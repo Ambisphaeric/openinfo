@@ -235,3 +235,86 @@ those. Served as `GET /relevant` (`RelevantEntity[]`, a new payload contract) pl
 - Retro-linking refs on previously persisted moments; speaker→person entity matching.
 - `match(live stream)` and `person-affinity` ranking factors; a ranking config document (see above).
 - Retry-at-idle llm.smart upgrades — still deferred from slice 2; a drain failure re-runs the same pass.
+
+## Slice: Sessions lifecycle (manual start/stop)
+
+### Contracts
+- `POST /sessions` now takes a dedicated **`StartSessionRequest`** payload (workspaceId + modeId
+  required; registerId + title optional), NOT a partial/full `Session`. The caller supplies only
+  what it knows; the engine stamps id/startedAt/attribution and returns the full Session. This
+  mirrors slice 3's `RelevantEntity` precedent (a purpose-built payload, not an overloaded record) —
+  a caller should never invent server-owned fields, and "POST a Session, get a Session back" would
+  have forced it to fabricate an id and a `manual` attribution it has no business authoring.
+- End route added: **`POST /sessions/:id/end`** (no request body; `endedAt` is server-stamped
+  `now()`), following the existing `POST /sessions/:id/reroute` sub-resource verb pattern rather
+  than a `PATCH`. Ending is a lifecycle transition, not a partial edit — a verb sub-resource reads
+  truer and leaves `PATCH /sessions/:id` free for a future generic edit if one is ever needed.
+- `Session` is used **as-is** from Phase 0 — no schema change. Seeded `session.live.json` +
+  `startSessionRequest.start.json` examples (validated by contracts.test).
+- Events: `session.started` / `session.ended` (both already carrying `Session` in the P0 contract)
+  are now actually published + WS-broadcast, exactly like `moment.created` et al. `EngineEvents`
+  gained the two keys.
+
+### Concurrency policy — ONE live session per WORKSPACE; start-while-live AUTO-ENDS
+- Scope is **per workspace**, not global: DB-per-workspace isolation exists precisely so parallel
+  workspaces run independently, so each workspace may hold one live (unended) session at a time and
+  they don't interfere. `store.liveSession(workspaceId)` is the single unended session.
+- On **start-while-live** in the same workspace we **auto-end** the live session (stamp `endedAt`,
+  emit `session.ended`) and then start the new one (emit `session.started`) — a 200, not a 409.
+  Rejecting would strand a forgotten-to-stop session and make the client babysit lifecycle; the
+  HUD's Now line wants "start B" to just work.
+- **`session.switched` is NOT emitted by this slice.** That event is router territory (P3): it
+  denotes a *detected* context switch (with reroute semantics), which a manual start is not. A
+  manual start-while-live is honestly two discrete lifecycle events (A ended, then B started), so
+  we emit exactly those two. `session.switched` stays genuinely unused until the router lands —
+  better an honest silence than a fabricated switch event a P3 consumer would misread.
+- End is **idempotent**: ending an already-ended session returns it unchanged and emits no second
+  `session.ended`; an unknown id is 404. The end route looks the session up **across workspaces**
+  (`store.findSession` — ids are uuids, globally unique) since `/sessions/:id/end` addresses it
+  without a workspace.
+
+### Closing the distill loop — real session records now steer voice + windowing
+The distiller previously resolved *every* chunk against the default meeting mode (`docs.mode()`)
+and that mode's `registerId` as the mode-scope default binding. It now, per session group:
+1. Looks up the real session record via `store.getSession(chunkWorkspaceId, sessionId)`.
+2. If found, uses **that session's `modeId`** to load the mode document (so merge window +
+   token budget come from the session's mode) and adds a **session-scope binding** from the
+   session's `registerId`. Because resolution precedence is session > workspace > mode > global,
+   the session register wins over the mode default — this is what makes "the same meeting run under
+   a different register produces visibly different output" (the Phase-2 exit criterion) true. The
+   e2e test proves it: the same transcript resolves sales-floor (charm 8 / specificity 5) under a
+   session record vs boardroom (charm 2 / specificity 9) on the fallback, echoed in the prompt.
+3. **Fallback (unchanged behavior): no session record ⇒ the default meeting mode**, because capture
+   can (and does) spool before or without a started session — the drain must never block on a
+   session existing. A session whose `modeId` points to a missing mode document also falls back to
+   the default mode doc (via `docs.mode(id)`'s existing fallback). Stored voice bindings still come
+   first, so an explicit stored binding out-ranks both synthesized (session/mode) bindings.
+
+### Store — sessions live in their workspace's own DB
+`store.saveSession/getSession/listSessions/liveSession/findSession` are the only path that touches
+sessions (DB-handle hard rule). The per-workspace `sessions` table (present since Phase 1 as
+`(id, body)`) gained `started_at` + `ended_at` columns — lifted out of the JSON body only to drive
+ordering (newest-started first) and the `live` filter (`ended_at IS NULL`); the full record stays
+in `body`. `saveSession` is insert-or-replace (start writes, end re-writes with `endedAt`), workspace
+created on demand like `saveDistillate`/`saveMoment`.
+
+### No flag — deliberately (flags gate behavior, sessions are lifecycle records)
+Sessions get **no flag**. The flag philosophy here is that flags gate *behavior* and documents
+*configure* it; a session is neither — it is a lifecycle record plus its CRUD routes, exactly like
+`/workspaces` (ungated). Everything a session could switch on is *already* gated: the distiller only
+runs behind `distill.enabled`, and a real session record merely feeds that existing pass better
+inputs (its own mode/register) rather than turning on any new code path. A `sessions.enabled` flag
+would gate nothing that isn't already gated and would only add a way to half-break the coming HUD
+(which is a hard prerequisite on live sessions). Consistent with the existing flags, which all gate
+an optional *processing* behavior (capture.sim, fabric.http, distill.*), never a resource's routes.
+
+### Client engine-link
+Thin typed methods added, matching the established get/getArray/request idiom (client never opens a
+DB, only talks to the API): `sessions({ workspace?, live? })`, `startSession(StartSessionRequest)`,
+`endSession(id)`. These are what the HUD slice will call for its Now line and start/stop control.
+
+### Deferred (out of this slice, by scope)
+- Router / context-switch detection / attribution beyond the single `manual` evidence entry, and
+  `POST /sessions/:id/reroute` (route exists in the P3 contract, left unimplemented) — all P3.
+- `session.switched` emission (router) — see policy above.
+- HUD surface / blocks / rendering (next slice); follow-up draft (Act); calendar capture.

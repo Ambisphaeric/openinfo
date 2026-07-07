@@ -22,7 +22,7 @@ openinfo/
 │  ├─ api/                      P1   http, ws, routes/ per resource
 │  ├─ bus/                      P1   ← loom packages/bus
 │  ├─ store/                    P1   ← loom packages/store + sqlite-vec
-│  │                                 workspace-registry (DB-FILE PER WORKSPACE) · graph (P3) · layouts (P2)
+│  │                                 workspace-registry (DB-FILE PER WORKSPACE) · sessions (P2: manual start/stop lifecycle) · graph (P3) · layouts (P2)
 │  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
 │  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm openai-compat)
 │  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG)
