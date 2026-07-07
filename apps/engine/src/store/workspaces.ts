@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Workspace } from '@openinfo/contracts'
+import type { Distillate, Workspace } from '@openinfo/contracts'
 import { LayoutStore } from './layouts.js'
 import { resolveDataDir } from './paths.js'
 
@@ -55,6 +55,31 @@ export class WorkspaceRegistry {
     return workspace
   }
 
+  /**
+   * Persist a distillate to its workspace's OWN sqlite file. The workspace is created on demand
+   * (a distill pass may reference a workspace no one has registered yet). This is the only path
+   * that writes distillates — the distiller asks store to write, per the DB-handle hard rule.
+   */
+  saveDistillate(distillate: Distillate): Distillate {
+    this.ensureWorkspace({ id: distillate.workspaceId, name: distillate.workspaceId })
+    const db = this.openWorkspace(distillate.workspaceId)
+    db.prepare('insert or replace into distillates (id, session_id, created_at, body) values (?, ?, ?, ?)').run(
+      distillate.id,
+      distillate.sessionId,
+      distillate.createdAt,
+      JSON.stringify(distillate),
+    )
+    return distillate
+  }
+
+  listDistillates(workspaceId: string, sessionId?: string): Distillate[] {
+    const db = this.openWorkspace(workspaceId)
+    const rows = sessionId
+      ? (db.prepare('select body from distillates where session_id = ? order by created_at').all(sessionId) as { body: string }[])
+      : (db.prepare('select body from distillates order by created_at').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as Distillate)
+  }
+
   close(): void {
     for (const db of this.workspaceHandles.values()) db.close()
     this.workspaceHandles.clear()
@@ -69,6 +94,9 @@ export class WorkspaceRegistry {
     const db = new Database(join(this.dataDir, workspace.dbFile))
     db.pragma('journal_mode = WAL')
     db.prepare('create table if not exists sessions (id text primary key, body text not null)').run()
+    db.prepare(
+      'create table if not exists distillates (id text primary key, session_id text not null, created_at text not null, body text not null)',
+    ).run()
     this.workspaceHandles.set(id, db)
     return db
   }

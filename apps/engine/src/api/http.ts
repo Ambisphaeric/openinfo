@@ -3,9 +3,12 @@ import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type CaptureChunk, type Fabric, type Flag } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
+import { DistillDocuments, Distiller } from '../distill/index.js'
 import { FabricDocuments } from '../fabric/index.js'
+import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry } from '../store/index.js'
+import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
 import { EventSocketHub } from './ws.js'
@@ -39,12 +42,30 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const bus = new EventBus<EngineEvents>()
   const ws = new EventSocketHub()
   const fabric = new FabricDocuments(store)
-  const queue = new CaptureQueue(join(store.dataDir, 'queue'))
+  const voice = new VoiceDocuments(store)
+  const distillDocs = new DistillDocuments(store)
   ensureDefaultFlags(store)
+  voice.ensureDefaults()
+  distillDocs.ensureDefaults()
+
+  const distiller = new Distiller({
+    store,
+    voice,
+    fabric,
+    docs: distillDocs,
+    publish: (distillate) => bus.publish('distillate.updated', distillate),
+    log,
+  })
+  // Seam (see PHASE2-NOTES): distill rides the queue drain, gated on distill.enabled (OFF by
+  // default). Flag off → the drain stays the Phase 1 no-op GC; on → each drained file distills.
+  const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
+    if (isFlagEnabled(store, 'distill.enabled')) await distiller.distillChunks(chunks)
+  })
 
   bus.subscribe('capture.received', (chunk) => ws.broadcast('capture.received', chunk))
   bus.subscribe('queue.updated', (status) => ws.broadcast('queue.updated', status))
   bus.subscribe('flag.changed', (flag) => ws.broadcast('flag.changed', flag))
+  bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
 
   const server = createServer((req, res) => {
     const ctx: HandlerContext = { bus, fabric, queue, store, log }
