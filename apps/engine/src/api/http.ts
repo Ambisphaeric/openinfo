@@ -1,7 +1,8 @@
+import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type CaptureChunk, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type CaptureChunk, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity, type Session, type StartSessionRequest } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller } from '../distill/index.js'
 import { FabricDocuments } from '../fabric/index.js'
@@ -80,6 +81,8 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
   bus.subscribe('moment.created', (moment) => ws.broadcast('moment.created', moment))
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
+  bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
+  bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
 
   const server = createServer((req, res) => {
     const ctx: HandlerContext = { bus, fabric, voice, queue, store, log }
@@ -116,6 +119,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/workspaces') return send(res, 200, ctx.store.all())
   if (req.method === 'GET' && url.pathname === '/registers') return send(res, 200, ctx.voice.registers())
+  if (req.method === 'GET' && url.pathname === '/sessions') return send(res, 200, readSessions(ctx.store, url))
+  if (req.method === 'POST' && url.pathname === '/sessions') return startSession(req, res, ctx)
+  const sessionEnd = url.pathname.match(/^\/sessions\/([^/]+)\/end$/)
+  if (req.method === 'POST' && sessionEnd?.[1]) return endSession(res, ctx, decodeURIComponent(sessionEnd[1]))
   if (req.method === 'GET' && url.pathname === '/moments') return send(res, 200, readMoments(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
@@ -164,6 +171,68 @@ function sendContract(url: URL, res: ServerResponse): void {
   const schema = schemaByName(name)
   if (!schema) return send(res, 404, { error: `unknown contract: ${name}` })
   send(res, 200, schema)
+}
+
+/**
+ * List a workspace's sessions (default `default`), most recently started first. `?live=true`
+ * narrows to the (at most one) unended session — the HUD's Now line keys off it. Mirrors
+ * readMoments: unknown workspace is an empty list, not an error.
+ */
+function readSessions(store: WorkspaceRegistry, url: URL): Session[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const live = url.searchParams.get('live') === 'true'
+  return store.listSessions(workspaceId, live ? { live: true } : {})
+}
+
+/**
+ * Start a manual session. The caller supplies workspaceId + modeId (+ optional registerId/title);
+ * the engine stamps id/startedAt and a single 'manual' attribution at confidence 1.0. Concurrency
+ * (see PHASE2-NOTES): ONE live session per workspace — if one is already live, it is auto-ended
+ * (session.ended emitted) before the new one starts. No session.switched: that event is the
+ * router's (P3); a manual start is two discrete lifecycle events, not a detected context switch.
+ */
+async function startSession(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('StartSessionRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid StartSessionRequest', details: errors })
+  const request = body as StartSessionRequest
+  const now = new Date().toISOString()
+
+  const live = ctx.store.liveSession(request.workspaceId)
+  if (live) {
+    const ended: Session = { ...live, endedAt: now }
+    ctx.store.saveSession(ended)
+    await ctx.bus.publish('session.ended', ended)
+    ctx.log(`auto-ended live session ${live.id} on start-while-live in workspace ${request.workspaceId}`)
+  }
+
+  const session: Session = {
+    id: randomUUID(),
+    workspaceId: request.workspaceId,
+    modeId: request.modeId,
+    startedAt: now,
+    attribution: { evidence: [{ kind: 'manual', detail: 'started manually', weight: 1 }], confidence: 1 },
+    ...(request.registerId !== undefined ? { registerId: request.registerId } : {}),
+    ...(request.title !== undefined ? { title: request.title } : {}),
+  }
+  ctx.store.saveSession(session)
+  await ctx.bus.publish('session.started', session)
+  send(res, 200, session)
+}
+
+/**
+ * End a session by id (server-stamps endedAt). Idempotent: ending an already-ended session returns
+ * it unchanged and emits no second session.ended. Unknown id ⇒ 404. The session is looked up across
+ * workspaces (ids are globally unique) since the route addresses it without its workspace.
+ */
+async function endSession(res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const session = ctx.store.findSession(id)
+  if (!session) return send(res, 404, { error: `no such session: ${id}` })
+  if (session.endedAt !== undefined) return send(res, 200, session)
+  const ended: Session = { ...session, endedAt: new Date().toISOString() }
+  ctx.store.saveSession(ended)
+  await ctx.bus.publish('session.ended', ended)
+  send(res, 200, ended)
 }
 
 /**
