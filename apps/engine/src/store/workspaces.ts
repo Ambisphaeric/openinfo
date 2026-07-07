@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Entity, EntityProvenance, Moment, Workspace } from '@openinfo/contracts'
+import type { Distillate, Entity, EntityProvenance, Moment, Session, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { LayoutStore } from './layouts.js'
@@ -104,6 +104,60 @@ export class WorkspaceRegistry {
       ? (db.prepare('select body from distillates where session_id = ? order by created_at').all(sessionId) as { body: string }[])
       : (db.prepare('select body from distillates order by created_at').all() as { body: string }[])
     return rows.map((row) => JSON.parse(row.body) as Distillate)
+  }
+
+  /**
+   * Persist a session record to its workspace's OWN sqlite file (a session lives in its workspace's
+   * DB; DB-handle hard rule: only store/ writes). Workspace is created on demand, mirroring
+   * saveDistillate. Idempotent per session id (insert or replace) — start writes it, end re-writes
+   * it with endedAt stamped. started_at/ended_at are lifted into columns for ordering + the live
+   * filter; ended_at null ⇔ the session is still live.
+   */
+  saveSession(session: Session): Session {
+    this.ensureWorkspace({ id: session.workspaceId, name: session.workspaceId })
+    const db = this.openWorkspace(session.workspaceId)
+    db.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(
+      session.id,
+      session.startedAt,
+      session.endedAt ?? null,
+      JSON.stringify(session),
+    )
+    return session
+  }
+
+  getSession(workspaceId: string, id: string): Session | undefined {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return undefined
+    const db = this.openWorkspace(workspaceId)
+    const row = db.prepare('select body from sessions where id = ?').get(id) as { body: string } | undefined
+    return row ? (JSON.parse(row.body) as Session) : undefined
+  }
+
+  /** List a workspace's sessions, most recently started first; `live` narrows to unended sessions. */
+  listSessions(workspaceId: string, opts: { live?: boolean } = {}): Session[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const sql = opts.live
+      ? 'select body from sessions where ended_at is null order by started_at desc'
+      : 'select body from sessions order by started_at desc'
+    return (db.prepare(sql).all() as { body: string }[]).map((row) => JSON.parse(row.body) as Session)
+  }
+
+  /** The single live session for a workspace (the HUD's Now line keys off it), or undefined. */
+  liveSession(workspaceId: string): Session | undefined {
+    return this.listSessions(workspaceId, { live: true })[0]
+  }
+
+  /**
+   * Find a session by id across all workspaces — session ids are globally unique (uuid), and the
+   * end route addresses a session without its workspace. Returns the record (which carries its own
+   * workspaceId), so callers can then saveSession it back to the right DB.
+   */
+  findSession(id: string): Session | undefined {
+    for (const workspace of this.all()) {
+      const session = this.getSession(workspace.id, id)
+      if (session) return session
+    }
+    return undefined
   }
 
   /**
@@ -242,7 +296,9 @@ export class WorkspaceRegistry {
     if (!workspace) throw new Error(`unknown workspace: ${id}`)
     const db = new Database(join(this.dataDir, workspace.dbFile))
     db.pragma('journal_mode = WAL')
-    db.prepare('create table if not exists sessions (id text primary key, body text not null)').run()
+    db.prepare(
+      'create table if not exists sessions (id text primary key, started_at text not null, ended_at text, body text not null)',
+    ).run()
     db.prepare(
       'create table if not exists distillates (id text primary key, session_id text not null, created_at text not null, body text not null)',
     ).run()

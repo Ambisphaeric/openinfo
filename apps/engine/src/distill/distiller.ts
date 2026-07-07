@@ -86,19 +86,31 @@ export class Distiller {
   async distillChunks(chunks: readonly CaptureChunk[], opts: DistillOptions = {}): Promise<Distillate[]> {
     const text = chunks.filter(isText)
     if (text.length === 0) return []
-    const mode: Mode = this.docs.mode()
+    const defaultMode: Mode = this.docs.mode()
     const template: PromptTemplate = this.docs.template()
     const extractTemplate: PromptTemplate = this.docs.extractTemplate()
     const entitiesTemplate: PromptTemplate = this.docs.entitiesTemplate()
     const registers = this.voice.registers()
-    // A mode's registerId IS its mode-scope default binding (IMPLEMENTATION §1: "a mode declares a
-    // default"). Explicit stored bindings come first so they win the mode scope over this default.
-    const modeDefault: VoiceBinding[] =
-      mode.registerId !== undefined ? [{ scope: 'mode', targetId: mode.id, registerId: mode.registerId }] : []
-    const bindings = [...this.voice.bindings(), ...modeDefault]
+    const storedBindings = this.voice.bindings()
     const produced: Distillate[] = []
 
     for (const [sessionId, sessionChunks] of groupBySession(text)) {
+      // Close the distill loop (see PHASE2-NOTES): if a real session record exists for this chunk's
+      // sessionId, use ITS modeId (for merge window/token budget + mode-default register) and its
+      // registerId (as a session-scope binding that wins the resolution). No record ⇒ fall back to
+      // the default meeting mode — capture may spool before/without a started session.
+      const sessionWorkspaceId = sessionChunks[0]!.workspaceId
+      const record = this.store.getSession(sessionWorkspaceId, sessionId)
+      const mode: Mode = record ? this.docs.mode(record.modeId) : defaultMode
+      // A mode's registerId IS its mode-scope default binding (IMPLEMENTATION §1: "a mode declares a
+      // default"). A session's registerId is a session-scope binding (session > mode precedence).
+      // Stored bindings come first so an explicit stored binding still wins over these synthesized ones.
+      const modeDefault: VoiceBinding[] =
+        mode.registerId !== undefined ? [{ scope: 'mode', targetId: mode.id, registerId: mode.registerId }] : []
+      const sessionBinding: VoiceBinding[] =
+        record?.registerId !== undefined ? [{ scope: 'session', targetId: sessionId, registerId: record.registerId }] : []
+      const bindings = [...storedBindings, ...sessionBinding, ...modeDefault]
+
       const windows = bucketIntoWindows(sessionChunks, mode.distill.mergeWindow)
       for (const window of windows) {
         const workspaceId = window.chunks[0]!.workspaceId

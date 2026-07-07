@@ -71,6 +71,37 @@ test('upsertEntity resolves the same entity across windows into ONE record', asy
   }
 })
 
+test('sessions persist in their own workspace DB; live filter + cross-workspace find', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-sessions-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const session: import('@openinfo/contracts').Session = {
+      id: 'ses-a', workspaceId: 'ws-a', modeId: 'mode-meeting', startedAt: '2026-07-07T14:00:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'started manually', weight: 1 }], confidence: 1 },
+    }
+    registry.saveSession(session)
+
+    // isolation: the session lives in ws-a's DB, not ws-b's, not default's
+    assert.equal(registry.getSession('ws-a', 'ses-a')?.id, 'ses-a')
+    assert.equal(registry.getSession('default', 'ses-a'), undefined)
+    assert.deepEqual(registry.listSessions('ws-b'), [])
+
+    // live while unended; drops off the live list once ended
+    assert.equal(registry.liveSession('ws-a')?.id, 'ses-a')
+    registry.saveSession({ ...session, endedAt: '2026-07-07T15:00:00Z' })
+    assert.equal(registry.liveSession('ws-a'), undefined)
+    assert.equal(registry.listSessions('ws-a').length, 1) // still listed, just not live
+    assert.equal(registry.listSessions('ws-a', { live: true }).length, 0)
+
+    // findSession locates it across workspaces without knowing its workspace
+    assert.equal(registry.findSession('ses-a')?.workspaceId, 'ws-a')
+    assert.equal(registry.findSession('ses-nowhere'), undefined)
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('addEntityMomentRefs appends refs; unknown entity is undefined', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-entities-'))
   try {

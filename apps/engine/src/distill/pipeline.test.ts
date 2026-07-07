@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Entity, Fabric, Moment } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Entity, Fabric, Moment, Session } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { FabricDocuments, defaultFabric } from '../fabric/index.js'
 import { CaptureQueue } from '../queue/spool.js'
@@ -111,6 +111,48 @@ test('drain → distill → store → bus with a fake llm endpoint', async () =>
     // distill.moments was not enabled for this drain → no extraction call, no moments
     assert.equal(llm.prompts.filter((p) => p.includes('Return ONLY a JSON array')).length, 0)
     assert.deepEqual(store.listMoments('ws-e2e'), [])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('a real session record steers voice resolution off the default-mode fallback', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-session-voice-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const voice = new VoiceDocuments(store)
+    voice.ensureDefaults()
+    const docs = new DistillDocuments(store)
+    docs.ensureDefaults()
+    const fabric = new FabricDocuments(store)
+    fabric.save({ slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } })
+    const distiller = new Distiller({ store, voice, fabric, docs })
+
+    // a real session record for the chunks' sessionId, carrying a NON-default register (sales-floor,
+    // charm 8 / specificity 5) instead of the meeting mode's boardroom default (charm 2 / spec 9).
+    const session: Session = {
+      id: 'ses-e2e', workspaceId: 'ws-e2e', modeId: 'mode-meeting', startedAt: '2026-07-07T13:59:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'started manually', weight: 1 }], confidence: 1 },
+      registerId: 'reg-sales-floor',
+    }
+    store.saveSession(session)
+
+    const produced = await distiller.distillChunks([chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'agreed, Thursday it is')])
+    // session-scope binding wins over the mode-default boardroom → sales-floor reached the prompt
+    assert.equal(produced.length, 1)
+    assert.equal(produced[0]!.voice.registerId, 'reg-sales-floor')
+    assert.equal(produced[0]!.voice.scope, 'session')
+    assert.equal(produced[0]!.voice.dials.charm, 8)
+    assert.match(llm.prompts[0]!, /specificity 5\/10/) // sales-floor, NOT boardroom's 9
+
+    // contrast: a session id with NO record falls back to the default meeting mode → boardroom
+    const fallback = await distiller.distillChunks([{ ...chunk(3, 0, 'different meeting'), sessionId: 'ses-unstarted' }])
+    assert.equal(fallback[0]!.voice.registerId, 'reg-boardroom')
+    assert.equal(fallback[0]!.voice.scope, 'mode')
+    assert.match(llm.prompts.at(-1)!, /specificity 9\/10/)
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })
