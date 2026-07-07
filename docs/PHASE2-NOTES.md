@@ -434,3 +434,109 @@ as the minimal readout surface.
 - Electron window wiring (see above); user-tunable relevant-now ranking as a block-document knob
   (slice 3 named this the home) — the block carries `top` today; exposing rank constants as query
   params is the P6 editor's job.
+
+## Slice: Follow-up draft — the first Act node (act/, act.enabled) — CLOSES PHASE 2
+
+### DAG vs direct — chosen: DIRECT (the recipe executor is NOT transplanted this slice)
+`workflow/` was a design placeholder (README only); no P2 slice ran through a DAG — distill/moments/
+index ride the drain, sessions/HUD are wired at their routes. The "first Act node" language invited
+transplanting loom's recipe executor now; it was declined. A DAG executor for a **single, unchained,
+one-node graph** is ceremony: the follow-up draft has one trigger (session end) and no downstream
+node, so a compile-mode-to-DAG layer would add an indirection every reader traces through and buy
+nothing this phase uses. The five primitives are already named and homed (`distill/`, `index/`,
+`voice/`, `act/`, `route/`), so the eventual executor will **compose** these modules, not absorb them
+— declining now creates no rework debt. **What forces the transplant later:** a mode needing more
+than one act, or chained nodes (an act consuming another's output), or per-mode act ordering/fan-out.
+At that point `compile.ts` turns `Mode.acts` (+ source/distill/overlay config) into a DAG and these
+direct triggers become node invocations. `workflow/README.md` now records exactly this.
+
+### Home — a new `act/` module (the Act primitive's home), NOT `ledger/prepare`
+The Act primitive gets its own top-level engine module, mirroring how `distill/`/`index/`/`voice/`
+each own a primitive. CODE_MAP had no `act/` row (only `ledger/ … prepare (action cards)` at P4);
+per CODE_MAP rule 5 a homeless feature needs a note before code — so `act/` is added to CODE_MAP.
+Distinct from `ledger/prepare`: that (P4) attaches prepared **action cards to ledger commitments**;
+the follow-up draft is the Act primitive's canonical session-end artifact and its foundation.
+`ledger/prepare` will build on `act/` in P4. `act/`: `draft.ts` (the pure `composeFollowUpDraft` +
+the `Actor` orchestrator), `defaults.ts` (the seeded template), `documents.ts` (`ActDocuments`).
+
+### Trigger + the ≤60s story — on `session.ended`, flush the drain, then compose
+The act rides **session end**, not the chunk drain (its input is already-distilled records, not raw
+chunks — the drain processor's signature is `chunks ⇒ void`, a poor fit; and it fires once per end,
+not per chunk). The http.ts bus subscriber, gated on `act.enabled`, does: `await queue.drainNow(log)`
+then `actor.runFollowUpDraft(session)`. **`drainNow` (new)** waits out any in-flight scheduled drain
+then runs one guarded pass, so every pending chunk for the session is distilled *before* the draft is
+composed — the draft reflects the whole meeting, resolving the in-flight-distillation concern. ≤60s:
+the draft is built from stored distillates/moments (NO re-run of the llm over raw transcript) plus one
+prose llm call, so on idle local hardware a drain-flush + one call is well under budget. The mode's
+`acts[].params.latencySecPostSession: 60` documents the *intent*; we do not hard-cut on a timer (that
+would truncate a legitimately slow drain) — the e2e asserts the draft lands < 60s and logs elapsed.
+Auto-end (start-while-live) also emits `session.ended`, so an auto-ended session is drafted too; the
+end route is idempotent, so a re-end emits no second event and drafts nothing twice.
+
+### Retry — honest deviation from the drain's retry-at-idle
+Because the trigger is a one-shot lifecycle event (not a durable queue file), a failed draft does NOT
+get the drain's re-queue-at-idle. Mitigations in place: `invokeLlm` already fails over across llm
+endpoints, and `composeFollowUpDraft` bounded-retries a blank completion (default 2, mirroring the
+moments extractor). A transport failure logs and prepares no draft that session. **Gap (documented):**
+no durable cross-restart retry for the act; the future home is either a manual re-compose route
+(`POST /sessions/:id/draft`) or folding the act into the DAG executor with a durable job. Called out
+because the drain-job approach *would* give retry-for-free — it was weighed and rejected on ordering
+fragility (a draft job file must sort strictly after all chunk files, and within one drain pass the
+chunk files must process first; `drainNow` on a lifecycle event is deterministic where that is not).
+
+### The draft record + provenance
+`Draft` (records/draft.ts, `DRAFT_SCHEMA_VERSION = 1`): id, sessionId, workspaceId, `actKind`
+(union mirroring `Mode.acts[].kind`; only follow-up-draft implemented), `body` (markdown prose),
+`status` (a **single-member enum `'prepared'`** — the type itself codifies "the app prepares, never
+sends"), `voice` (registerId?/scope/dials — same shape as Distillate, the vector that shaped it), and
+`provenance` (templateId + templateVersion, slot/endpoint/model, and the exact `sourceDistillates`/
+`sourceMoments` ids). Every draft is inspectable back to what it was built from (product principle 1).
+`draft.created` event → `Draft`; `GET /drafts?workspace=&session=` (phase 2) mirrors `/moments`
+(unknown workspace ⇒ `[]`, not an error). No placeholder existed in events.ts to correct.
+
+### The register visibly shapes the draft (the exit-criterion evidence)
+The Actor resolves voice exactly like the distiller: a session `registerId` becomes a session-scope
+binding that wins over the mode-default (`mode.registerId`) by session > mode precedence; stored
+bindings still out-rank both. The `tpl-followup-default` template (kind `act`, seeded, versioned,
+cloneable) interpolates the dial numbers **and** the compiled `{{voice.rules}}`. The
+register-shaping test seeds identical session material and drafts it twice — boardroom (mode default:
+charm 2 / specificity 9) vs a sales-floor session register (charm 8): with a prompt-echoing fake llm
+the two draft bodies differ (`Avoid humor … stay clinical` + `specificity 9/10` vs `Be personable and
+charismatic` + `charm 8/10`), and `assert.notEqual(bodyA, bodyB)`. This mirrors the slice-4 e2e and is
+the constructional half of the exit criterion; the experiential half (a human judges the two real
+drafts read differently) is convergence-time, on real models.
+
+### Flag — `act.enabled` (umbrella, OFF, scope engine, minTier T1)
+Named to mirror the distill family: `distill.enabled` gates the core pass; `act.enabled` gates the
+core act. Future act kinds (task-extract, nudge) become sub-flags `act.tasks`/`act.nudge`, exactly as
+`distill.moments`/`distill.index` extend `distill.enabled`. Read at trigger time (per session-end), so
+an API flip takes effect without restart. **Interaction with distill flags:** the draft is composed
+from stored distillates/moments, so with `distill.enabled` off there is nothing to draft and no draft
+is produced (a normal outcome, logged — not an error, not a hard flag dependency). Moments enrich the
+draft but are not required; a draft composes from distillates alone. Seeded in `flag.examples.json`
+(the seed source `ensureDefaultFlags` reads).
+
+### HUD surfacing — DEFERRED (out of slice, not gold-plated)
+No `draft` BlockTypeName shipped (BlockTypeName is append-only; adding one is the CONTRIBUTING Tier-B
+recipe and the exit criterion only needs the draft to EXIST ≤60s and be retrievable — `GET /drafts`
+delivers that). The natural home is a later HUD/editor slice: a `draft` block + a `draft-with`/`copy`
+action over the served draft body (the `copy` verb is already live in the renderer).
+
+### Deferred (out of this slice, by scope)
+- task-extract + nudge act kinds (enum exists; unimplemented); sending/committing/replying outward
+  (hard product rule — never).
+- Durable act retry / manual re-compose route (see Retry above); the DAG executor (see DAG decision).
+- A `draft` HUD block + surfacing (see above); draft editing/versioning as a document.
+
+### Phase-2 exit criterion — honest status at slice close
+Constructionally COMPLETE: attend-a-meeting is exercised end-to-end in tests — session start →
+capture spool → drain/distill (+ moments/entities) → HUD hydration → session end → a register-bound
+follow-up draft ≤60s, retrievable. What Phase 2 still LACKS for the *lived* criterion (all
+convergence-time or separately-scoped, none constructional blockers):
+- **Real capture + a content-protected Electron window.** `client/main` is still a Phase-1 scaffold;
+  the HUD mounts via a browser dev-entry. Real mic/screen/system-audio capture (glass transplant) and
+  the window/tray are a separate follow-up. Today's e2e drives capture over `POST /capture`.
+- **Local-model quality on real hardware.** All llm calls in CI are fakes; extraction/draft quality
+  on 3–8B models (the #2 risk) is tuned against real meetings over calendar time, not construction.
+- **The experiential judgments** — "the HUD is alive and I trust it", "the two drafts read
+  differently" as a human reads them — need dogfooding, per CODE_MAP's construction-vs-convergence note.

@@ -1,6 +1,6 @@
 # openinfo — code map
 
-**Status:** scaffold on disk, no implementation yet · 2026-07-07
+**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act) · 2026-07-07
 **Reads with:** [ARCHITECTURE.md](./ARCHITECTURE.md) (the what) · [IMPLEMENTATION.md](./IMPLEMENTATION.md) (the when)
 This file is the **where** — including where features that don't exist yet will land, so no later phase ever
 has to invent a home (the historical failure mode).
@@ -22,16 +22,17 @@ openinfo/
 │  ├─ api/                      P1   http, ws, routes/ per resource
 │  ├─ bus/                      P1   ← loom packages/bus
 │  ├─ store/                    P1   ← loom packages/store + sqlite-vec
-│  │                                 workspace-registry (DB-FILE PER WORKSPACE) · sessions (P2: manual start/stop lifecycle) · graph (P3) · layouts (P2)
+│  │                                 workspace-registry (DB-FILE PER WORKSPACE) · sessions (P2: manual start/stop lifecycle) · distillates/moments/entities/drafts (P2) · graph (P3) · layouts (P2)
 │  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
 │  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm openai-compat)
-│  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG)
+│  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG) — NOT built: P2 primitives wired direct at their seams; DAG deferred until multi/chained acts (see workflow/README)
 │  ├─ distill/                  P2   merge · distiller · moments (typed extraction) · parse (defensive JSON, shared) · defaults/documents (template+mode docs) │ ocr (P3)
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
 │  ├─ index/                    P2   extract (entities) · rank (recency×frequency) · relevant (relevant-now join) │ P3: canon · ingest/ (pdf, gdoc)
+│  ├─ act/                      P2   the Act primitive: draft (follow-up-draft on session end) · defaults/documents (act template) │ P3+: task-extract · nudge · exports
 │  ├─ route/                    P3   detector · attribute · identity · reroute
-│  ├─ ledger/                   P4   commitments · watchers/{repo,doc,mail} · prepare (action cards)
-│  ├─ queue/                    P1   spool · drain (P2: optional distill processor) │ P3: eta │ gc
+│  ├─ ledger/                   P4   commitments · watchers/{repo,doc,mail} · prepare (action cards — builds on act/)
+│  ├─ queue/                    P1   spool · drain (P2: optional distill processor · drainNow flushes before the act) │ P3: eta │ gc
 │  ├─ overlay/                  P2   rules/lenses · roles · ontology (voice lives in voice/)
 │  ├─ flags/                    P0   flag registry (flags are documents)
 │  ├─ surfaces/                 P2   HUD surface documents (documents/defaults) · block-query compiler (query.ts: BlockQuery→store calls) │ P4: serve workbench │ P6: custom-block sandbox (rabbithole pattern)

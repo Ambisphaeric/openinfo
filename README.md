@@ -15,9 +15,10 @@ compose — not the product, just the first one we built.
 **Status:** pre-release, mid-Phase-2, moving fast. What works today: capture spools into the engine,
 a rolling-merge **distill** pass emits summaries + typed **moments** (● commitment ◆ question-at-you
 ▲ decision ✱ artifact) + an entity **index** with recency×frequency ranking, manual **sessions**
-steer voice, and the **HUD** renders entirely from a surface document through the real block
-renderer. Every feature ships behind a flag, **OFF by default**. Router, ledger, pins, and the visual
-editors are designed but not built (see `IMPLEMENTATION.md`).
+steer voice, the **HUD** renders entirely from a surface document through the real block renderer,
+and ending a call prepares a register-shaped **follow-up draft** (the first Act node — prepared,
+never sent). Every feature ships behind a flag, **OFF by default**. Router, ledger, pins, and the
+visual editors are designed but not built (see `IMPLEMENTATION.md`).
 
 ---
 
@@ -28,7 +29,7 @@ Verified from a clean tree (macOS, Node 22+, pnpm 9). Clone to a rendered HUD:
 ```bash
 pnpm install
 pnpm -r build          # contracts → engine + client (workbench is a Phase-4 scaffold)
-pnpm -r test           # contracts schema-validation + engine (60) + client (7)
+pnpm -r test           # contracts schema-validation + engine (67) + client (7)
 
 # start the engine daemon — localhost:8787 by default, data under ~/.openinfo/data
 node apps/engine/dist/main.js            # OPENINFO_PORT / OPENINFO_DATA to override
@@ -60,11 +61,11 @@ npx serve apps/client          # or any static server
 The HUD renders against a bare engine — the Now line, the block stack, empty explainable blocks.
 That is the honest state, not a broken one: the data a block shows is gated upstream.
 
-**To see distill / moments / index actually run**, two things must be true. First, flip the flags
-(they're documents; flip over the API, effective without a restart):
+**To see distill / moments / index / the follow-up draft actually run**, two things must be true.
+First, flip the flags (they're documents; flip over the API, effective without a restart):
 
 ```bash
-for f in distill.enabled distill.moments distill.index; do
+for f in distill.enabled distill.moments distill.index act.enabled; do
   curl -sX PUT localhost:8787/flags/$f -H 'content-type: application/json' \
     -d "{\"key\":\"$f\",\"default\":true,\"scope\":\"engine\",\"description\":\"on\"}"; done
 ```
@@ -81,7 +82,9 @@ curl -sX PUT localhost:8787/fabric -H 'content-type: application/json' -d '{"slo
 
 Without an endpoint, capture is still accepted and durably spooled; the drain simply re-queues it
 (retry-at-idle — nothing is ever lost) and no moments appear. With one, POST a text `CaptureChunk`
-to `/capture/mic` and the drain distills it into moments/entities the HUD then surfaces.
+to `/capture/mic` and the drain distills it into moments/entities the HUD then surfaces. End the
+session (`POST /sessions/:id/end`) and — with `act.enabled` on — a follow-up draft is prepared from
+the session's summaries within seconds; fetch it at `GET /drafts?workspace=default&session=<id>`.
 
 ---
 
