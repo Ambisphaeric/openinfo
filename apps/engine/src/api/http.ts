@@ -30,6 +30,7 @@ export interface EngineOptions {
 interface HandlerContext {
   bus: EventBus<EngineEvents>
   fabric: FabricDocuments
+  voice: VoiceDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
   onCapture?: (chunk: CaptureChunk) => void
@@ -68,7 +69,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, queue, store, log }
+    const ctx: HandlerContext = { bus, fabric, voice, queue, store, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -101,6 +102,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/fabric') return send(res, 200, ctx.fabric.load())
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/workspaces') return send(res, 200, ctx.store.all())
+  if (req.method === 'GET' && url.pathname === '/registers') return send(res, 200, ctx.voice.registers())
   if (req.method === 'GET' && url.pathname.startsWith('/contracts/')) return sendContract(url, res)
   if (req.method === 'PUT' && url.pathname.startsWith('/flags/')) return saveFlag(req, res, ctx, decodeURIComponent(url.pathname.slice(7)))
   const capture = url.pathname.match(/^\/capture\/([^/]+)$/)

@@ -41,3 +41,22 @@ test('capture route validates and publishes chunks', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('GET /registers serves the seeded builtin registers', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const response = await fetch(`http://127.0.0.1:${address.port}/registers`)
+    assert.equal(response.status, 200)
+    const registers = (await response.json()) as { id: string; name: string }[]
+    assert.ok(registers.some((r) => r.id === 'reg-boardroom'))
+    assert.ok(registers.some((r) => r.id === 'reg-sales-floor'))
+    assert.equal(registers.length, 5)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

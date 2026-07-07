@@ -24,14 +24,14 @@ openinfo/
 │  ├─ store/                    P1   ← loom packages/store + sqlite-vec
 │  │                                 workspace-registry (DB-FILE PER WORKSPACE) · graph (P3) · layouts (P2)
 │  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
-│  │                                 bench (measured tok/s) · health (first-healthy-wins)
+│  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm openai-compat)
 │  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG)
-│  ├─ distill/                  P2   merge · templates (voice-interpolated) · moments · ocr (P3)
-│  ├─ voice/                    P2   resolve · interpolate │ P5: comparator · chains
+│  ├─ distill/                  P2   merge · distiller · defaults/documents (template+mode docs) │ moments · ocr (P3)
+│  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
 │  ├─ index/                    P2   extract · rank │ P3: canon · ingest/ (pdf, gdoc)
 │  ├─ route/                    P3   detector · attribute · identity · reroute
 │  ├─ ledger/                   P4   commitments · watchers/{repo,doc,mail} · prepare (action cards)
-│  ├─ queue/                    P1   spool · drain │ P3: eta │ gc
+│  ├─ queue/                    P1   spool · drain (P2: optional distill processor) │ P3: eta │ gc
 │  ├─ overlay/                  P2   rules/lenses · roles · ontology (voice lives in voice/)
 │  ├─ flags/                    P0   flag registry (flags are documents)
 │  ├─ surfaces/                 P4   serve workbench │ P6: custom-block sandbox (rabbithole pattern)
