@@ -6,6 +6,7 @@ export const Events = {
   'moment.created': 'Moment',
   'distillate.updated': 'Distillate',
   'entity.updated': 'Entity',
+  'draft.created': 'Draft',
   'ledger.updated': 'Commitment',
   'drift.step': 'DriftChainStep',
   'queue.updated': 'QueueStatus',

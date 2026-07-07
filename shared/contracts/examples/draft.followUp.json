@@ -1,0 +1,10 @@
+{ "id": "drf-001", "sessionId": "ses-acme", "workspaceId": "ws-sales",
+  "actKind": "follow-up-draft",
+  "body": "Hi Dana,\n\nThanks for the time today. To recap: you asked for the retention language in writing by Thursday, and I'll route our draft through legal today so you have it well ahead of then.\n\nNext steps:\n- Me: send the SOC 2 addendum language (by Thu)\n- Legal: review the retention clause (today)\n\nTalk soon.",
+  "status": "prepared",
+  "voice": { "registerId": "reg-boardroom", "scope": "session",
+             "dials": { "tone": 3, "warmth": 4, "wit": 2, "charm": 2, "specificity": 9, "brevity": 8 } },
+  "provenance": { "templateId": "tpl-followup-default", "templateVersion": 1,
+                  "slot": "llm", "endpoint": "llm.fast", "model": "llama-3.2-3b",
+                  "sourceDistillates": ["dst-001", "dst-002"], "sourceMoments": ["mom-101", "mom-102"] },
+  "schemaVersion": 1, "createdAt": "2026-07-07T15:02:11-04:00" }

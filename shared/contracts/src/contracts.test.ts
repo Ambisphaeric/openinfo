@@ -14,7 +14,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface',
   flag: 'Flag', commitment: 'Commitment', workspace: 'Workspace', moment: 'Moment',
   captureChunk: 'CaptureChunk', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus',
-  distillate: 'Distillate', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
+  distillate: 'Distillate', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
   session: 'Session', startSessionRequest: 'StartSessionRequest', queryResult: 'QueryResult',
 }
 

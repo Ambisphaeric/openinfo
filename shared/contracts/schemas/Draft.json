@@ -1,0 +1,228 @@
+{
+  "$id": "Draft",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "sessionId",
+    "workspaceId",
+    "actKind",
+    "body",
+    "status",
+    "voice",
+    "provenance",
+    "schemaVersion",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "actKind": {
+      "description": "which Act node produced this (mirrors Mode.acts[].kind); only follow-up-draft is implemented in P2",
+      "anyOf": [
+        {
+          "const": "follow-up-draft",
+          "type": "string"
+        },
+        {
+          "const": "task-extract",
+          "type": "string"
+        },
+        {
+          "const": "nudge",
+          "type": "string"
+        }
+      ]
+    },
+    "body": {
+      "description": "the prepared draft, markdown prose",
+      "type": "string"
+    },
+    "status": {
+      "description": "always \"prepared\": the app prepares, it never sends/commits/replies outward (ARCHITECTURE §1) — the enum has one member by design",
+      "const": "prepared",
+      "type": "string"
+    },
+    "voice": {
+      "additionalProperties": false,
+      "description": "the resolved voice vector this draft was composed under",
+      "type": "object",
+      "required": [
+        "scope",
+        "dials"
+      ],
+      "properties": {
+        "registerId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "scope": {
+          "description": "which binding scope won resolution — a session register wins over the mode default",
+          "anyOf": [
+            {
+              "const": "global",
+              "type": "string"
+            },
+            {
+              "const": "mode",
+              "type": "string"
+            },
+            {
+              "const": "workspace",
+              "type": "string"
+            },
+            {
+              "const": "session",
+              "type": "string"
+            }
+          ]
+        },
+        "dials": {
+          "$id": "Dials",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "tone",
+            "warmth",
+            "wit",
+            "charm",
+            "specificity",
+            "brevity"
+          ],
+          "properties": {
+            "tone": {
+              "minimum": 0,
+              "maximum": 10,
+              "type": "integer"
+            },
+            "warmth": {
+              "minimum": 0,
+              "maximum": 10,
+              "type": "integer"
+            },
+            "wit": {
+              "minimum": 0,
+              "maximum": 10,
+              "type": "integer"
+            },
+            "charm": {
+              "minimum": 0,
+              "maximum": 10,
+              "type": "integer"
+            },
+            "specificity": {
+              "minimum": 0,
+              "maximum": 10,
+              "type": "integer"
+            },
+            "brevity": {
+              "minimum": 0,
+              "maximum": 10,
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "templateId",
+        "slot",
+        "endpoint",
+        "sourceDistillates",
+        "sourceMoments"
+      ],
+      "properties": {
+        "templateId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "templateVersion": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "slot": {
+          "description": "fabric capability slot",
+          "anyOf": [
+            {
+              "const": "stt",
+              "type": "string"
+            },
+            {
+              "const": "tts",
+              "type": "string"
+            },
+            {
+              "const": "llm",
+              "type": "string"
+            },
+            {
+              "const": "vlm",
+              "type": "string"
+            },
+            {
+              "const": "ocr",
+              "type": "string"
+            },
+            {
+              "const": "embed",
+              "type": "string"
+            }
+          ]
+        },
+        "endpoint": {
+          "minLength": 1,
+          "description": "fabric endpoint name that produced this",
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "sourceDistillates": {
+          "description": "distillate ids the draft was composed from",
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          }
+        },
+        "sourceMoments": {
+          "description": "moment ids the draft was composed from",
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "schemaVersion": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

@@ -3,6 +3,7 @@ export * from './common.js'
 export * from './records/moment.js'
 export * from './records/entity.js'
 export * from './records/distillate.js'
+export * from './records/draft.js'
 export * from './records/session.js'
 export * from './records/workspace.js'
 export * from './records/pin.js'
@@ -20,6 +21,7 @@ export * from './api/payloads.js'
 import { Moment, MomentKind } from './records/moment.js'
 import { Entity } from './records/entity.js'
 import { Distillate } from './records/distillate.js'
+import { Draft } from './records/draft.js'
 import { Session } from './records/session.js'
 import { Workspace } from './records/workspace.js'
 import { Pin } from './records/pin.js'
@@ -34,7 +36,7 @@ import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, Rele
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
-  Moment, MomentKind, Entity, Distillate, Session, Workspace, Pin, Commitment, Watcher,
+  Moment, MomentKind, Entity, Distillate, Draft, Session, Workspace, Pin, Commitment, Watcher,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, Flag,
