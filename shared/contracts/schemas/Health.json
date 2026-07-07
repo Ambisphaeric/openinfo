@@ -1,0 +1,30 @@
+{
+  "$id": "Health",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "ok",
+    "phase",
+    "uptimeMs",
+    "checkedAt"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "phase": {
+      "minimum": 0,
+      "maximum": 7,
+      "type": "integer"
+    },
+    "uptimeMs": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "checkedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

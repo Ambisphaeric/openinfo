@@ -1,0 +1,7 @@
+{
+  "$id": "JsonSchema",
+  "type": "object",
+  "patternProperties": {
+    "^(.*)$": {}
+  }
+}

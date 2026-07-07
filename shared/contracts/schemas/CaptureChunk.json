@@ -1,0 +1,86 @@
+{
+  "$id": "CaptureChunk",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "sessionId",
+    "workspaceId",
+    "source",
+    "sequence",
+    "capturedAt",
+    "contentType",
+    "encoding",
+    "data"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "source": {
+      "$id": "CaptureSource",
+      "anyOf": [
+        {
+          "const": "mic",
+          "type": "string"
+        },
+        {
+          "const": "screen",
+          "type": "string"
+        },
+        {
+          "const": "calendar",
+          "type": "string"
+        },
+        {
+          "const": "repo",
+          "type": "string"
+        },
+        {
+          "const": "camera",
+          "type": "string"
+        }
+      ]
+    },
+    "sequence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "capturedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "contentType": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "encoding": {
+      "anyOf": [
+        {
+          "const": "utf8",
+          "type": "string"
+        },
+        {
+          "const": "base64",
+          "type": "string"
+        }
+      ]
+    },
+    "data": {
+      "type": "string"
+    }
+  }
+}

@@ -13,6 +13,7 @@ export * from './config/fabric.js'
 export * from './config/flag.js'
 export * from './api/routes.js'
 export * from './api/events.js'
+export * from './api/payloads.js'
 
 import { Moment, MomentKind } from './records/moment.js'
 import { Entity } from './records/entity.js'
@@ -25,6 +26,7 @@ import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surf
 import { Mode } from './config/mode.js'
 import { Fabric, Endpoint, LocalRuntime } from './config/fabric.js'
 import { Flag } from './config/flag.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -32,4 +34,5 @@ export const AllSchemas = {
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, Fabric, Endpoint, LocalRuntime, Flag,
+  Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus,
 } as const

@@ -1,0 +1,25 @@
+{
+  "$id": "CaptureSource",
+  "anyOf": [
+    {
+      "const": "mic",
+      "type": "string"
+    },
+    {
+      "const": "screen",
+      "type": "string"
+    },
+    {
+      "const": "calendar",
+      "type": "string"
+    },
+    {
+      "const": "repo",
+      "type": "string"
+    },
+    {
+      "const": "camera",
+      "type": "string"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "$id": "QueueStatus",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "pendingFiles",
+    "pendingBytes",
+    "drainedFiles",
+    "updatedAt"
+  ],
+  "properties": {
+    "pendingFiles": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "pendingBytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "drainedFiles": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "updatedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

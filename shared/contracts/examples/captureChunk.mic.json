@@ -1,0 +1,11 @@
+{
+  "id": "chunk-0001",
+  "sessionId": "session-demo",
+  "workspaceId": "sales",
+  "source": "mic",
+  "sequence": 1,
+  "capturedAt": "2026-07-07T14:00:01Z",
+  "contentType": "text/plain",
+  "encoding": "utf8",
+  "data": "fake mic frame"
+}

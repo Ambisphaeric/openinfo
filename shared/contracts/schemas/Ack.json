@@ -1,0 +1,30 @@
+{
+  "$id": "Ack",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "ok",
+    "chunkId",
+    "sequence",
+    "receivedAt"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "chunkId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "receivedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}
