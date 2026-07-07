@@ -19,7 +19,7 @@
       "type": "string"
     },
     "kind": {
-      "description": "which pipeline stage this template feeds (extract = typed-moment extraction)",
+      "description": "which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id)",
       "anyOf": [
         {
           "const": "distill",

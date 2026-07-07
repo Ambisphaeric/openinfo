@@ -1,0 +1,367 @@
+{
+  "$id": "RelevantEntity",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "entity",
+    "score",
+    "moments"
+  ],
+  "properties": {
+    "entity": {
+      "$id": "Entity",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "workspaceId",
+        "kind",
+        "name",
+        "aliases",
+        "momentRefs",
+        "outboundCount",
+        "firstSeen",
+        "lastSeen"
+      ],
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "const": "person",
+              "type": "string"
+            },
+            {
+              "const": "artifact",
+              "type": "string"
+            },
+            {
+              "const": "topic",
+              "type": "string"
+            }
+          ]
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "aliases": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "canonicalOf": {
+          "description": "entity ids merged into this one",
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          }
+        },
+        "pinId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "momentRefs": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          }
+        },
+        "outboundCount": {
+          "minimum": 0,
+          "default": 0,
+          "description": "times SENT to someone — strongest canon signal",
+          "type": "integer"
+        },
+        "mentions": {
+          "minimum": 0,
+          "default": 0,
+          "description": "windows/distillates that mentioned this entity — the frequency signal for recency×frequency ranking",
+          "type": "integer"
+        },
+        "provenance": {
+          "description": "per-window trail: which distillate/window/model mentioned this entity (noise is inspectable)",
+          "type": "array",
+          "items": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "slot",
+              "endpoint"
+            ],
+            "properties": {
+              "distillateId": {
+                "minLength": 1,
+                "description": "opaque identifier",
+                "type": "string"
+              },
+              "windowStart": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              },
+              "windowEnd": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              },
+              "slot": {
+                "description": "fabric capability slot",
+                "anyOf": [
+                  {
+                    "const": "stt",
+                    "type": "string"
+                  },
+                  {
+                    "const": "tts",
+                    "type": "string"
+                  },
+                  {
+                    "const": "llm",
+                    "type": "string"
+                  },
+                  {
+                    "const": "vlm",
+                    "type": "string"
+                  },
+                  {
+                    "const": "ocr",
+                    "type": "string"
+                  },
+                  {
+                    "const": "embed",
+                    "type": "string"
+                  }
+                ]
+              },
+              "endpoint": {
+                "minLength": 1,
+                "description": "fabric endpoint name that produced this mention",
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "firstSeen": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "lastSeen": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    },
+    "score": {
+      "minimum": 0,
+      "description": "recency×frequency rank score at query time",
+      "type": "number"
+    },
+    "moments": {
+      "description": "recent moments referencing this entity — the inspectable join",
+      "type": "array",
+      "items": {
+        "$id": "Moment",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "sessionId",
+          "workspaceId",
+          "at",
+          "kind",
+          "text",
+          "refs",
+          "source",
+          "confidence"
+        ],
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "sessionId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "workspaceId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          },
+          "kind": {
+            "description": "● commitment · ◆ question-at-you · ▲ decision · ✱ artifact · mention-of-user · note",
+            "anyOf": [
+              {
+                "const": "commitment",
+                "type": "string"
+              },
+              {
+                "const": "question",
+                "type": "string"
+              },
+              {
+                "const": "decision",
+                "type": "string"
+              },
+              {
+                "const": "artifact",
+                "type": "string"
+              },
+              {
+                "const": "mention",
+                "type": "string"
+              },
+              {
+                "const": "note",
+                "type": "string"
+              }
+            ]
+          },
+          "text": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "speaker": {
+            "description": "person entity id or raw label",
+            "type": "string"
+          },
+          "refs": {
+            "description": "entity ids referenced by this moment",
+            "default": [],
+            "type": "array",
+            "items": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            }
+          },
+          "source": {
+            "anyOf": [
+              {
+                "const": "mic",
+                "type": "string"
+              },
+              {
+                "const": "screen",
+                "type": "string"
+              },
+              {
+                "const": "calendar",
+                "type": "string"
+              },
+              {
+                "const": "repo",
+                "type": "string"
+              },
+              {
+                "const": "camera",
+                "type": "string"
+              }
+            ]
+          },
+          "confidence": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          "answered": {
+            "description": "questions only: heard an answer yet?",
+            "type": "boolean"
+          },
+          "provenance": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "slot",
+              "endpoint"
+            ],
+            "properties": {
+              "distillateId": {
+                "minLength": 1,
+                "description": "opaque identifier",
+                "type": "string"
+              },
+              "windowStart": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              },
+              "windowEnd": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              },
+              "slot": {
+                "description": "fabric capability slot",
+                "anyOf": [
+                  {
+                    "const": "stt",
+                    "type": "string"
+                  },
+                  {
+                    "const": "tts",
+                    "type": "string"
+                  },
+                  {
+                    "const": "llm",
+                    "type": "string"
+                  },
+                  {
+                    "const": "vlm",
+                    "type": "string"
+                  },
+                  {
+                    "const": "ocr",
+                    "type": "string"
+                  },
+                  {
+                    "const": "embed",
+                    "type": "string"
+                  }
+                ]
+              },
+              "endpoint": {
+                "minLength": 1,
+                "description": "fabric endpoint name that produced this",
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

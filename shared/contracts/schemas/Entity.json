@@ -80,6 +80,78 @@
       "description": "times SENT to someone — strongest canon signal",
       "type": "integer"
     },
+    "mentions": {
+      "minimum": 0,
+      "default": 0,
+      "description": "windows/distillates that mentioned this entity — the frequency signal for recency×frequency ranking",
+      "type": "integer"
+    },
+    "provenance": {
+      "description": "per-window trail: which distillate/window/model mentioned this entity (noise is inspectable)",
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "slot",
+          "endpoint"
+        ],
+        "properties": {
+          "distillateId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "windowStart": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          },
+          "windowEnd": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          },
+          "slot": {
+            "description": "fabric capability slot",
+            "anyOf": [
+              {
+                "const": "stt",
+                "type": "string"
+              },
+              {
+                "const": "tts",
+                "type": "string"
+              },
+              {
+                "const": "llm",
+                "type": "string"
+              },
+              {
+                "const": "vlm",
+                "type": "string"
+              },
+              {
+                "const": "ocr",
+                "type": "string"
+              },
+              {
+                "const": "embed",
+                "type": "string"
+              }
+            ]
+          },
+          "endpoint": {
+            "minLength": 1,
+            "description": "fabric endpoint name that produced this mention",
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "firstSeen": {
       "format": "date-time",
       "description": "ISO-8601 timestamp",
