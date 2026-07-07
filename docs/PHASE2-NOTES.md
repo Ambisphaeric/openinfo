@@ -318,3 +318,119 @@ DB, only talks to the API): `sessions({ workspace?, live? })`, `startSession(Sta
   `POST /sessions/:id/reroute` (route exists in the P3 contract, left unimplemented) — all P3.
 - `session.switched` emission (router) — see policy above.
 - HUD surface / blocks / rendering (next slice); follow-up draft (Act); calendar capture.
+
+## Slice: HUD surface (the first UI) — document-driven block rendering
+
+### Contracts — one addition (`QueryResult`), no shape changes
+- `QueryResult` (api/payloads.ts): the body of `POST /query`. `{ source, items: unknown[], top?,
+  truncated }`. `items` is `unknown[]` keyed by `source` (relevant-now→RelevantEntity, moments→
+  Moment, sessions→Session, entities→Entity, ledger→Commitment, pins→Pin) rather than one over-broad
+  union — the surface source already discriminates, and a union array would make Value.Check try every
+  member per row. `truncated` reports "more existed than returned" (the HUD shows top-K, the workbench
+  holds the rest — surface.ts). Seeded `queryResult.relevant.json`, validated by contracts.test.
+- Everything else this slice needs was ALREADY in the Phase-0 contract: `Surface`/`Block`/`BlockQuery`/
+  `Action`, the routes `GET/PUT /layouts/surfaces/:id` + `POST /query`, and the events. Used as-is.
+
+### Query-execution shape — chosen: BOTH a layout endpoint AND a query endpoint (hydration), because the contract already names both
+The Routes contract names `GET /layouts/surfaces/:id` (→ Surface) *and* `POST /query` (BlockQuery →
+QueryResult) at phase 2 — so the intended shape is not "surface endpoint hydrates every block inline"
+but **serve the static layout document, then hydrate each block's query separately**. That is exactly
+right for this product: "the client never owned data — every built-in block is already an API call"
+(hud-v2.html), and a surface document changes rarely while its blocks re-hydrate constantly on live
+events. Inlining hydration into the surface GET would recompute the whole layout on every moment and
+couple caching of the (stable) layout to the (volatile) data. So the HUD does `GET /layouts/surfaces/:id`
+once and `POST /query` per block, re-issuing only the queries on live events.
+
+### Surface documents — versioned layout docs in `_meta.db`, served/saved by `engine/surfaces/`
+- Surfaces are versioned, cloneable documents like everything user-configurable. `SurfaceDocuments`
+  (engine/surfaces/documents.ts) mirrors `DistillDocuments`/`VoiceDocuments`: LayoutStore kind
+  `surface`, seeds the shipped openinfo HUD only when absent (never clobbers a user edit), and `save`
+  stamps `version = latestStored + 1` (LayoutStore keeps every prior version — cloneable history).
+- **Home: `engine/surfaces/` gains a P2 role.** CODE_MAP homed surfaces/ at P4 (serve workbench) +
+  P6 (custom-block sandbox), and "layouts (P2)" under store/. The layout *documents* do live in the
+  store (LayoutStore); the *serving + query compilation* logic is the surface module's concern, so
+  `surfaces/{documents,query,defaults}.ts` is its P2 down-payment. Noted in CODE_MAP.
+- **The block-query compiler** (engine/surfaces/query.ts) realizes the Phase-0 decision "compiled
+  server-side to store calls": relevant-now/moments/sessions/entities hydrate through store/ (the
+  DB-handle rule); **ledger (P4) and pins (P3) return `[]` with documented semantics, not an error**,
+  so a HUD composing a not-yet-backed block shows an empty explainable block instead of failing.
+  `session: "current"` binds to the workspace's live session AT QUERY TIME — the layout stays
+  context-agnostic and the same document works across sessions. `top` bounds rows; `truncated`
+  compares against a capped superset (≤50, the BlockQuery.top max).
+
+### No flag — deliberately (consistent with the sessions slice)
+Serving/saving a layout document and compiling a read query are **resource routes, not gated
+behaviors** — exactly the sessions-slice reasoning. The data a HUD block shows is *already* gated
+upstream (moments/entities only exist behind `distill.*`); a HUD that renders an empty relevant-now
+block when distill is off is the honest state, not a half-broken feature. A `hud.enabled` flag would
+gate nothing that isn't already gated.
+
+### The renderer — pure VNode tree, `render(surfaceDocument)`, no hardcoded layout
+- `client/surfaces/block-renderer/` outputs a **pure virtual-node tree** (`document + hydrated data →
+  VNode`), serialized to HTML by `renderToHtml`. This mirrors the engine's pure-function/imperative-
+  shell split (rendering is pure and node-testable; `mount.ts` is the DOM shell) and — decisively —
+  lets the renderer be unit-tested with `node:test` asserting real serialized markup **without adding
+  jsdom** (the client had no DOM test lib, and its package depends only on contracts). `renderSurface`
+  walks the document stack, applies `show`/`collapsed`/`top`, and dispatches by `BlockTypeName` through
+  a registry — it contains ZERO block-type-specific branching, so two different documents produce two
+  different layouts (a renderer test asserts exactly this). `custom` doubles as the fallback for any
+  block type a client build lacks (append-only BlockTypeName), so a forward document degrades instead
+  of breaking. The render is recognizably design/renderings/hud-v2.html: ● commitment / ◆ question /
+  ▲ decision / ✱ artifact moment glyphs (◉ person on relevant-now rows), the context line + heartbeat,
+  the Now line, per-row why-lines built from real index data, the moments stream, `.mini` actions.
+- **Consciously simplified vs hud-v2**: the absolute-positioned moment **tick-rail** (needs
+  whole-session geometry) is omitted; the `compact` panel variant is not auto-selected; provenance is
+  surfaced as the one-line why (mentions + latest moment), not a hover card. States B/C of the mockup
+  (router re-keying, the evidence-checked ledger) depend on P3/P4 stores and are out of scope.
+
+### Live updates — chosen: RE-QUERY, not patch-in-place
+On a relevant WS event (`moment.created`, `entity.updated`, `distillate.updated`, `session.started`,
+`session.ended`) the HUD re-issues the affected block queries and re-renders; a session event also
+re-derives the Now line. Patch-in-place was rejected: the block query is the single source of truth and
+the engine owns ranking/joining — reproducing that client-side to splice one row in would duplicate the
+intelligence and violate "the engine thinks, the block renders". Rapid events are coalesced into one
+trailing refresh. The surface document is fetched once (not re-GET on data events).
+
+### Actions — `copy` is live, the rest are visible-but-inert (documented)
+Buttons render from the seeded document's `Action` verbs. `copy` is wired through an injected,
+clipboard-safe `copy(text)` (browser `navigator.clipboard`, overridable for Electron/tests); the button
+carries the ready text as `data-copy` and one delegated listener (survives re-render) fires it. Every
+other verb (open/mark-done/dismiss/run-mode/draft-with/navigate) renders visible-but-inert: the dismiss/
+teach write path doesn't exist (slice 2), navigation has no workbench target yet (P4), and "verbs never
+send/commit outward" (Action's own contract) — so wiring them now would be theater.
+
+### Where the HUD mounts today — a browser dev entry (Phase 1 left no Electron window)
+PHASE1-NOTES: "no Electron code was added in Phase 1" — the seam was proven headless. So the HUD mounts
+via `client/surfaces/hud/dev-entry.ts` + `apps/client/dev-hud.html`: serve `apps/client` statically and
+open `dev-hud.html?engine=…` against a running engine. The controller depends on a narrow browser-safe
+`HudTransport` (surface/query/sessions/subscribe) — NOT `EngineLink` directly, because EngineLink pulls
+in `node:fs` for its offline capture spool and can't load in a plain browser. EngineLink gained the same
+four methods and satisfies HudTransport **structurally**, so the Electron client passes an EngineLink;
+the dev entry passes a fetch+WebSocket transport. **Remaining to wire (small follow-up):** a real
+content-protected Electron window (client/main is still a Phase-1 scaffold) hosting the same mountable
+`Hud` — no renderer/controller change, just the window + an EngineLink instance.
+
+### DOM typing — kept out of the node-typed package
+`mount.ts` and `dev-entry.ts` touch `document`/`navigator` but the client tsconfig is `types: ["node"]`;
+adding the DOM lib would collide with @types/node's `fetch`/`WebSocket` globals. They are typed against
+minimal **structural** interfaces (the exact DOM subset used) reached via a single `globalThis` cast, so
+the package stays node-typed and conflict-free while the real type safety lives in the pure renderer.
+
+### Templates — #1 and #3 shipped as pure documents (nearly-free, as predicted)
+`templates/openinfo-hud/surface.json` (identical to the engine-seeded default) and
+`templates/glass-minimal/surface.json` (Now line + a collapsed moments stream). Two documents, two
+layouts from one renderer — the openness proof. They reference the builtin `mode-meeting`/registers by
+id rather than re-declaring them (a template adds its own mode/registers/flags only to diverge). Glass
+Minimal's interactive capture pill (mic/screen toggle buttons) is palette territory (P6); it ships now
+as the minimal readout surface.
+
+### Deferred (out of this slice, by scope)
+- Follow-up draft / the Act node (final Phase-2 slice); surface/mode/dial editors + palette + custom-
+  block sandbox (P6); the workbench app (P4).
+- Ledger/pins backing stores (P3/P4) — the `ledger`/`pinned-doc`/`hint` block renderers exist and the
+  compiler returns `[]` for their sources, so they light up when the stores land, no new home invented.
+- The `hud-v2` tick-rail, auto-compact density, hover provenance cards; states B/C (router re-key,
+  evidence-checked ledger).
+- Electron window wiring (see above); user-tunable relevant-now ranking as a block-document knob
+  (slice 3 named this the home) — the block carries `top` today; exposing rank constants as query
+  params is the P6 editor's job.

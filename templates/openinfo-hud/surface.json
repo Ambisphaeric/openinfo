@@ -1,0 +1,24 @@
+{
+  "id": "surf-openinfo-hud",
+  "name": "openinfo HUD",
+  "context": "meeting",
+  "version": 1,
+  "stack": [
+    { "block": "now" },
+    {
+      "block": "relevant-now",
+      "top": 4,
+      "show": "always",
+      "query": { "source": "relevant-now", "params": { "session": "current" }, "top": 4 },
+      "actions": [
+        { "id": "act-copy", "label": "Copy", "verb": "copy", "params": {} },
+        { "id": "act-open", "label": "Open", "verb": "open", "params": {} }
+      ]
+    },
+    {
+      "block": "moments",
+      "collapsed": false,
+      "query": { "source": "moments", "params": { "session": "current" }, "top": 20 }
+    }
+  ]
+}

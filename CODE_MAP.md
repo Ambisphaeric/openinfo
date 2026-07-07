@@ -34,14 +34,14 @@ openinfo/
 │  ├─ queue/                    P1   spool · drain (P2: optional distill processor) │ P3: eta │ gc
 │  ├─ overlay/                  P2   rules/lenses · roles · ontology (voice lives in voice/)
 │  ├─ flags/                    P0   flag registry (flags are documents)
-│  ├─ surfaces/                 P4   serve workbench │ P6: custom-block sandbox (rabbithole pattern)
+│  ├─ surfaces/                 P2   HUD surface documents (documents/defaults) · block-query compiler (query.ts: BlockQuery→store calls) │ P4: serve workbench │ P6: custom-block sandbox (rabbithole pattern)
 │  └─ teach/                    P2   dismiss/reroute signals → extraction prompts (quality flywheel)
 │
 ├─ apps/client/src/             thin Electron client — NEVER opens a database
 │  ├─ main/                     P1   windows (content-protection, hide, ⌘\) · tray · shortcuts
 │  ├─ capture/                  P1   mic · screen Δ-gate · system audio + aec │ P2: calendar │ P3: focus │ P7: camera
 │  ├─ engine-link/              P1   typed client from contracts · offline spool
-│  └─ surfaces/                 P2   block-renderer · blocks/ · hud/ · settings/ │ P6: palette/ · editor/
+│  └─ surfaces/                 P2   block-renderer (pure VNode, render(surfaceDoc)) · blocks/ (built-ins + glyphs) · hud/ (live controller + transport + dev-entry) │ P2-todo: settings/ │ P6: palette/ · editor/
 │
 ├─ apps/workbench/src/          P4   Vite app served BY THE ENGINE (any browser, any machine)
 │                                    ledger · archive · brief │ P6: explore (canvas) │ P7: analytics

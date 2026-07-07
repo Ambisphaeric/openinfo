@@ -1,0 +1,14 @@
+{
+  "id": "surf-glass-minimal",
+  "name": "Glass Minimal",
+  "context": "any",
+  "version": 1,
+  "stack": [
+    { "block": "now" },
+    {
+      "block": "moments",
+      "collapsed": true,
+      "query": { "source": "moments", "params": { "session": "current" }, "top": 5 }
+    }
+  ]
+}
