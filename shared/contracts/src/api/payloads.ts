@@ -78,6 +78,29 @@ export const RelevantEntity = Type.Object(
 export type RelevantEntity = Static<typeof RelevantEntity>
 
 /**
+ * The result of compiling a BlockQuery server-side (POST /query). A BlockQuery is "compiled
+ * server-side to store calls" (the Phase-0 surface.ts decision), so the client never owns data —
+ * every built-in block is an API call against this endpoint. `items` are the hydrated rows; their
+ * element shape is keyed by `source` (relevant-now→RelevantEntity, moments→Moment, sessions→
+ * Session, entities→Entity, ledger→Commitment, pins→Pin), which is why it is `unknown[]` rather
+ * than one over-broad union. `top` echoes the requested cap; `truncated` is true when more rows
+ * existed than were returned (the HUD shows top-K, the workbench holds the rest — surface.ts).
+ * Sources whose backing store does not exist yet (ledger P4, pins P3) return `[]`, not an error.
+ */
+export const QueryResult = Type.Object(
+  {
+    source: Type.Union(
+      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities'].map((s) => Type.Literal(s)),
+    ),
+    items: Type.Array(Type.Unknown(), { description: 'hydrated rows; element shape is keyed by `source`' }),
+    top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    truncated: Type.Boolean({ description: 'true when more rows existed than were returned under `top`' }),
+  },
+  { $id: 'QueryResult', additionalProperties: false },
+)
+export type QueryResult = Static<typeof QueryResult>
+
+/**
  * The body of POST /sessions — a manual session START request. The caller supplies only what it
  * knows (which workspace, which mode, optionally a register override and a title); the engine
  * stamps id/startedAt/attribution and returns the full Session. A dedicated payload (not a partial

@@ -1,0 +1,54 @@
+{
+  "$id": "QueryResult",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "source",
+    "items",
+    "truncated"
+  ],
+  "properties": {
+    "source": {
+      "anyOf": [
+        {
+          "const": "relevant-now",
+          "type": "string"
+        },
+        {
+          "const": "moments",
+          "type": "string"
+        },
+        {
+          "const": "ledger",
+          "type": "string"
+        },
+        {
+          "const": "sessions",
+          "type": "string"
+        },
+        {
+          "const": "pins",
+          "type": "string"
+        },
+        {
+          "const": "entities",
+          "type": "string"
+        }
+      ]
+    },
+    "items": {
+      "description": "hydrated rows; element shape is keyed by `source`",
+      "type": "array",
+      "items": {}
+    },
+    "top": {
+      "minimum": 1,
+      "maximum": 50,
+      "type": "integer"
+    },
+    "truncated": {
+      "description": "true when more rows existed than were returned under `top`",
+      "type": "boolean"
+    }
+  }
+}

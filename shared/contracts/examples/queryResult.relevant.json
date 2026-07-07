@@ -1,0 +1,11 @@
+{ "source": "relevant-now", "top": 4, "truncated": false,
+  "items": [
+    { "entity": { "id": "ent-soc2", "workspaceId": "acme", "kind": "artifact",
+        "name": "SOC 2 Type II — 2026 report", "aliases": ["SOC 2"], "momentRefs": ["mom-soc-1"],
+        "outboundCount": 1, "mentions": 3,
+        "firstSeen": "2026-03-12T00:00:00Z", "lastSeen": "2026-07-07T14:41:00Z" },
+      "score": 4.12,
+      "moments": [
+        { "id": "mom-soc-1", "sessionId": "ses-sec", "workspaceId": "acme", "at": "2026-07-07T14:41:00Z",
+          "kind": "artifact", "text": "SOC 2 report referenced — third time this meeting.",
+          "refs": ["ent-soc2"], "source": "mic", "confidence": 0.9 } ] } ] }
