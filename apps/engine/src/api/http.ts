@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type CaptureChunk, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity, type Session, type StartSessionRequest } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller } from '../distill/index.js'
 import { FabricDocuments } from '../fabric/index.js'
@@ -10,6 +10,7 @@ import { relevantNow } from '../index/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry } from '../store/index.js'
+import { SurfaceDocuments, compileQuery } from '../surfaces/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -33,6 +34,7 @@ interface HandlerContext {
   bus: EventBus<EngineEvents>
   fabric: FabricDocuments
   voice: VoiceDocuments
+  surfaces: SurfaceDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
   onCapture?: (chunk: CaptureChunk) => void
@@ -47,9 +49,11 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const fabric = new FabricDocuments(store)
   const voice = new VoiceDocuments(store)
   const distillDocs = new DistillDocuments(store)
+  const surfaces = new SurfaceDocuments(store)
   ensureDefaultFlags(store)
   voice.ensureDefaults()
   distillDocs.ensureDefaults()
+  surfaces.ensureDefaults()
 
   const distiller = new Distiller({
     store,
@@ -85,7 +89,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, voice, queue, store, log }
+    const ctx: HandlerContext = { bus, fabric, voice, surfaces, queue, store, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -126,6 +130,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/moments') return send(res, 200, readMoments(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
+  const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
+  if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
+  if (req.method === 'PUT' && surface?.[1]) return putSurface(req, res, ctx, decodeURIComponent(surface[1]))
+  if (req.method === 'POST' && url.pathname === '/query') return runQuery(req, res, ctx)
   if (req.method === 'GET' && url.pathname.startsWith('/contracts/')) return sendContract(url, res)
   if (req.method === 'PUT' && url.pathname.startsWith('/flags/')) return saveFlag(req, res, ctx, decodeURIComponent(url.pathname.slice(7)))
   const capture = url.pathname.match(/^\/capture\/([^/]+)$/)
@@ -269,6 +277,44 @@ function readRelevant(store: WorkspaceRegistry, url: URL): RelevantEntity[] {
     ...(sessionId !== null ? { sessionId } : {}),
     ...(Number.isInteger(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
   })
+}
+
+/**
+ * Serve a surface (HUD layout) document by id — the first UI's single source of truth: the client
+ * fetches this and renders it through the block renderer (no hardcoded layout). Unknown id ⇒ 404.
+ */
+function getSurface(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const surface = ctx.surfaces.get(id)
+  if (!surface) return send(res, 404, { error: `no such surface: ${id}` })
+  send(res, 200, surface)
+}
+
+/**
+ * Persist an edited surface document (everything user-configurable is a versioned, cloneable
+ * document). The body must validate as a Surface and its id must match the route; the store stamps
+ * the next version. No flag — serving/saving a layout document is a resource route, not a gated
+ * behavior (consistent with /workspaces, /sessions; see PHASE2-NOTES).
+ */
+async function putSurface(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('Surface', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid Surface', details: errors })
+  const incoming = body as Surface
+  if (incoming.id !== id) return send(res, 400, { error: 'surface id does not match route' })
+  send(res, 200, ctx.surfaces.save(incoming))
+}
+
+/**
+ * Compile a BlockQuery to store calls and return the hydrated QueryResult (surfaces.ts Phase-0
+ * decision — the query is compiled server-side, so a custom block can never reach past what the
+ * engine allows). This is how every block hydrates: GET the surface for the layout, POST /query per
+ * block for its data. Session `current` binds to the workspace's live session at query time.
+ */
+async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('BlockQuery', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid BlockQuery', details: errors })
+  send(res, 200, compileQuery(ctx.store, body as BlockQuery))
 }
 
 function readFlags(store: WorkspaceRegistry): Flag[] {

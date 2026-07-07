@@ -1,0 +1,97 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import type { Moment, RelevantEntity, Session } from '@openinfo/contracts'
+import { WorkspaceRegistry } from '../store/index.js'
+import { compileQuery } from './query.js'
+
+const moment = (id: string, sessionId: string, at: string, refs: string[] = []): Moment => ({
+  id, sessionId, workspaceId: 'ws-q', at, kind: 'decision', text: `moment ${id}`, refs, source: 'mic', confidence: 0.8,
+})
+
+test('compileQuery hydrates each backed source, respects top, and reports truncation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const now = new Date('2026-07-07T15:00:00Z')
+    const soc = store.upsertEntity({ workspaceId: 'ws-q', kind: 'topic', name: 'SOC 2', seenAt: '2026-07-07T14:45:00Z', momentRefs: ['m-2'] })
+    store.upsertEntity({ workspaceId: 'ws-q', kind: 'person', name: 'Dana', seenAt: '2026-07-07T14:50:00Z' })
+    store.saveMoment(moment('m-1', 'ses-a', '2026-07-07T14:00:00Z'))
+    store.saveMoment(moment('m-2', 'ses-a', '2026-07-07T14:45:00Z', [soc.id]))
+    store.saveMoment(moment('m-3', 'ses-b', '2026-07-07T14:50:00Z'))
+
+    // moments: newest-first, top caps and flags truncation
+    const moments = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q' }, top: 2 }, now)
+    assert.equal(moments.source, 'moments')
+    assert.deepEqual((moments.items as Moment[]).map((m) => m.id), ['m-3', 'm-2'])
+    assert.equal(moments.top, 2)
+    assert.equal(moments.truncated, true) // 3 exist, 2 returned
+
+    // no top → all rows, never truncated
+    const allMoments = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q' } }, now)
+    assert.equal(allMoments.items.length, 3)
+    assert.equal(allMoments.truncated, false)
+    assert.equal(allMoments.top, undefined)
+
+    // relevant-now: ranked entities joined with their moments
+    const relevant = compileQuery(store, { source: 'relevant-now', params: { workspace: 'ws-q' }, top: 4 }, now)
+    assert.equal(relevant.source, 'relevant-now')
+    assert.equal((relevant.items as RelevantEntity[]).length, 2)
+    assert.equal((relevant.items as RelevantEntity[])[0]!.entity.kind !== undefined, true)
+
+    // entities: newest lastSeen first
+    const entities = compileQuery(store, { source: 'entities', params: { workspace: 'ws-q' } }, now)
+    assert.equal(entities.items.length, 2)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileQuery binds session "current" to the workspace live session', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-cur-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const live: Session = {
+      id: 'ses-live', workspaceId: 'ws-q', modeId: 'mode-meeting', startedAt: '2026-07-07T14:00:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'x', weight: 1 }], confidence: 1 },
+    }
+    store.saveSession(live)
+    store.saveMoment(moment('m-live', 'ses-live', '2026-07-07T14:10:00Z'))
+    store.saveMoment(moment('m-other', 'ses-old', '2026-07-07T13:00:00Z'))
+
+    // "current" resolves to the live session id → only its moments
+    const cur = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q', session: 'current' } })
+    assert.deepEqual((cur.items as Moment[]).map((m) => m.id), ['m-live'])
+
+    // sessions source lists them all
+    const sessions = compileQuery(store, { source: 'sessions', params: { workspace: 'ws-q' } })
+    assert.deepEqual((sessions.items as Session[]).map((s) => s.id), ['ses-live'])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileQuery returns [] (not an error) for unbuilt stores and unknown workspaces', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-empty-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // ledger (P4) and pins (P3) have no backing store yet → empty, explainable, never throws
+    for (const source of ['ledger', 'pins'] as const) {
+      const result = compileQuery(store, { source, params: {}, top: 2 })
+      assert.deepEqual(result.items, [])
+      assert.equal(result.truncated, false)
+      assert.equal(result.source, source)
+    }
+    // unknown workspace reads as [] across backed sources too
+    assert.deepEqual(compileQuery(store, { source: 'moments', params: { workspace: 'nowhere' } }).items, [])
+    assert.deepEqual(compileQuery(store, { source: 'relevant-now', params: { workspace: 'nowhere' } }).items, [])
+    assert.deepEqual(compileQuery(store, { source: 'entities', params: { workspace: 'nowhere' } }).items, [])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

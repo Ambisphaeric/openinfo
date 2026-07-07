@@ -1,0 +1,51 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { WorkspaceRegistry } from '../store/index.js'
+import { SurfaceDocuments } from './documents.js'
+import { defaultHudSurface } from './defaults.js'
+
+test('SurfaceDocuments seeds the openinfo HUD and serves it by id', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const docs = new SurfaceDocuments(store)
+    docs.ensureDefaults()
+    const hud = docs.get(defaultHudSurface.id)
+    assert.ok(hud)
+    assert.equal(hud.name, 'openinfo HUD')
+    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'relevant-now', 'moments'])
+    assert.equal(hud.stack.find((b) => b.block === 'relevant-now')?.top, 4)
+    // unknown id ⇒ undefined (the route turns this into a 404)
+    assert.equal(docs.get('surf-nope'), undefined)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SurfaceDocuments.save bumps the version and never clobbers a user edit on re-seed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-save-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const docs = new SurfaceDocuments(store)
+    docs.ensureDefaults()
+
+    // user removes the moments block and saves — version increments to 2
+    const edited = { ...defaultHudSurface, stack: defaultHudSurface.stack.filter((b) => b.block !== 'moments') }
+    const saved = docs.save(edited)
+    assert.equal(saved.version, 2)
+    assert.deepEqual(saved.stack.map((b) => b.block), ['now', 'relevant-now'])
+
+    // a fresh ensureDefaults must NOT clobber the edit
+    new SurfaceDocuments(store).ensureDefaults()
+    const reloaded = docs.get(defaultHudSurface.id)
+    assert.deepEqual(reloaded?.stack.map((b) => b.block), ['now', 'relevant-now'])
+    assert.equal(reloaded?.version, 2)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
