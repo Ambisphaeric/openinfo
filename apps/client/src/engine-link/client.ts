@@ -1,4 +1,4 @@
-import type { Ack, CaptureChunk, Fabric, Flag, Health, Session, StartSessionRequest, Workspace } from '@openinfo/contracts'
+import type { Ack, BlockQuery, CaptureChunk, Fabric, Flag, Health, QueryResult, Session, StartSessionRequest, Surface, Workspace } from '@openinfo/contracts'
 import { OfflineSpool } from './spool.js'
 
 export interface EngineLinkOptions {
@@ -60,6 +60,40 @@ export class EngineLink {
 
   endSession(id: string): Promise<Session> {
     return this.request('POST', `/sessions/${encodeURIComponent(id)}/end`)
+  }
+
+  /** Fetch a surface (HUD layout) document — the block renderer's single source of truth. */
+  surface(id: string): Promise<Surface> {
+    return this.get(`/layouts/surfaces/${encodeURIComponent(id)}`)
+  }
+
+  /** Persist an edited surface document (the WYSIWYG editor's write path lands in P6). */
+  putSurface(surface: Surface): Promise<Surface> {
+    return this.request('PUT', `/layouts/surfaces/${encodeURIComponent(surface.id)}`, surface)
+  }
+
+  /** Compile + hydrate a block query server-side — how every HUD block gets its data. */
+  query(query: BlockQuery): Promise<QueryResult> {
+    return this.request('POST', '/query', query)
+  }
+
+  /**
+   * Subscribe to the engine's WS event feed (the HUD's live-update trigger). Returns an unsubscribe.
+   * Uses the WebSocket global (Node 22+ and browsers), so this method works in Electron; the browser
+   * dev entry uses its own fetch-based transport because EngineLink also pulls in node:fs for capture.
+   */
+  subscribe(handler: (event: { name: string; payload: unknown }) => void): () => void {
+    const socket = new WebSocket(`${this.baseUrl.replace(/^http/, 'ws')}/events`)
+    socket.addEventListener('message', (event) => {
+      let parsed: { name?: unknown; payload?: unknown }
+      try {
+        parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
+      } catch {
+        return
+      }
+      if (typeof parsed.name === 'string') handler({ name: parsed.name, payload: parsed.payload })
+    })
+    return () => socket.close()
   }
 
   async capture(chunk: CaptureChunk): Promise<Ack | undefined> {
