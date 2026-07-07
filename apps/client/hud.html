@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>openinfo — HUD</title>
+    <!--
+      The Electron renderer host for the live HUD. It loads the SAME compiled dev entry the browser
+      harness (dev-hud.html) uses — no renderer/controller change, exactly as PHASE2-NOTES scoped the
+      window follow-up. The dev entry reads ?engine=… from location.search, which the main process
+      sets via loadFile({ search }); it uses the browser HudTransport (fetch + WebSocket), NOT
+      EngineLink (which pulls node:fs and can't load in a renderer).
+
+      The dev entry injects the shared HUD stylesheet (styles.ts), whose .stage paints an opaque dark
+      backdrop meant for a full browser tab. In a frameless, transparent, always-on-top window we want
+      only the translucent .hud panel to float, so we override the backdrop to transparent here with
+      !important (the injected sheet is appended later in <head>, so equal specificity would lose).
+    -->
+    <style>
+      html, body { background: transparent !important; }
+      .stage {
+        background: transparent !important;
+        min-height: 0 !important;
+        padding: 12px !important;
+        justify-content: center !important;
+      }
+    </style>
+  </head>
+  <body>
+    <script type="module" src="./dist/surfaces/hud/dev-entry.js"></script>
+  </body>
+</html>
