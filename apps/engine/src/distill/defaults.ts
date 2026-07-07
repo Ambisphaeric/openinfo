@@ -51,6 +51,33 @@ export const defaultExtractTemplate: PromptTemplate = {
 }
 
 /**
+ * The shipped entity-extraction template — a document, seeded like the distill/extract templates.
+ * Entity extraction is a THIRD tight call per window (see PHASE2-NOTES: one job / one output grammar
+ * per call beats a compound moments+entities response on 3–8B local models). The body demands a
+ * strict JSON array of {name, kind, aliases} and interpolates the resolved voice vector plus the
+ * window {{transcript}} and {{summary}}. Mirrors shared/contracts/examples/promptTemplate.entities.json.
+ */
+export const defaultEntitiesTemplate: PromptTemplate = {
+  id: 'tpl-entities-default',
+  name: 'entities-default',
+  kind: 'extract',
+  slot: 'llm',
+  builtin: true,
+  description: 'entity extraction; one tight job per call, emits a strict JSON array of named entities',
+  body:
+    'You extract the named entities discussed in a meeting transcript — the people, artifacts, and topics that matter.\n' +
+    'Return ONLY a JSON array of entities, no prose, no code fences.\n' +
+    'Each element: {"name": string, "kind": one of "person"|"artifact"|"topic", "aliases": string[] (optional other names for the same thing)}.\n' +
+    '- person: a human named or clearly referred to.\n' +
+    '- artifact (✱): a document, file, link, system, or deliverable.\n' +
+    '- topic: a subject, project, or theme under discussion.\n' +
+    'Extract only entities the transcript supports; invent nothing. Merge obvious aliases of one thing into a single entity. If there are none, return [].\n' +
+    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
+    'Summary of the window: {{summary}}\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array of entities:',
+}
+
+/**
  * The default meeting mode — window config lives here (mode document owns merge windows, per
  * ARCHITECTURE §7). Mirrors shared/contracts/examples/mode.meeting.json; the distiller reads only
  * distill.mergeWindow + distill.tokenBudget from it in this slice.

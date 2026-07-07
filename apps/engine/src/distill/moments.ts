@@ -3,6 +3,7 @@ import type { CaptureSource, Dials, Moment, PromptTemplate } from '@openinfo/con
 import { Moment as MomentSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { compileVoiceVars, interpolateTemplate } from '../voice/index.js'
+import { parseJsonCandidates } from './parse.js'
 import type { LlmInvoke } from './distiller.js'
 
 /**
@@ -49,75 +50,12 @@ export interface ExtractResult {
 /** The model-controlled fields we read off each candidate; everything else is server-stamped. */
 const MOMENT_KINDS = new Set(['commitment', 'question', 'decision', 'artifact'])
 
-/** Strip markdown code fences small models love to wrap JSON in. */
-const stripFences = (raw: string): string => raw.replace(/```(?:json)?/gi, '').trim()
-
-const tryParse = (text: string): unknown => {
-  try {
-    return JSON.parse(text) as unknown
-  } catch {
-    return undefined
-  }
-}
-
 /**
- * Scan for top-level balanced `{…}` substrings, honoring string literals and escapes. Salvages
- * per-object: an array with one broken element still yields its intact siblings, and JSONL / comma-
- * free object streams parse. Never throws.
+ * Defensively parse an llm response into candidate moment objects (shared parse helper in parse.ts).
+ * Unwraps a `{ "moments": [...] }` object; a clean `[]` is a normal zero-moment window, not an error.
  */
-const scanBalancedObjects = (text: string): string[] => {
-  const objects: string[] = []
-  let depth = 0
-  let start = -1
-  let inString = false
-  let escaped = false
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i]!
-    if (inString) {
-      if (escaped) escaped = false
-      else if (ch === '\\') escaped = true
-      else if (ch === '"') inString = false
-      continue
-    }
-    if (ch === '"') {
-      inString = true
-      continue
-    }
-    if (ch === '{') {
-      if (depth === 0) start = i
-      depth += 1
-    } else if (ch === '}') {
-      if (depth > 0) {
-        depth -= 1
-        if (depth === 0 && start >= 0) {
-          objects.push(text.slice(start, i + 1))
-          start = -1
-        }
-      }
-    }
-  }
-  return objects
-}
-
-/**
- * Defensively parse an llm response into candidate objects. Returns `parsedAnything: false` only
- * when nothing object-shaped could be recovered at all (the signal for a bounded re-sample). A
- * clean empty array (`[]`) counts as parsed — zero moments is a normal outcome, not a failure.
- */
-export const parseMomentCandidates = (raw: string): { candidates: unknown[]; parsedAnything: boolean } => {
-  const text = stripFences(raw)
-  const whole = tryParse(text)
-  if (Array.isArray(whole)) return { candidates: whole, parsedAnything: true }
-  if (whole !== null && typeof whole === 'object') {
-    const moments = (whole as { moments?: unknown }).moments
-    if (Array.isArray(moments)) return { candidates: moments, parsedAnything: true }
-    return { candidates: [whole], parsedAnything: true }
-  }
-  const candidates = scanBalancedObjects(text)
-    .map(tryParse)
-    .filter((v): v is Record<string, unknown> => v !== null && typeof v === 'object')
-  return { candidates, parsedAnything: candidates.length > 0 }
-}
+export const parseMomentCandidates = (raw: string): { candidates: unknown[]; parsedAnything: boolean } =>
+  parseJsonCandidates(raw, 'moments')
 
 /** Build a full Moment from a raw candidate + server-stamped fields, then validate. */
 const toMoment = (candidate: unknown, input: ExtractInput, newId: () => string, at: string): Moment | undefined => {

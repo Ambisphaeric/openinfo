@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Fabric, Moment } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Entity, Fabric, Moment } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { FabricDocuments, defaultFabric } from '../fabric/index.js'
 import { CaptureQueue } from '../queue/spool.js'
@@ -28,11 +28,14 @@ const startFakeLlm = async (): Promise<FakeLlm> => {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: string }[] }
       const prompt = body.messages[0]!.content
       prompts.push(prompt)
-      // one fake model, two jobs: the extraction prompt (from the extract template) asks for a
-      // strict JSON array; everything else is the summary pass.
-      const content = prompt.includes('Return ONLY a JSON array')
-        ? '[{"kind": "commitment", "text": "ship Thursday", "speaker": "user", "confidence": 0.85}, {"kind": "banana", "text": "invalid kind, dropped"}]'
-        : 'SUMMARY: they agreed to ship Thursday.'
+      // one fake model, three jobs, told apart by their template bodies: the entities prompt asks
+      // for a 'JSON array of entities', the moment-extraction prompt for a strict JSON array, and
+      // everything else is the summary pass.
+      const content = prompt.includes('JSON array of entities')
+        ? '[{"kind": "person", "name": "Dana"}, {"kind": "topic", "name": "Thursday ship date", "aliases": ["ship Thursday"]}, {"kind": "banana", "name": "invalid kind, dropped"}]'
+        : prompt.includes('Return ONLY a JSON array')
+          ? '[{"kind": "commitment", "text": "ship Thursday", "speaker": "user", "confidence": 0.85}, {"kind": "banana", "text": "invalid kind, dropped"}]'
+          : 'SUMMARY: they agreed to ship Thursday.'
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }))
     })
@@ -178,6 +181,94 @@ test('drain → distill → moments → store → bus with a fake llm endpoint',
     assert.match(extractPrompt, /specificity 9\/10/)
     assert.match(extractPrompt, /they agreed to ship Thursday/) // {{summary}} from the distill call
     assert.match(extractPrompt, /we should ship Thursday/) // {{transcript}}
+
+    assert.equal((await queue.status()).pendingFiles, 0)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('drain → distill → moments → entities → store → bus with a fake llm endpoint', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-index-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const voice = new VoiceDocuments(store)
+    voice.ensureDefaults()
+    const docs = new DistillDocuments(store)
+    docs.ensureDefaults()
+    const fabric = new FabricDocuments(store)
+    const fabricDoc: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }
+    fabric.save(fabricDoc)
+
+    const bus = new EventBus<EngineEvents>()
+    const publishedEntities: Entity[] = []
+    const publishedMoments: Moment[] = []
+    bus.subscribe('entity.updated', (e) => {
+      publishedEntities.push(e)
+    })
+    bus.subscribe('moment.created', (m) => {
+      publishedMoments.push(m)
+    })
+
+    const distiller = new Distiller({
+      store,
+      voice,
+      fabric,
+      docs,
+      publish: (d) => bus.publish('distillate.updated', d),
+      publishMoment: (m) => bus.publish('moment.created', m),
+      publishEntity: (e) => bus.publish('entity.updated', e),
+    })
+    // Real seam: the drain runs the full pass — distill + moments (distill.moments) + entity
+    // indexing (distill.index).
+    const queue = new CaptureQueue(join(dir, 'queue'), async (chunks) => {
+      await distiller.distillChunks(chunks, { extractMoments: true, extractEntities: true })
+    })
+    // a >30s gap forces TWO merge windows → the same entities are extracted twice and must MERGE
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 40, 'Dana agreed, ship Thursday')]) await queue.append(c)
+
+    queue.scheduleDrain(() => undefined)
+    for (let i = 0; i < 100 && publishedEntities.length < 4; i += 1) await new Promise((r) => setTimeout(r, 10))
+
+    // two windows × (Dana + topic) upserted — 4 entity.updated events — but ONE record each:
+    // cross-window resolution merged them (mention count 2), never a duplicate row
+    assert.equal(publishedEntities.length, 4)
+    const entities = store.listEntities('ws-e2e')
+    assert.equal(entities.length, 2)
+    const dana = entities.find((e) => e.kind === 'person')!
+    const topic = entities.find((e) => e.kind === 'topic')!
+    assert.equal(dana.name, 'Dana')
+    assert.equal(dana.mentions, 2)
+    assert.equal(topic.name, 'Thursday ship date')
+    assert.deepEqual(topic.aliases, ['ship Thursday'])
+    assert.equal(topic.mentions, 2)
+
+    // provenance: one entry per window that mentioned the entity, tied to real distillates
+    const distillates = store.listDistillates('ws-e2e', 'ses-e2e')
+    assert.equal(distillates.length, 2)
+    assert.deepEqual(
+      dana.provenance?.map((p) => p.distillateId).sort(),
+      distillates.map((d) => d.id).sort(),
+    )
+    assert.equal(dana.provenance?.[0]?.endpoint, 'llm.fast')
+    assert.equal(dana.provenance?.[0]?.model, 'llama-3.2-3b')
+
+    // refs linking, both directions: each window's moment says "ship Thursday", which matches the
+    // topic's alias — so moment.refs carries the entity id and the entity's momentRefs carry the
+    // moment ids. Dana is never named in a moment text, so no link (post-hoc name matching only).
+    const moments = store.listMoments('ws-e2e', 'ses-e2e')
+    assert.equal(moments.length, 2)
+    for (const m of moments) {
+      assert.deepEqual(m.refs, [topic.id])
+    }
+    assert.deepEqual([...topic.momentRefs].sort(), moments.map((m) => m.id).sort())
+    assert.deepEqual(dana.momentRefs, [])
+    // published moment.created events already carried the linked refs (linking is same-pass, pre-persist)
+    assert.equal(publishedMoments.length, 2)
+    for (const m of publishedMoments) assert.deepEqual(m.refs, [topic.id])
 
     assert.equal((await queue.status()).pendingFiles, 0)
   } finally {

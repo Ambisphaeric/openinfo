@@ -1,6 +1,6 @@
 import type { Mode, PromptTemplate } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { defaultDistillTemplate, defaultExtractTemplate, defaultMeetingMode } from './defaults.js'
+import { defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultMeetingMode } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 const MODE_KIND = 'mode'
@@ -20,6 +20,9 @@ export class DistillDocuments {
     if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultExtractTemplate.id)) {
       this.store.layouts.put(TEMPLATE_KIND, defaultExtractTemplate.id, defaultExtractTemplate)
     }
+    if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultEntitiesTemplate.id)) {
+      this.store.layouts.put(TEMPLATE_KIND, defaultEntitiesTemplate.id, defaultEntitiesTemplate)
+    }
     if (!this.store.layouts.getLatest<Mode>(MODE_KIND, defaultMeetingMode.id)) {
       this.store.layouts.put(MODE_KIND, defaultMeetingMode.id, defaultMeetingMode)
     }
@@ -31,6 +34,10 @@ export class DistillDocuments {
 
   extractTemplate(id: string = defaultExtractTemplate.id): PromptTemplate {
     return this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, id)?.body ?? defaultExtractTemplate
+  }
+
+  entitiesTemplate(id: string = defaultEntitiesTemplate.id): PromptTemplate {
+    return this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, id)?.body ?? defaultEntitiesTemplate
   }
 
   mode(id: string = defaultMeetingMode.id): Mode {

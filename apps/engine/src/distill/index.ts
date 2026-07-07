@@ -1,7 +1,7 @@
 export { Distiller, type DistillerDeps, type DistillOptions, type LlmInvoke } from './distiller.js'
 export { bucketIntoWindows, type MergeWindow, type MergeWindowConfig } from './merge.js'
 export { DistillDocuments } from './documents.js'
-export { defaultDistillTemplate, defaultExtractTemplate, defaultMeetingMode } from './defaults.js'
+export { defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultMeetingMode } from './defaults.js'
 export {
   extractMoments,
   parseMomentCandidates,
@@ -9,3 +9,4 @@ export {
   type ExtractInput,
   type ExtractResult,
 } from './moments.js'
+export { parseJsonCandidates } from './parse.js'
