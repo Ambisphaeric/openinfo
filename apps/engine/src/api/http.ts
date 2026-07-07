@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type CaptureChunk, type Fabric, type Flag, type Moment } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type CaptureChunk, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller } from '../distill/index.js'
 import { FabricDocuments } from '../fabric/index.js'
+import { relevantNow } from '../index/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry } from '../store/index.js'
@@ -56,15 +57,21 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     docs: distillDocs,
     publish: (distillate) => bus.publish('distillate.updated', distillate),
     publishMoment: (moment) => bus.publish('moment.created', moment),
+    publishEntity: (entity) => bus.publish('entity.updated', entity),
     log,
   })
   // Seam (see PHASE2-NOTES): distill rides the queue drain, gated on distill.enabled (OFF by
   // default). Flag off → the drain stays the Phase 1 no-op GC; on → each drained file distills.
-  // Moments extraction is a further opt-in (distill.moments) and requires distill.enabled — both
-  // flags are read per-drain, so flipping either over the API takes effect without a restart.
+  // Moments extraction (distill.moments) and entity indexing (distill.index) are further opt-ins
+  // and require distill.enabled — all three flags are read per-drain, so flipping any of them over
+  // the API takes effect without a restart. Moment.refs linking needs BOTH extras on: with
+  // distill.index alone entities still index, but there are no same-pass moments to link.
   const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
     if (!isFlagEnabled(store, 'distill.enabled')) return
-    await distiller.distillChunks(chunks, { extractMoments: isFlagEnabled(store, 'distill.moments') })
+    await distiller.distillChunks(chunks, {
+      extractMoments: isFlagEnabled(store, 'distill.moments'),
+      extractEntities: isFlagEnabled(store, 'distill.index'),
+    })
   })
 
   bus.subscribe('capture.received', (chunk) => ws.broadcast('capture.received', chunk))
@@ -72,6 +79,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('flag.changed', (flag) => ws.broadcast('flag.changed', flag))
   bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
   bus.subscribe('moment.created', (moment) => ws.broadcast('moment.created', moment))
+  bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
 
   const server = createServer((req, res) => {
     const ctx: HandlerContext = { bus, fabric, voice, queue, store, log }
@@ -109,6 +117,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/workspaces') return send(res, 200, ctx.store.all())
   if (req.method === 'GET' && url.pathname === '/registers') return send(res, 200, ctx.voice.registers())
   if (req.method === 'GET' && url.pathname === '/moments') return send(res, 200, readMoments(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
   if (req.method === 'GET' && url.pathname.startsWith('/contracts/')) return sendContract(url, res)
   if (req.method === 'PUT' && url.pathname.startsWith('/flags/')) return saveFlag(req, res, ctx, decodeURIComponent(url.pathname.slice(7)))
   const capture = url.pathname.match(/^\/capture\/([^/]+)$/)
@@ -166,6 +176,30 @@ function readMoments(store: WorkspaceRegistry, url: URL): Moment[] {
   if (!store.all().some((ws) => ws.id === workspaceId)) return []
   const sessionId = url.searchParams.get('session')
   return sessionId ? store.listMoments(workspaceId, sessionId) : store.listMoments(workspaceId)
+}
+
+/**
+ * Serve the entity index for a workspace (default `default`), most recently seen first. Mirrors
+ * readMoments: a read over store/, unknown workspace is an empty list, not an error.
+ */
+function readEntities(store: WorkspaceRegistry, url: URL): Entity[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  if (!store.all().some((ws) => ws.id === workspaceId)) return []
+  return store.listEntities(workspaceId)
+}
+
+/**
+ * Serve the relevant-now join: entities ranked by recency×frequency, each with the recent moments
+ * that reference it (`?workspace=&session=&limit=`). The join itself lives in index/relevant.ts.
+ */
+function readRelevant(store: WorkspaceRegistry, url: URL): RelevantEntity[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const sessionId = url.searchParams.get('session')
+  const limitRaw = Number(url.searchParams.get('limit'))
+  return relevantNow(store, workspaceId, {
+    ...(sessionId !== null ? { sessionId } : {}),
+    ...(Number.isInteger(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
+  })
 }
 
 function readFlags(store: WorkspaceRegistry): Flag[] {
