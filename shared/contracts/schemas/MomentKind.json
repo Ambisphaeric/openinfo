@@ -1,0 +1,29 @@
+{
+  "description": "● commitment · ◆ question-at-you · ▲ decision · ✱ artifact · mention-of-user · note",
+  "anyOf": [
+    {
+      "const": "commitment",
+      "type": "string"
+    },
+    {
+      "const": "question",
+      "type": "string"
+    },
+    {
+      "const": "decision",
+      "type": "string"
+    },
+    {
+      "const": "artifact",
+      "type": "string"
+    },
+    {
+      "const": "mention",
+      "type": "string"
+    },
+    {
+      "const": "note",
+      "type": "string"
+    }
+  ]
+}

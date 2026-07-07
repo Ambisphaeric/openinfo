@@ -1,0 +1,19 @@
+{
+  "name": "@openinfo/contracts",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p .",
+    "gen": "node ../../tools/schema-gen/gen.mjs",
+    "test": "node --test 'dist/**/*.test.js'"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
+  }
+}

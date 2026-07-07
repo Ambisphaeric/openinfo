@@ -1,0 +1,11 @@
+{
+  "name": "openinfo",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "contracts:gen": "pnpm --filter @openinfo/contracts gen"
+  }
+}

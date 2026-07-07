@@ -1,0 +1,75 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  apps/client:
+    dependencies:
+      '@openinfo/contracts':
+        specifier: workspace:*
+        version: link:../../shared/contracts
+
+  apps/engine:
+    dependencies:
+      '@openinfo/contracts':
+        specifier: workspace:*
+        version: link:../../shared/contracts
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  apps/workbench:
+    dependencies:
+      '@openinfo/contracts':
+        specifier: workspace:*
+        version: link:../../shared/contracts
+
+  shared/contracts:
+    dependencies:
+      '@sinclair/typebox':
+        specifier: ^0.34.49
+        version: 0.34.49
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.0
+        version: 26.1.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+packages:
+
+  '@sinclair/typebox@0.34.49':
+    resolution: {integrity: sha512-brySQQs7Jtn0joV8Xh9ZV/hZb9Ozb0pmazDIASBkYKCjXrXU3mpcFahmK/z4YDhGkQvP9mWJbVyahdtU5wQA+A==}
+
+  '@types/node@26.1.0':
+    resolution: {integrity: sha512-O0A1G3xPGy4w7AgQdAQYUlQ+BKk2Oovw8eRpofyp5KdBZULnbe+WqaOVNrm705SHphCiG4XHsACrSmPu1f+Kgw==}
+
+  typescript@6.0.3:
+    resolution: {integrity: sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw==}
+    engines: {node: '>=14.17'}
+    hasBin: true
+
+  undici-types@8.3.0:
+    resolution: {integrity: sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==}
+
+snapshots:
+
+  '@sinclair/typebox@0.34.49': {}
+
+  '@types/node@26.1.0':
+    dependencies:
+      undici-types: 8.3.0
+
+  typescript@6.0.3: {}
+
+  undici-types@8.3.0: {}

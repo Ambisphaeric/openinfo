@@ -1,0 +1,101 @@
+{
+  "$id": "Pin",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "uri",
+    "title",
+    "kind",
+    "ingest",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "uri": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "const": "pdf",
+          "type": "string"
+        },
+        {
+          "const": "gdoc",
+          "type": "string"
+        },
+        {
+          "const": "url",
+          "type": "string"
+        },
+        {
+          "const": "file",
+          "type": "string"
+        }
+      ]
+    },
+    "ingest": {
+      "additionalProperties": false,
+      "description": "pins are ingested (fetched, page-anchored, embedded), not bookmarked",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "anyOf": [
+            {
+              "const": "pending",
+              "type": "string"
+            },
+            {
+              "const": "ingested",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "pages": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "chunks": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lastFetchedAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "createdAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

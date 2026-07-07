@@ -1,0 +1,3 @@
+{ "id": "reg-sales-floor", "name": "sales-floor", "builtin": true,
+  "description": "high charm, softer tone, more flexibility",
+  "dials": { "tone": 7, "warmth": 8, "wit": 6, "charm": 8, "specificity": 5, "brevity": 4 } }

@@ -1,0 +1,2 @@
+{ "id": "ws-sales", "name": "sales", "dbFile": "sales.db", "color": "#e06a3c",
+  "retentionDays": 365, "createdAt": "2026-07-07T09:00:00-04:00" }

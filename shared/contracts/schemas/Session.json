@@ -1,0 +1,113 @@
+{
+  "$id": "Session",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "modeId",
+    "startedAt",
+    "attribution"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "modeId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "startedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "endedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    },
+    "attribution": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "evidence",
+        "confidence"
+      ],
+      "properties": {
+        "evidence": {
+          "type": "array",
+          "items": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "kind",
+              "detail",
+              "weight"
+            ],
+            "properties": {
+              "kind": {
+                "anyOf": [
+                  {
+                    "const": "calendar",
+                    "type": "string"
+                  },
+                  {
+                    "const": "window",
+                    "type": "string"
+                  },
+                  {
+                    "const": "repo",
+                    "type": "string"
+                  },
+                  {
+                    "const": "voice",
+                    "type": "string"
+                  },
+                  {
+                    "const": "manual",
+                    "type": "string"
+                  }
+                ]
+              },
+              "detail": {
+                "type": "string"
+              },
+              "weight": {
+                "minimum": 0,
+                "maximum": 1,
+                "type": "number"
+              }
+            }
+          }
+        },
+        "confidence": {
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        }
+      }
+    },
+    "registerId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "reroutedFrom": {
+      "minLength": 1,
+      "description": "workspace id, if retroactively moved",
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,181 @@
+{
+  "$id": "Endpoint",
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "runtime",
+        "model"
+      ],
+      "properties": {
+        "kind": {
+          "const": "local",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtime": {
+          "$id": "LocalRuntime",
+          "anyOf": [
+            {
+              "const": "mlx",
+              "type": "string"
+            },
+            {
+              "const": "ollama",
+              "type": "string"
+            },
+            {
+              "const": "llama.cpp",
+              "type": "string"
+            },
+            {
+              "const": "whisper.cpp",
+              "type": "string"
+            },
+            {
+              "const": "paddle",
+              "type": "string"
+            },
+            {
+              "const": "coreml",
+              "type": "string"
+            }
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "measured": {
+          "additionalProperties": false,
+          "description": "MEASURED by tools/bench — never vendor claims",
+          "type": "object",
+          "properties": {
+            "tokPerSec": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "latencyMs": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "measuredAt": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "url",
+        "api"
+      ],
+      "properties": {
+        "kind": {
+          "const": "http",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "pattern": "^https?://",
+          "type": "string"
+        },
+        "api": {
+          "anyOf": [
+            {
+              "const": "openai-compat",
+              "type": "string"
+            },
+            {
+              "const": "native",
+              "type": "string"
+            }
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "measured": {
+          "additionalProperties": false,
+          "description": "MEASURED by tools/bench — never vendor claims",
+          "type": "object",
+          "properties": {
+            "tokPerSec": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "latencyMs": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "measuredAt": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "description": "enhancement, never dependency — offline is a guarantee",
+      "type": "object",
+      "required": [
+        "kind",
+        "name",
+        "provider",
+        "auth"
+      ],
+      "properties": {
+        "kind": {
+          "const": "cloud",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "auth": {
+          "const": "keychain",
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "measured": {
+          "additionalProperties": false,
+          "description": "MEASURED by tools/bench — never vendor claims",
+          "type": "object",
+          "properties": {
+            "tokPerSec": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "latencyMs": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "measuredAt": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

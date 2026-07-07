@@ -1,0 +1,78 @@
+{
+  "$id": "VoiceBinding",
+  "additionalProperties": false,
+  "description": "resolution: session > workspace > mode > global",
+  "type": "object",
+  "required": [
+    "scope",
+    "registerId"
+  ],
+  "properties": {
+    "scope": {
+      "anyOf": [
+        {
+          "const": "global",
+          "type": "string"
+        },
+        {
+          "const": "mode",
+          "type": "string"
+        },
+        {
+          "const": "workspace",
+          "type": "string"
+        },
+        {
+          "const": "session",
+          "type": "string"
+        }
+      ]
+    },
+    "targetId": {
+      "minLength": 1,
+      "description": "the mode/workspace/session; absent for global",
+      "type": "string"
+    },
+    "registerId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "dialOverrides": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "tone": {
+          "minimum": 0,
+          "maximum": 10,
+          "type": "integer"
+        },
+        "warmth": {
+          "minimum": 0,
+          "maximum": 10,
+          "type": "integer"
+        },
+        "wit": {
+          "minimum": 0,
+          "maximum": 10,
+          "type": "integer"
+        },
+        "charm": {
+          "minimum": 0,
+          "maximum": 10,
+          "type": "integer"
+        },
+        "specificity": {
+          "minimum": 0,
+          "maximum": 10,
+          "type": "integer"
+        },
+        "brevity": {
+          "minimum": 0,
+          "maximum": 10,
+          "type": "integer"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "kind",
+    "config"
+  ],
+  "properties": {
+    "kind": {
+      "anyOf": [
+        {
+          "const": "repo",
+          "type": "string"
+        },
+        {
+          "const": "doc",
+          "type": "string"
+        },
+        {
+          "const": "mail",
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "type": "string"
+        }
+      ]
+    },
+    "config": {
+      "description": "watcher-kind-specific, e.g. { repo, pathGlob }",
+      "type": "object",
+      "patternProperties": {
+        "^(.*)$": {}
+      }
+    },
+    "lastChecked": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "evidence": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "found",
+        "detail",
+        "at"
+      ],
+      "properties": {
+        "found": {
+          "type": "boolean"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "at": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "$id": "DriftChainStep",
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step"
+      ],
+      "properties": {
+        "step": {
+          "const": "glyph",
+          "type": "string"
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step",
+        "offer"
+      ],
+      "properties": {
+        "step": {
+          "const": "card",
+          "type": "string"
+        },
+        "offer": {
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "ALWAYS two ways back",
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "step"
+      ],
+      "properties": {
+        "step": {
+          "const": "tts",
+          "type": "string"
+        },
+        "if": {
+          "const": "audio_private",
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

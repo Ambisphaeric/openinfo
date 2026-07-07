@@ -1,0 +1,4 @@
+[ { "key": "capture.camera", "default": false, "scope": "engine", "description": "camera source: presence/away first", "minTier": "T0" },
+  { "key": "surface.block.pinned-doc", "default": false, "scope": "surface", "description": "always-visible pinned doc card with copy bar" },
+  { "key": "voice.drift", "default": false, "scope": "mode", "description": "register comparator + escalation chains", "minTier": "T2" },
+  { "key": "ingest.gdoc", "default": false, "scope": "engine", "description": "Google Docs pin ingestion (read-only auth)" } ]

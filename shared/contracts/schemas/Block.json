@@ -1,0 +1,221 @@
+{
+  "$id": "Block",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "block"
+  ],
+  "properties": {
+    "block": {
+      "$id": "BlockTypeName",
+      "anyOf": [
+        {
+          "const": "now",
+          "type": "string"
+        },
+        {
+          "const": "moments",
+          "type": "string"
+        },
+        {
+          "const": "relevant-now",
+          "type": "string"
+        },
+        {
+          "const": "ledger",
+          "type": "string"
+        },
+        {
+          "const": "pinned-doc",
+          "type": "string"
+        },
+        {
+          "const": "hint",
+          "type": "string"
+        },
+        {
+          "const": "ask",
+          "type": "string"
+        },
+        {
+          "const": "custom",
+          "type": "string"
+        }
+      ]
+    },
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "query": {
+      "$id": "BlockQuery",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "source",
+        "params"
+      ],
+      "properties": {
+        "source": {
+          "anyOf": [
+            {
+              "const": "relevant-now",
+              "type": "string"
+            },
+            {
+              "const": "moments",
+              "type": "string"
+            },
+            {
+              "const": "ledger",
+              "type": "string"
+            },
+            {
+              "const": "sessions",
+              "type": "string"
+            },
+            {
+              "const": "pins",
+              "type": "string"
+            },
+            {
+              "const": "entities",
+              "type": "string"
+            }
+          ]
+        },
+        "params": {
+          "default": {},
+          "type": "object",
+          "patternProperties": {
+            "^(.*)$": {}
+          }
+        },
+        "top": {
+          "minimum": 1,
+          "maximum": 50,
+          "type": "integer"
+        }
+      }
+    },
+    "show": {
+      "anyOf": [
+        {
+          "const": "always",
+          "type": "string"
+        },
+        {
+          "const": "on-match",
+          "type": "string"
+        },
+        {
+          "const": "manual",
+          "type": "string"
+        }
+      ]
+    },
+    "collapsed": {
+      "type": "boolean"
+    },
+    "top": {
+      "minimum": 1,
+      "maximum": 50,
+      "description": "HUD shows top-K; workbench holds the rest",
+      "type": "integer"
+    },
+    "use": {
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "llm": {
+          "type": "string"
+        },
+        "register": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "$id": "Action",
+        "additionalProperties": false,
+        "description": "the app prepares; verbs never send/commit/reply outward",
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "verb",
+          "params"
+        ],
+        "properties": {
+          "id": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "maxLength": 24,
+            "type": "string"
+          },
+          "verb": {
+            "anyOf": [
+              {
+                "const": "copy",
+                "type": "string"
+              },
+              {
+                "const": "open",
+                "type": "string"
+              },
+              {
+                "const": "mark-done",
+                "type": "string"
+              },
+              {
+                "const": "dismiss",
+                "type": "string"
+              },
+              {
+                "const": "run-mode",
+                "type": "string"
+              },
+              {
+                "const": "draft-with",
+                "type": "string"
+              },
+              {
+                "const": "navigate",
+                "type": "string"
+              }
+            ]
+          },
+          "params": {
+            "default": {},
+            "type": "object",
+            "patternProperties": {
+              "^(.*)$": {}
+            }
+          }
+        }
+      }
+    },
+    "custom": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "htmlEndpoint"
+      ],
+      "properties": {
+        "htmlEndpoint": {
+          "description": "engine-served, sandboxed; API-only reach",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

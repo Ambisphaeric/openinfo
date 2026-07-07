@@ -1,0 +1,4 @@
+{ "id": "mom-244", "sessionId": "ses-acme", "workspaceId": "ws-sales",
+  "at": "2026-07-07T14:44:00-04:00", "kind": "commitment",
+  "text": "retention language to legal today; written answer to Dana by Thursday",
+  "speaker": "user", "refs": ["ent-dana", "ent-soc2"], "source": "mic", "confidence": 0.9 }

@@ -1,0 +1,17 @@
+{
+  "name": "@openinfo/engine",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p .",
+    "dev": "node --watch dist/main.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@openinfo/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,285 @@
+{
+  "$id": "Commitment",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "text",
+    "provenance",
+    "owedTo",
+    "confidence",
+    "status",
+    "statusHistory",
+    "watchers",
+    "context"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "text": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "description": "nothing without a why",
+      "type": "object",
+      "required": [
+        "momentId",
+        "sessionId",
+        "heardAt"
+      ],
+      "properties": {
+        "momentId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "heardAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    },
+    "owedTo": {
+      "description": "person entity ids",
+      "default": [],
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "description": "opaque identifier",
+        "type": "string"
+      }
+    },
+    "due": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "confidence": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "status": {
+      "anyOf": [
+        {
+          "const": "open",
+          "type": "string"
+        },
+        {
+          "const": "prepared",
+          "type": "string"
+        },
+        {
+          "const": "done",
+          "type": "string"
+        },
+        {
+          "const": "dismissed",
+          "type": "string"
+        }
+      ]
+    },
+    "statusHistory": {
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "at",
+          "by"
+        ],
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "const": "open",
+                "type": "string"
+              },
+              {
+                "const": "prepared",
+                "type": "string"
+              },
+              {
+                "const": "done",
+                "type": "string"
+              },
+              {
+                "const": "dismissed",
+                "type": "string"
+              }
+            ]
+          },
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "const": "user",
+                "type": "string"
+              },
+              {
+                "const": "watcher",
+                "type": "string"
+              },
+              {
+                "const": "system",
+                "type": "string"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "watchers": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "config"
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "const": "repo",
+                "type": "string"
+              },
+              {
+                "const": "doc",
+                "type": "string"
+              },
+              {
+                "const": "mail",
+                "type": "string"
+              },
+              {
+                "const": "manual",
+                "type": "string"
+              }
+            ]
+          },
+          "config": {
+            "description": "watcher-kind-specific, e.g. { repo, pathGlob }",
+            "type": "object",
+            "patternProperties": {
+              "^(.*)$": {}
+            }
+          },
+          "lastChecked": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          },
+          "evidence": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "found",
+              "detail",
+              "at"
+            ],
+            "properties": {
+              "found": {
+                "type": "boolean"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "at": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "prepared": {
+      "additionalProperties": false,
+      "description": "the app prepares; the human executes",
+      "type": "object",
+      "required": [
+        "artifactKind",
+        "content",
+        "preparedAt"
+      ],
+      "properties": {
+        "artifactKind": {
+          "anyOf": [
+            {
+              "const": "email-draft",
+              "type": "string"
+            },
+            {
+              "const": "excerpt",
+              "type": "string"
+            },
+            {
+              "const": "text",
+              "type": "string"
+            }
+          ]
+        },
+        "content": {
+          "type": "string"
+        },
+        "preparedAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    },
+    "context": {
+      "additionalProperties": false,
+      "default": {},
+      "description": "born-with-context: what was on screen when it was heard",
+      "type": "object",
+      "properties": {
+        "fileRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "screenshotRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prRefs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

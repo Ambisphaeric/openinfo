@@ -1,0 +1,62 @@
+{
+  "$id": "Flag",
+  "additionalProperties": false,
+  "description": "every feature ships OFF behind one of these",
+  "type": "object",
+  "required": [
+    "key",
+    "default",
+    "scope",
+    "description"
+  ],
+  "properties": {
+    "key": {
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9-]*)+$",
+      "description": "e.g. surface.block.pinned-doc",
+      "type": "string"
+    },
+    "default": {
+      "type": "boolean"
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "const": "engine",
+          "type": "string"
+        },
+        {
+          "const": "surface",
+          "type": "string"
+        },
+        {
+          "const": "mode",
+          "type": "string"
+        }
+      ]
+    },
+    "description": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "minTier": {
+      "anyOf": [
+        {
+          "const": "T0",
+          "type": "string"
+        },
+        {
+          "const": "T1",
+          "type": "string"
+        },
+        {
+          "const": "T2",
+          "type": "string"
+        },
+        {
+          "const": "T3",
+          "type": "string"
+        }
+      ]
+    }
+  }
+}

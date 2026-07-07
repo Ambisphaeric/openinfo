@@ -1,0 +1,63 @@
+{
+  "$id": "Action",
+  "additionalProperties": false,
+  "description": "the app prepares; verbs never send/commit/reply outward",
+  "type": "object",
+  "required": [
+    "id",
+    "label",
+    "verb",
+    "params"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "label": {
+      "minLength": 1,
+      "maxLength": 24,
+      "type": "string"
+    },
+    "verb": {
+      "anyOf": [
+        {
+          "const": "copy",
+          "type": "string"
+        },
+        {
+          "const": "open",
+          "type": "string"
+        },
+        {
+          "const": "mark-done",
+          "type": "string"
+        },
+        {
+          "const": "dismiss",
+          "type": "string"
+        },
+        {
+          "const": "run-mode",
+          "type": "string"
+        },
+        {
+          "const": "draft-with",
+          "type": "string"
+        },
+        {
+          "const": "navigate",
+          "type": "string"
+        }
+      ]
+    },
+    "params": {
+      "default": {},
+      "type": "object",
+      "patternProperties": {
+        "^(.*)$": {}
+      }
+    }
+  }
+}

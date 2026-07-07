@@ -1,0 +1,94 @@
+{
+  "$id": "Entity",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "kind",
+    "name",
+    "aliases",
+    "momentRefs",
+    "outboundCount",
+    "firstSeen",
+    "lastSeen"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "const": "person",
+          "type": "string"
+        },
+        {
+          "const": "artifact",
+          "type": "string"
+        },
+        {
+          "const": "topic",
+          "type": "string"
+        }
+      ]
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "aliases": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "canonicalOf": {
+      "description": "entity ids merged into this one",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "description": "opaque identifier",
+        "type": "string"
+      }
+    },
+    "pinId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "momentRefs": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "description": "opaque identifier",
+        "type": "string"
+      }
+    },
+    "outboundCount": {
+      "minimum": 0,
+      "default": 0,
+      "description": "times SENT to someone — strongest canon signal",
+      "type": "integer"
+    },
+    "firstSeen": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "lastSeen": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

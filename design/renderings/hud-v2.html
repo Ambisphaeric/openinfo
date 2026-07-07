@@ -1,0 +1,640 @@
+<title>openinfo — the HUD</title>
+<style>
+  :root{
+    --page-bg:#f4f5f7; --page-ink:#1b1e24; --page-muted:#5c636e;
+    --page-line:#d9dce2; --page-card:#ffffff;
+    --accent:#e06a3c;
+    --m-commit:#e06a3c;   /* ● commitment */
+    --m-quest:#d9a13b;    /* ◆ question aimed at you */
+    --m-decide:#4da47a;   /* ▲ decision */
+    --m-artifact:#6f9ecf; /* ✱ artifact referenced */
+  }
+  @media (prefers-color-scheme: dark){
+    :root{--page-bg:#101216;--page-ink:#e8eaee;--page-muted:#8b919c;--page-line:#262a31;--page-card:#16191f}
+  }
+  :root[data-theme="dark"]{--page-bg:#101216;--page-ink:#e8eaee;--page-muted:#8b919c;--page-line:#262a31;--page-card:#16191f}
+  :root[data-theme="light"]{--page-bg:#f4f5f7;--page-ink:#1b1e24;--page-muted:#5c636e;--page-line:#d9dce2;--page-card:#ffffff}
+
+  :root{
+    --s-bg0:#0c0e13; --s-bg1:#14171e; --s-bg2:#1b1f28;
+    --s-glass:rgba(21,24,32,.84);
+    --s-line:rgba(255,255,255,.09); --s-line-soft:rgba(255,255,255,.05);
+    --s-ink:#e9ebef; --s-muted:#9aa0ab; --s-faint:#6b7280;
+    --s-mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,monospace;
+  }
+
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page-bg);color:var(--page-ink);
+    font-family:system-ui,-apple-system,'SF Pro Text','Helvetica Neue',sans-serif;
+    line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1060px;margin:0 auto;padding:56px 32px 96px}
+
+  header.doc{padding-bottom:26px;border-bottom:1px solid var(--page-line);margin-bottom:44px}
+  .doc h1{font-size:clamp(28px,4vw,38px);line-height:1.1;margin:0 0 12px;letter-spacing:-.02em;font-weight:650;text-wrap:balance}
+  .doc h1 .dim{color:var(--page-muted);font-weight:450}
+  .doc .thesis{margin:0;max-width:64ch;font-size:16px;color:var(--page-ink)}
+  .doc .thesis b{font-weight:650}
+  .doc .sub{margin:10px 0 0;max-width:64ch;font-size:14px;color:var(--page-muted)}
+
+  .caphead{display:flex;align-items:baseline;gap:14px;margin:0 0 12px}
+  .caphead .num{font-family:var(--s-mono);font-size:12px;color:var(--accent);font-weight:600}
+  .caphead h2{font-size:20px;margin:0;font-weight:650;letter-spacing:-.01em}
+  .caphead .ctxlbl{margin-left:auto;font-family:var(--s-mono);font-size:11px;color:var(--page-muted)}
+  section{margin-bottom:78px}
+  .note{font-size:14px;color:var(--page-muted);max-width:72ch;margin:0 0 18px}
+  .note b{color:var(--page-ink);font-weight:600}
+
+  /* ---------- screen frame ---------- */
+  .screen{position:relative;border-radius:14px;overflow:hidden;
+    background:
+      radial-gradient(1100px 460px at 72% -12%, #222936 0%, transparent 60%),
+      radial-gradient(800px 460px at 8% 112%, #1a2028 0%, transparent 55%),
+      var(--s-bg0);
+    border:1px solid var(--page-line);
+    box-shadow:0 24px 60px -30px rgba(10,12,18,.55);
+    color:var(--s-ink);font-size:13px}
+  .screen-scroll{overflow-x:auto}
+  .screen .inner{min-width:860px;display:flex;justify-content:center;padding:40px 24px 48px}
+
+  /* ---------- the HUD panel ---------- */
+  .hud{width:660px;border-radius:15px;overflow:hidden;
+    background:var(--s-glass);backdrop-filter:blur(20px);
+    border:1px solid var(--s-line);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.07), 0 34px 70px -24px rgba(0,0,0,.8)}
+  .hud.compact{width:560px}
+
+  .hudtop{display:flex;align-items:baseline;gap:10px;padding:14px 18px 4px}
+  .hudtop .ctx{font-size:15px;font-weight:650;color:var(--s-ink);letter-spacing:-.01em}
+  .hudtop .ctx .ws{color:var(--s-muted);font-weight:450}
+  .hudtop .el{font-family:var(--s-mono);font-size:10.5px;color:var(--s-faint)}
+  .hudtop .st{margin-left:auto;display:flex;align-items:center;gap:7px}
+  .livedot{width:8px;height:8px;border-radius:50%;background:var(--m-commit);animation:pulse 1.8s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .nowline{padding:2px 18px 13px;font-size:12.5px;color:var(--s-muted);border-bottom:1px solid var(--s-line-soft)}
+  .nowline b{color:#c9cdd5;font-weight:500}
+
+  .hgroup{padding:11px 18px 5px}
+  .hgroup .glbl{font-family:var(--s-mono);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--s-faint);margin-bottom:7px}
+
+  /* relevant-now rows */
+  .rel{display:grid;grid-template-columns:16px 1fr auto;gap:10px;padding:8px 0;border-bottom:1px solid var(--s-line-soft);align-items:start}
+  .rel:last-child{border-bottom:none}
+  .rel .mk{padding-top:3px;text-align:center;font-size:10px;line-height:1}
+  .rel .body .ttl{font-size:12.5px;font-weight:600;color:var(--s-ink);line-height:1.4}
+  .rel .body .ttl .ext{font-family:var(--s-mono);font-size:10px;color:var(--s-faint);font-weight:400}
+  .rel .body .why{font-size:11.5px;color:var(--s-muted);line-height:1.5;margin-top:1px}
+  .rel .body .why b{color:#c9cdd5;font-weight:600}
+  .rel .go{display:flex;gap:6px;padding-top:2px}
+  .mini{padding:3px 10px;border-radius:6px;font-size:10.5px;font-weight:600;border:1px solid var(--s-line);color:var(--s-ink);background:var(--s-bg2);white-space:nowrap}
+  .mini.ghost{background:transparent;color:var(--s-muted);font-weight:500}
+  .mini.done{border-color:rgba(77,164,122,.4);color:#8fd1af;background:rgba(77,164,122,.1)}
+  .tag{display:inline-block;font-family:var(--s-mono);font-size:9px;color:var(--s-faint);border:1px solid var(--s-line-soft);border-radius:4px;padding:0 5px;margin-left:6px;vertical-align:1px}
+
+  .mk.a{color:var(--m-artifact)}
+  .mk.c{color:var(--m-commit)}
+  .mk.q{color:var(--m-quest)}
+  .mk.d{color:var(--m-decide)}
+  .mk.p{color:var(--s-muted)}
+
+  /* moments stream */
+  .stream{display:grid;grid-template-columns:14px 1fr;gap:0 12px;margin:0 18px 0;position:relative}
+  .tickrail{position:relative;width:2px;margin:6px auto 0;background:var(--s-line-soft);border-radius:1px}
+  .stream .rows{padding-bottom:6px}
+  .mo{display:grid;grid-template-columns:40px 14px 1fr;gap:9px;padding:6.5px 0;align-items:baseline;border-bottom:1px dashed var(--s-line-soft)}
+  .mo:last-child{border-bottom:none}
+  .mo .t{font-family:var(--s-mono);font-size:10px;color:var(--s-faint);font-variant-numeric:tabular-nums}
+  .mo .g{font-size:10px;text-align:center;line-height:1.5}
+  .mo .x{font-size:12px;color:#c3c8d1;line-height:1.5}
+  .mo .x b{color:var(--s-ink);font-weight:600}
+  .mo.hot .x{color:var(--s-ink)}
+  .mo .x .unans{font-family:var(--s-mono);font-size:9.5px;color:var(--m-quest);margin-left:6px}
+  .streamwrap{max-height:224px;overflow:hidden;position:relative;padding-bottom:8px}
+  .streamwrap::after{content:"";position:absolute;left:0;right:0;bottom:0;height:30px;
+    background:linear-gradient(transparent, rgba(21,24,32,.95));pointer-events:none}
+  /* tick rail marks */
+  .trk{position:absolute;left:-2px;width:6px;height:2px;border-radius:1px}
+
+  /* legend under frame */
+  .marklegend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--page-muted)}
+  .marklegend span b{font-weight:400;margin-right:6px}
+  .lg-c{color:var(--m-commit)}.lg-q{color:var(--m-quest)}.lg-d{color:var(--m-decide)}.lg-a{color:var(--m-artifact)}
+
+  /* callout captions */
+  .caps{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px}
+  @media (max-width:860px){.caps{grid-template-columns:1fr}}
+  .capn{border:1px solid var(--page-line);border-radius:10px;background:var(--page-card);padding:12px 15px;font-size:13px;color:var(--page-muted);line-height:1.55}
+  .capn b{color:var(--page-ink);font-weight:600}
+
+  /* ---------- how it knows ---------- */
+  .flow{display:flex;align-items:stretch;gap:0;margin:20px 0 26px;overflow-x:auto;padding-bottom:4px}
+  .fstep{flex:1;min-width:118px;border:1px solid var(--page-line);background:var(--page-card);border-radius:10px;padding:11px 13px}
+  .fstep .fk{font-family:var(--s-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  .fstep .fd{font-size:12px;color:var(--page-muted);margin-top:3px;line-height:1.45}
+  .farr{align-self:center;padding:0 7px;color:var(--page-muted);flex:none;font-size:13px}
+  .knowgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:860px){.knowgrid{grid-template-columns:1fr}}
+  .know{border:1px solid var(--page-line);border-radius:11px;background:var(--page-card);padding:15px 18px}
+  .know h3{margin:0 0 6px;font-size:14.5px;font-weight:650}
+  .know p{margin:0;font-size:13.5px;color:var(--page-muted);line-height:1.6}
+  .know p b{color:var(--page-ink);font-weight:600}
+  .know .mono{font-family:var(--s-mono);font-size:12px}
+
+  .principles{border:1px solid var(--page-line);border-radius:11px;background:var(--page-card);padding:18px 22px;margin-top:14px}
+  .principles h3{margin:0 0 10px;font-size:14.5px;font-weight:650}
+  .principles ol{margin:0;padding-left:20px;font-size:13.5px;color:var(--page-muted);line-height:1.9}
+  .principles b{color:var(--page-ink);font-weight:600}
+
+  /* answer-ready hint strip */
+  .hintrow{display:grid;grid-template-columns:16px 1fr;gap:10px;margin:10px 18px 2px;padding:9px 12px 10px;
+    border:1px solid rgba(77,164,122,.3);background:rgba(77,164,122,.06);border-radius:9px}
+  .hintrow .hk{color:#7cc4a0;font-size:11px;padding-top:2px}
+  .hintrow .hx{font-size:12px;color:#c3c8d1;line-height:1.55}
+  .hintrow .hx b{color:var(--s-ink);font-weight:600}
+  .copybar{display:flex;align-items:center;gap:8px;margin-top:7px;border:1px solid var(--s-line);
+    border-radius:7px;background:rgba(0,0,0,.25);padding:4px 5px 4px 10px}
+  .copybar .txt{flex:1;font-family:var(--s-mono);font-size:10px;color:#b7bcc6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .checkg{color:#8fd1af;font-size:11px}
+
+  /* compose / edit mode */
+  .editwrap{display:grid;grid-template-columns:1fr 240px;min-height:540px}
+  .editcanvas{padding:30px 22px;display:flex;justify-content:center;align-items:flex-start}
+  .hudedit{width:600px;border-radius:15px;background:var(--s-glass);backdrop-filter:blur(20px);
+    border:1px solid var(--s-line);box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 34px 70px -24px rgba(0,0,0,.8);
+    padding:10px 10px 12px}
+  .beblock{border:1px dashed rgba(255,255,255,.18);border-radius:10px;margin-bottom:8px;background:rgba(255,255,255,.015)}
+  .beblock.sel{border-color:rgba(224,106,60,.6);border-style:solid}
+  .beblock.collapsed .bebody{display:none}
+  .behead{display:flex;align-items:center;gap:9px;padding:7px 11px}
+  .behead .drag{font-family:var(--s-mono);font-size:10px;color:var(--s-faint);letter-spacing:-1px}
+  .behead .bname{font-family:var(--s-mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--s-muted)}
+  .behead .bmeta{font-family:var(--s-mono);font-size:9px;color:var(--s-faint)}
+  .behead .bctl{margin-left:auto;display:flex;gap:10px;font-size:11px;color:var(--s-faint)}
+  .bebody{padding:2px 13px 11px;font-size:11.5px;color:var(--s-muted);line-height:1.55}
+  .bebody b{color:var(--s-ink);font-weight:600}
+  .addblock{border:1px dashed rgba(255,255,255,.14);border-radius:10px;padding:9px;text-align:center;
+    font-size:11.5px;color:var(--s-faint)}
+  .composerail{border-left:1px solid var(--s-line-soft);padding:16px 14px;background:rgba(0,0,0,.18)}
+  .composerail .glbl{font-family:var(--s-mono);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--s-faint);margin:0 0 8px}
+  .btile{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--s-line-soft);
+    border-radius:8px;margin-bottom:6px;font-size:11.5px;color:var(--s-ink);background:var(--s-bg1)}
+  .btile .bm{font-size:9px;color:var(--s-faint)}
+  .btile.custom{border-style:dashed;color:var(--s-muted)}
+  .insp{margin-top:16px;border-top:1px solid var(--s-line-soft);padding-top:14px}
+  .insp .fld{margin-bottom:12px}
+  .insp .fld .glbl{margin-bottom:5px}
+  .qbox{border:1px solid var(--s-line-soft);border-radius:7px;padding:7px 9px;font-family:var(--s-mono);
+    font-size:9.5px;line-height:1.6;color:#b7bcc6;background:rgba(0,0,0,.25)}
+  .segx{display:flex;border:1px solid var(--s-line);border-radius:7px;overflow:hidden}
+  .segx span{flex:1;text-align:center;padding:4px 0;font-family:var(--s-mono);font-size:9.5px;color:var(--s-muted)}
+  .segx span.on{background:rgba(224,106,60,.14);color:#f0906a;font-weight:600}
+
+  footer.doc{border-top:1px solid var(--page-line);padding-top:24px;color:var(--page-muted);font-size:13.5px;max-width:72ch;margin-top:70px}
+  footer.doc b{color:var(--page-ink)}
+
+  @media (prefers-reduced-motion: reduce){.livedot{animation:none}}
+</style>
+
+<div class="wrap">
+
+  <header class="doc">
+    <h1>openinfo <span class="dim">— the HUD</span></h1>
+    <p class="thesis">The HUD is a <b>live join</b>: entities detected in what's happening now, matched against
+    everything this context has seen before — and it shows nothing it can't explain.</p>
+    <p class="sub">No mode chips, no queue counters, no engine labels. One dot says it's alive. And the join looks
+    both ways — behind you (what this context has seen) and ahead (what the next context expects of you, checked
+    against evidence). Each item carries its one-line why.</p>
+  </header>
+
+  <!-- ============ STATE A ============ -->
+  <section>
+    <div class="caphead">
+      <span class="num">A</span>
+      <h2>In a security review</h2>
+      <span class="ctxlbl">same panel, keyed by what it hears</span>
+    </div>
+    <p class="note">Dana asks about retention. Within a breath, the panel is holding the SOC 2 report — not because
+    "security meeting mode" exists, but because <b>the entity index matched the conversation</b>: this artifact was
+    pinned as canon, sent to a customer in March, and referenced three times in the last ten minutes.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="hud">
+        <div class="hudtop">
+          <span class="ctx"><span class="ws">acme /</span> Renewal — security review</span>
+          <span class="el">2:47p · 31m</span>
+          <span class="st"><span class="livedot"></span></span>
+        </div>
+        <div class="nowline">Now: <b>data-retention guarantees in the DPA</b> — Dana pressing on derived data; her 2:43 question is still unanswered.</div>
+
+        <div class="hintrow">
+          <span class="hk">✓</span>
+          <span class="hx"><b>Answer ready</b> — derived data is covered: your SOC 2, <b>§9.3, page 42</b>. One tap puts the excerpt on your clipboard.
+            <span class="copybar"><span class="txt">“Derived and telemetry data follow the same 30-day purge cycle as primary records…” — p. 42</span><button class="mini">Copy</button></span>
+          </span>
+        </div>
+
+        <div class="hgroup">
+          <div class="glbl">Relevant now</div>
+
+          <div class="rel">
+            <span class="mk a">✱</span>
+            <span class="body">
+              <span class="ttl">SOC 2 Type II — 2026 report <span class="ext">compliance/soc2-typeII-2026.pdf</span><span class="tag">pinned · ingested 84 pp</span></span>
+              <span class="why">Referenced 3× this meeting · you sent this exact file to Vantiv on Mar 12 · ingested with page anchors, which is where the p. 42 answer above comes from</span>
+            </span>
+            <span class="go"><button class="mini">Copy link</button><button class="mini ghost">Open</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk a">✱</span>
+            <span class="body">
+              <span class="ttl">Retention language — DPA v4, §6.2</span>
+              <span class="why">You sent this wording to <b>Dana</b> on Jun 14, after she asked the same question in the Q2 call. Her current ask extends it to derived data — §6.2 doesn't cover that.</span>
+            </span>
+            <span class="go"><button class="mini">Open</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk p">◉</span>
+            <span class="body">
+              <span class="ttl">Dana Okafor <span class="ext">VP Procurement, Acme · 4th session</span></span>
+              <span class="why">Last met Jun 12. Her open thread then: retention language (you closed it Jun 14). Historically asks for things in writing — she will expect a doc, not a promise.</span>
+            </span>
+            <span class="go"><button class="mini ghost">History</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk q">◆</span>
+            <span class="body">
+              <span class="ttl">Open loop: pen-test summary</span>
+              <span class="why">Marco asked for it in last Thursday's security sync — still unsent. Same topic, different person: worth closing while you're in it.</span>
+            </span>
+            <span class="go"><button class="mini done">Done</button><button class="mini ghost">Later</button></span>
+          </div>
+        </div>
+
+        <div class="hgroup" style="padding-bottom:0">
+          <div class="glbl">Moments · this session</div>
+        </div>
+        <div class="streamwrap">
+          <div class="stream">
+            <div class="tickrail">
+              <span class="trk" style="top:4%;background:var(--m-commit)"></span>
+              <span class="trk" style="top:11%;background:var(--m-quest)"></span>
+              <span class="trk" style="top:22%;background:var(--m-artifact)"></span>
+              <span class="trk" style="top:38%;background:var(--m-decide)"></span>
+              <span class="trk" style="top:57%;background:var(--m-quest)"></span>
+              <span class="trk" style="top:76%;background:var(--m-artifact)"></span>
+            </div>
+            <div class="rows">
+              <div class="mo hot"><span class="t">2:44p</span><span class="g mk c">●</span><span class="x"><b>You committed:</b> retention language to legal today; written answer to Dana by Thursday.</span></div>
+              <div class="mo hot"><span class="t">2:43p</span><span class="g mk q">◆</span><span class="x"><b>Dana:</b> “can you guarantee 30-day deletion for <b>derived</b> data too?”<span class="unans">unanswered</span></span></div>
+              <div class="mo"><span class="t">2:41p</span><span class="g mk a">✱</span><span class="x">SOC 2 report referenced — third time this meeting.</span></div>
+              <div class="mo"><span class="t">2:36p</span><span class="g mk d">▲</span><span class="x"><b>Decided:</b> DPA redlines route through Acme legal, not procurement.</span></div>
+              <div class="mo"><span class="t">2:31p</span><span class="g">·</span><span class="x">Priya walked the security questionnaire — 38 of 42 answered.</span></div>
+              <div class="mo"><span class="t">2:24p</span><span class="g mk q">◆</span><span class="x"><b>Marcus:</b> which subprocessors touch customer PII?</span></div>
+              <div class="mo"><span class="t">2:16p</span><span class="g">·</span><span class="x">Session start — attributed to <b>acme</b>: calendar slot + meeting window + Dana's and Priya's voices.</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="marklegend">
+      <span><b class="lg-c">●</b>commitment</span>
+      <span><b class="lg-q">◆</b>question aimed at you</span>
+      <span><b class="lg-d">▲</b>decision</span>
+      <span><b class="lg-a">✱</b>artifact referenced</span>
+      <span><b>◉</b>person</span>
+    </div>
+
+    <div class="caps">
+      <div class="capn"><b>Moments are events, not buckets.</b> 2:43 and 2:44 each get their own row and their own
+      mark — nothing is folded into a minute. Scroll is the rewind; the tick rail shows where the marks cluster
+      across the whole session, and clicking a tick jumps there.</div>
+      <div class="capn"><b>Every card states its why.</b> "You sent this exact file to Vantiv on Mar 12" is the
+      reason the SOC 2 card exists. If the index can't produce that sentence, the card doesn't ship — that's the
+      rule that keeps this from becoming a widget wall.</div>
+      <div class="capn"><b>Unanswered is a state.</b> Dana's derived-data question stays marked until the
+      distillate hears an answer or the session ends — at which point it becomes an open loop that follows the
+      Acme context, not a note that dies with the meeting.</div>
+    </div>
+  </section>
+
+  <!-- ============ STATE B ============ -->
+  <section>
+    <div class="caphead">
+      <span class="num">B</span>
+      <h2>Forty minutes later, in the editor</h2>
+      <span class="ctxlbl">same join, re-keyed by the switch</span>
+    </div>
+    <p class="note">No configuration changed. The router saw the context switch, and the join re-keyed itself:
+    now the panel holds what past-you owes present-you in <b>this</b> repo — the 10:42 promise with a hard
+    deadline, and the PR you historically forget.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="hud compact">
+        <div class="hudtop">
+          <span class="ctx"><span class="ws">ingest-api /</span> deep work</span>
+          <span class="el">3:27p · 14m</span>
+          <span class="st"><span class="livedot" style="background:#c9b458"></span></span>
+        </div>
+        <div class="nowline">Now: <b>worker/consumer.ts</b> — retry logic, near the code your 10:42 commitment touches.</div>
+
+        <div class="hgroup">
+          <div class="glbl">Relevant now</div>
+
+          <div class="rel">
+            <span class="mk c">●</span>
+            <span class="body">
+              <span class="ttl">Retry limit before tonight's batch <span class="ext">due 8:00p</span></span>
+              <span class="why">Promised to <b>Priya</b> at 10:42a by phone. No matching commit or branch yet — and you're in the right file now.</span>
+            </span>
+            <span class="go"><button class="mini done">Done</button><button class="mini ghost">Play it</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk a">✱</span>
+            <span class="body">
+              <span class="ttl">PR #412 — fix: dedupe retry queue</span>
+              <span class="why">You opened it at 9:04a and switched away 2 minutes later; no reviewer requested. Same subsystem as this edit.</span>
+            </span>
+            <span class="go"><button class="mini">Request review</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk a">✱</span>
+            <span class="body">
+              <span class="ttl">Backoff concerns — Marco, May standup</span>
+              <span class="why">He flagged exponential-backoff interaction with the batch window when retries last changed. Distilled from <b>platform</b>, surfaced here because the code overlaps.</span>
+            </span>
+            <span class="go"><button class="mini ghost">Open</button></span>
+          </div>
+        </div>
+
+        <div class="hgroup" style="padding-bottom:14px">
+          <div class="glbl">Moments · this session</div>
+          <div class="mo"><span class="t">3:25p</span><span class="g mk a">✱</span><span class="x">Opened <b>worker/consumer.ts</b> — matched to the 10:42 commitment.</span></div>
+          <div class="mo"><span class="t">3:13p</span><span class="g">·</span><span class="x">Session start — attributed to <b>ingest-api</b>: repo path + editor window title.</span></div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="caps">
+      <div class="capn"><b>Cross-workspace, with provenance.</b> Marco's backoff concern lives in
+      <b>platform</b>'s DB, not this repo's — it crosses over because the entity graph links the retry subsystem
+      across both, and the card says exactly where it came from.</div>
+      <div class="capn"><b>The commitment finds the code.</b> The 10:42 promise surfaces at the moment you open the
+      file it touches — not at a scheduled nudge time. Proximity is the trigger; the 4pm nudge is only the
+      fallback.</div>
+      <div class="capn"><b>Quiet contexts stay quiet.</b> Two moments, three cards. Deep work doesn't get a
+      meeting's density — the panel's size follows the context's actual event rate, not a layout template.</div>
+    </div>
+  </section>
+
+  <!-- ============ STATE C : HORIZON ============ -->
+  <section>
+    <div class="caphead">
+      <span class="num">C</span>
+      <h2>Nineteen minutes before the weekly</h2>
+      <span class="ctxlbl">the living to-do, checked against evidence</span>
+    </div>
+    <p class="note">The recurring meeting is where owed things come due — and "did I do that?" is a question
+    <b>evidence should answer, not memory</b>. Every commitment carries watchers (commits, sent mail, doc edits,
+    thread replies). Before the room fills, the panel settles the ledger: what closed itself, what's still open,
+    what got added while you weren't looking, and what's likely to come back.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="hud">
+        <div class="hudtop">
+          <span class="ctx"><span class="ws">platform /</span> Weekly sync — in 19m</span>
+          <span class="el">Wed · 9:41a</span>
+          <span class="st"><span class="livedot" style="background:#6f9ecf"></span></span>
+        </div>
+        <div class="nowline">Pre-meeting brief: <b>Marco, Priya + 4 others</b> — this room's ledger, checked against what actually happened since last Wednesday.</div>
+
+        <div class="hgroup">
+          <div class="glbl">You owe this room</div>
+
+          <div class="rel">
+            <span class="mk q">◆</span>
+            <span class="body">
+              <span class="ttl">Schema migration take <span class="ext">owed to Marco · 8 days</span></span>
+              <span class="why">You said “I'll look after lunch” — eight days and two weeklies ago. Evidence check came back empty: no doc comment, no thread reply, no branch. <b>He's in this meeting.</b></span>
+            </span>
+            <span class="go"><button class="mini">Draft it now</button><button class="mini ghost">Defer again</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk d"><span class="checkg">✓</span></span>
+            <span class="body">
+              <span class="ttl">Retry limit before the batch — closed itself</span>
+              <span class="why">Commit <b>a41f9</b> in ingest-api at 4:12p yesterday matched the commitment; the watcher closed it and dropped the link in Priya's thread. Nothing to do — shown so you can say so.</span>
+            </span>
+            <span class="go"><button class="mini ghost">View</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk c">●</span>
+            <span class="body">
+              <span class="ttl">Dedupe race — new, from yesterday 2:52p</span>
+              <span class="why">Priya: <b>“need your help fixing the dedupe race.”</b> Captured with what you had on screen — the open file, the OCR'd traceback, PR #412 — so the task arrives with its context attached. She's in this meeting too.</span>
+            </span>
+            <span class="go"><button class="mini">Accept</button><button class="mini ghost">Not mine</button></span>
+          </div>
+
+          <div class="rel">
+            <span class="mk a">✱</span>
+            <span class="body">
+              <span class="ttl">Likely to resurface: partition strategy</span>
+              <span class="why">Left unresolved in last week's minutes; no decision recorded anywhere since. If it comes up, your notes from the Jun 24 thread are one tap away.</span>
+            </span>
+            <span class="go"><button class="mini ghost">Prep</button></span>
+          </div>
+        </div>
+
+        <div class="hgroup" style="padding-bottom:14px">
+          <div class="glbl">Since last Wednesday, in this room's world</div>
+          <div class="mo"><span class="t">Fri</span><span class="g mk d">▲</span><span class="x"><b>PR #412 merged</b> — dedupe retry queue shipped.</span></div>
+          <div class="mo"><span class="t">Mon</span><span class="g">·</span><span class="x">Two ingest incidents, both distilled — root cause pointed at the batch window overlap.</span></div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="caps">
+      <div class="capn"><b>Watchers close loops, not you.</b> A commitment about code watches the repo; one about a
+      document watches the doc; one about email watches outbound mail. "Did I?" gets asked only when every watcher
+      comes back empty — the ✓ item shows the other outcome.</div>
+      <div class="capn"><b>Tasks are born with context attached.</b> "Need your help with X" heard live becomes a
+      task carrying the screen you had open, the OCR'd error, and the PR it touches — the living map entry, not a
+      bare string in a to-do app.</div>
+      <div class="capn"><b>The ledger follows the room.</b> Items key to the people and topic, not the calendar
+      event — the schema-migration debt surfaces here because Marco is here, and it would follow him into a
+      hallway call just the same.</div>
+    </div>
+  </section>
+
+  <!-- ============ HOW IT KNOWS ============ -->
+  <section>
+    <div class="caphead">
+      <span class="num">D</span>
+      <h2>How it knows what the SOC 2 link is</h2>
+      <span class="ctxlbl">the context index</span>
+    </div>
+    <p class="note">The display layer is only as smart as the index under it. This is the part that has to be
+    built well once: <b>entity extraction rides the distillation pass it already pays for</b>, and everything
+    above is a ranked join against what accumulates.</p>
+
+    <div class="flow">
+      <div class="fstep"><div class="fk">capture</div><div class="fd">mic, screen, repo, calendar</div></div>
+      <span class="farr">→</span>
+      <div class="fstep"><div class="fk">distill</div><div class="fd">rolling summary, as before</div></div>
+      <span class="farr">→</span>
+      <div class="fstep"><div class="fk">extract</div><div class="fd">people, artifacts, topics, commitments, questions</div></div>
+      <span class="farr">→</span>
+      <div class="fstep"><div class="fk">canonicalize</div><div class="fd">repeat references merge into one entity</div></div>
+      <span class="farr">→</span>
+      <div class="fstep"><div class="fk">index</div><div class="fd">per-workspace DBs + cross-workspace entity graph</div></div>
+      <span class="farr">→</span>
+      <div class="fstep"><div class="fk">join live</div><div class="fd">now-stream × index → ranked, explained cards</div></div>
+    </div>
+
+    <div class="knowgrid">
+      <div class="know">
+        <h3>Extraction is free-riding</h3>
+        <p>The distill pass already reads every 30 seconds of transcript and every screen diff. The same pass emits
+        structured entities — <b>no second model call</b>. A person mention, a URL on screen, a "I'll send you X"
+        each become a typed record with a pointer back to their moment.</p>
+      </div>
+      <div class="know">
+        <h3>Canon is earned, or pinned</h3>
+        <p>"The SOC 2 link" emerges two ways. <b>Learned:</b> the same file referenced across sessions collapses
+        into one entity, and the version you actually <b>sent to someone</b> outranks versions you merely viewed —
+        outbound use is the strongest canon signal. <b>Pinned:</b> pre-seed a workspace with its canon (compliance
+        folder, runbooks, glossary); pins beat learning, learning fills in whatever you never bothered to pin.
+        And pins are <b>ingested, not bookmarked</b>: a pinned Google Doc or PDF is fetched with read-only auth,
+        chunked with page anchors, and embedded — which is how an answer cites “p. 42” instead of “somewhere in
+        that file.”</p>
+      </div>
+      <div class="know">
+        <h3>Ranking, in one line</h3>
+        <p><span class="mono">score = match × recency × frequency × person-affinity</span> — how strongly the live
+        stream matches the entity, how recently and often it appeared, and whether it was previously exchanged with
+        the <b>people in the room</b>. Dana in the meeting is why Dana's Jun 14 thread outranks a hundred other
+        retention mentions.</p>
+      </div>
+      <div class="know">
+        <h3>People are entities too</h3>
+        <p>A voice or a calendar invite resolves to a person record: sessions shared, things they asked for, things
+        you owe them, things they owe you. That's how "John asked for that report last week" surfaces the moment
+        John speaks — his open asks are indexed against his identity, not against a meeting title.</p>
+      </div>
+    </div>
+
+    <div class="principles">
+      <h3>Display rules the panel lives by</h3>
+      <ol>
+        <li><b>Nothing without a why.</b> Every surfaced item carries the one-line reason it's here. Can't produce the sentence → don't show the card.</li>
+        <li><b>Say it once.</b> The context line at the top is the only place the context is named. No mode chips, no engine labels, no status text — one dot is the heartbeat.</li>
+        <li><b>Events, not buckets.</b> Moments get individual marks at their own timestamps. Scroll is rewind; the tick rail is the map.</li>
+        <li><b>Density follows reality.</b> A dense meeting yields a dense panel; deep work yields three lines. The layout has no minimum to fill.</li>
+        <li><b>Plumbing lives elsewhere.</b> Queues, token rates, backends, and mode editing exist — in the settings and analytics surfaces, never on the glass you look through all day.</li>
+        <li><b>Blocks, not a layout.</b> The panel is a stack the user owns — collapse it, reorder it, add to it, or build your own block. The defaults are a starter kit, not a verdict.</li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ COMPOSE ============ -->
+  <section>
+    <div class="caphead">
+      <span class="num">E</span>
+      <h2>Compose your own panel</h2>
+      <span class="ctxlbl">block = query + renderer + placement</span>
+    </div>
+    <p class="note">Everything above was built from the same primitive: a <b>block</b> is an index query, a
+    renderer, and a place in the stack. "Relevant now," "Moments," "You owe this room" — all just blocks with
+    different queries. Which means user customization isn't a feature to bolt on; it's exposing what's already
+    there. Hold the panel's edge and it opens like this.</p>
+
+    <div class="screen screen-scroll"><div class="inner" style="padding:0">
+      <div class="editwrap" style="width:100%">
+        <div class="editcanvas">
+          <div class="hudedit">
+            <div class="beblock">
+              <div class="behead"><span class="drag">⋮⋮</span><span class="bname">Now</span><span class="bmeta">built-in · always on top</span><span class="bctl"><span>⌄</span></span></div>
+              <div class="bebody">Current context line + live topic. The one block that can't be removed.</div>
+            </div>
+            <div class="beblock collapsed">
+              <div class="behead"><span class="drag">⋮⋮</span><span class="bname">Moments</span><span class="bmeta">collapsed by this user</span><span class="bctl"><span>›</span><span>×</span></span></div>
+            </div>
+            <div class="beblock">
+              <div class="behead"><span class="drag">⋮⋮</span><span class="bname">Relevant now</span><span class="bmeta">query: live-join · top 4</span><span class="bctl"><span>⌄</span><span>×</span></span></div>
+              <div class="bebody">Ranked entity matches with provenance — the block from states A and B.</div>
+            </div>
+            <div class="beblock sel">
+              <div class="behead"><span class="drag">⋮⋮</span><span class="bname">Pinned doc — SOC 2</span><span class="bmeta">custom · added by this user</span><span class="bctl"><span>⌄</span><span>×</span></span></div>
+              <div class="bebody">Always-visible card for <b>compliance/soc2-typeII-2026</b> with a copy bar and
+                “answer from this doc” hints scoped to it.
+                <span class="copybar"><span class="txt">docs.google.com/document/d/1xK…/soc2-typeII-2026</span><button class="mini">Copy</button></span>
+              </div>
+            </div>
+            <div class="beblock">
+              <div class="behead"><span class="drag">⋮⋮</span><span class="bname">You owe this room</span><span class="bmeta">query: ledger · people-in-context</span><span class="bctl"><span>⌄</span><span>×</span></span></div>
+              <div class="bebody">The horizon block from state C — shown only when a gathering is near.</div>
+            </div>
+            <div class="addblock">+ add block</div>
+          </div>
+        </div>
+
+        <div class="composerail">
+          <div class="glbl">Block library</div>
+          <div class="btile">Now <span class="bm" style="margin-left:auto">built-in</span></div>
+          <div class="btile">Relevant now <span class="bm" style="margin-left:auto">built-in</span></div>
+          <div class="btile">Moments <span class="bm" style="margin-left:auto">built-in</span></div>
+          <div class="btile">You owe this room <span class="bm" style="margin-left:auto">built-in</span></div>
+          <div class="btile">Pinned doc <span class="bm" style="margin-left:auto">built-in</span></div>
+          <div class="btile custom">Custom query…</div>
+          <div class="btile custom">Custom block (HTML)…</div>
+
+          <div class="insp">
+            <div class="glbl">Pinned doc — SOC 2</div>
+            <div class="fld">
+              <span class="glbl">Query</span>
+              <div class="qbox">recall(doc: soc2-typeII-2026)<br>.answers(from: live_stream)<br>.cite(pages: true)</div>
+            </div>
+            <div class="fld">
+              <span class="glbl">Shown</span>
+              <div class="segx"><span class="on">always</span><span>on match</span><span>manual</span></div>
+            </div>
+            <div class="fld">
+              <span class="glbl">Answers use</span>
+              <div class="segx"><span class="on">default model</span><span>pick…</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="caps">
+      <div class="capn"><b>Three tiers of creativity.</b> Everyone: reorder, collapse, remove, add from the
+      library. Power users: write a query — the same <span style="font-family:var(--s-mono);font-size:12px">recall()</span>
+      calls the built-ins use, pointed wherever they want. Builders: a custom block is a self-contained HTML
+      surface served by the engine, the rabbithole pattern — the engine thinks, the block renders.</div>
+      <div class="capn"><b>Why this is cheap, not a rewrite.</b> The client never owned data — every built-in
+      block is already an API call against the engine. "Customization" is exposing those same endpoints plus a
+      per-context layout doc (a JSON stack of block configs). The hard part was the seam, and the seam already
+      exists.</div>
+      <div class="capn"><b>Per context, per person.</b> Layouts key to context type — your meeting stack and your
+      deep-work stack differ, and both are yours. Models, density, and palette are block-level settings, so one
+      person's cockpit and another's two-line whisper are the same product.</div>
+    </div>
+  </section>
+
+  <footer class="doc">
+    <b>Scope of this artifact:</b> the HUD as a product — the display layer, the context index that feeds it, the
+    evidence-checked ledger that gives it a future, and the block system that makes it the user's own. The engine
+    underneath is unchanged from the v0.2 architecture (thin client ⇄ engine over HTTP, one SQLite file per
+    workspace, mode-compiled DAGs); its configuration surfaces live in the previous artifact. All names,
+    artifacts, and quotes are mock content.
+  </footer>
+
+</div>

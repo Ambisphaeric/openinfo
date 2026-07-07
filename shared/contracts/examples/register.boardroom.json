@@ -1,0 +1,3 @@
+{ "id": "reg-boardroom", "name": "boardroom", "builtin": true,
+  "description": "SOC 2 profile: low-but-not-no charm, cite the page, keep it tight",
+  "dials": { "tone": 3, "warmth": 4, "wit": 2, "charm": 2, "specificity": 9, "brevity": 8 } }

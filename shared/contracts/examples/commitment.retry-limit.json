@@ -1,0 +1,8 @@
+{ "id": "cmt-retry-limit", "workspaceId": "ws-ingest-api",
+  "text": "bump the retry limit on the ingest worker before the batch run tonight",
+  "provenance": { "momentId": "mom-1042", "sessionId": "ses-phone-1042", "heardAt": "2026-07-07T10:42:00-04:00" },
+  "owedTo": ["ent-priya"], "due": "2026-07-07T20:00:00-04:00", "confidence": 0.92,
+  "status": "open",
+  "statusHistory": [ { "status": "open", "at": "2026-07-07T10:42:30-04:00", "by": "system" } ],
+  "watchers": [ { "kind": "repo", "config": { "repo": "ingest-api", "pathGlob": "worker/**" } } ],
+  "context": { "fileRefs": ["worker/consumer.ts"], "prRefs": ["ingest-api#412"] } }

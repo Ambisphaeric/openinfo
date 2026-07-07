@@ -1,0 +1,11 @@
+{ "memoryBudgetMb": 12288,
+  "slots": {
+    "stt":   [ { "kind": "local", "name": "parakeet-local", "runtime": "mlx", "model": "parakeet-110m" } ],
+    "tts":   [ { "kind": "local", "name": "kokoro-local", "runtime": "mlx", "model": "kokoro-82m" } ],
+    "llm":   [ { "kind": "local", "name": "llm.fast", "runtime": "mlx", "model": "qwen3-4b" },
+               { "kind": "local", "name": "llm.smart", "runtime": "mlx", "model": "qwen3-8b" },
+               { "kind": "http",  "name": "llm.big", "url": "http://192.168.1.104:8787", "api": "openai-compat", "model": "qwen3-30b-a3b" } ],
+    "vlm":   [ { "kind": "local", "name": "vlm-local", "runtime": "mlx", "model": "qwen2.5-vl-3b" } ],
+    "ocr":   [ { "kind": "local", "name": "paddle-local", "runtime": "paddle", "model": "pp-ocrv4" },
+               { "kind": "http",  "name": "ocr-box", "url": "http://192.168.1.103:8600", "api": "native" } ],
+    "embed": [ { "kind": "local", "name": "embed-local", "runtime": "mlx", "model": "nomic-embed" } ] } }

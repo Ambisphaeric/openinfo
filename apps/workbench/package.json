@@ -1,0 +1,7 @@
+{
+  "name": "@openinfo/workbench",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": { "build": "vite build", "dev": "vite", "test": "node --test" },
+  "dependencies": { "@openinfo/contracts": "workspace:*" }
+}

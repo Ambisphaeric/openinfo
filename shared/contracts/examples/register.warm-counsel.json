@@ -1,0 +1,3 @@
+{ "id": "reg-warm-counsel", "name": "warm-counsel", "builtin": true,
+  "description": "serious but softer — the second way back",
+  "dials": { "tone": 6, "warmth": 7, "wit": 3, "charm": 4, "specificity": 8, "brevity": 6 } }

@@ -1,0 +1,86 @@
+{
+  "$id": "DriftConfig",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "threshold",
+    "sustainSec",
+    "chain"
+  ],
+  "properties": {
+    "threshold": {
+      "minimum": 1,
+      "maximum": 10,
+      "description": "dial-distance that counts as drift",
+      "type": "integer"
+    },
+    "sustainSec": {
+      "minimum": 10,
+      "type": "integer"
+    },
+    "chain": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "$id": "DriftChainStep",
+        "anyOf": [
+          {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "step"
+            ],
+            "properties": {
+              "step": {
+                "const": "glyph",
+                "type": "string"
+              }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "step",
+              "offer"
+            ],
+            "properties": {
+              "step": {
+                "const": "card",
+                "type": "string"
+              },
+              "offer": {
+                "minItems": 2,
+                "maxItems": 2,
+                "description": "ALWAYS two ways back",
+                "type": "array",
+                "items": {
+                  "minLength": 1,
+                  "description": "opaque identifier",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "step"
+            ],
+            "properties": {
+              "step": {
+                "const": "tts",
+                "type": "string"
+              },
+              "if": {
+                "const": "audio_private",
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

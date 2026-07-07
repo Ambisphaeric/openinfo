@@ -1,0 +1,7 @@
+{
+  "name": "@openinfo/client",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": { "build": "tsc -p .", "test": "node --test" },
+  "dependencies": { "@openinfo/contracts": "workspace:*" }
+}

@@ -1,0 +1,5 @@
+packages:
+  - shared/*
+  - apps/*
+  # spikes/ and templates/ are deliberately NOT workspace packages:
+  # spikes are throwaway and must not be importable; templates are documents, not code.

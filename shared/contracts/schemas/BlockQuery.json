@@ -1,0 +1,51 @@
+{
+  "$id": "BlockQuery",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "source",
+    "params"
+  ],
+  "properties": {
+    "source": {
+      "anyOf": [
+        {
+          "const": "relevant-now",
+          "type": "string"
+        },
+        {
+          "const": "moments",
+          "type": "string"
+        },
+        {
+          "const": "ledger",
+          "type": "string"
+        },
+        {
+          "const": "sessions",
+          "type": "string"
+        },
+        {
+          "const": "pins",
+          "type": "string"
+        },
+        {
+          "const": "entities",
+          "type": "string"
+        }
+      ]
+    },
+    "params": {
+      "default": {},
+      "type": "object",
+      "patternProperties": {
+        "^(.*)$": {}
+      }
+    },
+    "top": {
+      "minimum": 1,
+      "maximum": 50,
+      "type": "integer"
+    }
+  }
+}

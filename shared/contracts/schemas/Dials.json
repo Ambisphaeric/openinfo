@@ -1,0 +1,45 @@
+{
+  "$id": "Dials",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "tone",
+    "warmth",
+    "wit",
+    "charm",
+    "specificity",
+    "brevity"
+  ],
+  "properties": {
+    "tone": {
+      "minimum": 0,
+      "maximum": 10,
+      "type": "integer"
+    },
+    "warmth": {
+      "minimum": 0,
+      "maximum": 10,
+      "type": "integer"
+    },
+    "wit": {
+      "minimum": 0,
+      "maximum": 10,
+      "type": "integer"
+    },
+    "charm": {
+      "minimum": 0,
+      "maximum": 10,
+      "type": "integer"
+    },
+    "specificity": {
+      "minimum": 0,
+      "maximum": 10,
+      "type": "integer"
+    },
+    "brevity": {
+      "minimum": 0,
+      "maximum": 10,
+      "type": "integer"
+    }
+  }
+}

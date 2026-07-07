@@ -1,0 +1,1053 @@
+<title>openinfo — surface renderings v0.2</title>
+<style>
+  :root{
+    --page-bg:#f4f5f7;
+    --page-ink:#1b1e24;
+    --page-muted:#5c636e;
+    --page-line:#d9dce2;
+    --page-card:#ffffff;
+    --accent:#e06a3c;          /* ember */
+    --accent-soft:rgba(224,106,60,.14);
+    --ok:#4da47a;
+    --warn:#d9a13b;
+    --live:#e05252;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --page-bg:#101216;
+      --page-ink:#e8eaee;
+      --page-muted:#8b919c;
+      --page-line:#262a31;
+      --page-card:#16191f;
+    }
+  }
+  :root[data-theme="dark"]{
+    --page-bg:#101216; --page-ink:#e8eaee; --page-muted:#8b919c;
+    --page-line:#262a31; --page-card:#16191f;
+  }
+  :root[data-theme="light"]{
+    --page-bg:#f4f5f7; --page-ink:#1b1e24; --page-muted:#5c636e;
+    --page-line:#d9dce2; --page-card:#ffffff;
+  }
+
+  /* ---------- screen-internal tokens: the product is dark glass, always ---------- */
+  :root{
+    --s-bg0:#0c0e13;
+    --s-bg1:#14171e;
+    --s-bg2:#1b1f28;
+    --s-glass:rgba(22,25,33,.78);
+    --s-line:rgba(255,255,255,.09);
+    --s-line-soft:rgba(255,255,255,.05);
+    --s-ink:#e9ebef;
+    --s-muted:#9aa0ab;
+    --s-faint:#6b7280;
+    --s-mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,monospace;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    background:var(--page-bg);
+    color:var(--page-ink);
+    font-family:system-ui,-apple-system,'SF Pro Text','Helvetica Neue',sans-serif;
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1120px;margin:0 auto;padding:56px 32px 96px}
+
+  /* ---------- page header ---------- */
+  header.doc{display:grid;grid-template-columns:1fr auto;gap:24px;align-items:end;
+    padding-bottom:28px;border-bottom:1px solid var(--page-line);margin-bottom:12px}
+  .doc h1{font-size:clamp(28px,4vw,40px);line-height:1.08;margin:0 0 10px;letter-spacing:-.02em;text-wrap:balance;font-weight:650}
+  .doc h1 .dim{color:var(--page-muted);font-weight:450}
+  .doc p{margin:0;max-width:62ch;color:var(--page-muted);font-size:15px}
+  .stamp{font-family:var(--s-mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--page-muted);text-align:right;line-height:2}
+  .stamp b{color:var(--accent);font-weight:600}
+
+  /* ---------- primitives legend ---------- */
+  .legend{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:28px 0 64px}
+  .legend .prim{border:1px solid var(--page-line);background:var(--page-card);border-radius:10px;padding:14px 16px}
+  .prim .k{font-family:var(--s-mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);font-weight:600}
+  .prim .d{font-size:13px;color:var(--page-muted);margin-top:4px;line-height:1.45}
+  @media (max-width:900px){.legend{grid-template-columns:repeat(2,1fr)}}
+
+  /* ---------- section chrome ---------- */
+  section.surface{margin:0 0 88px}
+  .cap{display:flex;align-items:baseline;gap:16px;margin-bottom:14px;flex-wrap:wrap}
+  .cap .num{font-family:var(--s-mono);font-size:12px;color:var(--accent);font-weight:600}
+  .cap h2{font-size:21px;margin:0;letter-spacing:-.01em;font-weight:650}
+  .cap .uses{margin-left:auto;font-family:var(--s-mono);font-size:11px;color:var(--page-muted);letter-spacing:.06em}
+  .note{font-size:14px;color:var(--page-muted);max-width:72ch;margin:0 0 20px}
+  .note b{color:var(--page-ink);font-weight:600}
+
+  /* ---------- the screen frame ---------- */
+  .screen{
+    position:relative;border-radius:14px;overflow:hidden;
+    background:
+      radial-gradient(1200px 500px at 70% -10%, #232a38 0%, transparent 60%),
+      radial-gradient(900px 500px at 10% 110%, #1a2028 0%, transparent 55%),
+      var(--s-bg0);
+    border:1px solid var(--page-line);
+    box-shadow:0 24px 60px -30px rgba(10,12,18,.55);
+    color:var(--s-ink);
+    font-size:13px;
+  }
+  .screen .inner{min-width:920px}
+  .screen-scroll{overflow-x:auto}
+
+  .macbar{display:flex;align-items:center;gap:18px;height:30px;padding:0 14px;
+    background:rgba(18,20,26,.92);border-bottom:1px solid var(--s-line-soft);
+    font-size:12px;color:var(--s-muted)}
+  .macbar .apple{color:var(--s-ink);font-size:13px}
+  .macbar .app{color:var(--s-ink);font-weight:600}
+  .macbar .right{margin-left:auto;display:flex;gap:16px;align-items:center;font-family:var(--s-mono);font-size:11px}
+  .statusglyph{display:inline-flex;align-items:center;gap:6px;color:var(--s-ink)}
+  .ringdot{width:9px;height:9px;border-radius:50%;border:2px solid var(--accent);position:relative}
+  .ringdot::after{content:"";position:absolute;inset:1.5px;border-radius:50%;background:var(--accent);opacity:.85}
+
+  .mono{font-family:var(--s-mono)}
+  .lbl{font-family:var(--s-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--s-faint)}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;
+    border:1px solid var(--s-line);font-family:var(--s-mono);font-size:10.5px;color:var(--s-muted);white-space:nowrap}
+  .pill.acc{border-color:rgba(224,106,60,.45);color:#f0906a;background:rgba(224,106,60,.08)}
+  .pill.ok{border-color:rgba(77,164,122,.4);color:#7cc4a0}
+  .pill.warn{border-color:rgba(217,161,59,.4);color:#dfb567}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dot.live{background:var(--live);animation:pulse 1.6s ease-in-out infinite}
+  .dot.ok{background:var(--ok)}
+  .dot.warn{background:var(--warn)}
+  .dot.idle{background:var(--s-faint)}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){
+    .dot.live{animation:none}
+    .caret{animation:none}
+    .edge-active{animation:none}
+    .eq span{animation:none;height:6px}
+  }
+
+  /* ============ SCREEN 1 : companion bar + HUD ============ */
+  .desk{padding:0 0 46px}
+  .hudrow{display:flex;justify-content:center;margin-top:22px}
+  .hudpill{
+    display:flex;align-items:center;gap:14px;padding:9px 10px 9px 16px;border-radius:999px;
+    background:var(--s-glass);backdrop-filter:blur(14px);
+    border:1px solid var(--s-line);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 14px 34px -14px rgba(0,0,0,.7);
+  }
+  .hudpill .ctx{font-size:12.5px;color:var(--s-ink);font-weight:500}
+  .hudpill .ctx .ws{color:var(--s-muted)}
+  .eq{display:flex;align-items:flex-end;gap:2px;height:14px;padding:0 2px}
+  .eq span{width:2.5px;background:#f0906a;border-radius:1px;animation:eq 1.1s ease-in-out infinite}
+  .eq span:nth-child(1){height:6px;animation-delay:0s}
+  .eq span:nth-child(2){height:11px;animation-delay:.15s}
+  .eq span:nth-child(3){height:8px;animation-delay:.3s}
+  .eq span:nth-child(4){height:13px;animation-delay:.45s}
+  .eq span:nth-child(5){height:5px;animation-delay:.6s}
+  @keyframes eq{0%,100%{transform:scaleY(.5)}50%{transform:scaleY(1)}}
+  .hudbtn{padding:5px 13px;border-radius:999px;font-size:12px;font-weight:600;border:1px solid var(--s-line);
+    color:var(--s-ink);background:var(--s-bg2)}
+  .hudbtn.primary{background:var(--accent);border-color:var(--accent);color:#16110d}
+  .hudbtn .kbd{font-family:var(--s-mono);font-size:10px;color:var(--s-faint);margin-left:6px;font-weight:400}
+  .hudbtn.primary .kbd{color:rgba(22,17,13,.6)}
+
+  .hudpanel{
+    width:660px;margin:14px auto 0;border-radius:14px;overflow:hidden;
+    background:var(--s-glass);backdrop-filter:blur(18px);
+    border:1px solid var(--s-line);
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.07), 0 30px 60px -20px rgba(0,0,0,.75);
+  }
+  .hudhead{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--s-line-soft);flex-wrap:wrap}
+  .away{
+    margin:12px 16px 2px;border:1px solid rgba(217,161,59,.35);border-radius:10px;
+    background:rgba(217,161,59,.07);padding:10px 13px;font-size:12px;color:#d8dbe1;line-height:1.55}
+  .away .aw-h{display:flex;gap:8px;align-items:center;margin-bottom:4px}
+  .away .aw-h .lbl{color:#dfb567}
+  .away b{color:var(--s-ink)}
+  .away .aw-act{margin-top:7px;display:flex;gap:8px}
+  .rewind-bar{display:flex;align-items:center;gap:10px;padding:12px 16px 6px}
+  .rewind-bar .seg{display:flex;border:1px solid var(--s-line);border-radius:7px;overflow:hidden}
+  .rewind-bar .seg span{padding:3px 11px;font-family:var(--s-mono);font-size:10px;color:var(--s-muted)}
+  .rewind-bar .seg span.on{background:var(--accent-soft);color:#f0906a;font-weight:600}
+  .rewind-bar .jump{margin-left:auto}
+  .distill{padding:2px 16px 8px;max-height:196px;overflow:hidden;position:relative}
+  .distill::after{content:"";position:absolute;left:0;right:0;bottom:0;height:34px;
+    background:linear-gradient(transparent, rgba(22,25,33,.92));pointer-events:none}
+  .drow{display:grid;grid-template-columns:52px 1fr;gap:12px;padding:7px 0;border-bottom:1px dashed var(--s-line-soft);align-items:baseline}
+  .drow .t{font-family:var(--s-mono);font-size:10.5px;color:var(--s-faint)}
+  .drow .x{font-size:12.5px;color:#c9cdd5;line-height:1.5}
+  .drow .x b{color:var(--s-ink);font-weight:600}
+  .drow.fresh .x{color:var(--s-ink)}
+  .drow.past .x{color:var(--s-muted)}
+  .scrollhint{position:absolute;right:8px;top:12px;bottom:40px;width:3px;border-radius:2px;background:var(--s-line-soft)}
+  .scrollhint::after{content:"";position:absolute;top:0;height:34%;left:0;right:0;border-radius:2px;background:rgba(255,255,255,.25)}
+  .hudfoot{display:flex;gap:10px;align-items:center;padding:10px 16px;border-top:1px solid var(--s-line-soft)}
+  .hudfoot .spacer{flex:1}
+  .hudfoot .estate{font-family:var(--s-mono);font-size:10px;color:var(--s-faint)}
+  .chipbtn{padding:4px 11px;border-radius:7px;font-size:11.5px;font-weight:600;border:1px solid var(--s-line);
+    color:var(--s-ink);background:var(--s-bg2)}
+  .chipbtn.ghost{background:transparent;font-weight:500;color:var(--s-muted)}
+  .callouts{display:flex;gap:10px;justify-content:center;margin-top:26px;flex-wrap:wrap;padding:0 20px}
+  .co{max-width:255px;border:1px solid var(--s-line-soft);border-radius:10px;padding:10px 13px;
+    font-size:11.5px;color:var(--s-muted);background:rgba(255,255,255,.02)}
+  .co b{color:var(--s-ink);font-weight:600;display:block;margin-bottom:2px;font-size:11.5px}
+
+  /* ============ SCREEN 2 : mode configuration ============ */
+  .modecfg{display:grid;grid-template-columns:190px 1fr;min-height:560px}
+  .modelist{border-right:1px solid var(--s-line-soft);padding:14px 12px;background:rgba(0,0,0,.18)}
+  .modelist .lbl{display:block;margin-bottom:10px}
+  .mtile{display:flex;align-items:center;gap:8px;padding:9px 11px;border:1px solid var(--s-line-soft);
+    border-radius:9px;margin-bottom:7px;font-size:12.5px;color:var(--s-ink);background:var(--s-bg1)}
+  .mtile .sub{display:block;font-family:var(--s-mono);font-size:9px;color:var(--s-faint);margin-top:1px}
+  .mtile.sel{border-color:rgba(224,106,60,.55)}
+  .mtile .right{margin-left:auto}
+  .cfgmain{padding:18px 22px 22px}
+  .cfghead{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:2px}
+  .cfghead h3{margin:0;font-size:16px;color:var(--s-ink);font-weight:650}
+  .cfgsub{font-size:12px;color:var(--s-muted);margin-bottom:16px}
+  .cfggrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:980px){.cfggrid{grid-template-columns:1fr}}
+  .cfgcard{border:1px solid var(--s-line-soft);border-radius:11px;background:var(--s-bg1);overflow:hidden}
+  .cfgcard .ch{display:flex;align-items:center;gap:8px;padding:9px 13px;border-bottom:1px solid var(--s-line-soft)}
+  .cfgcard .ch .lbl{color:var(--s-muted)}
+  .cfgcard .cb{padding:11px 13px}
+  .cfgrow{display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12px;color:#c3c8d1}
+  .cfgrow .k{width:96px;flex:none;color:var(--s-muted)}
+  .cfgrow .v{font-family:var(--s-mono);font-size:11px;color:var(--s-ink)}
+  .cfgrow .meta{margin-left:auto;font-family:var(--s-mono);font-size:10px;color:var(--s-faint)}
+  .radio{display:flex;align-items:flex-start;gap:9px;padding:7px 0;font-size:12px;color:#c3c8d1;line-height:1.5}
+  .radio .rd{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--s-faint);flex:none;margin-top:2px}
+  .radio.on .rd{border-color:var(--accent);box-shadow:inset 0 0 0 3px var(--s-bg1);background:var(--accent)}
+  .radio b{color:var(--s-ink);font-weight:600}
+  .radio .fine{display:block;font-size:11px;color:var(--s-muted)}
+  .envelope{border:1px solid rgba(217,161,59,.4);background:rgba(217,161,59,.07);border-radius:10px;
+    padding:11px 14px;margin:0 0 14px;font-size:12.5px;color:#d8dbe1;line-height:1.6}
+  .envelope b{color:#dfb567;font-weight:650}
+  .envelope .mono{font-size:11px}
+  .modelrow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px dashed var(--s-line-soft);font-size:12px}
+  .modelrow:last-child{border-bottom:none}
+  .modelrow .rd{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--s-faint);flex:none}
+  .modelrow.on .rd{border-color:var(--accent);box-shadow:inset 0 0 0 3px var(--s-bg1);background:var(--accent)}
+  .modelrow .nm{font-family:var(--s-mono);font-size:11px;color:var(--s-ink)}
+  .modelrow .tk{margin-left:auto;font-family:var(--s-mono);font-size:10.5px;color:var(--s-muted);font-variant-numeric:tabular-nums}
+  .testbtn{margin-left:auto;padding:3px 10px;border-radius:6px;font-size:11px;font-weight:600;
+    border:1px solid var(--s-line);color:var(--s-ink);background:var(--s-bg2)}
+  .inputbox{font-family:var(--s-mono);font-size:11px;color:var(--s-ink);border:1px solid var(--s-line);
+    border-radius:7px;padding:6px 10px;background:rgba(0,0,0,.25);flex:1}
+
+  /* ============ SCREEN 3 : workflow canvas ============ */
+  .studio{display:grid;grid-template-columns:150px 1fr 250px;min-height:560px}
+  .palette{border-right:1px solid var(--s-line-soft);padding:14px 12px;background:rgba(0,0,0,.18)}
+  .palette .lbl{display:block;margin-bottom:10px}
+  .ptile{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--s-line-soft);
+    border-radius:8px;margin-bottom:7px;font-size:12px;color:var(--s-ink);background:var(--s-bg1)}
+  .ptile .glyph{width:8px;height:8px;border-radius:2px;flex:none}
+  .g-source{background:#6f9ecf}.g-distill{background:#e06a3c}.g-route{background:#c9b458}
+  .g-overlay{background:#9b7fc4}.g-act{background:#4da47a}
+  .canvas{position:relative;padding:18px}
+  .canvas svg.edges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .edge{stroke:rgba(255,255,255,.16);stroke-width:1.5;fill:none}
+  .edge-active{stroke:rgba(224,106,60,.75);stroke-width:1.5;fill:none;stroke-dasharray:5 5;animation:flow 1.2s linear infinite}
+  @keyframes flow{to{stroke-dashoffset:-10}}
+  .node{position:absolute;width:196px;border-radius:10px;background:var(--s-bg1);
+    border:1px solid var(--s-line);box-shadow:0 10px 24px -12px rgba(0,0,0,.6);font-size:11.5px}
+  .node.sel{border-color:rgba(224,106,60,.6);box-shadow:0 0 0 1px rgba(224,106,60,.35),0 10px 24px -12px rgba(0,0,0,.6)}
+  .node .nh{display:flex;align-items:center;gap:7px;padding:8px 10px;border-bottom:1px solid var(--s-line-soft);font-weight:600;color:var(--s-ink);font-size:12px}
+  .node .nb{padding:7px 10px 9px;color:var(--s-muted);display:grid;gap:4px}
+  .node .kv{display:flex;justify-content:space-between;gap:8px;font-family:var(--s-mono);font-size:10px}
+  .node .kv .v{color:#c9cdd5}
+  .inspector{border-left:1px solid var(--s-line-soft);padding:16px 14px;background:rgba(0,0,0,.18)}
+  .inspector h4{margin:2px 0 2px;font-size:13px;color:var(--s-ink)}
+  .inspector .sub{font-family:var(--s-mono);font-size:10px;color:var(--s-faint);margin-bottom:14px}
+  .field{margin-bottom:13px}
+  .field .lbl{display:block;margin-bottom:5px}
+  .seg{display:flex;border:1px solid var(--s-line);border-radius:7px;overflow:hidden}
+  .seg span{flex:1;text-align:center;padding:5px 0;font-family:var(--s-mono);font-size:10px;color:var(--s-muted)}
+  .seg span.on{background:var(--accent-soft);color:#f0906a;font-weight:600}
+  .slider{position:relative;height:4px;border-radius:2px;background:var(--s-bg2);margin:12px 4px 4px}
+  .slider .fill{position:absolute;left:0;top:0;bottom:0;width:38%;border-radius:2px;background:var(--accent)}
+  .slider .knob{position:absolute;left:38%;top:50%;width:12px;height:12px;border-radius:50%;
+    background:#f0906a;transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(224,106,60,.25)}
+  .slider-meta{display:flex;justify-content:space-between;font-family:var(--s-mono);font-size:9.5px;color:var(--s-faint);margin-top:6px}
+  .promptbox{border:1px solid var(--s-line-soft);border-radius:8px;padding:9px 10px;font-family:var(--s-mono);
+    font-size:10px;line-height:1.6;color:#b7bcc6;background:rgba(0,0,0,.25)}
+  .enginefoot{grid-column:1 / -1;display:flex;gap:16px;align-items:center;border-top:1px solid var(--s-line-soft);
+    padding:9px 16px;font-family:var(--s-mono);font-size:10.5px;color:var(--s-faint);background:rgba(0,0,0,.22)}
+  .enginefoot .sep{opacity:.4}
+
+  /* ============ SCREEN 4 : backlog analytics ============ */
+  .analytics{padding:18px 22px 22px}
+  .tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+  @media (max-width:980px){.tiles{grid-template-columns:repeat(2,1fr)}}
+  .tile{border:1px solid var(--s-line-soft);border-radius:11px;background:var(--s-bg1);padding:12px 14px}
+  .tile .lbl{display:block;margin-bottom:6px}
+  .tile .big{font-size:22px;font-weight:650;color:var(--s-ink);letter-spacing:-.01em;font-variant-numeric:tabular-nums;line-height:1.1}
+  .tile .fine{font-size:11px;color:var(--s-muted);margin-top:3px}
+  .tile.eta .big{color:#f0906a}
+  .chartcard{border:1px solid var(--s-line-soft);border-radius:11px;background:var(--s-bg1);padding:13px 16px 8px;margin-bottom:14px}
+  .chartcard .chh{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+  .chartcard .chh .ttl{font-size:12.5px;font-weight:600;color:var(--s-ink)}
+  .chartcard .chh .sub{font-family:var(--s-mono);font-size:10px;color:var(--s-faint);margin-left:auto}
+  .chartcard svg{display:block;width:100%;height:auto}
+  .chartcard text{font-family:var(--s-mono);font-size:9px;fill:var(--s-faint);font-variant-numeric:tabular-nums}
+  .qtable{border:1px solid var(--s-line-soft);border-radius:11px;background:var(--s-bg1);overflow:hidden}
+  .qrow{display:grid;grid-template-columns:1.4fr 1fr 1.2fr auto;gap:12px;align-items:center;
+    padding:10px 14px;border-bottom:1px solid var(--s-line-soft);font-size:12px}
+  .qrow:last-child{border-bottom:none}
+  .qrow.qh{font-family:var(--s-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--s-faint);background:rgba(0,0,0,.18)}
+  .qrow .sess{color:var(--s-ink);font-weight:600}
+  .qrow .sess .wsm{display:block;font-family:var(--s-mono);font-size:9.5px;color:var(--s-faint);font-weight:400}
+  .qrow .qty{font-family:var(--s-mono);font-size:11px;color:#c9cdd5;font-variant-numeric:tabular-nums}
+  .qrow .win{font-family:var(--s-mono);font-size:10.5px;color:var(--s-muted);font-variant-numeric:tabular-nums}
+  .qbar{position:relative;height:4px;border-radius:2px;background:var(--s-bg2);margin-top:5px;overflow:hidden}
+  .qbar span{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--ok)}
+
+  /* ============ SCREEN 5 : timeline ============ */
+  .day{display:grid;grid-template-columns:210px 1fr;min-height:560px}
+  .rail{border-right:1px solid var(--s-line-soft);padding:16px 12px;background:rgba(0,0,0,.18)}
+  .slot{display:grid;grid-template-columns:40px 1fr;gap:8px;margin-bottom:4px;align-items:stretch}
+  .slot .hr{font-family:var(--s-mono);font-size:9.5px;color:var(--s-faint);padding-top:4px}
+  .blk{border-radius:7px;padding:6px 9px;font-size:11px;border:1px solid var(--s-line-soft);
+    background:var(--s-bg1);color:var(--s-muted);margin-bottom:3px}
+  .blk b{display:block;color:var(--s-ink);font-weight:600;font-size:11.5px}
+  .blk .wsm{font-family:var(--s-mono);font-size:9px;color:var(--s-faint)}
+  .blk.w-plat{border-left:3px solid #6f9ecf}
+  .blk.w-ing{border-left:3px solid #c9b458}
+  .blk.w-sales{border-left:3px solid var(--accent);background:rgba(224,106,60,.07)}
+  .blk.w-bill{border-left:3px solid #9b7fc4}
+  .switch{display:flex;align-items:center;gap:7px;margin:6px 0;font-family:var(--s-mono);font-size:9px;color:var(--s-faint)}
+  .switch .ln{flex:1;height:1px;background:var(--s-line-soft)}
+  .sessdetail{padding:18px 20px}
+  .sesshead{display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap}
+  .sesshead h3{margin:0;font-size:16px;color:var(--s-ink);font-weight:650}
+  .whychip{font-size:11px;color:var(--s-faint);border:1px dashed var(--s-line);border-radius:999px;padding:2px 10px}
+  .related{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 14px}
+  .related .lbl{margin-right:2px}
+  .rchip{display:inline-flex;align-items:center;gap:6px;padding:3px 11px;border-radius:999px;
+    border:1px solid var(--s-line);font-size:11px;color:#c3c8d1;background:var(--s-bg1)}
+  .rchip .src{font-family:var(--s-mono);font-size:9px;color:var(--s-faint)}
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:980px){.twocol{grid-template-columns:1fr}}
+  .panel{border:1px solid var(--s-line-soft);border-radius:11px;background:var(--s-bg1);overflow:hidden}
+  .panel .ph{display:flex;align-items:center;gap:8px;padding:9px 13px;border-bottom:1px solid var(--s-line-soft)}
+  .panel .ph .lbl{color:var(--s-muted)}
+  .panel .pc{padding:11px 13px;font-size:12px;color:#c3c8d1;line-height:1.6}
+  .draft p{margin:0 0 10px}
+  .draft .to{font-family:var(--s-mono);font-size:10.5px;color:var(--s-faint);border-bottom:1px dashed var(--s-line-soft);padding-bottom:7px;margin-bottom:10px}
+  .caret{display:inline-block;width:7px;height:14px;background:var(--accent);vertical-align:-2px;animation:blink 1s steps(1) infinite;margin-left:2px}
+  @keyframes blink{50%{opacity:0}}
+  .mkr{display:grid;grid-template-columns:44px 1fr;gap:10px;padding:6px 0;border-bottom:1px dashed var(--s-line-soft);align-items:baseline}
+  .mkr:last-child{border:none}
+  .mkr .t{font-family:var(--s-mono);font-size:10px;color:var(--s-faint)}
+  .mkr .x{font-size:12px;line-height:1.5}
+  .mkr .x b{color:var(--s-ink)}
+  .mkr.awaymkr .x{color:#dfb567}
+
+  /* ============ SCREEN 6 : explore canvas ============ */
+  .explore{position:relative;min-height:540px;overflow:hidden;
+    background-image:radial-gradient(rgba(255,255,255,.06) 1px, transparent 1px);
+    background-size:22px 22px}
+  .xcard{position:absolute;border-radius:11px;background:var(--s-bg1);border:1px solid var(--s-line);
+    box-shadow:0 14px 30px -14px rgba(0,0,0,.65);font-size:12px}
+  .xcard .xh{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--s-line-soft)}
+  .xcard .xh .lbl{color:var(--s-muted)}
+  .xcard .xb{padding:10px 13px;color:#c3c8d1;line-height:1.6}
+  .xcard .xb b{color:var(--s-ink)}
+  .hl{background:rgba(224,106,60,.22);border-bottom:1px solid rgba(224,106,60,.6);border-radius:2px;padding:0 2px;color:var(--s-ink)}
+  .lensrow{position:absolute;display:flex;gap:6px;padding:5px 7px;border-radius:999px;
+    background:var(--s-glass);backdrop-filter:blur(10px);border:1px solid var(--s-line);
+    box-shadow:0 10px 24px -10px rgba(0,0,0,.7)}
+  .lens{padding:3px 11px;border-radius:999px;font-size:11px;font-weight:600;color:var(--s-ink);
+    border:1px solid var(--s-line);background:var(--s-bg2)}
+  .lens.on{background:var(--accent);border-color:var(--accent);color:#16110d}
+  .xedges{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .xrel{display:grid;gap:8px}
+  .xrelrow{display:grid;grid-template-columns:auto 1fr;gap:9px;align-items:baseline;font-size:11.5px}
+  .xrelrow .src{font-family:var(--s-mono);font-size:9px;color:var(--s-faint);white-space:nowrap;padding-top:1px}
+  .xrelrow .tx{color:#c3c8d1;line-height:1.45}
+  .xrelrow .tx b{color:var(--s-ink)}
+
+  /* ============ SCREEN 7 : inbox ============ */
+  .inbox{padding:18px 22px 24px;max-width:760px;margin:0 auto}
+  .ibhead{display:flex;align-items:baseline;gap:14px;margin-bottom:14px}
+  .ibhead h3{margin:0;font-size:16px;font-weight:650;color:var(--s-ink)}
+  .ibhead .stats{margin-left:auto;font-family:var(--s-mono);font-size:10.5px;color:var(--s-faint)}
+  .card{border:1px solid var(--s-line-soft);border-radius:12px;background:var(--s-bg1);padding:13px 16px;margin-bottom:10px}
+  .card.hot{border-color:rgba(224,106,60,.4)}
+  .card .prov{display:flex;gap:8px;align-items:center;margin-bottom:7px;flex-wrap:wrap}
+  .card .say{font-size:13px;color:var(--s-ink);line-height:1.55;margin-bottom:4px}
+  .card .say .q{color:#c9cdd5;font-style:italic}
+  .card .why{font-size:11.5px;color:var(--s-muted);margin-bottom:11px}
+  .card .why .mono{font-size:10.5px}
+  .acts{display:flex;gap:8px;flex-wrap:wrap}
+  .abtn{padding:5px 12px;border-radius:7px;font-size:11.5px;font-weight:600;border:1px solid var(--s-line);color:var(--s-ink);background:var(--s-bg2)}
+  .abtn.yes{background:rgba(77,164,122,.15);border-color:rgba(77,164,122,.4);color:#8fd1af}
+  .abtn.ghost{background:transparent;color:var(--s-muted);font-weight:500}
+
+  /* ---------- code map ---------- */
+  .mapgrid{display:grid;grid-template-columns:1.15fr 1fr;gap:22px;align-items:start}
+  @media (max-width:900px){.mapgrid{grid-template-columns:1fr}}
+  .tree{border:1px solid var(--page-line);border-radius:12px;background:var(--page-card);
+    padding:18px 20px;font-family:var(--s-mono);font-size:12px;line-height:1.75;overflow-x:auto;white-space:pre}
+  .tree .dir{color:var(--page-ink);font-weight:600}
+  .tree .cm{color:var(--page-muted)}
+  .tree .loom{color:var(--accent);font-weight:600}
+  .mapnotes{display:grid;gap:10px}
+  .mn{border:1px solid var(--page-line);border-radius:10px;background:var(--page-card);padding:12px 15px;font-size:13px;color:var(--page-muted);line-height:1.55}
+  .mn b{color:var(--page-ink);font-weight:600}
+  .mn .k{font-family:var(--s-mono);font-size:11px;color:var(--accent);font-weight:600}
+
+  footer.doc{border-top:1px solid var(--page-line);padding-top:26px;color:var(--page-muted);font-size:13.5px;max-width:72ch;margin-top:70px}
+  footer.doc b{color:var(--page-ink)}
+  footer.doc .mono{font-family:var(--s-mono);font-size:12px}
+</style>
+
+<div class="wrap">
+
+  <header class="doc">
+    <div>
+      <h1>openinfo <span class="dim">— surface renderings</span></h1>
+      <p>An always-on companion split in two: a thin client that captures and renders, and an engine —
+      local by default, or any HTTP address — that distills, routes, and drafts. Modes are the unit of
+      configuration. When hardware can't keep up, work queues instead of dropping.</p>
+    </div>
+    <div class="stamp">
+      v0.2 · concept<br>
+      strangler fork · <b>pickle-com/glass</b><br>
+      client ⇄ engine over http<br>
+      isolation: db-file / workspace
+    </div>
+  </header>
+
+  <div class="legend">
+    <div class="prim"><span class="k">Source</span><div class="d">Mic, screen Δ-diff, calendar, browser focus. Cadence-gated at capture.</div></div>
+    <div class="prim"><span class="k">Distill</span><div class="d">Rolling merge: last 30s folded into the last 2m. Local model, token-budgeted.</div></div>
+    <div class="prim"><span class="k">Route</span><div class="d">Context-switch detector. Attributes the session to a workspace and its DB file.</div></div>
+    <div class="prim"><span class="k">Overlay</span><div class="d">Your tone, opinions, ontology, roles. Applied to outputs, never to raw capture.</div></div>
+    <div class="prim"><span class="k">Act</span><div class="d">Draft the follow-up, extract the commitment, nudge you at 4pm.</div></div>
+  </div>
+
+  <!-- ================= SURFACE 1 ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">01</span>
+      <h2>Companion bar + HUD</h2>
+      <span class="uses">for humans, not telemetry</span>
+    </div>
+    <p class="note">Telemetry is gone — that lives in mode configuration now. The HUD earns its space with three
+    jobs: <b>what's happening now</b>, <b>what happened while you were away</b>, and a <b>scrubbable rewind</b> of the
+    day at whatever grain you want — minute-by-minute for debugging your morning, 30-minute buckets for the shape of it.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="macbar">
+        <span class="apple">&#63743;</span><span class="app">openinfo</span>
+        <span>File</span><span>Session</span><span>Modes</span><span>Engine</span>
+        <span class="right">
+          <span class="statusglyph"><span class="ringdot"></span></span>
+          <span>&#8631;</span><span>&#9889;</span><span>Tue 2:47 PM</span>
+        </span>
+      </div>
+
+      <div class="desk">
+        <div class="hudrow">
+          <div class="hudpill">
+            <span class="dot live"></span>
+            <span class="ctx"><span class="ws">sales /</span> Acme renewal call · 22m</span>
+            <span class="eq"><span></span><span></span><span></span><span></span><span></span></span>
+            <button class="hudbtn primary">Ask</button>
+            <button class="hudbtn">Hide<span class="kbd">⌘\</span></button>
+          </div>
+        </div>
+
+        <div class="hudpanel">
+          <div class="hudhead">
+            <span class="pill acc"><span class="dot live"></span>listening</span>
+            <span class="pill">mode: meeting</span>
+            <span class="pill warn"><span class="dot warn"></span>34 queued · clear ~6:40p</span>
+          </div>
+
+          <div class="away">
+            <div class="aw-h"><span class="lbl">While you were away · 2:31–2:39p</span></div>
+            Your name came up. Dana: <b>“let's have Zack confirm the retention language with legal
+            before Thursday.”</b> Priya agreed to send the current draft.
+            <div class="aw-act">
+              <button class="chipbtn">Play that moment</button>
+              <button class="chipbtn ghost">Got it</button>
+            </div>
+          </div>
+
+          <div class="rewind-bar">
+            <span class="lbl">Rewind</span>
+            <div class="seg"><span>1m</span><span class="on">5m</span><span>30m</span></div>
+            <button class="chipbtn jump">Action items (3)</button>
+          </div>
+
+          <div class="distill">
+            <div class="scrollhint"></div>
+            <div class="drow fresh"><span class="t">2:45p</span><span class="x">You committed to sending the <b>SOC 2 report by end of day</b> and looping in legal on retention.</span></div>
+            <div class="drow"><span class="t">2:40p</span><span class="x">Security review named as the blocker; Dana wants the retention answer <b>in writing</b>.</span></div>
+            <div class="drow"><span class="t">2:35p</span><span class="x">While away: your name mentioned — retention language handoff (see above).</span></div>
+            <div class="drow past"><span class="t">2:30p</span><span class="x">Q3 price hold requested; scope unchanged at current seat count.</span></div>
+            <div class="drow past"><span class="t">2:25p</span><span class="x">Call started. Attendees: Dana, Priya, you. Renewal agenda confirmed.</span></div>
+            <div class="drow past"><span class="t">2:20p</span><span class="x">ingest-api session closed — summary written to <b>ingest-api.db</b>.</span></div>
+            <div class="drow past"><span class="t">2:15p</span><span class="x">Reviewing PR #412 diff; no comments left.</span></div>
+          </div>
+
+          <div class="hudfoot">
+            <button class="chipbtn">Open timeline</button>
+            <button class="chipbtn ghost">Explore</button>
+            <span class="spacer"></span>
+            <span class="estate">engine: this Mac · mode “meeting”</span>
+          </div>
+        </div>
+
+        <div class="callouts">
+          <div class="co"><b>The queue chip replaces telemetry</b>One glanceable consequence — “34 queued, clear by 6:40” — instead of tok/s numbers. The numbers live in Modes and Analytics.</div>
+          <div class="co"><b>Rewind grain is a view, not a setting</b>1m / 5m / 30m re-buckets the same distillate history. Scroll back two hours to debug what you were doing; nothing to configure.</div>
+          <div class="co"><b>Away-mentions surface on return</b>The engine knows your name and aliases. Step away, and what involved you is the first thing you see — with the receipt one tap away.</div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= SURFACE 2 ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">02</span>
+      <h2>Mode configuration</h2>
+      <span class="uses">source · distill — the honest hardware contract</span>
+    </div>
+    <p class="note">A mode is the unit of configuration, and it's allowed to exceed your hardware. The envelope
+    check does the math — measured tokens per second against what the mode demands — and when you're short, you
+    pick the fallback: <b>queue raw capture for later processing</b> (then delete), degrade cadence, or drop.
+    The engine itself is just another setting: this machine, or an IP and a port.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="modecfg">
+        <div class="modelist">
+          <span class="lbl">Modes</span>
+          <div class="mtile"><div>meeting<span class="sub">live now</span></div><span class="right pill acc" style="padding:1px 7px">●</span></div>
+          <div class="mtile"><div>deep-work<span class="sub">screen-heavy, mic off</span></div></div>
+          <div class="mtile"><div>interview<span class="sub">diarize on, 1m merge</span></div></div>
+          <div class="mtile sel"><div>conference-day<span class="sub">custom · exceeds hw</span></div><span class="right dot warn"></span></div>
+          <div class="mtile" style="border-style:dashed;color:var(--s-muted)">+ new mode</div>
+        </div>
+
+        <div class="cfgmain">
+          <div class="cfghead">
+            <h3>conference-day</h3>
+            <span class="pill warn">exceeds realtime</span>
+            <span class="pill">editable copy of “meeting”</span>
+          </div>
+          <div class="cfgsub">Back-to-back sessions, dense screen sharing, you want the smart model — not the fast one.</div>
+
+          <div class="envelope">
+            <b>Needs ~55 tok/s sustained · this Mac measured 41 tok/s (qwen3-8b).</b>
+            Realtime distillation will fall behind by roughly <span class="mono">18 min per hour</span> of meetings.
+            Capture is never dropped — choose what happens to the overflow below.
+          </div>
+
+          <div class="cfggrid">
+            <div class="cfgcard">
+              <div class="ch"><span class="lbl">Sources &amp; cadence</span></div>
+              <div class="cb">
+                <div class="cfgrow"><span class="k">Mic</span><span class="v">parakeet-110m · streaming</span><span class="meta">3.1s lag</span></div>
+                <div class="cfgrow"><span class="k">Screen</span><span class="v">Δ-diff ≥ 2% · 1 shot / 5s</span><span class="meta">~34 shots/hr</span></div>
+                <div class="cfgrow"><span class="k">Calendar</span><span class="v">not connected</span><span class="meta">optional</span></div>
+                <div class="cfgrow"><span class="k">Merge</span><span class="v">30s → 2m rolling</span><span class="meta">≤700 tok/pass</span></div>
+              </div>
+            </div>
+
+            <div class="cfgcard">
+              <div class="ch"><span class="lbl">Distill model</span><span class="pill" style="margin-left:auto">measured on this engine</span></div>
+              <div class="cb">
+                <div class="modelrow on"><span class="rd"></span><span class="nm">qwen3-8b</span><span class="tk">41 tok/s · smarter</span></div>
+                <div class="modelrow"><span class="rd"></span><span class="nm">llama-3.2-3b</span><span class="tk">88 tok/s · keeps realtime</span></div>
+                <div class="modelrow"><span class="rd"></span><span class="nm">remote engine model</span><span class="tk">— · needs backend below</span></div>
+              </div>
+            </div>
+
+            <div class="cfgcard">
+              <div class="ch"><span class="lbl">When this mode falls behind</span></div>
+              <div class="cb">
+                <div class="radio on"><span class="rd"></span><span><b>Queue raw for later</b><span class="fine">Screenshots + audio spool to disk; processed at idle in session order, raw deleted after distillation. Watch progress in Analytics.</span></span></div>
+                <div class="radio"><span class="rd"></span><span><b>Degrade cadence</b><span class="fine">Stretch to 1 shot/15s and a 5m merge until caught up. Stays realtime, loses detail.</span></span></div>
+                <div class="radio"><span class="rd"></span><span><b>Drop overflow</b><span class="fine">Realtime only; anything the engine can't chew is discarded. Nothing is queued.</span></span></div>
+              </div>
+            </div>
+
+            <div class="cfgcard">
+              <div class="ch"><span class="lbl">Engine (backend)</span></div>
+              <div class="cb">
+                <div class="radio"><span class="rd"></span><span><b>This Mac</b><span class="fine">Everything stays on this machine.</span></span></div>
+                <div class="radio on"><span class="rd"></span><span><b>Remote engine</b><span class="fine">Thin-client capture here; distillation, storage, and queues live on the server.</span></span></div>
+                <div class="cfgrow" style="margin-top:6px">
+                  <span class="inputbox">http://192.168.1.104:8787</span>
+                  <button class="testbtn">Test</button>
+                </div>
+                <div class="cfgrow"><span class="v" style="color:#7cc4a0">connected · 12ms · engine v0.2 · 2 workers · gpu: 3090</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= SURFACE 3 ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">03</span>
+      <h2>Mode pipeline — advanced view</h2>
+      <span class="uses">the same mode, as a graph</span>
+    </div>
+    <p class="note">Every mode compiles to this graph; most users never open it. Power users rewire it — the node
+    vocabulary stays fixed to the five primitives, and the inspector's dials are where <b>“whatever token speed we
+    can get” becomes a per-node contract</b>.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="studio">
+        <div class="palette">
+          <span class="lbl">Primitives</span>
+          <div class="ptile"><span class="glyph g-source"></span>Source</div>
+          <div class="ptile"><span class="glyph g-distill"></span>Distill</div>
+          <div class="ptile"><span class="glyph g-route"></span>Route</div>
+          <div class="ptile"><span class="glyph g-overlay"></span>Overlay</div>
+          <div class="ptile"><span class="glyph g-act"></span>Act</div>
+          <div style="margin-top:18px"><span class="lbl">Editing</span></div>
+          <div class="ptile" style="border-color:rgba(217,161,59,.45)">conference-day</div>
+        </div>
+
+        <div class="canvas">
+          <svg class="edges" viewBox="0 0 520 520" preserveAspectRatio="none">
+            <path class="edge-active" d="M 100 62 C 150 62, 150 120, 200 128"/>
+            <path class="edge-active" d="M 100 158 C 150 158, 150 140, 200 140"/>
+            <path class="edge" d="M 100 254 C 160 254, 160 160, 200 152"/>
+            <path class="edge-active" d="M 300 140 C 340 140, 340 210, 368 216"/>
+            <path class="edge-active" d="M 420 260 C 420 290, 300 280, 262 306"/>
+            <path class="edge" d="M 262 370 C 300 400, 360 380, 388 396"/>
+            <path class="edge-active" d="M 262 350 C 310 350, 350 330, 388 336"/>
+          </svg>
+
+          <div class="node" style="left:14px;top:26px">
+            <div class="nh"><span class="glyph g-source" style="width:8px;height:8px;border-radius:2px"></span>Mic</div>
+            <div class="nb">
+              <div class="kv"><span>stt</span><span class="v">parakeet-110m</span></div>
+              <div class="kv"><span>mode</span><span class="v">streaming</span></div>
+              <div class="kv"><span>diarize</span><span class="v">off</span></div>
+            </div>
+          </div>
+          <div class="node" style="left:14px;top:126px">
+            <div class="nh"><span class="glyph g-source" style="width:8px;height:8px;border-radius:2px"></span>Screen</div>
+            <div class="nb">
+              <div class="kv"><span>gate</span><span class="v">Δ-diff ≥ 2%</span></div>
+              <div class="kv"><span>max</span><span class="v">1 shot / 5s</span></div>
+              <div class="kv"><span>overflow</span><span class="v">→ queue</span></div>
+            </div>
+          </div>
+          <div class="node" style="left:14px;top:224px">
+            <div class="nh"><span class="glyph g-source" style="width:8px;height:8px;border-radius:2px"></span>Calendar</div>
+            <div class="nb">
+              <div class="kv"><span>src</span><span class="v">gcal · read-only</span></div>
+              <div class="kv"><span>auth</span><span class="v">not connected</span></div>
+            </div>
+          </div>
+
+          <div class="node sel" style="left:206px;top:96px">
+            <div class="nh"><span class="glyph g-distill" style="width:8px;height:8px;border-radius:2px"></span>Rolling merge</div>
+            <div class="nb">
+              <div class="kv"><span>window</span><span class="v">30s → 2m</span></div>
+              <div class="kv"><span>model</span><span class="v">qwen3-8b · engine</span></div>
+              <div class="kv"><span>behind</span><span class="v">queue raw</span></div>
+            </div>
+          </div>
+
+          <div class="node" style="left:374px;top:190px">
+            <div class="nh"><span class="glyph g-route" style="width:8px;height:8px;border-radius:2px"></span>Context router</div>
+            <div class="nb">
+              <div class="kv"><span>detect</span><span class="v">switch ≥ 0.8</span></div>
+              <div class="kv"><span>write</span><span class="v">{ws}.db</span></div>
+              <div class="kv"><span>recall</span><span class="v">vector · top-5</span></div>
+            </div>
+          </div>
+
+          <div class="node" style="left:68px;top:296px">
+            <div class="nh"><span class="glyph g-overlay" style="width:8px;height:8px;border-radius:2px"></span>Voice + roles</div>
+            <div class="nb">
+              <div class="kv"><span>tone</span><span class="v">direct, no “!”</span></div>
+              <div class="kv"><span>roles</span><span class="v">data-eng · devops</span></div>
+              <div class="kv"><span>rules</span><span class="v">brief by default</span></div>
+            </div>
+          </div>
+
+          <div class="node" style="left:394px;top:306px">
+            <div class="nh"><span class="glyph g-act" style="width:8px;height:8px;border-radius:2px"></span>Follow-up draft</div>
+            <div class="nb">
+              <div class="kv"><span>latency</span><span class="v">≤ 60s post-session</span></div>
+              <div class="kv"><span>out</span><span class="v">draft, never send</span></div>
+            </div>
+          </div>
+          <div class="node" style="left:394px;top:398px">
+            <div class="nh"><span class="glyph g-act" style="width:8px;height:8px;border-radius:2px"></span>Task extract</div>
+            <div class="nb">
+              <div class="kv"><span>filter</span><span class="v">commitments only</span></div>
+              <div class="kv"><span>sink</span><span class="v">inbox · nudge 4p</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="inspector">
+          <h4>Rolling merge</h4>
+          <div class="sub">distill · node 04 · hot</div>
+          <div class="field">
+            <span class="lbl">Merge cadence</span>
+            <div class="seg"><span>10s</span><span class="on">30s</span><span>2m</span><span>manual</span></div>
+          </div>
+          <div class="field">
+            <span class="lbl">Token budget / pass</span>
+            <div class="slider"><div class="fill"></div><div class="knob"></div></div>
+            <div class="slider-meta"><span>150</span><span>700 tok</span><span>2k</span></div>
+          </div>
+          <div class="field">
+            <span class="lbl">Runs on</span>
+            <div class="seg"><span>client</span><span class="on">engine</span></div>
+          </div>
+          <div class="field">
+            <span class="lbl">Prompt · meeting-scribe</span>
+            <div class="promptbox">Merge the last 30s of transcript into the running 2-minute summary. Keep names,
+            numbers, commitments verbatim. Track open topics as a list.<br>…</div>
+          </div>
+        </div>
+
+        <div class="enginefoot">
+          engine: 192.168.1.104:8787 <span class="sep">|</span> 4 nodes hot
+          <span class="sep">|</span> queue: 34 <span class="sep">|</span> bg workers 2/2
+          <span class="sep">|</span> editing “conference-day” — not live
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= SURFACE 4 ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">04</span>
+      <h2>Backlog analytics</h2>
+      <span class="uses">when will the queue clear, at current rate</span>
+    </div>
+    <p class="note">The other half of the queue-for-later promise. One number is the headline — <b>when you'll be
+    caught up</b> — and the chart shows the day's shape: backlog climbs during meetings, drains at idle, and the
+    dashed line is the projection at the current drain rate. Raw files are deleted the moment their session is distilled.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="analytics">
+        <div class="tiles">
+          <div class="tile eta"><span class="lbl">Caught up by</span><div class="big">6:40 pm</div><div class="fine">at current drain rate</div></div>
+          <div class="tile"><span class="lbl">Queued now</span><div class="big">84 shots</div><div class="fine">+ 46 min audio · 3 sessions</div></div>
+          <div class="tile"><span class="lbl">Drain rate</span><div class="big">3.2/min</div><div class="fine">idle · qwen3-8b @ 41 tok/s</div></div>
+          <div class="tile"><span class="lbl">Raw on disk</span><div class="big">412 MB</div><div class="fine">deleted as sessions distill</div></div>
+        </div>
+
+        <div class="chartcard">
+          <div class="chh"><span class="ttl">Backlog depth today</span><span class="sub">items · shaded = in a meeting · dashed = projection</span></div>
+          <svg viewBox="0 0 720 208" role="img" aria-label="Backlog depth across the day, peaking at 84 items during afternoon meetings and projected to reach zero at 6:40 pm">
+            <!-- meeting bands -->
+            <rect x="40" y="20" width="16" height="150" fill="rgba(111,158,207,.10)"/>
+            <rect x="172" y="20" width="49" height="150" fill="rgba(111,158,207,.10)"/>
+            <rect x="304" y="20" width="50" height="150" fill="rgba(111,158,207,.10)"/>
+            <rect x="402" y="20" width="38" height="150" fill="rgba(111,158,207,.10)"/>
+            <!-- grid -->
+            <line x1="40" y1="170" x2="700" y2="170" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+            <line x1="40" y1="108" x2="700" y2="108" stroke="rgba(255,255,255,.05)" stroke-width="1"/>
+            <line x1="40" y1="46"  x2="700" y2="46"  stroke="rgba(255,255,255,.05)" stroke-width="1"/>
+            <text x="32" y="173" text-anchor="end">0</text>
+            <text x="32" y="111" text-anchor="end">40</text>
+            <text x="32" y="49"  text-anchor="end">80</text>
+            <!-- x labels -->
+            <text x="40"  y="188" text-anchor="middle">9a</text>
+            <text x="172" y="188" text-anchor="middle">11a</text>
+            <text x="304" y="188" text-anchor="middle">1p</text>
+            <text x="436" y="188" text-anchor="middle">3p</text>
+            <text x="568" y="188" text-anchor="middle">5p</text>
+            <text x="700" y="188" text-anchor="middle">7p</text>
+            <!-- area + line (actual) -->
+            <path d="M 40 170 L 56 158 L 106 170 L 172 170 L 221 74 L 304 111 L 354 40 L 390 64 L 424 40 L 424 170 Z"
+                  fill="rgba(224,106,60,.13)"/>
+            <path d="M 40 170 L 56 158 L 106 170 L 172 170 L 221 74 L 304 111 L 354 40 L 390 64 L 424 40"
+                  fill="none" stroke="#e06a3c" stroke-width="2" stroke-linejoin="round"/>
+            <!-- projection -->
+            <path d="M 424 40 L 678 170" fill="none" stroke="#8b919c" stroke-width="1.5" stroke-dasharray="4 5"/>
+            <circle cx="678" cy="170" r="3.5" fill="#8b919c"/>
+            <text x="678" y="160" text-anchor="middle" fill="#9aa0ab">clear 6:40p</text>
+            <!-- now marker + frozen tooltip -->
+            <line x1="424" y1="20" x2="424" y2="170" stroke="rgba(255,255,255,.22)" stroke-width="1" stroke-dasharray="2 3"/>
+            <circle cx="424" cy="40" r="4" fill="#e06a3c" stroke="#14171e" stroke-width="2"/>
+            <g>
+              <rect x="437" y="26" width="150" height="34" rx="6" fill="#1b1f28" stroke="rgba(255,255,255,.12)"/>
+              <text x="447" y="40" fill="#e9ebef" style="font-size:10px">2:47p · 84 items queued</text>
+              <text x="447" y="53">drains after 3:00p meeting</text>
+            </g>
+          </svg>
+        </div>
+
+        <div class="qtable">
+          <div class="qrow qh"><span>Session</span><span>Queued</span><span>Processing window</span><span>Status</span></div>
+          <div class="qrow">
+            <span class="sess">Tech sync — billing-svc<span class="wsm">billing-svc.db · 1:00p</span></span>
+            <span class="qty">31 shots · 18 min<div class="qbar"><span style="width:62%"></span></div></span>
+            <span class="win">2:05p → 3:10p</span>
+            <span class="pill ok">processing</span>
+          </div>
+          <div class="qrow">
+            <span class="sess">Acme renewal call<span class="wsm">sales.db · live now</span></span>
+            <span class="qty">42 shots · 22 min<div class="qbar"><span style="width:8%"></span></div></span>
+            <span class="win">3:10p → 5:20p <span style="color:var(--s-faint)">projected</span></span>
+            <span class="pill warn">accumulating</span>
+          </div>
+          <div class="qrow">
+            <span class="sess">Deep work — ingest-api<span class="wsm">ingest-api.db · 9:30a</span></span>
+            <span class="qty">11 shots · 6 min<div class="qbar"><span style="width:100%"></span></div></span>
+            <span class="win">1:40p → 2:05p</span>
+            <span class="pill ok">done · raw deleted</span>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= SURFACE 5 ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">05</span>
+      <h2>Session timeline + live review</h2>
+      <span class="uses">route · distill · overlay · act</span>
+    </div>
+    <p class="note">The day as the router saw it. The attribution evidence hides behind a quiet “why this
+    workspace?” disclosure instead of parading in the header. New here: <b>related recall</b> — vector search
+    across your workspace DBs pulls what past-you knew about Acme the moment the session starts.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="day">
+        <div class="rail">
+          <span class="lbl" style="display:block;margin-bottom:12px">Tue · Jul 7</span>
+          <div class="slot"><span class="hr">9:00</span><div>
+            <div class="blk w-plat"><b>Standup</b>team platform<span class="wsm">platform.db · distilled ✓</span></div>
+          </div></div>
+          <div class="switch"><span class="ln"></span>auto-switch 9:32<span class="ln"></span></div>
+          <div class="slot"><span class="hr">9:30</span><div>
+            <div class="blk w-ing"><b>Deep work</b>ingest-api · PR #412 opened 9:04<span class="wsm">ingest-api.db · distilled ✓</span></div>
+          </div></div>
+          <div class="switch"><span class="ln"></span>auto-switch 11:02<span class="ln"></span></div>
+          <div class="slot"><span class="hr">11:00</span><div>
+            <div class="blk w-bill"><b>Tech sync</b>billing-svc · action: backend change<span class="wsm">billing-svc.db · queued</span></div>
+          </div></div>
+          <div class="switch"><span class="ln"></span>auto-switch 2:25<span class="ln"></span></div>
+          <div class="slot"><span class="hr">2:25</span><div>
+            <div class="blk w-sales"><b>Acme renewal call</b>sales · live now<span class="wsm">sales.db · composing…</span></div>
+          </div></div>
+        </div>
+
+        <div class="sessdetail">
+          <div class="sesshead">
+            <h3>Acme renewal call</h3>
+            <span class="pill acc"><span class="dot live"></span>live · 22m</span>
+            <span class="pill">sales.db</span>
+            <span class="whychip">why this workspace?</span>
+          </div>
+
+          <div class="related">
+            <span class="lbl">Related</span>
+            <span class="rchip">Acme Q2 pricing thread<span class="src">sales.db · Jun 12</span></span>
+            <span class="rchip">SOC 2 report folder<span class="src">platform.db · May</span></span>
+            <span class="rchip">Last renewal notes<span class="src">sales.db · Mar 14</span></span>
+          </div>
+
+          <div class="twocol">
+            <div class="panel">
+              <div class="ph"><span class="lbl">Running distillate</span><span class="pill" style="margin-left:auto">merge 30s→2m</span></div>
+              <div class="pc">
+                <div class="mkr"><span class="t">2:30</span><span class="x">Renewal scope confirmed: same seat count, <b>Q3 price hold</b> requested.</span></div>
+                <div class="mkr awaymkr"><span class="t">2:31</span><span class="x">You stepped away — 8 min. Your name came up (retention handoff).</span></div>
+                <div class="mkr"><span class="t">2:40</span><span class="x">Blocker: security review. They need <b>SOC 2</b> + retention answer.</span></div>
+                <div class="mkr"><span class="t">2:45</span><span class="x">You committed: docs <b>by EOD</b>, legal looped in on retention.</span></div>
+              </div>
+            </div>
+
+            <div class="panel draft">
+              <div class="ph"><span class="lbl">Follow-up draft</span><span class="pill warn" style="margin-left:auto">composing</span></div>
+              <div class="pc">
+                <div class="to">to: dana@acme.example · subject: Renewal — docs and next steps</div>
+                <p>Dana — thanks for the time today. Confirming what we agreed:</p>
+                <p>1. SOC 2 report and our data-retention language are on the way to you by end of day.<br>
+                   2. The Q3 price hold is noted; I'll confirm in writing whether it covers the API add-on<span class="caret"></span></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= SURFACE 6 ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">06</span>
+      <h2>Explore canvas</h2>
+      <span class="uses">overlay rules as lenses · vector recall as branches</span>
+    </div>
+    <p class="note">The rabbithole pattern, pointed at your own history: any distillate opens on an infinite
+    canvas, and highlighting a line offers <b>lenses</b> — Brief, Detail, Explore, Related — your overlay rules as
+    one-tap verbs. “Related” branches by vector search across workspace DBs, so the sales call can surface the
+    engineering context it touches.</p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="explore">
+        <svg class="xedges" viewBox="0 0 920 540" preserveAspectRatio="none">
+          <path class="edge-active" d="M 330 210 C 420 200, 450 140, 520 130"/>
+          <path class="edge" d="M 330 250 C 430 280, 460 330, 528 340"/>
+        </svg>
+
+        <div class="xcard" style="left:36px;top:110px;width:300px">
+          <div class="xh"><span class="lbl">Acme renewal · distillate</span><span class="pill" style="margin-left:auto;padding:1px 7px">sales.db</span></div>
+          <div class="xb">
+            Security review is the blocker — they need the SOC 2 report and
+            <span class="hl">a data-retention answer</span> before Thursday. Q3 price hold
+            requested; open question on the API add-on.
+          </div>
+        </div>
+
+        <div class="lensrow" style="left:118px;top:236px">
+          <span class="lens">Brief</span>
+          <span class="lens">Detail</span>
+          <span class="lens">Explore</span>
+          <span class="lens on">Related</span>
+        </div>
+
+        <div class="xcard" style="left:520px;top:64px;width:330px">
+          <div class="xh"><span class="lbl">Related · vector recall</span><span class="pill acc" style="margin-left:auto;padding:1px 7px">4 branches</span></div>
+          <div class="xb">
+            <div class="xrel">
+              <div class="xrelrow"><span class="src">platform.db · May 20</span><span class="tx"><b>SOC 2 Type II</b> issued — report PDF in compliance folder; renewal clause notes attached.</span></div>
+              <div class="xrelrow"><span class="src">ingest-api.db · Jun 3</span><span class="tx">Retention is enforced by the <b>purge job in ingest-api</b> — 90-day default, per-tenant override.</span></div>
+              <div class="xrelrow"><span class="src">sales.db · Mar 14</span><span class="tx">Last renewal: Acme asked for the same hold; legal approved with a <b>12-month cap</b>.</span></div>
+              <div class="xrelrow"><span class="src">platform.db · Jun 28</span><span class="tx">Data-map doc marks two tables as <b>out of retention scope</b> — flag before answering.</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="xcard" style="left:528px;top:300px;width:300px">
+          <div class="xh"><span class="lbl">Detail · retention answer, expanded</span></div>
+          <div class="xb">
+            What Dana actually needs in writing: default window, override policy, and deletion
+            SLA. Draft answer assembled from the purge-job README and the May compliance notes —
+            <b>2 claims need your review</b> before it leaves the machine.
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= SURFACE 7 ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">07</span>
+      <h2>Proactive task inbox</h2>
+      <span class="uses">act</span>
+    </div>
+    <p class="note">Everything you said you'd do, heard and held. Each card carries provenance — when it was heard,
+    in which session, and what the system checked before bothering you. <b>It nudges; it never acts on your behalf.</b></p>
+
+    <div class="screen screen-scroll"><div class="inner">
+      <div class="inbox">
+        <div class="ibhead">
+          <h3>Commitments</h3>
+          <span class="stats">4 open · 2 from meetings · 1 stale PR · next nudge 4:00p</span>
+        </div>
+
+        <div class="card hot">
+          <div class="prov"><span class="pill acc">heard 10:42a · phone call</span><span class="pill ok">confidence high</span><span class="pill">ingest-api.db</span></div>
+          <div class="say">You told Priya you'd <span class="q">“bump the retry limit on the ingest worker before the batch run tonight.”</span></div>
+          <div class="why">Checked: no matching commit or open branch in <span class="mono">ingest-api</span> since 10:42a. Batch run is at 8:00p.</div>
+          <div class="acts"><button class="abtn yes">Did it</button><button class="abtn">Not yet — nudge at 4p</button><button class="abtn ghost">Dismiss</button></div>
+        </div>
+
+        <div class="card">
+          <div class="prov"><span class="pill acc">committed 2:45p · Acme call</span><span class="pill ok">confidence high</span><span class="pill">sales.db</span></div>
+          <div class="say">Send Dana the <span class="q">SOC 2 report and retention language</span> by end of day; loop in legal.</div>
+          <div class="why">Draft email is ready in the session view. Legal thread not started yet.</div>
+          <div class="acts"><button class="abtn yes">Did it</button><button class="abtn">Open draft</button><button class="abtn ghost">Dismiss</button></div>
+        </div>
+
+        <div class="card">
+          <div class="prov"><span class="pill warn">observed 9:04a · deep work</span><span class="pill">stale 5h</span><span class="pill">ingest-api.db</span></div>
+          <div class="say">PR #412 <span class="q">“fix: dedupe retry queue”</span> — opened this morning, no review requested, no activity since.</div>
+          <div class="why">You context-switched 2 minutes after opening it. This is the one you usually forget.</div>
+          <div class="acts"><button class="abtn yes">Handled</button><button class="abtn">Request review</button><button class="abtn ghost">Dismiss</button></div>
+        </div>
+
+        <div class="card">
+          <div class="prov"><span class="pill">mentioned 9:12a · standup</span><span class="pill warn">confidence medium</span><span class="pill">platform.db</span></div>
+          <div class="say">Marco asked for your take on the <span class="q">schema migration plan</span> — you said <span class="q">“I'll look after lunch.”</span></div>
+          <div class="why">Medium confidence: casual phrasing. Confirm or dismiss to teach the extractor.</div>
+          <div class="acts"><button class="abtn yes">Did it</button><button class="abtn">Nudge at 2p</button><button class="abtn ghost">Not a commitment</button></div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= CODE MAP ================= -->
+  <section class="surface">
+    <div class="cap">
+      <span class="num">08</span>
+      <h2>Code organization — planned before code exists</h2>
+      <span class="uses">where loom fits · where the client/engine seam is</span>
+    </div>
+    <p class="note">The seam that makes the remote backend possible is the same seam that prevents the old failure:
+    <b>the client never touches a database</b>. It captures and renders; everything else happens behind the engine's
+    HTTP/WS API, whether that engine is on localhost or another machine. Workspaces live where they always should
+    have — in the store, one file each.</p>
+
+    <div class="mapgrid">
+      <div class="tree"><span class="dir">openinfo/</span>
+├─ <span class="dir">apps/client/</span>            <span class="cm">thin client · Electron (glass shell)</span>
+│  ├─ capture/             <span class="cm">mic, screen Δ-gate, SystemAudioDump, aec — from glass</span>
+│  ├─ surfaces/            <span class="cm">hud, modes, timeline, inbox, analytics, explore</span>
+│  └─ engine-link/         <span class="cm">http/ws client · offline spool when engine unreachable</span>
+├─ <span class="dir">apps/engine/</span>            <span class="cm">daemon · localhost by default, any host by config</span>
+│  ├─ api/                 <span class="cm">HTTP+WS: /modes /sessions /queue /recall /events</span>
+│  ├─ bus/                 <span class="loom">← loom packages/bus</span>
+│  ├─ workflow/            <span class="loom">← loom packages/recipe</span> <span class="cm">— DAG executor runs modes</span>
+│  ├─ distill/             <span class="cm">rolling merge, screenshot distiller, prompts</span>
+│  ├─ route/               <span class="cm">context-switch detector, workspace attribution, identity (your name/aliases)</span>
+│  ├─ store/               <span class="loom">← loom packages/store + sqlite-vec</span> <span class="cm">— one DB file per workspace</span>
+│  ├─ queue/               <span class="cm">deferred backlog, drain scheduler, ETA math, raw-file GC</span>
+│  ├─ overlay/             <span class="cm">tone, rules/lenses, roles, ontology</span>
+│  └─ models/              <span class="cm">provider registry, measured tok/s benchmarks</span>
+└─ <span class="dir">shared/contracts/</span>       <span class="cm">typed API + event schemas — nothing crosses the seam untyped</span></div>
+
+      <div class="mapnotes">
+        <div class="mn"><span class="k">Why the seam is load-bearing</span><br>
+        “Backend as a configuration option” means the client/engine boundary must exist on day one — you can't
+        retrofit it. It's also the isolation fix: workspace DBs are an engine-internal concern, so no UI code can
+        ever reach around them the way the old fork's column filters were reached around.</div>
+        <div class="mn"><b>Loom's fit, settled:</b> three packages transplant into the engine — <span class="k">bus</span> (events),
+        <span class="k">recipe</span> (the DAG executor that runs compiled modes), and <span class="k">store</span>
+        (with its sqlite-vec adapter powering Related recall). Loom's empty <span class="mono">engine/graph/cli</span> stubs stay behind.</div>
+        <div class="mn"><b>Glass's fit:</b> the client keeps glass's capture plumbing, content-protection windowing,
+        and hide-from-screenshare. Its Firebase layer, shared DB, and prompt presets don't cross over.</div>
+        <div class="mn"><b>Rabbithole's fit:</b> the explore canvas follows its serving pattern — a self-contained
+        HTML surface delivered by the engine, split by responsibility (shell / styles / client chunks). The engine
+        does the thinking; the canvas only renders and branches.</div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="doc">
+    <b>What changed in v0.2:</b> telemetry moved off the HUD into Modes; the HUD gained rewind (1m/5m/30m),
+    away-mentions, and a queue-consequence chip. New surfaces: Mode configuration with the hardware-envelope
+    contract and remote-engine backend, Backlog analytics with drain projection, and the rabbithole-style Explore
+    canvas. The code map fixes the client/engine seam and settles where loom's salvageable packages land.
+    All names, numbers, and metrics shown are mock content.
+  </footer>
+
+</div>

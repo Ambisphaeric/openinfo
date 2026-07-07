@@ -1,0 +1,13 @@
+{ "id": "surf-hud-meeting", "name": "openinfo HUD — meeting", "context": "meeting", "version": 1,
+  "stack": [
+    { "block": "now" },
+    { "block": "hint", "show": "on-match",
+      "query": { "source": "pins", "params": { "answers": "live", "citePages": true }, "top": 1 } },
+    { "block": "relevant-now", "top": 4,
+      "query": { "source": "relevant-now", "params": {}, "top": 4 } },
+    { "block": "ledger", "top": 2, "show": "on-match",
+      "query": { "source": "ledger", "params": { "owed": "people-in-context" }, "top": 2 },
+      "actions": [ { "id": "act-done", "label": "Done", "verb": "mark-done", "params": {} },
+                   { "id": "act-open-wb", "label": "All", "verb": "navigate", "params": { "to": "workbench://ledger" } } ] },
+    { "block": "moments", "collapsed": false,
+      "query": { "source": "moments", "params": { "session": "current" } } } ] }

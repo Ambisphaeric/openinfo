@@ -1,0 +1,37 @@
+{
+  "$id": "BlockTypeName",
+  "anyOf": [
+    {
+      "const": "now",
+      "type": "string"
+    },
+    {
+      "const": "moments",
+      "type": "string"
+    },
+    {
+      "const": "relevant-now",
+      "type": "string"
+    },
+    {
+      "const": "ledger",
+      "type": "string"
+    },
+    {
+      "const": "pinned-doc",
+      "type": "string"
+    },
+    {
+      "const": "hint",
+      "type": "string"
+    },
+    {
+      "const": "ask",
+      "type": "string"
+    },
+    {
+      "const": "custom",
+      "type": "string"
+    }
+  ]
+}

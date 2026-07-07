@@ -1,0 +1,309 @@
+{
+  "$id": "Mode",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "sources",
+    "distill",
+    "overflow",
+    "acts"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "sources": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "enabled",
+          "params"
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "const": "mic",
+                "type": "string"
+              },
+              {
+                "const": "screen",
+                "type": "string"
+              },
+              {
+                "const": "calendar",
+                "type": "string"
+              },
+              {
+                "const": "repo",
+                "type": "string"
+              },
+              {
+                "const": "camera",
+                "type": "string"
+              }
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "cadence": {
+            "additionalProperties": false,
+            "type": "object",
+            "properties": {
+              "shotEverySec": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "deltaGatePct": {
+                "minimum": 0,
+                "maximum": 100,
+                "type": "number"
+              }
+            }
+          },
+          "params": {
+            "default": {},
+            "type": "object",
+            "patternProperties": {
+              "^(.*)$": {}
+            }
+          }
+        }
+      }
+    },
+    "distill": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "mergeWindow",
+        "tokenBudget",
+        "use"
+      ],
+      "properties": {
+        "mergeWindow": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "shortSec",
+            "longSec"
+          ],
+          "properties": {
+            "shortSec": {
+              "minimum": 5,
+              "type": "integer"
+            },
+            "longSec": {
+              "minimum": 30,
+              "type": "integer"
+            }
+          }
+        },
+        "tokenBudget": {
+          "minimum": 50,
+          "maximum": 4000,
+          "description": "per pass — high-compression, low-token by design",
+          "type": "integer"
+        },
+        "use": {
+          "description": "fabric endpoint name or slot tier, e.g. \"llm.fast\"",
+          "type": "string"
+        },
+        "screenUnderstanding": {
+          "description": "paddle-class OCR vs vision model — user's fork",
+          "anyOf": [
+            {
+              "const": "ocr",
+              "type": "string"
+            },
+            {
+              "const": "vlm",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    "overflow": {
+      "description": "what happens when the mode exceeds measured hardware",
+      "anyOf": [
+        {
+          "const": "queue",
+          "type": "string"
+        },
+        {
+          "const": "degrade",
+          "type": "string"
+        },
+        {
+          "const": "drop",
+          "type": "string"
+        }
+      ]
+    },
+    "registerId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "drift": {
+      "$id": "DriftConfig",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "threshold",
+        "sustainSec",
+        "chain"
+      ],
+      "properties": {
+        "threshold": {
+          "minimum": 1,
+          "maximum": 10,
+          "description": "dial-distance that counts as drift",
+          "type": "integer"
+        },
+        "sustainSec": {
+          "minimum": 10,
+          "type": "integer"
+        },
+        "chain": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "$id": "DriftChainStep",
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "step"
+                ],
+                "properties": {
+                  "step": {
+                    "const": "glyph",
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "step",
+                  "offer"
+                ],
+                "properties": {
+                  "step": {
+                    "const": "card",
+                    "type": "string"
+                  },
+                  "offer": {
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "ALWAYS two ways back",
+                    "type": "array",
+                    "items": {
+                      "minLength": 1,
+                      "description": "opaque identifier",
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              {
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "step"
+                ],
+                "properties": {
+                  "step": {
+                    "const": "tts",
+                    "type": "string"
+                  },
+                  "if": {
+                    "const": "audio_private",
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "acts": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "params"
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "const": "follow-up-draft",
+                "type": "string"
+              },
+              {
+                "const": "task-extract",
+                "type": "string"
+              },
+              {
+                "const": "nudge",
+                "type": "string"
+              }
+            ]
+          },
+          "params": {
+            "default": {},
+            "type": "object",
+            "patternProperties": {
+              "^(.*)$": {}
+            }
+          }
+        }
+      }
+    },
+    "minTier": {
+      "description": "capability-ladder floor (docs/DESIGN-CRITIQUE.md §1)",
+      "anyOf": [
+        {
+          "const": "T0",
+          "type": "string"
+        },
+        {
+          "const": "T1",
+          "type": "string"
+        },
+        {
+          "const": "T2",
+          "type": "string"
+        },
+        {
+          "const": "T3",
+          "type": "string"
+        }
+      ]
+    }
+  }
+}
