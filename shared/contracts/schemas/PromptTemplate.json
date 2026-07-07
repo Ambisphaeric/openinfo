@@ -1,0 +1,75 @@
+{
+  "$id": "PromptTemplate",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "kind",
+    "body"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "kind": {
+      "description": "which pipeline stage this template feeds",
+      "anyOf": [
+        {
+          "const": "distill",
+          "type": "string"
+        },
+        {
+          "const": "act",
+          "type": "string"
+        }
+      ]
+    },
+    "slot": {
+      "description": "fabric capability slot",
+      "anyOf": [
+        {
+          "const": "stt",
+          "type": "string"
+        },
+        {
+          "const": "tts",
+          "type": "string"
+        },
+        {
+          "const": "llm",
+          "type": "string"
+        },
+        {
+          "const": "vlm",
+          "type": "string"
+        },
+        {
+          "const": "ocr",
+          "type": "string"
+        },
+        {
+          "const": "embed",
+          "type": "string"
+        }
+      ]
+    },
+    "body": {
+      "minLength": 1,
+      "description": "template with {{var}} placeholders",
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "builtin": {
+      "type": "boolean"
+    }
+  }
+}
