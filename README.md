@@ -29,7 +29,7 @@ Verified from a clean tree (macOS, Node 22+, pnpm 9). Clone to a rendered HUD:
 ```bash
 pnpm install
 pnpm -r build          # contracts → engine + client (workbench is a Phase-4 scaffold)
-pnpm -r test           # contracts schema-validation + engine (67) + client (7)
+pnpm -r test           # contracts schema-validation + engine (67) + client (29)
 
 # start the engine daemon — localhost:8787 by default, data under ~/.openinfo/data
 node apps/engine/dist/main.js            # OPENINFO_PORT / OPENINFO_DATA to override
@@ -50,7 +50,19 @@ curl -sX POST localhost:8787/query -H 'content-type: application/json' \
   -d '{"source":"relevant-now","params":{"workspace":"demo"},"top":4}'
 ```
 
-**Render the HUD** (Phase 1 left no Electron window yet — a browser dev entry stands in):
+**Render the HUD — the menu-bar app** (the real client shell: a frameless, always-on-top,
+content-protected window, invisible to screen share, hosting the HUD):
+
+```bash
+pnpm --filter @openinfo/client start     # builds, then launches electron .
+# OPENINFO_ENGINE_URL / OPENINFO_PORT point it at the daemon (default http://127.0.0.1:8787)
+```
+
+The window opens **hidden** (like Glass). Reveal it with **⌘\\** or the menu-bar (tray) icon → **Show
+HUD**. The tray also toggles the session — **Start Session / End Session** — and shows whether one is
+live; **Quit** exits. (Dev run only — no packaging/signing yet; real mic/screen capture is the next slice.)
+
+**Or render it in a plain browser** (same HUD, same transport — handy without Electron):
 
 ```bash
 pnpm --filter @openinfo/client build
@@ -58,8 +70,8 @@ npx serve apps/client          # or any static server
 # open http://localhost:3000/dev-hud.html?engine=http://127.0.0.1:8787
 ```
 
-The HUD renders against a bare engine — the Now line, the block stack, empty explainable blocks.
-That is the honest state, not a broken one: the data a block shows is gated upstream.
+Either way the HUD renders against a bare engine — the Now line, the block stack, empty explainable
+blocks. That is the honest state, not a broken one: the data a block shows is gated upstream.
 
 **To see distill / moments / index / the follow-up draft actually run**, two things must be true.
 First, flip the flags (they're documents; flip over the API, effective without a restart):

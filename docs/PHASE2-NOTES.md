@@ -540,3 +540,116 @@ convergence-time or separately-scoped, none constructional blockers):
   on 3–8B models (the #2 risk) is tuned against real meetings over calendar time, not construction.
 - **The experiential judgments** — "the HUD is alive and I trust it", "the two drafts read
   differently" as a human reads them — need dogfooding, per CODE_MAP's construction-vs-convergence note.
+
+## Slice: The real client shell — window · menu-bar tray · hide (post-Phase-2-code convergence)
+
+This is convergence work *after* the Phase-2 code was complete: Phase 1 added no Electron code and the
+HUD mounted only via a browser dev-entry (see "Where the HUD mounts today" above). This slice gives the
+thin client its actual shell — the CODE_MAP `client/main/` home — closing that follow-up. No new blocks,
+no new engine routes, no capture. Scope was deliberately tight (the founder asked for tight).
+
+### What landed
+A macOS menu-bar app (`apps/client/src/main/`): one frameless, transparent, always-on-top HUD window
+with `setContentProtection(true)`; a tray whose menu toggles the window and the session and reflects
+live state; ⌘\ toggles visibility. Run it with **`pnpm --filter @openinfo/client start`** (builds, then
+`electron .`) against a running engine.
+
+### Renderer transport — the browser HudTransport, no preload bridge (simplest correct wiring)
+The renderer is Chromium: it already has `fetch`/`WebSocket`/`document`/`navigator.clipboard`. So the
+Electron window loads `apps/client/hud.html`, which hosts the **exact compiled dev entry the browser
+harness uses** (`dev-entry.js` → `BrowserTransport`) — zero renderer/controller change, precisely as the
+HUD slice scoped this follow-up. A preload bridge was considered and rejected: it would only be needed
+to reach node-bound APIs, but the HUD needs none — it reads the engine over HTTP+WS like any browser.
+`EngineLink` is *not* used in the renderer (it pulls `node:fs` for the capture spool and can't load
+there). The main process sets the engine URL via `loadFile(hud.html, { search: 'engine=…' })`.
+`hud.html` differs from `dev-hud.html` only by a transparency override (the shared stylesheet's `.stage`
+paints an opaque backdrop for a full browser tab; in a transparent window we want just the glass panel
+to float, so `.stage`/`body` background is forced transparent with `!important`).
+
+### Tray menu + live-session state — WS push, not polling
+Menu: a disabled **status header** (● session live / ○ no session / ○ connecting…), **Show/Hide HUD**,
+**Start Session / End Session** (the founder's on/off toggle — one item whose label + verb flip with the
+live state), and **Quit**. The tooltip mirrors the status. Live state is tracked from the engine **WS
+stream** (`session.started`/`session.ended`) via `SessionLiveState`, seeded by one initial
+`GET /sessions?live` on connect (+ on reconnect). **WS over polling** because it is push: zero idle cost,
+instant reflection, and it reuses the same event feed the HUD already consumes; a poll would add fixed
+latency and waste requests while nothing changes. Start/End is disabled until the first seed returns, so
+the menu never asserts a state we haven't confirmed. Start targets `ShellConfig.workspace`/`.modeId`; the
+engine's start-while-live auto-end (sessions slice) means "Start" always just works.
+
+### ⌘\ and content-protection on this Electron/macOS (Electron 38, darwin 25.3, verified)
+- `globalShortcut.register('CommandOrControl+\\', …)` after `app.whenReady()`; `unregisterAll()` on
+  `will-quit`. Registration returned true on this machine (logged). `CommandOrControl` is the portable
+  token (⌘ on macOS). Nothing extra was required.
+- `win.setContentProtection(true)` maps to `NSWindowSharingNone` on macOS (per Electron docs) — the
+  window is excluded from screen capture/share. **Honest caveat from the docs:** newer capturers built on
+  **ScreenCaptureKit** may still capture a content-protected window; NSWindowSharingNone is the ceiling
+  Electron exposes. Protection can't be screenshot-verified from code, so the shell **logs** it
+  (`content-protection: ON`) at window creation — asserted in the verification run below.
+- The window is `focusable: false` and shown via `showInactive()` so it never steals focus (a glance,
+  not a workspace); `setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })` keeps it present over
+  other spaces/fullscreen apps (Glass behaviour); `app.dock.hide()` makes it a menu-bar-only agent.
+
+### Flag vs config — client-local CONFIG, no flag documents (consistent with sessions/HUD)
+Shell behaviours (always-on-top, content-protection, frameless, ⌘\, the tray, which engine to talk to)
+are **client-local config resolved from env** (`config.ts`), **not flag documents**. A flag is an
+engine-side, DB-backed, `/flags`-served record that gates **engine processing behaviour**; these
+behaviours never touch the engine or its store — they are how the client paints its own window. This is
+the same line the sessions and HUD slices drew (flags gate engine processing; a resource route, a
+lifecycle record, or a client window are none of those). A `window.alwaysOnTop` flag would live in the
+engine and mean nothing there. So: no new flags, no new engine routes — as scoped.
+
+### Testability — pure logic, electron-free CI
+CI builds/tests headless, so all logic is pure and node-tested: the window-options builder (asserts
+frameless/transparent/always-on-top + the content-protection/all-workspaces hardening), the tray state
+machine (label/verb flips, disabled-until-connected, status/tooltip), the shortcut→command map, the
+config resolver, the session client (against a **stubbed fetch**), and `SessionLiveState` (fed fake WS
+events). Only `shell.ts` imports `electron`, and the `*.test.js` glob never matches it. Adding `electron`
+as a devDependency did **not** require a tsconfig split: `skipLibCheck` (already on) absorbs electron's
+internal DOM lib references, and `shell.ts` itself uses only node globals (`WebSocket`, `URLSearchParams`),
+so the package stays `types: ["node"]` and type-checks the shell code fully. (+22 client tests: 29 total.)
+
+### Live machine verification (darwin 25.3, Electron 38, Node 25) — what actually ran
+- `electron .` launched against a local engine (on :8899 — see gotcha below). Main-process log showed
+  `HUD window created — content-protection: ON` and `shortcut CommandOrControl+\ → toggle-visibility:
+  registered`; the renderer loaded `hud.html` and ran the HUD entry (only a benign dev CSP warning, no
+  fetch errors); 7 Electron processes (window + helpers) stayed resident. `GET /layouts/surfaces/
+  surf-openinfo-hud` served the HUD document the renderer hydrates.
+- **Session round-trip through the shell's own `EngineSessionClient` + `SessionLiveState`** (the exact
+  code the tray calls): `startSession` → engine-stamped id; `session.started` arrived over WS and flipped
+  `SessionLiveState.live` → true (this is what turns the tray to "End Session" / "● session live");
+  `endSession` → `endedAt` stamped; `session.ended` over WS flipped it back to false. Confirmed via
+  `GET /sessions`.
+- **Could not automate** in this headless-automation context: the visual appearance of the transparent
+  window, a real tray *click*, and a real ⌘\ keypress. Registration/creation/protection are asserted from
+  logs; the session toggle's engine round-trip and live-state reflection are exercised directly through
+  the shell modules. Nothing broke on this Electron/macOS combo — no glass-transplant friction at the
+  window/tray/shortcut layer (real *capture* is the next slice, where that risk lives).
+- **Gotcha (not a code issue):** an unrelated service already held :8787 on the dev machine, so the engine
+  was run on :8899 (`OPENINFO_PORT=8899`, and the shell pointed at it via the same env). The default
+  remains :8787.
+
+### The audio path — what the real-capture slice still needs (findings, per task)
+Read of the current capture/distill/fabric wiring, to scope the NEXT slice honestly:
+- **`CaptureChunk`** (contracts) carries `{ source, contentType, encoding: 'utf8'|'base64', data, … }`.
+  The distiller (`distill/distiller.ts`) filters to **`encoding === 'utf8'` only** (`isText`) — base64
+  frames are explicitly deferred to OCR (P3). So a `/capture/mic` POST carrying **base64 audio would be
+  accepted and spooled but dropped by distill** — it produces nothing today.
+- **The `stt` fabric slot is not wired to anything that transcribes.** `stt` appears only in
+  `fabric/bench.ts` (health/throughput probe) and the empty default slot list; there is **no
+  `invoke`-style STT path** (only `fabric/invoke.ts::invokeLlm` exists, for the llm slot). So there is no
+  audio→text step anywhere in the engine.
+- **Therefore** an Electron-renderer `getUserMedia → POST /capture/mic` (base64 audio) would **not** yield
+  anything distill can use today. The real-capture slice needs, minimally: (1) an `stt` invoke path in the
+  fabric (mirroring `invokeLlm`) resolving the `stt` slot's endpoints; (2) a drain/distill step that runs
+  audio chunks through `stt` to produce utf8 text chunks (or transcript records) **before** the text
+  filter — i.e. transcription is the missing pre-distill stage; (3) the client capture modules
+  (`capture/mic.ts` etc., glass transplant) emitting chunks. The seam itself already works: the Phase-1
+  `capture/sim.ts` + `EngineLink.capture` prove chunk POST + offline spool; only the *audio→text* stage
+  and the real OS capture are absent. Text capture works end-to-end **now** (POST a utf8 chunk → distill).
+
+### Deferred (out of this slice, by scope)
+- Real mic/screen/system-audio capture + AEC (next slice — see audio findings above); auto-updater;
+  packaging/signing/notarization (a plain `electron .` dev run is the deliverable); Windows/Linux polish.
+- Settings/editors/palette UI; a tray "engine picker"; multi-workspace tray targeting (one workspace today).
+- Tray click / ⌘\ keypress automated UI tests (need a display-bearing harness, e.g. Playwright-for-Electron).
