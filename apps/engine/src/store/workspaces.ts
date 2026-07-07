@@ -1,9 +1,35 @@
+import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Moment, Workspace } from '@openinfo/contracts'
+import type { Distillate, Entity, EntityProvenance, Moment, Workspace } from '@openinfo/contracts'
+import { Entity as EntitySchema } from '@openinfo/contracts'
+import { Value } from '@sinclair/typebox/value'
 import { LayoutStore } from './layouts.js'
 import { resolveDataDir } from './paths.js'
+
+/**
+ * Normalize an entity name for the v0 resolution match key: trim, lowercase, collapse internal
+ * whitespace. Deliberately simple — case/whitespace-insensitive only, no fuzzy or coreference
+ * matching (documented weakness in PHASE2-NOTES). Kept identical to distill/entities.ts's alias
+ * normalization; store owns the match key so it stays decoupled from the (DB-free) extractor.
+ */
+const normalizeEntityName = (name: string): string => name.trim().toLowerCase().replace(/\s+/g, ' ')
+
+/**
+ * The fields the distiller hands store to merge into a canonical entity record. Ids, timestamps,
+ * mention counts and the provenance trail are store-owned; the model never controls them.
+ */
+export interface EntityUpsert {
+  workspaceId: string
+  kind: Entity['kind']
+  name: string
+  aliases?: string[]
+  /** window end of the mention — advances lastSeen, seeds firstSeen on creation */
+  seenAt: string
+  provenance?: EntityProvenance
+  momentRefs?: string[]
+}
 
 interface WorkspaceRow {
   id: string
@@ -106,6 +132,103 @@ export class WorkspaceRegistry {
     return rows.map((row) => JSON.parse(row.body) as Moment)
   }
 
+  /**
+   * Resolve-and-merge an entity mention into ONE canonical record per (kind, normalized name) —
+   * upsert, not append (Index v0). Match policy: same kind AND the normalized mention name equals
+   * the record's normalized name or one of its normalized aliases. On match: bump `mentions`,
+   * advance `lastSeen`, union new aliases, append the provenance entry and moment refs. On miss:
+   * create the record (id + firstSeen are store-stamped). The full merged record is contract-
+   * validated before it is written — the last line of defense, mirroring saveMoment's policy.
+   * Only this path writes entities (DB-handle hard rule).
+   */
+  upsertEntity(input: EntityUpsert): Entity {
+    this.ensureWorkspace({ id: input.workspaceId, name: input.workspaceId })
+    const db = this.openWorkspace(input.workspaceId)
+    const nameKey = normalizeEntityName(input.name)
+    const aliases = (input.aliases ?? []).map((alias) => alias.trim()).filter((alias) => alias.length > 0)
+
+    const existing = this.findEntity(db, input.kind, [nameKey, ...aliases.map(normalizeEntityName)])
+    const entity: Entity = existing
+      ? this.mergeEntity(existing, input, aliases)
+      : {
+          id: randomUUID(),
+          workspaceId: input.workspaceId,
+          kind: input.kind,
+          name: input.name.trim(),
+          aliases,
+          momentRefs: [...new Set(input.momentRefs ?? [])],
+          outboundCount: 0,
+          mentions: 1,
+          ...(input.provenance !== undefined ? { provenance: [input.provenance] } : {}),
+          firstSeen: input.seenAt,
+          lastSeen: input.seenAt,
+        }
+
+    if (!Value.Check(EntitySchema, entity)) {
+      throw new Error(`entity failed contract validation: ${input.kind} "${input.name}"`)
+    }
+    db.prepare('insert or replace into entities (id, kind, name_key, last_seen, body) values (?, ?, ?, ?, ?)').run(
+      entity.id,
+      entity.kind,
+      normalizeEntityName(entity.name),
+      entity.lastSeen,
+      JSON.stringify(entity),
+    )
+    return entity
+  }
+
+  /** Append moment ids to an entity's momentRefs (refs linking writes back both directions). */
+  addEntityMomentRefs(workspaceId: string, entityId: string, momentIds: readonly string[]): Entity | undefined {
+    const db = this.openWorkspace(workspaceId)
+    const row = db.prepare('select body from entities where id = ?').get(entityId) as { body: string } | undefined
+    if (!row) return undefined
+    const entity = JSON.parse(row.body) as Entity
+    entity.momentRefs = [...new Set([...entity.momentRefs, ...momentIds])]
+    db.prepare('update entities set body = ? where id = ?').run(JSON.stringify(entity), entityId)
+    return entity
+  }
+
+  listEntities(workspaceId: string): Entity[] {
+    const db = this.openWorkspace(workspaceId)
+    const rows = db.prepare('select body from entities order by last_seen desc, name_key').all() as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as Entity)
+  }
+
+  /** Match by kind + any normalized key against a stored record's normalized name OR aliases. */
+  private findEntity(db: Database.Database, kind: Entity['kind'], keys: readonly string[]): Entity | undefined {
+    const rows = db.prepare('select body from entities where kind = ?').all(kind) as { body: string }[]
+    const wanted = new Set(keys)
+    for (const row of rows) {
+      const entity = JSON.parse(row.body) as Entity
+      const known = [normalizeEntityName(entity.name), ...entity.aliases.map(normalizeEntityName)]
+      if (known.some((key) => wanted.has(key))) return entity
+    }
+    return undefined
+  }
+
+  private mergeEntity(existing: Entity, input: EntityUpsert, aliases: readonly string[]): Entity {
+    const knownKeys = new Set([normalizeEntityName(existing.name), ...existing.aliases.map(normalizeEntityName)])
+    const mergedAliases = [...existing.aliases]
+    // a mention under a different surface name becomes an alias of the canonical record
+    for (const candidate of [input.name.trim(), ...aliases]) {
+      const key = normalizeEntityName(candidate)
+      if (!knownKeys.has(key)) {
+        mergedAliases.push(candidate)
+        knownKeys.add(key)
+      }
+    }
+    const provenance = [...(existing.provenance ?? []), ...(input.provenance !== undefined ? [input.provenance] : [])]
+    return {
+      ...existing,
+      aliases: mergedAliases,
+      momentRefs: [...new Set([...existing.momentRefs, ...(input.momentRefs ?? [])])],
+      mentions: (existing.mentions ?? 0) + 1,
+      ...(provenance.length > 0 ? { provenance } : {}),
+      lastSeen: input.seenAt > existing.lastSeen ? input.seenAt : existing.lastSeen,
+      firstSeen: input.seenAt < existing.firstSeen ? input.seenAt : existing.firstSeen,
+    }
+  }
+
   close(): void {
     for (const db of this.workspaceHandles.values()) db.close()
     this.workspaceHandles.clear()
@@ -125,6 +248,9 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists moments (id text primary key, session_id text not null, at text not null, kind text not null, body text not null)',
+    ).run()
+    db.prepare(
+      'create table if not exists entities (id text primary key, kind text not null, name_key text not null, last_seen text not null, body text not null)',
     ).run()
     this.workspaceHandles.set(id, db)
     return db
