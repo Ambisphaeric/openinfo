@@ -12,8 +12,8 @@ export const PromptTemplate = Type.Object(
   {
     id: Id,
     name: Type.String({ minLength: 1 }),
-    kind: Type.Union(['distill', 'act'].map((k) => Type.Literal(k)), {
-      description: 'which pipeline stage this template feeds',
+    kind: Type.Union(['distill', 'extract', 'act'].map((k) => Type.Literal(k)), {
+      description: 'which pipeline stage this template feeds (extract = typed-moment extraction)',
     }),
     slot: Type.Optional(SlotName),
     body: Type.String({ minLength: 1, description: 'template with {{var}} placeholders' }),

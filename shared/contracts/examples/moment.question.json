@@ -1,0 +1,6 @@
+{ "id": "mom-311", "sessionId": "ses-acme", "workspaceId": "ws-sales",
+  "at": "2026-07-07T14:45:00-04:00", "kind": "question",
+  "text": "Dana asked whether the retention window can be shortened to 30 days.",
+  "speaker": "ent-dana", "refs": ["ent-dana"], "source": "mic", "confidence": 0.82, "answered": false,
+  "provenance": { "distillateId": "dst-001", "windowStart": "2026-07-07T14:43:30-04:00",
+                  "windowEnd": "2026-07-07T14:45:00-04:00", "slot": "llm", "endpoint": "llm.fast", "model": "llama-3.2-3b" } }
