@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Fabric } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Fabric, Moment } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { FabricDocuments, defaultFabric } from '../fabric/index.js'
 import { CaptureQueue } from '../queue/spool.js'
@@ -26,9 +26,15 @@ const startFakeLlm = async (): Promise<FakeLlm> => {
     req.on('data', (c: Buffer) => chunks.push(c))
     req.on('end', () => {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: string }[] }
-      prompts.push(body.messages[0]!.content)
+      const prompt = body.messages[0]!.content
+      prompts.push(prompt)
+      // one fake model, two jobs: the extraction prompt (from the extract template) asks for a
+      // strict JSON array; everything else is the summary pass.
+      const content = prompt.includes('Return ONLY a JSON array')
+        ? '[{"kind": "commitment", "text": "ship Thursday", "speaker": "user", "confidence": 0.85}, {"kind": "banana", "text": "invalid kind, dropped"}]'
+        : 'SUMMARY: they agreed to ship Thursday.'
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'SUMMARY: they agreed to ship Thursday.' } }] }))
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }))
     })
   })
   await new Promise<void>((resolve) => server.listen(0, resolve))
@@ -98,6 +104,82 @@ test('drain → distill → store → bus with a fake llm endpoint', async () =>
     assert.match(llm.prompts[0]!, /we should ship Thursday/)
 
     assert.equal((await queue.status()).pendingFiles, 0) // file drained after processing
+
+    // distill.moments was not enabled for this drain → no extraction call, no moments
+    assert.equal(llm.prompts.filter((p) => p.includes('Return ONLY a JSON array')).length, 0)
+    assert.deepEqual(store.listMoments('ws-e2e'), [])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('drain → distill → moments → store → bus with a fake llm endpoint', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-moments-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const voice = new VoiceDocuments(store)
+    voice.ensureDefaults()
+    const docs = new DistillDocuments(store)
+    docs.ensureDefaults()
+    const fabric = new FabricDocuments(store)
+    const fabricDoc: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }
+    fabric.save(fabricDoc)
+
+    const bus = new EventBus<EngineEvents>()
+    const publishedMoments: Moment[] = []
+    bus.subscribe('moment.created', (m) => {
+      publishedMoments.push(m)
+    })
+
+    const distiller = new Distiller({
+      store,
+      voice,
+      fabric,
+      docs,
+      publish: (d) => bus.publish('distillate.updated', d),
+      publishMoment: (m) => bus.publish('moment.created', m),
+    })
+    // Real seam: the drain runs the distill pass with moment extraction on (distill.moments).
+    const queue = new CaptureQueue(join(dir, 'queue'), async (chunks) => {
+      await distiller.distillChunks(chunks, { extractMoments: true })
+    })
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'agreed, Thursday it is')]) await queue.append(c)
+
+    queue.scheduleDrain(() => undefined)
+    for (let i = 0; i < 40 && publishedMoments.length === 0; i += 1) await new Promise((r) => setTimeout(r, 10))
+
+    // the fake llm returned one valid commitment + one invalid kind (dropped, salvage policy)
+    assert.equal(publishedMoments.length, 1)
+    const stored = store.listMoments('ws-e2e', 'ses-e2e')
+    assert.equal(stored.length, 1)
+    const m = stored[0]!
+    assert.equal(m.kind, 'commitment')
+    assert.equal(m.text, 'ship Thursday')
+    assert.equal(m.speaker, 'user')
+    assert.equal(m.confidence, 0.85)
+    assert.equal(m.source, 'mic')
+    assert.equal(m.sessionId, 'ses-e2e')
+    assert.equal(m.workspaceId, 'ws-e2e')
+
+    // provenance ties the moment back to its distillate window and the producing endpoint
+    const distillates = store.listDistillates('ws-e2e', 'ses-e2e')
+    assert.equal(distillates.length, 1)
+    assert.equal(m.provenance?.distillateId, distillates[0]!.id)
+    assert.equal(m.provenance?.endpoint, 'llm.fast')
+    assert.equal(m.provenance?.model, 'llama-3.2-3b')
+    assert.equal(m.at, distillates[0]!.windowEnd)
+
+    // the extraction prompt interpolated the boardroom voice and the window summary
+    const extractPrompt = llm.prompts.find((p) => p.includes('Return ONLY a JSON array'))
+    assert.ok(extractPrompt)
+    assert.match(extractPrompt, /specificity 9\/10/)
+    assert.match(extractPrompt, /they agreed to ship Thursday/) // {{summary}} from the distill call
+    assert.match(extractPrompt, /we should ship Thursday/) // {{transcript}}
+
+    assert.equal((await queue.status()).pendingFiles, 0)
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })

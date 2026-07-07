@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Workspace } from '@openinfo/contracts'
+import type { Distillate, Moment, Workspace } from '@openinfo/contracts'
 import { LayoutStore } from './layouts.js'
 import { resolveDataDir } from './paths.js'
 
@@ -80,6 +80,32 @@ export class WorkspaceRegistry {
     return rows.map((row) => JSON.parse(row.body) as Distillate)
   }
 
+  /**
+   * Persist an extracted moment to its workspace's OWN sqlite file (DB-handle hard rule: only
+   * store/ writes; the distiller asks store to write). Workspace is created on demand, mirroring
+   * saveDistillate. Idempotent per moment id (insert or replace).
+   */
+  saveMoment(moment: Moment): Moment {
+    this.ensureWorkspace({ id: moment.workspaceId, name: moment.workspaceId })
+    const db = this.openWorkspace(moment.workspaceId)
+    db.prepare('insert or replace into moments (id, session_id, at, kind, body) values (?, ?, ?, ?, ?)').run(
+      moment.id,
+      moment.sessionId,
+      moment.at,
+      moment.kind,
+      JSON.stringify(moment),
+    )
+    return moment
+  }
+
+  listMoments(workspaceId: string, sessionId?: string): Moment[] {
+    const db = this.openWorkspace(workspaceId)
+    const rows = sessionId
+      ? (db.prepare('select body from moments where session_id = ? order by at').all(sessionId) as { body: string }[])
+      : (db.prepare('select body from moments order by at').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as Moment)
+  }
+
   close(): void {
     for (const db of this.workspaceHandles.values()) db.close()
     this.workspaceHandles.clear()
@@ -96,6 +122,9 @@ export class WorkspaceRegistry {
     db.prepare('create table if not exists sessions (id text primary key, body text not null)').run()
     db.prepare(
       'create table if not exists distillates (id text primary key, session_id text not null, created_at text not null, body text not null)',
+    ).run()
+    db.prepare(
+      'create table if not exists moments (id text primary key, session_id text not null, at text not null, kind text not null, body text not null)',
     ).run()
     this.workspaceHandles.set(id, db)
     return db

@@ -23,6 +23,34 @@ export const defaultDistillTemplate: PromptTemplate = {
 }
 
 /**
+ * The shipped typed-moment extraction template — a document, seeded like the distill template.
+ * Extraction is a SECOND, tighter call per window (see PHASE2-NOTES: one tight job per call beats
+ * one call doing summary + JSON on 3–8B local models). The body demands a strict JSON array and
+ * interpolates the resolved voice vector plus the window {{transcript}} and {{summary}} (the
+ * just-produced distillate text). Mirrors shared/contracts/examples/promptTemplate.extract.json.
+ */
+export const defaultExtractTemplate: PromptTemplate = {
+  id: 'tpl-extract-default',
+  name: 'extract-default',
+  kind: 'extract',
+  slot: 'llm',
+  builtin: true,
+  description: 'typed-moment extraction; one tight job per call, emits a strict JSON array of typed moments',
+  body:
+    'You extract typed moments from a meeting transcript. Return ONLY a JSON array, no prose, no code fences.\n' +
+    'Each element: {"kind": one of "commitment"|"question"|"decision"|"artifact", "text": string, ' +
+    '"speaker": string (optional), "confidence": number 0..1 (optional), "answered": boolean (only for kind "question")}.\n' +
+    '- commitment (●): someone promised to do something.\n' +
+    '- question (◆): a question directed at the user awaiting an answer.\n' +
+    '- decision (▲): a choice the group settled on.\n' +
+    '- artifact (✱): a document, link, or file referenced or to produce.\n' +
+    'Extract only what the transcript supports; invent nothing. If there are no moments, return [].\n' +
+    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
+    'Summary of the window: {{summary}}\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array:',
+}
+
+/**
  * The default meeting mode — window config lives here (mode document owns merge windows, per
  * ARCHITECTURE §7). Mirrors shared/contracts/examples/mode.meeting.json; the distiller reads only
  * distill.mergeWindow + distill.tokenBudget from it in this slice.
