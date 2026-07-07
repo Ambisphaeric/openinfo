@@ -1,0 +1,47 @@
+/**
+ * Client-local shell configuration — resolved from the environment, NOT a flag document. Shell
+ * behaviours (which engine to talk to, which workspace/surface the HUD shows, where it opens) are
+ * how the client paints its own window; they never touch the engine or its store, so a flag
+ * document (an engine-side, DB-backed record served over /flags) would be the wrong home. This is
+ * the same call the sessions/HUD slices made — flags gate ENGINE processing behaviour; a resource
+ * route, a lifecycle record, or (here) a client's own window are none of those. See PHASE2-NOTES.
+ */
+export interface ShellConfig {
+  /** Base URL of the engine daemon the HUD and tray talk to. */
+  engineUrl: string
+  /** Workspace the tray's Start Session targets and whose live session the tray reflects. */
+  workspace: string
+  /** Mode the tray's Start Session runs under (a session requires a modeId — sessions slice). */
+  modeId: string
+  /** Surface document the HUD window renders. */
+  surfaceId: string
+}
+
+const DEFAULTS = {
+  host: '127.0.0.1',
+  port: 8787,
+  workspace: 'default',
+  modeId: 'mode-meeting',
+  surfaceId: 'surf-openinfo-hud',
+} as const
+
+/** Trim a trailing slash so `${engineUrl}${path}` never doubles up. */
+const normalizeUrl = (url: string): string => url.replace(/\/+$/, '')
+
+/**
+ * Resolve the shell config from an env map (defaulting to `process.env`). `OPENINFO_ENGINE_URL`
+ * wins; otherwise a URL is built from `OPENINFO_ENGINE_HOST`/`OPENINFO_PORT` with localhost:8787
+ * defaults — the same port the engine listens on (`OPENINFO_PORT`, engine/main.ts).
+ */
+export const resolveShellConfig = (env: Record<string, string | undefined> = process.env): ShellConfig => {
+  const explicit = env['OPENINFO_ENGINE_URL']
+  const host = env['OPENINFO_ENGINE_HOST'] ?? DEFAULTS.host
+  const port = Number(env['OPENINFO_PORT'] ?? DEFAULTS.port)
+  const engineUrl = normalizeUrl(explicit ?? `http://${host}:${port}`)
+  return {
+    engineUrl,
+    workspace: env['OPENINFO_WORKSPACE'] ?? DEFAULTS.workspace,
+    modeId: env['OPENINFO_MODE'] ?? DEFAULTS.modeId,
+    surfaceId: env['OPENINFO_SURFACE'] ?? DEFAULTS.surfaceId,
+  }
+}
