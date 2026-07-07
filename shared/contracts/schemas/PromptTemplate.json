@@ -19,10 +19,14 @@
       "type": "string"
     },
     "kind": {
-      "description": "which pipeline stage this template feeds",
+      "description": "which pipeline stage this template feeds (extract = typed-moment extraction)",
       "anyOf": [
         {
           "const": "distill",
+          "type": "string"
+        },
+        {
+          "const": "extract",
           "type": "string"
         },
         {

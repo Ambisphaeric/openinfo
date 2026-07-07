@@ -113,6 +113,68 @@
     "answered": {
       "description": "questions only: heard an answer yet?",
       "type": "boolean"
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "slot",
+        "endpoint"
+      ],
+      "properties": {
+        "distillateId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "windowStart": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "windowEnd": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "slot": {
+          "description": "fabric capability slot",
+          "anyOf": [
+            {
+              "const": "stt",
+              "type": "string"
+            },
+            {
+              "const": "tts",
+              "type": "string"
+            },
+            {
+              "const": "llm",
+              "type": "string"
+            },
+            {
+              "const": "vlm",
+              "type": "string"
+            },
+            {
+              "const": "ocr",
+              "type": "string"
+            },
+            {
+              "const": "embed",
+              "type": "string"
+            }
+          ]
+        },
+        "endpoint": {
+          "minLength": 1,
+          "description": "fabric endpoint name that produced this",
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      }
     }
   }
 }
