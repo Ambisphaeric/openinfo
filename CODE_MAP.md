@@ -26,7 +26,7 @@ openinfo/
 │  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
 │  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm openai-compat)
 │  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG)
-│  ├─ distill/                  P2   merge · distiller · defaults/documents (template+mode docs) │ moments · ocr (P3)
+│  ├─ distill/                  P2   merge · distiller · moments (typed extraction) · defaults/documents (template+mode docs) │ ocr (P3)
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
 │  ├─ index/                    P2   extract · rank │ P3: canon · ingest/ (pdf, gdoc)
 │  ├─ route/                    P3   detector · attribute · identity · reroute

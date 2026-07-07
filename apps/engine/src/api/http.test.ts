@@ -42,6 +42,33 @@ test('capture route validates and publishes chunks', async () => {
   }
 })
 
+test('GET /moments serves stored moments per workspace/session', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // empty default workspace and unknown workspaces both read as empty lists, not errors
+    assert.deepEqual(await (await fetch(`${base}/moments`)).json(), [])
+    assert.deepEqual(await (await fetch(`${base}/moments?workspace=nowhere`)).json(), [])
+
+    app.store.saveMoment({
+      id: 'mom-1', sessionId: 'ses-1', workspaceId: 'ws-api', at: '2026-07-07T14:45:00Z',
+      kind: 'decision', text: 'ship Thursday', refs: [], source: 'mic', confidence: 0.8,
+    })
+    const listed = (await (await fetch(`${base}/moments?workspace=ws-api`)).json()) as { id: string }[]
+    assert.deepEqual(listed.map((m) => m.id), ['mom-1'])
+    const bySession = (await (await fetch(`${base}/moments?workspace=ws-api&session=ses-other`)).json()) as unknown[]
+    assert.deepEqual(bySession, [])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('GET /registers serves the seeded builtin registers', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })

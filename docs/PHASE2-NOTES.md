@@ -75,3 +75,71 @@ the flag over the API takes effect without restart). Flag off ⇒ the drain stay
   sessions slice.
 - Non-text capture (screen/base64) is filtered out of distill v0; screen understanding is OCR (P3).
 - Per-user/per-context flag overrides: `isFlagEnabled` reads the flag document `default` for now.
+
+## Slice: Moments v0 (typed extraction riding the distill pass)
+
+### Where it lives — `distill/moments.ts`, not a new `moments/` module
+CODE_MAP already homes moments under `distill/` ("merge · distiller · defaults/documents │
+moments · ocr") — extraction *rides the distill pass*, shares its windows, voice resolution, and
+llm invocation, and has no independent trigger. A sibling top-level module would invent a second
+home for the same pass. The extractor itself is store-free and bus-free (pure given its injected
+`invoke` + template) so it unit-tests against canned llm output without sqlite; the distiller owns
+persistence + publishing, same as for distillates.
+
+### One call vs two — chosen: a SECOND, tighter call per window
+Weighed per the risk register (extraction quality on 3–8B local models is the known hard part):
+- One combined call (summary + JSON in a single response) halves latency/cost, but asks a small
+  model to do two jobs with two output grammars at once — exactly where 3–8B models fall apart,
+  and a malformed response then costs the *summary* too.
+- Two calls keep each job tight: the summary prompt stays prose-only; the extraction prompt demands
+  ONLY a JSON array with a five-line kind glossary. A failed extraction never damages the
+  distillate. The extraction prompt also receives the just-produced summary as `{{summary}}`
+  context, which a combined call could not do.
+The extra call runs on the drain (idle path), not in the capture request budget, so doubling
+per-window llm time is the cheap side of the trade. Revisit if drains back up on real hardware.
+
+### Contracts
+- `Moment` gains an OPTIONAL `provenance` (distillateId, window bounds, slot/endpoint/model) —
+  additive, backward-compatible (Phase-0 examples still validate); every extracted moment is
+  inspectable back to its window and model (product principle 1). No existing field changed.
+- `Moment.kind` was NOT changed: the Phase-0 enum's `question` is the "◆ question-at-you" of
+  IMPLEMENTATION Phase 2 (the schema's own description says so); `mention`/`note` remain valid
+  kinds but the extractor only emits the four typed ones.
+- `PromptTemplate.kind` gains `extract` (was distill|act) — extraction prompts are versioned,
+  cloneable documents like everything else; `tpl-extract-default` is seeded beside the distill
+  template and mirrored in `examples/promptTemplate.extract.json`.
+- `GET /moments` added to the Routes contract (phase 2). `moment.created` in the Events contract
+  already carried `Moment` — no placeholder to correct this time.
+- Flag `distill.moments` (OFF, scope engine). **Interaction: moments require distill.enabled** —
+  the drain processor returns before the distiller runs when distill is off, so distill.moments
+  alone does nothing. Both flags are read per-drain; flipping either over the API takes effect
+  without a restart.
+
+### Robust structured output (the malformed-JSON policy)
+Small local models emit fences, prose preambles, trailing commas, and half-broken arrays. Policy,
+in order:
+1. Strip code fences; try the whole response as JSON (array, `{moments: []}` wrapper, or a single
+   object all count as parsed). A clean `[]` is a **normal zero-moment window, not an error**.
+2. Otherwise scan for top-level balanced `{…}` substrings (string-literal/escape aware) and parse
+   each independently — an array with one broken element still yields its intact siblings.
+3. Every candidate is rebuilt server-side (ids, timestamps, provenance are stamped, never trusted
+   from the model; confidence clamped to 0..1, default 0.5) and validated against the full Moment
+   TypeBox schema. Invalid candidates are **dropped, not retried** — retrying one bad element of an
+   otherwise-good response re-pays the whole call for noise.
+4. A *wholly unparseable* response is re-sampled within the pass, bounded (default 2 attempts),
+   then yields zero moments. **Transport failures propagate** — the drain re-queues the spool file
+   (the existing retry-at-idle), so extraction retries ride the same recovery as distill itself.
+
+### Store + API
+- `WorkspaceRegistry.saveMoment/listMoments` — a `moments` table per workspace file, only-store-
+  opens-DB rule intact; idempotent per moment id. `GET /moments?workspace=&session=` mirrors how
+  registers are served; unknown workspace reads as `[]`, not an error.
+
+### Deferred (out of this slice, by scope)
+- `refs` (entity ids) is always `[]` — entity records + linking land with index v0 (next slice).
+  `speaker` is the raw label the model heard, not an entity id yet.
+- Dismiss/teaching-loop write path (`Moment` has no status field; nothing to populate). `answered`
+  is persisted when the model emits it for questions; nothing updates it later yet.
+- Retry-at-idle *upgrades* (re-running weak extractions with `llm.smart`) — the queue seam supports
+  it, but endpoint tiering is not wired; today a drain failure simply re-runs the same pass.
+- Deduplication across overlapping windows: windows don't overlap in v0, so not needed yet.

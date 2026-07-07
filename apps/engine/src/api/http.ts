@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type CaptureChunk, type Fabric, type Flag } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type CaptureChunk, type Fabric, type Flag, type Moment } from '@openinfo/contracts'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller } from '../distill/index.js'
 import { FabricDocuments } from '../fabric/index.js'
@@ -55,18 +55,23 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     fabric,
     docs: distillDocs,
     publish: (distillate) => bus.publish('distillate.updated', distillate),
+    publishMoment: (moment) => bus.publish('moment.created', moment),
     log,
   })
   // Seam (see PHASE2-NOTES): distill rides the queue drain, gated on distill.enabled (OFF by
   // default). Flag off → the drain stays the Phase 1 no-op GC; on → each drained file distills.
+  // Moments extraction is a further opt-in (distill.moments) and requires distill.enabled — both
+  // flags are read per-drain, so flipping either over the API takes effect without a restart.
   const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
-    if (isFlagEnabled(store, 'distill.enabled')) await distiller.distillChunks(chunks)
+    if (!isFlagEnabled(store, 'distill.enabled')) return
+    await distiller.distillChunks(chunks, { extractMoments: isFlagEnabled(store, 'distill.moments') })
   })
 
   bus.subscribe('capture.received', (chunk) => ws.broadcast('capture.received', chunk))
   bus.subscribe('queue.updated', (status) => ws.broadcast('queue.updated', status))
   bus.subscribe('flag.changed', (flag) => ws.broadcast('flag.changed', flag))
   bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
+  bus.subscribe('moment.created', (moment) => ws.broadcast('moment.created', moment))
 
   const server = createServer((req, res) => {
     const ctx: HandlerContext = { bus, fabric, voice, queue, store, log }
@@ -103,6 +108,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/workspaces') return send(res, 200, ctx.store.all())
   if (req.method === 'GET' && url.pathname === '/registers') return send(res, 200, ctx.voice.registers())
+  if (req.method === 'GET' && url.pathname === '/moments') return send(res, 200, readMoments(ctx.store, url))
   if (req.method === 'GET' && url.pathname.startsWith('/contracts/')) return sendContract(url, res)
   if (req.method === 'PUT' && url.pathname.startsWith('/flags/')) return saveFlag(req, res, ctx, decodeURIComponent(url.pathname.slice(7)))
   const capture = url.pathname.match(/^\/capture\/([^/]+)$/)
@@ -148,6 +154,18 @@ function sendContract(url: URL, res: ServerResponse): void {
   const schema = schemaByName(name)
   if (!schema) return send(res, 404, { error: `unknown contract: ${name}` })
   send(res, 200, schema)
+}
+
+/**
+ * Serve extracted moments for a workspace (default `default`), optionally narrowed to a session.
+ * Mirrors how registers/distillates are served — a read over store/, the only DB-handle holder.
+ * An unknown workspace is an empty list, not an error.
+ */
+function readMoments(store: WorkspaceRegistry, url: URL): Moment[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  if (!store.all().some((ws) => ws.id === workspaceId)) return []
+  const sessionId = url.searchParams.get('session')
+  return sessionId ? store.listMoments(workspaceId, sessionId) : store.listMoments(workspaceId)
 }
 
 function readFlags(store: WorkspaceRegistry): Flag[] {
