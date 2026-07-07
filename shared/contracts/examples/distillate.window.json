@@ -1,0 +1,8 @@
+{ "id": "dst-001", "sessionId": "ses-acme", "workspaceId": "ws-sales",
+  "windowStart": "2026-07-07T14:43:30-04:00", "windowEnd": "2026-07-07T14:45:00-04:00",
+  "sourceChunks": ["chunk-0102", "chunk-0103", "chunk-0104"],
+  "text": "Dana asked for retention language in writing by Thursday; user committed to routing it through legal today.",
+  "voice": { "registerId": "reg-boardroom", "scope": "mode",
+             "dials": { "tone": 3, "warmth": 4, "wit": 2, "charm": 2, "specificity": 9, "brevity": 8 } },
+  "provenance": { "slot": "llm", "endpoint": "llm.fast", "model": "llama-3.2-3b" },
+  "schemaVersion": 1, "createdAt": "2026-07-07T14:45:01-04:00" }

@@ -4,7 +4,7 @@ export const Events = {
   'session.ended': 'Session',
   'session.switched': 'Session',
   'moment.created': 'Moment',
-  'distillate.updated': 'Moment',
+  'distillate.updated': 'Distillate',
   'entity.updated': 'Entity',
   'ledger.updated': 'Commitment',
   'drift.step': 'DriftChainStep',

@@ -1,0 +1,4 @@
+{ "id": "tpl-distill-default", "name": "distill-default", "kind": "distill", "slot": "llm",
+  "builtin": true,
+  "description": "rolling-merge summary; interpolates the resolved voice vector before the local model runs",
+  "body": "You are distilling a live meeting into a tight, factual summary of what just happened.\nVoice: tone {{tone}}/10, warmth {{warmth}}/10, wit {{wit}}/10, charm {{charm}}/10, specificity {{specificity}}/10, brevity {{brevity}}/10.\n{{voice.rules}}\nSummarize only what the transcript supports. Do not invent commitments or names.\n\nTranscript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nSummary:" }
