@@ -1,0 +1,13 @@
+{ "id": "ent-dana",
+  "workspaceId": "ws-sales",
+  "kind": "person",
+  "name": "Dana",
+  "aliases": ["Dana Cruz"],
+  "momentRefs": ["mom-1"],
+  "outboundCount": 0,
+  "mentions": 3,
+  "provenance": [
+    { "distillateId": "dst-x", "windowStart": "2026-07-07T14:43:30Z", "windowEnd": "2026-07-07T14:45:00Z", "slot": "llm", "endpoint": "llm.fast", "model": "llama-3.2-3b" }
+  ],
+  "firstSeen": "2026-07-07T14:20:00Z",
+  "lastSeen": "2026-07-07T14:45:00Z" }

@@ -1,5 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Id, IsoTime } from '../common.js'
+import { Entity } from '../records/entity.js'
+import { Moment } from '../records/moment.js'
 
 export const Health = Type.Object(
   {
@@ -58,3 +60,19 @@ export const QueueStatus = Type.Object(
   { $id: 'QueueStatus', additionalProperties: false },
 )
 export type QueueStatus = Static<typeof QueueStatus>
+
+/**
+ * One row of the relevant-now join (Index v0): a ranked entity together with the recent moments
+ * that reference it. The score is the recency×frequency rank at query time; the joined moments
+ * carry their own provenance so a surfaced entity's relevance is inspectable (product principle 1).
+ * Served by GET /relevant.
+ */
+export const RelevantEntity = Type.Object(
+  {
+    entity: Entity,
+    score: Type.Number({ minimum: 0, description: 'recency×frequency rank score at query time' }),
+    moments: Type.Array(Moment, { description: 'recent moments referencing this entity — the inspectable join' }),
+  },
+  { $id: 'RelevantEntity', additionalProperties: false },
+)
+export type RelevantEntity = Static<typeof RelevantEntity>

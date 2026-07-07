@@ -25,6 +25,8 @@ export const Routes: readonly RouteDef[] = [
   { method: 'PUT', path: '/modes/:id', request: 'Mode', response: 'Mode', phase: 2 },
   { method: 'GET', path: '/registers', response: 'Register[]', phase: 2 },
   { method: 'GET', path: '/moments', response: 'Moment[]', phase: 2 },
+  { method: 'GET', path: '/entities', response: 'Entity[]', phase: 2 },
+  { method: 'GET', path: '/relevant', response: 'RelevantEntity[]', phase: 2 },
   { method: 'POST', path: '/query', request: 'BlockQuery', response: 'QueryResult', phase: 2 },
   { method: 'POST', path: '/recall', request: 'BlockQuery', response: 'QueryResult', phase: 3 },
   { method: 'POST', path: '/sessions/:id/reroute', request: 'RerouteRequest', response: 'Session', phase: 3 },
