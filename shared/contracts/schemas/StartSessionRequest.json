@@ -1,0 +1,29 @@
+{
+  "$id": "StartSessionRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "modeId"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "modeId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "registerId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "title": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{ "id": "ses-2026-07-07-sales-sync",
+  "workspaceId": "ws-sales",
+  "modeId": "mode-meeting",
+  "startedAt": "2026-07-07T14:00:00Z",
+  "title": "Acme sales sync",
+  "attribution": { "evidence": [ { "kind": "manual", "detail": "started manually from the client", "weight": 1 } ], "confidence": 1 },
+  "registerId": "reg-sales-floor" }

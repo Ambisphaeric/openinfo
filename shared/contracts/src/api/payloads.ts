@@ -76,3 +76,20 @@ export const RelevantEntity = Type.Object(
   { $id: 'RelevantEntity', additionalProperties: false },
 )
 export type RelevantEntity = Static<typeof RelevantEntity>
+
+/**
+ * The body of POST /sessions — a manual session START request. The caller supplies only what it
+ * knows (which workspace, which mode, optionally a register override and a title); the engine
+ * stamps id/startedAt/attribution and returns the full Session. A dedicated payload (not a partial
+ * Session) so the caller never invents server-owned fields, mirroring RelevantEntity's precedent.
+ */
+export const StartSessionRequest = Type.Object(
+  {
+    workspaceId: Id,
+    modeId: Id,
+    registerId: Type.Optional(Id),
+    title: Type.Optional(Type.String()),
+  },
+  { $id: 'StartSessionRequest', additionalProperties: false },
+)
+export type StartSessionRequest = Static<typeof StartSessionRequest>
