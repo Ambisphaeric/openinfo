@@ -48,6 +48,22 @@ export class CaptureQueue {
     })
   }
 
+  /**
+   * Await a full drain of everything currently pending. Waits out any in-flight scheduled drain,
+   * then runs one guarded pass so all pending files are processed before it resolves. Used by the
+   * Act trigger on session end: the follow-up draft must reflect the whole meeting, so any chunks
+   * still in the queue are distilled first (see PHASE2-NOTES: the ≤60s story).
+   */
+  async drainNow(logger: (line: string) => void = console.log): Promise<void> {
+    while (this.draining) await new Promise((resolve) => setTimeout(resolve, 5))
+    this.draining = true
+    try {
+      await this.drain(logger)
+    } finally {
+      this.draining = false
+    }
+  }
+
   private async drain(logger: (line: string) => void): Promise<void> {
     await mkdir(this.queueDir, { recursive: true })
     const files = (await readdir(this.queueDir)).filter((file) => file.endsWith('.jsonl')).sort()

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Entity, EntityProvenance, Moment, Session, Workspace } from '@openinfo/contracts'
+import type { Distillate, Draft, Entity, EntityProvenance, Moment, Session, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { LayoutStore } from './layouts.js'
@@ -104,6 +104,32 @@ export class WorkspaceRegistry {
       ? (db.prepare('select body from distillates where session_id = ? order by created_at').all(sessionId) as { body: string }[])
       : (db.prepare('select body from distillates order by created_at').all() as { body: string }[])
     return rows.map((row) => JSON.parse(row.body) as Distillate)
+  }
+
+  /**
+   * Persist a prepared draft (the Act pass output) to its workspace's OWN sqlite file. Workspace
+   * created on demand, mirroring saveDistillate/saveMoment; idempotent per draft id. Only this path
+   * writes drafts (DB-handle hard rule: the Actor asks store to write).
+   */
+  saveDraft(draft: Draft): Draft {
+    this.ensureWorkspace({ id: draft.workspaceId, name: draft.workspaceId })
+    const db = this.openWorkspace(draft.workspaceId)
+    db.prepare('insert or replace into drafts (id, session_id, created_at, body) values (?, ?, ?, ?)').run(
+      draft.id,
+      draft.sessionId,
+      draft.createdAt,
+      JSON.stringify(draft),
+    )
+    return draft
+  }
+
+  /** List a workspace's prepared drafts (default all), oldest first; `sessionId` narrows to one session. */
+  listDrafts(workspaceId: string, sessionId?: string): Draft[] {
+    const db = this.openWorkspace(workspaceId)
+    const rows = sessionId
+      ? (db.prepare('select body from drafts where session_id = ? order by created_at').all(sessionId) as { body: string }[])
+      : (db.prepare('select body from drafts order by created_at').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as Draft)
   }
 
   /**
@@ -307,6 +333,9 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists entities (id text primary key, kind text not null, name_key text not null, last_seen text not null, body text not null)',
+    ).run()
+    db.prepare(
+      'create table if not exists drafts (id text primary key, session_id text not null, created_at text not null, body text not null)',
     ).run()
     this.workspaceHandles.set(id, db)
     return db

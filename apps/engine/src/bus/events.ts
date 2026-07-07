@@ -1,4 +1,4 @@
-import type { CaptureChunk, Distillate, Entity, Flag, Moment, QueueStatus, Session } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Flag, Moment, QueueStatus, Session } from '@openinfo/contracts'
 
 export interface EngineEvents {
   'capture.received': CaptureChunk
@@ -9,4 +9,5 @@ export interface EngineEvents {
   'entity.updated': Entity
   'session.started': Session
   'session.ended': Session
+  'draft.created': Draft
 }

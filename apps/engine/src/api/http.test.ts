@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Fabric, Moment, QueryResult, RelevantEntity, Session, Surface } from '@openinfo/contracts'
+import type { CaptureChunk, Draft, Fabric, Moment, QueryResult, RelevantEntity, Session, Surface } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 
 test('capture route validates and publishes chunks', async () => {
@@ -372,6 +372,130 @@ const eventuallyHttp = async (assertion: () => Promise<void>, timeoutMs = 4000):
   }
   throw lastError instanceof Error ? lastError : new Error('condition not met')
 }
+
+test('e2e: session start → capture → distill → end → follow-up draft ≤60s → store → bus → GET /drafts', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const drafts: Draft[] = []
+  app.bus.subscribe('draft.created', (d) => {
+    drafts.push(d)
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    // the full pass plus the act: distill produces the summaries the draft is composed from
+    for (const key of ['distill.enabled', 'distill.moments', 'act.enabled']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 7, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'agreed, Thursday it is')]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+    // distillation happens at idle on the drain
+    await eventuallyHttp(async () => {
+      const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
+      assert.ok(moments.length >= 1)
+    })
+
+    // end the call — the Act trigger flushes the drain then composes the follow-up draft
+    const endAt = Date.now()
+    const endRes = await fetch(`${base}/sessions/${encodeURIComponent(started.id)}/end`, { method: 'POST' })
+    assert.equal(endRes.status, 200)
+
+    await eventuallyHttp(async () => assert.equal(drafts.length, 1))
+    const elapsed = Date.now() - endAt
+    assert.ok(elapsed < 60_000, `draft prepared in ${elapsed}ms — under the ≤60s budget`)
+
+    // the published draft is composed from the session's stored distillates, register-bound (the
+    // meeting mode defaults to boardroom), and prepared (never sent)
+    const draft = drafts[0]!
+    assert.equal(draft.actKind, 'follow-up-draft')
+    assert.equal(draft.status, 'prepared')
+    assert.equal(draft.sessionId, started.id)
+    assert.ok(draft.body.length > 0)
+    assert.ok(draft.provenance.sourceDistillates.length >= 1)
+    assert.equal(draft.provenance.templateId, 'tpl-followup-default')
+    assert.equal(draft.voice.registerId, 'reg-boardroom')
+
+    // retrievable over the API (the exit criterion: a draft that exists and can be fetched)
+    const listed = (await (await fetch(`${base}/drafts?workspace=default&session=${started.id}`)).json()) as Draft[]
+    assert.deepEqual(listed.map((d) => d.id), [draft.id])
+    // unknown workspace reads empty, not an error
+    assert.deepEqual(await (await fetch(`${base}/drafts?workspace=nowhere`)).json(), [])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('act.enabled OFF: ending a session prepares no draft', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const drafts: Draft[] = []
+  app.bus.subscribe('draft.created', (d) => {
+    drafts.push(d)
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    // distill on, but act.enabled stays OFF (default) → summaries exist, no draft is prepared
+    await fetch(`${base}/flags/distill.enabled`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'distill.enabled', default: true, scope: 'engine', description: 'd' }),
+    })
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    await fetch(`${base}/capture/mic`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 1, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we should ship Thursday' }),
+    })
+    // wait for the drain to distill (a summary exists) — so the ONLY reason there is no draft is
+    // that act.enabled is off, not that there was nothing to draft
+    await eventuallyHttp(async () => assert.ok(app.store.listDistillates('default', started.id).length >= 1))
+    await fetch(`${base}/sessions/${encodeURIComponent(started.id)}/end`, { method: 'POST' })
+
+    // give the (disabled) act trigger a chance to NOT fire
+    await new Promise((r) => setTimeout(r, 200))
+    assert.equal(drafts.length, 0)
+    assert.deepEqual(await (await fetch(`${base}/drafts?workspace=default`)).json(), [])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
 
 test('GET /registers serves the seeded builtin registers', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))

@@ -4,4 +4,5 @@
   { "key": "distill.enabled", "default": false, "scope": "engine", "description": "rolling-merge distiller: window capture, interpolate voice, call llm slot, persist distillate", "minTier": "T1" },
   { "key": "distill.moments", "default": false, "scope": "engine", "description": "typed-moment extraction riding the distill pass (commitment/question/decision/artifact); requires distill.enabled", "minTier": "T1" },
   { "key": "distill.index", "default": false, "scope": "engine", "description": "entity extraction + recency×frequency index riding the distill pass; requires distill.enabled (Moment.refs linking also needs distill.moments)", "minTier": "T1" },
+  { "key": "act.enabled", "default": false, "scope": "engine", "description": "Act pass on session end: compose a follow-up draft from the session's distillates + moments (prepared, never sent); needs distillates to draft anything, so distill.enabled must have run", "minTier": "T1" },
   { "key": "ingest.gdoc", "default": false, "scope": "engine", "description": "Google Docs pin ingestion (read-only auth)" } ]

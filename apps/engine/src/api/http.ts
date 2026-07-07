@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type Draft, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller } from '../distill/index.js'
 import { FabricDocuments } from '../fabric/index.js'
@@ -49,10 +50,12 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const fabric = new FabricDocuments(store)
   const voice = new VoiceDocuments(store)
   const distillDocs = new DistillDocuments(store)
+  const actDocs = new ActDocuments(store)
   const surfaces = new SurfaceDocuments(store)
   ensureDefaultFlags(store)
   voice.ensureDefaults()
   distillDocs.ensureDefaults()
+  actDocs.ensureDefaults()
   surfaces.ensureDefaults()
 
   const distiller = new Distiller({
@@ -79,6 +82,30 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     })
   })
 
+  // Act v0 (the first Act node): the follow-up draft. It rides session END, not the chunk drain —
+  // see PHASE2-NOTES for the direct-trigger (vs DAG) and ≤60s decisions. On session.ended, when
+  // act.enabled is on and the session's mode declares a follow-up-draft act, we first flush any
+  // in-flight chunks (drainNow → their distillates land) so the draft reflects the whole meeting,
+  // then compose one voice-interpolated draft from the session's stored distillates + moments.
+  const actor = new Actor({
+    store,
+    voice,
+    fabric,
+    docs: actDocs,
+    mode: (id) => distillDocs.mode(id),
+    publish: (draft) => bus.publish('draft.created', draft),
+    log,
+  })
+  bus.subscribe('session.ended', (session) => {
+    if (!isFlagEnabled(store, 'act.enabled')) return
+    void (async () => {
+      await queue.drainNow(log)
+      await actor.runFollowUpDraft(session)
+    })().catch((error: unknown) =>
+      log(`follow-up draft failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`),
+    )
+  })
+
   bus.subscribe('capture.received', (chunk) => ws.broadcast('capture.received', chunk))
   bus.subscribe('queue.updated', (status) => ws.broadcast('queue.updated', status))
   bus.subscribe('flag.changed', (flag) => ws.broadcast('flag.changed', flag))
@@ -87,6 +114,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
   bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
+  bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
 
   const server = createServer((req, res) => {
     const ctx: HandlerContext = { bus, fabric, voice, surfaces, queue, store, log }
@@ -130,6 +158,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/moments') return send(res, 200, readMoments(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/drafts') return send(res, 200, readDrafts(ctx.store, url))
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
   if (req.method === 'PUT' && surface?.[1]) return putSurface(req, res, ctx, decodeURIComponent(surface[1]))
@@ -277,6 +306,18 @@ function readRelevant(store: WorkspaceRegistry, url: URL): RelevantEntity[] {
     ...(sessionId !== null ? { sessionId } : {}),
     ...(Number.isInteger(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
   })
+}
+
+/**
+ * Serve prepared follow-up drafts for a workspace (default `default`), optionally narrowed to a
+ * session. Mirrors readMoments: a read over store/, the only DB-handle holder; an unknown workspace
+ * is an empty list, not an error. This is how a draft is retrieved after the call (Phase-2 exit).
+ */
+function readDrafts(store: WorkspaceRegistry, url: URL): Draft[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  if (!store.all().some((ws) => ws.id === workspaceId)) return []
+  const sessionId = url.searchParams.get('session')
+  return sessionId ? store.listDrafts(workspaceId, sessionId) : store.listDrafts(workspaceId)
 }
 
 /**
