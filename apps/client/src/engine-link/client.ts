@@ -1,4 +1,4 @@
-import type { Ack, CaptureChunk, Fabric, Flag, Health, Workspace } from '@openinfo/contracts'
+import type { Ack, CaptureChunk, Fabric, Flag, Health, Session, StartSessionRequest, Workspace } from '@openinfo/contracts'
 import { OfflineSpool } from './spool.js'
 
 export interface EngineLinkOptions {
@@ -43,6 +43,23 @@ export class EngineLink {
 
   workspaces(): Promise<Workspace[]> {
     return this.getArray('/workspaces')
+  }
+
+  /** List sessions for a workspace; `live: true` narrows to the current live session (HUD Now line). */
+  sessions(query: { workspace?: string; live?: boolean } = {}): Promise<Session[]> {
+    const params = new URLSearchParams()
+    if (query.workspace !== undefined) params.set('workspace', query.workspace)
+    if (query.live) params.set('live', 'true')
+    const suffix = params.toString()
+    return this.getArray(`/sessions${suffix ? `?${suffix}` : ''}`)
+  }
+
+  startSession(request: StartSessionRequest): Promise<Session> {
+    return this.request('POST', '/sessions', request)
+  }
+
+  endSession(id: string): Promise<Session> {
+    return this.request('POST', `/sessions/${encodeURIComponent(id)}/end`)
   }
 
   async capture(chunk: CaptureChunk): Promise<Ack | undefined> {
