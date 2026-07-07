@@ -5,12 +5,15 @@
   "scripts": {
     "build": "tsc -p .",
     "dev": "node --watch dist/main.js",
-    "test": "node --test"
+    "test": "node --test 'dist/**/*.test.js'"
   },
   "dependencies": {
-    "@openinfo/contracts": "workspace:*"
+    "@openinfo/contracts": "workspace:*",
+    "@sinclair/typebox": "^0.34.49",
+    "better-sqlite3": "^12.11.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.1.0",
     "typescript": "^6.0.3"
   }

@@ -2,6 +2,10 @@
   "name": "@openinfo/workbench",
   "version": "0.0.0",
   "type": "module",
-  "scripts": { "build": "vite build", "dev": "vite", "test": "node --test" },
+  "scripts": {
+    "build": "node -e \"console.log('workbench scaffold: no Phase 1 build')\"",
+    "dev": "node -e \"console.log('workbench scaffold: no Phase 1 dev server')\"",
+    "test": "node -e \"console.log('workbench scaffold: no Phase 1 tests')\""
+  },
   "dependencies": { "@openinfo/contracts": "workspace:*" }
 }

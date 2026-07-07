@@ -2,6 +2,15 @@
   "name": "@openinfo/client",
   "version": "0.0.0",
   "type": "module",
-  "scripts": { "build": "tsc -p .", "test": "node --test" },
-  "dependencies": { "@openinfo/contracts": "workspace:*" }
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "node --test 'dist/**/*.test.js'"
+  },
+  "dependencies": {
+    "@openinfo/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3"
+  }
 }
