@@ -2,6 +2,7 @@ import { Type, type Static } from '@sinclair/typebox'
 import { Id, IsoTime } from '../common.js'
 import { Entity } from '../records/entity.js'
 import { Moment } from '../records/moment.js'
+import { StarterModel } from '../config/local.js'
 
 export const Health = Type.Object(
   {
@@ -176,3 +177,35 @@ export const EndpointProbe = Type.Object(
   { $id: 'EndpointProbe', additionalProperties: false },
 )
 export type EndpointProbe = Static<typeof EndpointProbe>
+
+/**
+ * The runtime state of ONE starter model (GET /fabric/local/models) — the tier-zero "no server at all"
+ * offer's backing (ARCHITECTURE §8, slice c). It joins the catalog entry with what the engine can see
+ * locally: whether the runtime binary is present (`runtimeAvailable`, with an `installHint` when not),
+ * whether the model file is downloaded/downloading/absent, and download progress. The Get-Started lens
+ * renders one row per model from this; the browser polls it during a download for progress.
+ */
+export const LocalModelStatus = Type.Object(
+  {
+    model: StarterModel,
+    runtimeAvailable: Type.Boolean({ description: 'the runtime binary (e.g. llama-server) was found on this machine' }),
+    installHint: Type.Optional(Type.String({ description: 'how to get the runtime binary when missing (e.g. brew install llama.cpp)' })),
+    state: Type.Union(['absent', 'downloading', 'ready', 'error'].map((s) => Type.Literal(s))),
+    downloadedBytes: Type.Optional(Type.Integer({ minimum: 0 })),
+    totalBytes: Type.Optional(Type.Integer({ minimum: 0, description: 'the download Content-Length, once known' })),
+    error: Type.Optional(Type.String()),
+  },
+  { $id: 'LocalModelStatus', additionalProperties: false },
+)
+export type LocalModelStatus = Static<typeof LocalModelStatus>
+
+/**
+ * The body of POST /fabric/local/download — the explicit user click that acquires ONE starter model.
+ * Never auto-downloaded; the engine streams the file into the data root models/ dir with resume + a
+ * size sanity check, and returns the model's LocalModelStatus (poll GET /fabric/local/models for progress).
+ */
+export const LocalDownloadRequest = Type.Object(
+  { modelId: Type.String({ minLength: 1, description: 'the StarterModel id to download' }) },
+  { $id: 'LocalDownloadRequest', additionalProperties: false },
+)
+export type LocalDownloadRequest = Static<typeof LocalDownloadRequest>

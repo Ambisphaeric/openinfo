@@ -14,6 +14,7 @@ export * from './config/mode.js'
 export * from './config/promptTemplate.js'
 export * from './config/fabric.js'
 export * from './config/discovery.js'
+export * from './config/local.js'
 export * from './config/flag.js'
 export * from './api/routes.js'
 export * from './api/events.js'
@@ -33,8 +34,9 @@ import { Mode } from './config/mode.js'
 import { PromptTemplate } from './config/promptTemplate.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
 import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult } from './config/discovery.js'
+import { StarterModel, StarterModels } from './config/local.js'
 import { Flag } from './config/flag.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -42,7 +44,7 @@ export const AllSchemas = {
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
-  CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, Flag,
+  CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, StarterModel, StarterModels, Flag,
   Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest,
-  CloneProfileRequest, SecretRef, SecretValue, EndpointProbe,
+  CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, LocalModelStatus, LocalDownloadRequest,
 } as const

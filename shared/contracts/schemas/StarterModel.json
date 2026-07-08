@@ -1,0 +1,106 @@
+{
+  "$id": "StarterModel",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "slot",
+    "runtime",
+    "name",
+    "filename",
+    "url",
+    "sizeBytes"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "stable id; the local endpoint references it as its `model`",
+      "type": "string"
+    },
+    "slot": {
+      "$id": "CapabilitySlot",
+      "anyOf": [
+        {
+          "const": "stt",
+          "type": "string"
+        },
+        {
+          "const": "tts",
+          "type": "string"
+        },
+        {
+          "const": "llm",
+          "type": "string"
+        },
+        {
+          "const": "vlm",
+          "type": "string"
+        },
+        {
+          "const": "ocr",
+          "type": "string"
+        },
+        {
+          "const": "embed",
+          "type": "string"
+        }
+      ]
+    },
+    "runtime": {
+      "$id": "LocalRuntime",
+      "anyOf": [
+        {
+          "const": "mlx",
+          "type": "string"
+        },
+        {
+          "const": "ollama",
+          "type": "string"
+        },
+        {
+          "const": "llama.cpp",
+          "type": "string"
+        },
+        {
+          "const": "whisper.cpp",
+          "type": "string"
+        },
+        {
+          "const": "paddle",
+          "type": "string"
+        },
+        {
+          "const": "coreml",
+          "type": "string"
+        }
+      ]
+    },
+    "name": {
+      "minLength": 1,
+      "description": "human label shown in the Get-Started lens",
+      "type": "string"
+    },
+    "filename": {
+      "minLength": 1,
+      "description": "on-disk filename under the data root models/ dir",
+      "type": "string"
+    },
+    "url": {
+      "pattern": "^https://",
+      "description": "a direct download URL (e.g. a Hugging Face resolve link)",
+      "type": "string"
+    },
+    "sizeBytes": {
+      "minimum": 1,
+      "description": "approximate download size, stated honestly in the UI",
+      "type": "integer"
+    },
+    "sha256": {
+      "description": "optional integrity hash; verified after download when present",
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    }
+  }
+}

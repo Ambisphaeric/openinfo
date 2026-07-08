@@ -1,0 +1,15 @@
+{
+  "$id": "LocalDownloadRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "modelId"
+  ],
+  "properties": {
+    "modelId": {
+      "minLength": 1,
+      "description": "the StarterModel id to download",
+      "type": "string"
+    }
+  }
+}
