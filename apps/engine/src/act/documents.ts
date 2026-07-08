@@ -1,6 +1,6 @@
 import type { PromptTemplate } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { defaultFollowUpTemplate } from './defaults.js'
+import { defaultFollowUpTemplate, defaultTaskExtractTemplate } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 
@@ -15,13 +15,21 @@ export class ActDocuments {
   constructor(private readonly store: WorkspaceRegistry) {}
 
   ensureDefaults(): void {
-    if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultFollowUpTemplate.id)) {
-      this.store.layouts.put(TEMPLATE_KIND, defaultFollowUpTemplate.id, defaultFollowUpTemplate)
+    for (const template of [defaultFollowUpTemplate, defaultTaskExtractTemplate]) {
+      if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, template.id)) {
+        this.store.layouts.put(TEMPLATE_KIND, template.id, template)
+      }
     }
   }
 
   followUpTemplate(id: string = defaultFollowUpTemplate.id): { template: PromptTemplate; version?: number } {
     const stored = this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, id)
     return stored ? { template: stored.body, version: stored.version } : { template: defaultFollowUpTemplate }
+  }
+
+  /** The task-extract prompt template (the CONSTRAIN side of the to-do loop), same store/id pattern. */
+  taskExtractTemplate(id: string = defaultTaskExtractTemplate.id): { template: PromptTemplate; version?: number } {
+    const stored = this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, id)
+    return stored ? { template: stored.body, version: stored.version } : { template: defaultTaskExtractTemplate }
   }
 }

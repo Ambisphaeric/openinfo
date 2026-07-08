@@ -27,3 +27,29 @@ export const defaultFollowUpTemplate: PromptTemplate = {
     'Key moments:\n{{moments}}\n\n' +
     'Write the follow-up as markdown — a short greeting, a recap, and clear next steps or commitments. Follow-up draft:',
 }
+
+/**
+ * The shipped task-extract prompt template — the CONSTRAIN side of the dynamic-to-do loop (P4A slice
+ * 4). A document, seeded like the follow-up template. kind `act`: it feeds the Act primitive. Distills
+ * a meeting's accumulated {{summaries}} + {{moments}} into a JSON array of follow-up items the engine
+ * merges (deduped) into the session's to-do document; a later draft un-constrains them back into prose
+ * via {{todo}}. The distinctive "JSON array of follow-up tasks" phrasing keeps small local models on a
+ * tight, parseable schema (one `text` field per item; the engine stamps ids/provenance).
+ */
+export const defaultTaskExtractTemplate: PromptTemplate = {
+  id: 'tpl-taskextract-default',
+  name: 'taskextract-default',
+  kind: 'act',
+  slot: 'llm',
+  builtin: true,
+  description:
+    'task-extract: distills a session\'s accumulated distillates + moments into a JSON array of follow-up to-do items (text only); the engine dedupes + stamps provenance, and a draft renders them via {{todo}}',
+  body:
+    'You extract the concrete FOLLOW-UP TASKS implied by a meeting so far — things the user still has to ' +
+    'do after it. Base them ONLY on what the summaries and moments support; invent nothing.\n\n' +
+    'What was discussed (distilled summaries):\n{{summaries}}\n\n' +
+    'Key moments:\n{{moments}}\n\n' +
+    'Return a JSON array of follow-up tasks, each an object with a single "text" field holding one short ' +
+    'imperative line (e.g. [{"text": "Send Dana the updated deck"}]). If there are no follow-ups yet, ' +
+    'return []. Return ONLY the JSON array, nothing else.',
+}
