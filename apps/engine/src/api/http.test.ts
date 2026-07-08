@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Draft, Fabric, Moment, QueryResult, RelevantEntity, Session, Surface } from '@openinfo/contracts'
+import type { CaptureChunk, Draft, Fabric, FabricProfile, Moment, QueryResult, RelevantEntity, Session, Surface } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 
 test('capture route validates and publishes chunks', async () => {
@@ -560,6 +560,47 @@ test('fabric profiles: seeded list, GET, PUT create, clone, activate, delete-act
     assert.equal((await fetch(`${base}/fabric/profiles/my-rig`, { method: 'DELETE' })).status, 409)
     assert.equal((await fetch(`${base}/fabric/profiles/my-rig-2`, { method: 'DELETE' })).status, 200)
     assert.equal((await fetch(`${base}/fabric/profiles/my-rig-2`, { method: 'DELETE' })).status, 404)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('full-fabric round-trip: adding a tts endpoint to an llm+stt profile keeps every other slot (the founder repro), local endpoints preserved', async () => {
+  // Mirrors what the setup page's saveEditor does — it re-PUTs the WHOLE fabric on every Save. The
+  // page now edits all six slots, so this proves a slot edit never drops the others (and a `local`
+  // endpoint round-trips untouched through an unrelated edit).
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const put = (id: string, body: unknown) =>
+      fetch(`${base}/fabric/profiles/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+    // Start with a profile carrying llm (http) + stt (a `local` starter endpoint from tier zero).
+    const llm = { kind: 'http', name: 'llm', url: 'http://192.168.1.105:1234', api: 'openai-compat', model: 'qwen3' }
+    const sttLocal = { kind: 'local', name: 'starter-stt', runtime: 'whisper.cpp', model: 'whisper-base' }
+    const start = { id: 'rig', name: 'Rig', version: 1, fabric: { slots: { stt: [sttLocal], tts: [], llm: [llm], vlm: [], ocr: [], embed: [] } } }
+    assert.equal((await put('rig', start)).status, 200)
+
+    // Save-with-a-new-tts: the whole fabric is re-PUT with a kokoro tts added, everything else the same.
+    const kokoro = { kind: 'http', name: 'kokoro', url: 'http://192.168.1.105:8880', api: 'openai-compat', model: 'kokoro' }
+    const withTts = { id: 'rig', name: 'Rig', version: 2, fabric: { slots: { stt: [sttLocal], tts: [kokoro], llm: [llm], vlm: [], ocr: [], embed: [] } } }
+    assert.equal((await put('rig', withTts)).status, 200)
+
+    // Add a vlm the same way; version bumps, nothing is lost.
+    const vlm = { kind: 'http', name: 'vlm', url: 'http://192.168.1.105:1235', api: 'openai-compat', model: 'qwen-vl' }
+    const withVlm = { id: 'rig', name: 'Rig', version: 3, fabric: { slots: { stt: [sttLocal], tts: [kokoro], llm: [llm], vlm: [vlm], ocr: [], embed: [] } } }
+    assert.equal((await put('rig', withVlm)).status, 200)
+
+    const got = (await (await fetch(`${base}/fabric/profiles/rig`)).json()) as FabricProfile
+    assert.equal(got.fabric.slots.llm.length, 1) // llm intact
+    assert.deepEqual(got.fabric.slots.stt[0], sttLocal) // the local stt endpoint survived every edit, byte-for-byte
+    assert.equal(got.fabric.slots.tts[0]!.name, 'kokoro') // the founder's added tts is present
+    assert.equal(got.fabric.slots.vlm[0]!.name, 'vlm') // and the vlm
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })
