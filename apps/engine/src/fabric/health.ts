@@ -1,5 +1,6 @@
 import type { Endpoint } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
+import type { LocalRuntimeManager, SpawnState } from './endpoints/local.js'
 
 export interface EndpointHealth {
   name: string
@@ -9,9 +10,30 @@ export interface EndpointHealth {
   error?: string
 }
 
-export const checkEndpoint = async (endpoint: Endpoint, timeoutMs = 1_000, resolveKey?: SecretResolver): Promise<EndpointHealth> => {
+/** Honest one-liner for each spawn state (health reports state; it never spawns from a health check). */
+const localHealth = (name: string, state: SpawnState, checkedAt: string, installHint?: string): EndpointHealth => {
+  if (state === 'ready') return { name, ok: true, checkedAt }
+  const error =
+    state === 'starting' ? 'runtime starting (model loading)'
+      : state === 'binary-missing' ? `runtime binary not installed${installHint ? ` — ${installHint}` : ''}`
+      : state === 'model-missing' ? 'model not downloaded yet'
+      : state === 'crashed' ? 'runtime crashed repeatedly — restart the engine'
+      : state === 'unsupported' ? 'local runtime not managed in v0'
+      : 'not started (spawns on demand)'
+  return { name, ok: false, checkedAt, error }
+}
+
+export const checkEndpoint = async (
+  endpoint: Endpoint,
+  timeoutMs = 1_000,
+  resolveKey?: SecretResolver,
+  runtimeManager?: LocalRuntimeManager,
+): Promise<EndpointHealth> => {
   const checkedAt = new Date().toISOString()
-  if (endpoint.kind === 'local') return { name: endpoint.name, ok: false, checkedAt, error: 'local runtime health is stubbed in Phase 1' }
+  if (endpoint.kind === 'local') {
+    if (!runtimeManager) return { name: endpoint.name, ok: false, checkedAt, error: 'local runtime not managed here' }
+    return localHealth(endpoint.name, runtimeManager.status(endpoint), checkedAt, runtimeManager.specFor(endpoint)?.installHint)
+  }
   if (endpoint.kind === 'cloud') return { name: endpoint.name, ok: false, checkedAt, error: 'cloud endpoints are out of Phase 1' }
 
   // An endpoint that declares auth but whose keyRef cannot be resolved is unhealthy — gracefully, so

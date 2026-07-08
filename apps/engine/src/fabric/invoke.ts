@@ -1,5 +1,6 @@
 import type { Endpoint, Fabric } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
+import type { LocalEndpoint, LocalRuntimeManager } from './endpoints/local.js'
 
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant'
@@ -7,6 +8,24 @@ export interface LlmMessage {
 }
 
 type HttpEndpoint = Extract<Endpoint, { kind: 'http' }>
+
+/**
+ * A `local` endpoint is served by a runtime the engine SPAWNS (ARCHITECTURE §8 tier zero). Given the
+ * manager, we ensure its runtime is running and get a localhost url — then speak the SAME OpenAI-compat
+ * http the http kind speaks (a spawned runtime IS an http server; the difference is the engine owns its
+ * lifecycle). Returns a synthetic http endpoint so the existing http call paths are reused verbatim.
+ * Throws (never crashes) when there is no manager or the runtime can't start — the caller falls through.
+ */
+const resolveLocal = async (
+  endpoint: LocalEndpoint,
+  manager: LocalRuntimeManager | undefined,
+): Promise<{ http: HttpEndpoint; transcribePath?: string }> => {
+  if (!manager) throw new Error('local runtime not managed here (no runtime manager)')
+  const { url, spec } = await manager.ensureRunning(endpoint)
+  const http: HttpEndpoint = { kind: 'http', name: endpoint.name, url, api: 'openai-compat' }
+  if (endpoint.model !== '') http.model = endpoint.model
+  return spec.transcribePath !== undefined ? { http, transcribePath: spec.transcribePath } : { http }
+}
 
 /**
  * Build the Authorization header for an http endpoint that declares `auth.keyRef` — injected ONLY
@@ -36,6 +55,8 @@ export interface InvokeOptions {
   temperature?: number
   /** resolve an endpoint's auth.keyRef to its secret value (injected as a bearer token). */
   resolveKey?: SecretResolver
+  /** manages `local` endpoints' spawned runtimes (tier zero); absent ⇒ local endpoints are skipped. */
+  runtimeManager?: LocalRuntimeManager
 }
 
 interface ChatCompletion {
@@ -85,22 +106,21 @@ export const invokeLlm = async (
   const endpoints = fabric.slots.llm
   const failures: string[] = []
   for (const endpoint of endpoints) {
-    if (endpoint.kind === 'local') {
-      failures.push(`${endpoint.name}: local runtime invocation is stubbed`)
-      continue
-    }
     if (endpoint.kind === 'cloud') {
       failures.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
-    if (endpoint.api !== 'openai-compat') {
-      failures.push(`${endpoint.name}: unsupported api "${endpoint.api}"`)
-      continue
-    }
     try {
-      const text = await callHttp(endpoint, messages, opts)
+      // A local endpoint's spawned runtime is resolved to a localhost http server, then called
+      // exactly like an http one (the engine owns its lifecycle; the protocol is identical).
+      const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint
+      if (http.api !== 'openai-compat') {
+        failures.push(`${endpoint.name}: unsupported api "${http.api}"`)
+        continue
+      }
+      const text = await callHttp(http, messages, opts)
       const result: LlmResult = { text, endpoint: endpoint.name, slot: 'llm' }
-      if (endpoint.model !== undefined) result.model = endpoint.model
+      if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       return result
     } catch (error) {
       failures.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
@@ -131,6 +151,8 @@ export interface SttOptions {
   language?: string
   /** resolve an endpoint's auth.keyRef to its secret value (injected as a bearer token). */
   resolveKey?: SecretResolver
+  /** manages `local` endpoints' spawned runtimes (tier zero); absent ⇒ local endpoints are skipped. */
+  runtimeManager?: LocalRuntimeManager
 }
 
 /** audio/<subtype> → a filename the transcriber can sniff a container from; defaults to audio.bin. */
@@ -141,24 +163,30 @@ const audioFilename = (contentType: string): string => {
 }
 
 /**
- * Call one http stt endpoint speaking the OpenAI-compatible multipart shape
- * (`POST /v1/audio/transcriptions` with `model` + `file` fields — whisper.cpp/faster-whisper-server
- * style local servers). Throws on transport or protocol failure so the caller falls through to the
- * next endpoint in fabric order, exactly like callHttp for llm.
+ * POST one multipart transcription request and return the transcript. Used by BOTH the http kind
+ * (OpenAI-compat `/v1/audio/transcriptions`, model + file) and the local whisper.cpp runtime
+ * (`/inference` with `response_format=json` — whisper-server does NOT serve the /v1 path). Throws on
+ * transport or protocol failure so the caller falls through to the next endpoint in fabric order.
  */
-const callSttHttp = async (endpoint: HttpEndpoint, audio: SttAudio, opts: SttOptions): Promise<string> => {
-  const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
+const postTranscription = async (
+  url: string,
+  path: string,
+  audio: SttAudio,
+  opts: SttOptions,
+  extra: { model?: string; auth?: Record<string, string>; responseFormat?: boolean },
+): Promise<string> => {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000)
   try {
     const form = new FormData()
-    if (endpoint.model !== undefined) form.set('model', endpoint.model)
+    if (extra.model !== undefined) form.set('model', extra.model)
     if (opts.language !== undefined) form.set('language', opts.language)
+    if (extra.responseFormat) form.set('response_format', 'json')
     const bytes = Buffer.from(audio.base64, 'base64')
     form.set('file', new Blob([bytes], { type: audio.contentType }), audioFilename(audio.contentType))
-    const response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/audio/transcriptions`, {
+    const response = await fetch(`${url.replace(/\/$/, '')}${path}`, {
       method: 'POST',
-      headers: auth,
+      headers: extra.auth ?? {},
       body: form,
       signal: controller.signal,
     })
@@ -172,6 +200,14 @@ const callSttHttp = async (endpoint: HttpEndpoint, audio: SttAudio, opts: SttOpt
   }
 }
 
+/** Call one http stt endpoint (OpenAI-compat `/v1/audio/transcriptions`, model + file). */
+const callSttHttp = (endpoint: HttpEndpoint, audio: SttAudio, opts: SttOptions): Promise<string> => {
+  const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
+  const extra: { model?: string; auth: Record<string, string> } = { auth }
+  if (endpoint.model !== undefined) extra.model = endpoint.model
+  return postTranscription(endpoint.url, '/v1/audio/transcriptions', audio, opts, extra)
+}
+
 /**
  * Invoke the `stt` slot: try endpoints in fabric order (order is fallback, first that answers wins),
  * mirroring invokeLlm. http/openai-compat endpoints POST the multipart transcription shape; `local`
@@ -182,22 +218,26 @@ export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOption
   const endpoints = fabric.slots.stt
   const failures: string[] = []
   for (const endpoint of endpoints) {
-    if (endpoint.kind === 'local') {
-      failures.push(`${endpoint.name}: local runtime invocation is stubbed`)
-      continue
-    }
     if (endpoint.kind === 'cloud') {
       failures.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
-    if (endpoint.api !== 'openai-compat') {
-      failures.push(`${endpoint.name}: unsupported api "${endpoint.api}"`)
-      continue
-    }
     try {
-      const text = await callSttHttp(endpoint, audio, opts)
+      let text: string
+      if (endpoint.kind === 'local') {
+        // The spawned whisper.cpp runtime serves /inference (response_format=json), not /v1.
+        const { http, transcribePath } = await resolveLocal(endpoint, opts.runtimeManager)
+        if (transcribePath === undefined) throw new Error('local runtime has no transcription path')
+        text = await postTranscription(http.url, transcribePath, audio, opts, { responseFormat: true })
+      } else {
+        if (endpoint.api !== 'openai-compat') {
+          failures.push(`${endpoint.name}: unsupported api "${endpoint.api}"`)
+          continue
+        }
+        text = await callSttHttp(endpoint, audio, opts)
+      }
       const result: SttResult = { text, endpoint: endpoint.name, slot: 'stt' }
-      if (endpoint.model !== undefined) result.model = endpoint.model
+      if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       return result
     } catch (error) {
       failures.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
