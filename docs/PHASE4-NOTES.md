@@ -228,3 +228,113 @@ workflow code.
   now.
 - The condition DSL in `StepGate`, graph edges/fan-out on `WorkflowSpec` (the DAG), `compile.ts`
   (Mode.acts → document), and typed queues / dynamic to-do (slices 3–4).
+
+## Slice: Typed queues + envelope/ETA  *(P4A, Terminal A, branch p4a-workflow)*
+
+The third P4A slice puts KINDS on the spool (audio / screen / llm-work), per-kind depth + a backlog ETA
++ the overflow policy in `GET /queue`. It is envelope MATH + policy PLUMBING — NOT cadence control of
+capture (that is client-side, not ours). The spool's durability semantics (append, drain, re-queue on
+failure) are byte-for-byte untouched; everything added is read-side status + one in-memory rate signal.
+
+### Kind classification — the rule (`queue/kinds.ts`, pure, zero deps)
+`classifyKind(chunk)` from `source`/`contentType` ALONE, so P4B's screen chunks land correctly without the
+queue importing any P4B/capture code:
+- `focus` source → **`focus`** — its OWN bucket, EXCLUDED from every work tally. A focus chunk is ephemeral
+  routing context (consumed by the detector, never distilled — the PHASE3 distill-hygiene decision); it is
+  never a meaningful backlog. Decision: excluded, NOT trivially counted. It still occupies pending-file
+  bytes, which is why `byKind` byte sums can be LESS than `pendingBytes` (documented on the contract).
+- `mic` / `system-audio`, or `audio/*` contentType → **`audio`** (the me/them split, mirrors distill's `isAudioChunk`).
+- `screen` / `camera`, or `image/*` contentType → **`screen`** (P4B adds the producers; a `screen` source or
+  an image payload classifies here with no P4B import — the mandate's explicit ask).
+- everything else (calendar / repo / typed text) → **`llm-work`** (text destined for distill; the default).
+
+Source wins over contentType for `mic`/`system-audio` (a `mic` text/plain frame is still `audio`).
+
+### QueueStatus additions (all additive/optional — the PHASE3 INVOKE-RESILIENCE precedent)
+Exact new fields on `QueueStatus` (`shared/contracts/src/api/payloads.ts`):
+- **`byKind?: { audio, screen, 'llm-work' }`** where each is **`QueueKindDepth { pendingChunks, pendingBytes }`**.
+- **`eta?: BacklogEta`** = `{ basis: 'observed'|'none', etaMs?, caughtUpBy?, drainRateChunksPerSec?, measuredTokPerSec? }`.
+- **`overflow?: OverflowState`** = `{ policy: 'queue-for-idle'|'degrade-cadence'|'drop', enforced }`.
+Four new `$id`'d schemas registered (`QueueKind`, `QueueKindDepth`, `BacklogEta`, `OverflowState`); schemas
+regenerated 60 → 64; `examples/queueStatus.typed.json` seeded + validated. The pre-existing
+`queueStatus.empty/failed` examples stay valid (new fields optional).
+
+### The ETA design (`queue/eta.ts`, pure) — inputs + honest unknowns
+`projectEta({ backlogChunks, samples, now, measuredTokPerSec? })`:
+- **Primary input = observed drain history.** The spool records one `DrainSample { chunks, ms }` per
+  SUCCESSFULLY drained file — `chunks` = the file's WORK-chunk count (focus excluded, so numerator and the
+  focus-excluded backlog denominator share units), `ms` = the processor duration. Kept in a 20-deep in-memory
+  ring (operational state, same justification as `lastFailure`/`drainedFiles` — no user intent, recomputed,
+  no version history; NOT a document). Rate = Σchunks / Σms → `etaMs = backlogChunks / rate`,
+  `caughtUpBy = now + etaMs`.
+- **Honest unknown (the mandate).** No samples, or samples with zero chunks / zero time → **`basis: 'none'`
+  with NO etaMs/caughtUpBy** — an unknown is unknown, never a fabricated ETA. Empty backlog → already caught
+  up (`etaMs 0`, `caughtUpBy = now`).
+- **`measuredTokPerSec`** (the active/first-in-fabric-order llm endpoint's benchmarked tok/s, fabric §8
+  `measured`) is injected READ-ONLY from `api/http.ts` and **echoed as the envelope's measured side** — it is
+  NOT the ETA basis in v0. Converting tok/s → a chunk ETA needs a tokens-per-chunk model that does not exist
+  honestly yet (deferred; `basis` union has room for a future `'measured'` member additively).
+- **ETA is OVERALL, not per-kind.** The drain processes whole files that MIX kinds, so the observed rate is a
+  mixed-kind chunks/sec. A per-kind ETA would need per-kind drain accounting — deferred, stated on the contract.
+
+### Overflow — what is REAL vs DECLARED
+The policy is DATA threaded from the active mode (`Mode.overflow` `queue|degrade|drop`) → the status
+tri-state (`queue`→`queue-for-idle`), surfaced via a read-only seam injected from `api/http.ts`. The
+`enforced` boolean encodes real-vs-declared directly in the data:
+- **`queue-for-idle` (default) — REAL, `enforced: true`.** It IS today's behavior: append + drain at idle,
+  never lose capture. No new code needed to honor it.
+- **`degrade-cadence` — DECLARED, `enforced: false`.** Capture cadence is a CLIENT concern; the engine cannot
+  and must not throttle the client (explicitly out of scope per the brief). Recorded-but-inert signal.
+- **`drop` — DECLARED, `enforced: false`.** Dropping deliberately violates the spool's whole reason to exist
+  (never lose capture). Enforcing a backlog cap by dropping is a real behavior change that needs explicit
+  product sign-off + a threshold source (no `maxPendingBytes` config exists today); deliberately NOT built.
+So v0 overflow is honest surfacing, not enforcement beyond the safe default. Deferred: `drop` backlog cap
+(with a threshold config), any engine-side degrade signalling the client acts on.
+
+### Seams kept intact (slice-2 constraints)
+- The executor is DOWNSTREAM of the spool and untouched: `distill`/`transcribe`/`drainNow` seam signatures
+  unchanged, processor-throw → `toQueueFailure` → re-queue (retry-at-idle) unchanged (the sample is recorded
+  only on SUCCESS, after the processor returns — a re-queue records no sample, correctly), drain-first flush
+  before session-end acts unchanged.
+- The queue keeps ZERO fabric/invoke/store imports — `kinds.ts`/`eta.ts` import only contract TYPES; measured
+  tok/s and overflow arrive through injected function seams (the `describeFailure` precedent).
+
+### Performance note (accepted for v0, optimization deferred)
+`status()` now parses the pending files to tally per-kind depth (O(pending bytes) per call, and it is called
+after every capture via `queue.updated`). Accepted because the backlog is normally empty (files drain
+immediately via `scheduleDrain`) and only grows when the model is slow/down; files are small JSONL. A future
+incremental-counter optimization (update per-kind counts on append/drain instead of re-parsing) is deferred.
+
+### Rule-7 check (definition of done)
+- **Contracts**: additive only (`byKind`/`eta`/`overflow` optional on `QueueStatus`; four new sub-schemas).
+  Schemas regenerated (64), `queueStatus.typed.json` added + validated, existing examples still valid.
+- **Flag** (rule 3): NONE. This adds no gated engine-processing behavior — it is read-side status enrichment
+  plus one in-memory rate signal; `overflow.enforced` for the non-default policies is inert by design, not a
+  flag. Consistent with the no-flag line for status/resource surfaces.
+- **Recipes/skills**: grepped `skills/` and `CONTRIBUTING.md` for `GET /queue` / `spool` / `QueueStatus` /
+  `byKind` / `pendingFiles` — NO reference anywhere, so nothing to keep true there.
+- **CODE_MAP**: `queue/` tree note updated (kinds.ts/eta.ts/byKind/eta/overflow) + a new "Typed queues +
+  envelope/ETA" built row; the "Backlog analytics surface" P7 row annotated (the eta module now exists).
+- **No route added/changed** (`GET /queue` already existed; only its payload grew additively).
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Contracts **53** (+1: `queueStatus.typed.json`),
+engine **312** (296 slice-2 baseline + 12 pure-module: `kinds.test.ts` 7 + `eta.test.ts` 5, + 4 `spool.test.ts`:
+per-kind depth incl. focus-exclusion, eta none→observed with a backlog, overflow+measured seam surfaced,
+absent-overflow additive), client 139. On the clean run all three suites were fully green; the pre-listed
+flakes (drain-timing e2e in `http.test.js`, client-seam TOCTOU) each pass in isolation (http.test.js 45/45
+alone). LIVE check: `createEngineApp` on :8931, POSTed mic/system-audio/screen/calendar/focus chunks, `GET
+/queue` returned the additive `byKind`/`eta`/`overflow` shape correctly (backlog 0 because the no-op drain
+cleared immediately; the non-empty backlog path is unit-covered).
+
+### Seam notes for slice 4 (task-extract act + dynamic to-do)
+- **Nothing in queue/status needs to change for slice 4.** A second `kind: act, trigger: session-end` step
+  (`task-extract`) rides the SAME executor session-end seam (slice-2 note) — it does not touch the queue.
+- **`byKind`/`eta` will surface a to-do act's cost only insofar as it drains chunks.** A `task-extract` act
+  runs on session-end AFTER the drain-first flush, so it is not a queue-drain processor and produces no
+  `DrainSample`; the ETA is unaffected. If slice 4 ever makes to-do extraction a DRAIN step (it should not —
+  it is an act), it would then count as `llm-work` and feed the rate like any other work chunk.
+- **Do NOT break**: the `DrainSample` is recorded ONLY on processor success — keep the re-queue path
+  (throw → no sample) as-is so a failing model does not poison the drain-rate with 0-chunk fast "successes".
+- The to-do DOCUMENT slice 4 adds is a store surface, not a queue concern; `GET /queue` stays a pure spool
+  status view (no workflow/act state leaks into it — the executor/queue separation from slice 2 holds).

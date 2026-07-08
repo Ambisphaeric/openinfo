@@ -1,8 +1,23 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { CaptureChunk, QueueFailure, QueueStatus } from '@openinfo/contracts'
+import type { CaptureChunk, OverflowState, QueueFailure, QueueStatus } from '@openinfo/contracts'
+import { countWork, emptyByKind, tallyFile } from './kinds.js'
+import { projectEta, type DrainSample } from './eta.js'
 
 const safeName = (value: string): string => value.replace(/[^a-zA-Z0-9._-]/g, '_')
+
+/** Most recent drain samples kept for the ETA (in-memory, operational — like drainedFiles, not a document). */
+const DRAIN_SAMPLE_WINDOW = 20
+
+/**
+ * READ-ONLY seams the queue calls for the envelope/overflow surfacing (P4A slice 3), injected from
+ * api/http.ts so the queue keeps ZERO fabric/store imports (the describeFailure precedent):
+ *  - measuredTokPerSec: the active llm endpoint's benchmarked tok/s (fabric §8 `measured`) — echoed as
+ *    the envelope's measured side; never converted to an ETA in v0.
+ *  - overflow: the declared overflow policy (from the active mode) + whether v0 enforces it.
+ */
+export type MeasuredRate = () => number | undefined
+export type OverflowProvider = () => OverflowState | undefined
 
 /**
  * Invoked once per drained file with its parsed chunks (the distiller's seam — see PHASE2-NOTES).
@@ -27,11 +42,16 @@ export class CaptureQueue {
   // queue (surfaced via status()/GET /queue/WS), exactly like drainedFiles, not in the store.
   private lastFailure?: QueueFailure
   private lastSuccessAt?: string
+  // Recent per-file drain samples (work-chunks + processor ms) — the honest drain-rate signal the ETA
+  // divides the backlog by. In-memory + ring-bounded, same operational justification as lastFailure.
+  private drainSamples: DrainSample[] = []
 
   constructor(
     private readonly queueDir: string,
     private readonly processor?: DrainProcessor,
     private readonly describeFailure?: DrainFailureDescriber,
+    private readonly measuredTokPerSec?: MeasuredRate,
+    private readonly overflow?: OverflowProvider,
   ) {}
 
   async append(chunk: CaptureChunk): Promise<void> {
@@ -43,12 +63,45 @@ export class CaptureQueue {
     await mkdir(this.queueDir, { recursive: true })
     const files = (await readdir(this.queueDir)).filter((file) => file.endsWith('.jsonl'))
     let pendingBytes = 0
-    for (const file of files) pendingBytes += (await stat(join(this.queueDir, file))).size
+    // Per-kind depth (P4A slice 3): the durable unit is the per-session file, but a file mixes kinds, so
+    // an honest per-kind depth has to parse the pending files and classify each chunk. Best-effort — a
+    // file renamed out from under us (a concurrent drain) or a corrupt line is skipped for the kind tally
+    // but still counted in pendingFiles/pendingBytes. v0 cost is O(pending bytes) per status(); acceptable
+    // because the backlog only grows when the model is slow/down (else it drains immediately), and a
+    // future incremental-counter optimization is deferred (PHASE4-NOTES).
+    const byKind = emptyByKind()
+    for (const file of files) {
+      const path = join(this.queueDir, file)
+      let fileBytes = 0
+      try {
+        fileBytes = (await stat(path)).size
+      } catch {
+        continue
+      }
+      pendingBytes += fileBytes
+      try {
+        tallyFile(await this.parse(path), fileBytes, byKind)
+      } catch {
+        // unreadable/racing file — its bytes still count; its kinds do not
+      }
+    }
+    const backlogChunks = byKind.audio.pendingChunks + byKind.screen.pendingChunks + byKind['llm-work'].pendingChunks
+    const measured = this.measuredTokPerSec?.()
+    const eta = projectEta({
+      backlogChunks,
+      samples: this.drainSamples,
+      now: Date.now(),
+      ...(measured !== undefined ? { measuredTokPerSec: measured } : {}),
+    })
+    const overflow = this.overflow?.()
     return {
       pendingFiles: files.length,
       pendingBytes,
       drainedFiles: this.drainedFiles,
       updatedAt: new Date().toISOString(),
+      byKind,
+      eta,
+      ...(overflow !== undefined ? { overflow } : {}),
       ...(this.lastFailure !== undefined ? { lastFailure: this.lastFailure } : {}),
       ...(this.lastSuccessAt !== undefined ? { lastSuccessAt: this.lastSuccessAt } : {}),
     }
@@ -92,8 +145,12 @@ export class CaptureQueue {
         continue
       }
       if (this.processor) {
+        const startedAt = performance.now()
+        let workChunks = 0
         try {
-          await this.processor(await this.parse(draining))
+          const parsed = await this.parse(draining)
+          workChunks = countWork(parsed)
+          await this.processor(parsed)
         } catch (error) {
           // The drain no longer re-queues SILENTLY (the founder's wall): classify why it failed and record
           // it so GET /queue / Status / the Try-it card can surface the real reason. A non-invoke error
@@ -107,6 +164,9 @@ export class CaptureQueue {
           await rename(draining, pending).catch(() => undefined)
           continue
         }
+        // A successful drain is one honest rate sample (work-chunks over processor ms) for the ETA.
+        this.drainSamples.push({ chunks: workChunks, ms: performance.now() - startedAt })
+        if (this.drainSamples.length > DRAIN_SAMPLE_WINDOW) this.drainSamples.shift()
       } else {
         logger(`queue drain no-op processed ${file}`)
       }

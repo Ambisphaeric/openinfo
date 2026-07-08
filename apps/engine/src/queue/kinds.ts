@@ -67,4 +67,9 @@ export function tallyFile(chunks: readonly CaptureChunk[], fileBytes: number, in
   return into
 }
 
+/** Count the WORK chunks (non-focus) in a file — the drain-rate numerator, so it matches the
+ * focus-excluded backlog the ETA divides (eta.ts). */
+export const countWork = (chunks: readonly CaptureChunk[]): number =>
+  chunks.reduce((n, c) => (classifyKind(c) === 'focus' ? n : n + 1), 0)
+
 export { emptyByKind }

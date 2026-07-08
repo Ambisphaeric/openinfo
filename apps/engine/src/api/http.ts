@@ -167,7 +167,20 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     // When a drain re-queues (a transcribe/distill invoke failed), classify WHY and record it on the queue
     // so GET /queue, Status, and the Try-it card surface the real reason instead of re-queuing silently
     // forever (the founder's wall). A model-load failure's hint is enriched with the loaded-model suggestion.
-  }, toQueueFailure)
+  }, toQueueFailure,
+    // Typed-queue envelope seams (P4A slice 3), READ-ONLY, injected so the queue keeps zero fabric/store
+    // imports (the describeFailure precedent). measuredTokPerSec: the primary (fabric-order first) llm
+    // endpoint's benchmarked tok/s — the envelope's measured side, surfaced as ETA context (never
+    // converted to an ETA in v0). overflow: the active mode's declared overflow policy mapped to the
+    // status tri-state; only queue-for-idle is enforced in v0 (degrade-cadence is client-side capture,
+    // drop would violate never-lose-capture — both declared-but-inert, see PHASE4-NOTES).
+    () => fabric.load().slots.llm[0]?.measured?.tokPerSec,
+    () => {
+      const raw = distillDocs.mode().overflow
+      const policy = raw === 'degrade' ? 'degrade-cadence' : raw === 'drop' ? 'drop' : 'queue-for-idle'
+      return { policy, enforced: policy === 'queue-for-idle' }
+    },
+  )
 
   // Act v0 (the first Act node): the follow-up draft. It rides session END, not the chunk drain —
   // see PHASE2-NOTES for the direct-trigger (vs DAG) and ≤60s decisions. On session.ended, when
