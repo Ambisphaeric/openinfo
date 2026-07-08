@@ -5,7 +5,7 @@ import { isFlagEnabled } from '../flags/read.js'
 import { ScreenOcrProcessor, type ScreenOcrInvoke } from './processor.js'
 import { registerScreenProcessor } from './registry.js'
 
-export { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenOcrProcessorDeps } from './processor.js'
+export { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenVlmInvoke, type ScreenOcrProcessorDeps } from './processor.js'
 export { handleScreen, type ScreenRouterContext } from './router.js'
 export { getScreenProcessor, registerScreenProcessor } from './registry.js'
 
@@ -50,6 +50,13 @@ export const wireScreenOcr = (app: ScreenWiringApp, options: ScreenWiringOptions
   })
   registerScreenProcessor(app.store, processor)
   app.bus.subscribe('capture.received', (chunk) => {
+    // Screen understanding has ONE owner (P4A×P4B joint slice, avoids double-processing): with
+    // workflow.enabled ON the workflow executor's ocr/vlm DRAIN stage owns it (it reaches this same
+    // registered processor via runOnDrain), so the ingest path DEFERS; OFF ⇒ the ingest processor owns
+    // it (the legacy path, gated on screen.ocr inside process()). Read per-frame so the flag is
+    // hot-flippable — flipping workflow.enabled hands screen understanding between the two paths with no
+    // restart, exactly as it does for distill/act in api/http.ts.
+    if (isFlagEnabled(app.store, 'workflow.enabled')) return
     void processor.process(chunk)
   })
   return processor

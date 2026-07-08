@@ -4,10 +4,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Fabric, OcrResult } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Fabric, OcrResult, VlmInvokeParams, WorkflowStep } from '@openinfo/contracts'
 import { AggregateInvokeError, FabricDocuments, type ClassifiedFailure, type ScreenTextResult } from '../fabric/index.js'
 import { WorkspaceRegistry } from '../store/index.js'
-import { ScreenOcrProcessor, type ScreenOcrInvoke } from './processor.js'
+import { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenVlmInvoke } from './processor.js'
 
 /** A PaddleHub ocr_system region — [box corners], text, confidence — as the real serving returns it. */
 interface PaddleRegion {
@@ -222,5 +222,76 @@ test('the last-failures ring is bounded to failureRingSize, keeping the newest',
     assert.equal(status.failed, 3)
     assert.equal(status.lastFailures.length, 2)
     assert.deepEqual(status.lastFailures.map((f) => f.endpoint), ['ep-2', 'ep-3'])
+  })
+})
+
+// --- runOnDrain: the workflow executor's ocr/vlm DRAIN stage (P4A×P4B joint slice) ------------------
+const ocrStep = (over: Partial<WorkflowStep> = {}): WorkflowStep =>
+  ({ id: 'screen-ocr', kind: 'ocr', slot: 'ocr', trigger: 'drain', when: { flag: 'screen.ocr' }, params: {}, ...over })
+
+test('runOnDrain: an ocr step recognizes the batch screen frames via the ocr slot → OcrResult + distillate persisted', async () => {
+  await withStore(async (store) => {
+    const seen: string[] = []
+    const invoke: ScreenOcrInvoke = async (params): Promise<ScreenTextResult> => {
+      seen.push(params.image)
+      return { text: 'PR #7 — wire ocr drain', blocks: [{ text: 'PR #7 — wire ocr drain' }], endpoint: 'paddle', model: 'pp-ocrv4', slot: 'ocr' }
+    }
+    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke, newId: counterId() })
+    // The batch: one image, its companion meta chunk, and an audio chunk — only the image is recognized.
+    await processor.runOnDrain([imageChunk(), metaChunk(), imageChunk({ id: 'x', source: 'mic', contentType: 'audio/webm' })], ocrStep())
+    assert.equal(seen.length, 1) // only the image frame invoked
+    const stored = store.listOcrResults('default')
+    assert.equal(stored.length, 1)
+    assert.equal(stored[0]!.text, 'PR #7 — wire ocr drain')
+    assert.equal(stored[0]!.provenance.slot, 'ocr')
+    assert.equal(store.listDistillates('default').length, 1)
+    const s = processor.status()
+    assert.deepEqual([s.processed, s.blank, s.skipped, s.failed], [1, 0, 1, 0]) // meta counted as skipped
+  })
+})
+
+test('runOnDrain: a vlm step invokes the VLM slot with the step prompt (not the ocr slot)', async () => {
+  await withStore(async (store) => {
+    let ocrCalled = false
+    const invoke: ScreenOcrInvoke = async () => {
+      ocrCalled = true
+      throw new Error('ocr slot must not be called for a vlm step')
+    }
+    const prompts: string[] = []
+    const invokeVlm: ScreenVlmInvoke = async (params: VlmInvokeParams): Promise<ScreenTextResult> => {
+      prompts.push(params.prompt)
+      return { text: 'a code editor with a failing test', endpoint: 'qwen-vl', slot: 'vlm' }
+    }
+    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke, invokeVlm, newId: counterId() })
+    await processor.runOnDrain([imageChunk()], ocrStep({ id: 'screen-vlm', kind: 'vlm', slot: 'vlm', params: { prompt: 'What is on screen?' } }))
+    assert.equal(ocrCalled, false)
+    assert.deepEqual(prompts, ['What is on screen?'])
+    const stored = store.listOcrResults('default')
+    assert.equal(stored.length, 1)
+    assert.equal(stored[0]!.provenance.slot, 'vlm')
+    assert.equal(stored[0]!.text, 'a code editor with a failing test')
+  })
+})
+
+test('runOnDrain: an invoke throw PROPAGATES (real drain work → re-queue), NOT swallowed into the ring', async () => {
+  await withStore(async (store) => {
+    const invoke: ScreenOcrInvoke = async () => {
+      throw new AggregateInvokeError('ocr', 'no ocr endpoint answered', [{ class: 'unreachable', endpoint: 'paddle', url: 'u', hint: 'h' }])
+    }
+    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke })
+    await assert.rejects(() => processor.runOnDrain([imageChunk()], ocrStep()), /no ocr endpoint answered/)
+    // Drain failures are the QUEUE's health, not the processor ring — so the ring stays empty here.
+    assert.equal(processor.status().lastFailures.length, 0)
+    assert.equal(store.listOcrResults('default').length, 0)
+  })
+})
+
+test('runOnDrain: an empty recognition is a blank frame — neither record persisted, counted as blank', async () => {
+  await withStore(async (store) => {
+    const invoke: ScreenOcrInvoke = async (): Promise<ScreenTextResult> => ({ text: '', endpoint: 'paddle', slot: 'ocr' })
+    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke })
+    await processor.runOnDrain([imageChunk()], ocrStep())
+    assert.equal(store.listOcrResults('default').length, 0)
+    assert.deepEqual([processor.status().blank, processor.status().processed], [1, 0])
   })
 })

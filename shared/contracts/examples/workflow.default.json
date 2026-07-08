@@ -1,6 +1,7 @@
 { "id": "workflow-default", "name": "default pipeline", "version": 1,
-  "description": "Mirror of today's pipeline (apps/engine/src/api/http.ts): on the queue drain, transcribe? -> distill -> the moments/index extras -> task-extract (P4A slice 4, gated act.tasks, default OFF); the follow-up-draft act rides session.ended, not the drain. Each step's when.flag gates that behavior; the executor coalesces the drain distill-family steps into one distiller call and runs drain acts (task-extract) best-effort after it.",
+  "description": "Mirror of today's pipeline (apps/engine/src/api/http.ts): on the queue drain, screen-ocr (P4A×P4B joint slice, gated screen.ocr, default OFF) -> transcribe? -> distill -> the moments/index extras -> task-extract (P4A slice 4, gated act.tasks, default OFF); the follow-up-draft act rides session.ended, not the drain. Each step's when.flag gates that behavior; the ocr step recognizes source:'screen' frames into an OcrResult + distillate (real drain work — throws re-queue), the executor coalesces the drain distill-family steps into one distiller call and runs drain acts (task-extract) best-effort after it.",
   "steps": [
+    { "id": "screen-ocr", "kind": "ocr", "slot": "ocr", "trigger": "drain", "when": { "flag": "screen.ocr" }, "params": {} },
     { "id": "transcribe", "kind": "transcribe", "slot": "stt", "trigger": "drain", "when": { "flag": "distill.transcribe" }, "params": {} },
     { "id": "distill", "kind": "distill", "slot": "llm", "templateId": "tpl-distill-default", "trigger": "drain", "when": { "flag": "distill.enabled" }, "params": {} },
     { "id": "moments", "kind": "moments", "trigger": "drain", "when": { "flag": "distill.moments" }, "params": {} },

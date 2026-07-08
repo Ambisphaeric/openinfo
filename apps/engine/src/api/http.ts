@@ -12,9 +12,9 @@ import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from 
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
-import { WorkflowDocuments, WorkflowExecutor } from '../workflow/index.js'
+import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
 import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, type SetupData } from '../surfaces/index.js'
-import { handleScreen } from '../screen/index.js'
+import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -221,11 +221,21 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // retry-at-idle propagation (transcribe/distill throws bubble out so the drain re-queues), same
   // drain-first flush before the act. drainActs adds the task-extract drain act (best-effort, gated
   // act.tasks). See PHASE4-NOTES for the byte-for-byte proof + the drain-vs-session-end decision.
+  // The screen-recognition drain seam (P4A×P4B joint slice): the executor's ocr/vlm steps delegate to the
+  // screen processor's runOnDrain (invokeOcr/invokeVlm → OcrResult + distillate, persisted). The processor
+  // is wired POST-createEngineApp by wireScreenOcr (P4B's charter keeps screen wiring out of this file), so
+  // it is reached LAZILY at drain time through the same store-keyed registry bridge the /screen router uses
+  // — not held as a reference here. Absent (a bare app with no wireScreenOcr) ⇒ the ocr/vlm steps
+  // skip-with-log in the executor. Double-processing with the ingest path is avoided in screen/index.ts:
+  // the ingest subscription defers while workflow.enabled is ON, so screen understanding has ONE owner.
+  const recognizeScreen: ScreenRunner = (chunks, step) =>
+    getScreenProcessor(store)?.runOnDrain(chunks, step) ?? Promise.resolve()
   executor = new WorkflowExecutor({
     store,
     docs: workflow,
     distill: (chunks, opts) => distiller.distillChunks(chunks, opts),
     transcribe: runTranscribe,
+    recognizeScreen,
     drainNow: () => queue.drainNow(log),
     acts: { 'follow-up-draft': async (session) => void (await actor.runFollowUpDraft(session)) },
     drainActs: { 'task-extract': (chunks, step) => taskExtractor.runOnDrain(chunks, step) },

@@ -641,10 +641,81 @@ node apps/engine/dist/main.js`; wired via `main.js`'s `wireScreenOcr`), NO workf
 - **`runtime:'paddle'` managed-local** — a spawned PaddleOCR runtime (invokeOcr falls through `local` ocr
   endpoints today; no `RUNTIME_SPECS` entry). Same future as a managed local vlm; no `LocalRuntimeManager`
   in the screen wiring until then.
-- **Workflow-step integration** — `ocr`/`vlm` are homed in the `WorkflowStepKind` union (P4A slice 1) but
-  the screen processor rides capture ingest directly today; folding screen understanding into the workflow
-  executor as an `ocr`/`vlm` step is the small JOINT slice after P4A's executor and this both land.
+- **Workflow-step integration** — DONE, see "## P4A×P4B JOINT SLICE" below.
 - **`capture.received` payload slimming** — `http.ts` rebroadcasts the FULL CaptureChunk (incl. the base64
   image) over the event feed; slimming that is an http.ts-owned (P4A) concern, not this branch's.
 - **A distillates read route / `/query` distillates source** — screen distillates currently surface only
   via `distillate.updated` + the workspace DB; a first-class read surface is unscoped here.
+
+## P4A×P4B JOINT SLICE — screen understanding as a workflow drain step  *(branch `p4ab-joint`, DONE 2026-07-08)*
+
+Folds P4B's screen understanding into P4A's workflow executor as the `ocr`/`vlm` drain stage (the tail
+listed in both P4A's CLOSE-OUT and P4B's deferred). No contract change — `WorkflowStepKind` already homed
+`ocr`/`vlm` and the screen-chunk records already exist on both sides.
+
+### What landed
+- **Executor drain stage** (`workflow/executor.ts`): a new injected `recognizeScreen` seam (type
+  `ScreenRunner`), driven for each `ocr`/`vlm` drain step. It runs at the TOP of `runDrain` — before the
+  distill gate — in document order among the screen steps, gated per-step by `when`. Mirrors the
+  `distill`/`transcribe` seam injection; NOT the best-effort `drainActs` pattern. A gated-ON step with no
+  seam registered skips-with-log; gated-OFF is silent (behavior-identical default).
+- **Processor drain entry** (`screen/processor.ts`): `runOnDrain(chunks, step)` recognizes the batch's
+  `source:'screen'` IMAGE frames through the slot the STEP names (`ocr` → `invokeOcr`, `vlm` → `invokeVlm`
+  with `step.params.prompt` or a default screen prompt), persisting the SAME `OcrResult` + `Distillate` the
+  ingest path builds — the build+persist+publish body is extracted into a shared `persist()` so both paths
+  emit byte-identical records. Counters feed `/screen/status` for the workflow path too.
+- **Wiring** (`api/http.ts`): the seam is `(chunks, step) => getScreenProcessor(store)?.runOnDrain(...)`.
+  The processor is wired POST-`createEngineApp` by `wireScreenOcr` (P4B's charter keeps screen wiring out
+  of this P4A-owned file), so the seam reaches it LAZILY at drain time through the SAME store-keyed
+  registry (`screen/registry.ts`) bridge the `/screen` router already uses — one processor instance, shared
+  by the router (status) and the executor (drain). No new construction in `http.ts`.
+- **Seeded default** (`shared/contracts/examples/workflow.default.json`): a `screen-ocr` step (kind `ocr`,
+  slot `ocr`, `when: screen.ocr`) added before `transcribe`. Behavior-identical when `workflow.enabled` OFF
+  (the executor is inert; the legacy ingest path is untouched). No `vlm` step in the default — the default
+  mirrors "today's pipeline" (screen understanding = OCR, VLM-fallback inside `invokeOcr`); a `vlm` step is
+  available for a user who edits the workflow, but shipping both `ocr`+`vlm` in the default would recognize
+  every frame twice.
+
+### The double-processing rule (the decision the hand-off asked for)
+**Screen understanding has exactly ONE owner, selected by `workflow.enabled`** — the same master switch that
+already routes distill/act between the legacy direct-wiring and the executor:
+- `workflow.enabled` **OFF** → the ingest-time processor owns it (rides `capture.received`, gated
+  `screen.ocr`) — the legacy P4B path, untouched.
+- `workflow.enabled` **ON** → the executor's `ocr`/`vlm` drain stage owns it (gated `screen.ocr`); the
+  **ingest subscription DEFERS** (`screen/index.ts`: `if (isFlagEnabled(store,'workflow.enabled')) return`
+  before `process()`), so a frame is never recognized twice.
+
+Why this rule (smallest coherent): it reuses the existing "`workflow.enabled` is the legacy↔executor master
+switch" pattern rather than inventing a new gate; the defer lives in ONE line at the ingest subscription; it
+reads the flag per-frame so flipping `workflow.enabled` hands ownership between the two paths with no
+restart. The e2e proves it: both flags ON ⇒ exactly ONE `OcrResult` on `/screen/results`.
+
+### Failure / ordering decisions
+- **Propagation (real drain work).** `runOnDrain` throws PROPAGATE out of the executor so the queue
+  re-queues the batch (retry-at-idle) and classifies the failure onto `GET /queue` — like `distill`/
+  `transcribe`, unlike the best-effort `drainActs`. The drain-failure home is the QUEUE's `lastFailure`, so
+  `runOnDrain` does NOT record into the processor's ingest failure ring (that ring stays the ingest path's
+  health).
+- **Order: OCR before the distill gate.** Screen recognition runs first and independently of
+  `distill.enabled` (a frame is understood by OCR, not the transcript distiller — matching the ingest
+  processor). Placing it before the distill call keeps an OCR failure's re-queue CLEAN for the flagship
+  screen-only batch (distill has persisted nothing yet).
+- **Known v0 limitation (documented, not fixed).** Whole-file re-queue granularity: in a MIXED batch, if a
+  screen frame is recognized (persisted) and a LATER stage in the same batch throws, the retry re-recognizes
+  the already-persisted frame → duplicate `OcrResult`. Same class as the deferred "DrainSample clean fix" /
+  re-queue-granularity note; low-risk for the screen-only flagship case where distill has no work to fail.
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Engine **374** (from 364: +4 `processor.test`
+drain-stage unit tests — ocr slot / vlm slot+prompt / propagating throw / blank; +5 net `executor.test`
+[replaced the "no executor path yet" stub with 6 seam tests]; +1 `screen/workflow-e2e.test` — both flags ON
+→ one OcrResult, the double-processing proof). Contracts **60**, client **154**, unchanged. The one
+intermittent failure observed under the full run is the PRE-EXISTING `route.detect` focus-timing e2e flake
+(passes 2/3 in isolation, in `route/`, untouched here) — the same drain-timing flake class PHASE4 already
+records. LIVE OCR was verified end-to-end in the P4B slice-4 note (glm-ocr on LM Studio); this slice reuses
+that exact recognition core (the shared `persist()`), driven from the drain instead of ingest.
+
+### Deferred (still, out of this joint slice)
+- A GET/PUT `/workflows` edit route (the executor already reads the doc hot; only the route is missing).
+- `/screen/status` counters reflect only whichever path is the active owner; a per-path breakdown is unbuilt.
+- The whole-file re-queue-granularity fix (above) and the P4B tails (Δ-gating, managed-local paddle/vlm).

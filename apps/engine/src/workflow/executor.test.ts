@@ -20,6 +20,8 @@ const fakeDocs = (spec: WorkflowSpec): WorkflowDocuments => ({ active: () => spe
 
 const chunk = (id: string): CaptureChunk =>
   ({ id, sessionId: 's1', workspaceId: 'default', source: 'mic', sequence: 0, capturedAt: '2026-07-08T00:00:00.000Z', contentType: 'text/plain', encoding: 'utf8', data: 'x' }) as CaptureChunk
+const screenChunk = (id: string): CaptureChunk =>
+  ({ id, sessionId: 's1', workspaceId: 'default', source: 'screen', sequence: 0, capturedAt: '2026-07-08T00:00:00.000Z', contentType: 'image/jpeg', encoding: 'base64', data: 'aW1n' }) as CaptureChunk
 const session = (): Session => ({ id: 's1' }) as unknown as Session
 
 // The behavior-identical default document (the shape the executor coalesces): transcribe? -> distill ->
@@ -41,14 +43,15 @@ interface Spy {
   drainNowCalls: number
   actCalls: string[]
   drainActCalls: string[]
+  screenCalls: { stepId: string; kind: string; count: number }[]
   logs: string[]
 }
 const build = (
   flags: Record<string, boolean>,
   spec = defaultSpec(),
-  opts: { transcribeThrows?: boolean; distillThrows?: boolean; acts?: string[]; drainActs?: string[]; drainActThrows?: string } = {},
+  opts: { transcribeThrows?: boolean; distillThrows?: boolean; acts?: string[]; drainActs?: string[]; drainActThrows?: string; recognizeScreen?: boolean; screenThrows?: boolean } = {},
 ) => {
-  const spy: Spy = { transcribeCalls: 0, distillCalls: [], drainNowCalls: 0, actCalls: [], drainActCalls: [], logs: [] }
+  const spy: Spy = { transcribeCalls: 0, distillCalls: [], drainNowCalls: 0, actCalls: [], drainActCalls: [], screenCalls: [], logs: [] }
   const acts: Record<string, (s: Session) => Promise<void>> = {}
   for (const id of opts.acts ?? ['follow-up-draft']) acts[id] = async () => void spy.actCalls.push(id)
   const drainActs: Record<string, (c: readonly CaptureChunk[]) => Promise<void>> = {}
@@ -66,9 +69,24 @@ const build = (
     drainNow: async () => void (spy.drainNowCalls += 1),
     acts,
     drainActs,
+    ...(opts.recognizeScreen
+      ? {
+          recognizeScreen: async (chunks: readonly CaptureChunk[], step: { id: string; kind: string }) => {
+            if (opts.screenThrows) throw new Error('ocr down')
+            spy.screenCalls.push({ stepId: step.id, kind: step.kind, count: chunks.filter((c) => c.source === 'screen').length })
+          },
+        }
+      : {}),
     log: (m) => void spy.logs.push(m),
   })
   return { executor, spy }
+}
+
+/** The default spec with an `ocr` drain step (gated screen.ocr), as the seeded default now carries. */
+const withScreenOcr = (): WorkflowSpec => {
+  const spec = defaultSpec()
+  spec.steps.splice(1, 0, { id: 'screen-ocr', kind: 'ocr', slot: 'ocr', trigger: 'drain', when: { flag: 'screen.ocr' }, params: {} })
+  return spec
 }
 
 /** A drain-triggered task-extract act step (gated act.tasks), appended to the default spec. */
@@ -124,13 +142,47 @@ test('runDrain: a distill throw PROPAGATES (drain re-queues, retry-at-idle)', as
   await assert.rejects(() => executor.runDrain([chunk('a')]), /llm down/)
 })
 
-test('runDrain: unwired kinds (ocr/vlm) on the drain skip-with-log, never crash; the distill still runs', async () => {
-  const spec = defaultSpec()
-  spec.steps.push({ id: 'screen-ocr', kind: 'ocr', trigger: 'drain', params: {} })
-  const { executor, spy } = build({ 'distill.enabled': true }, spec)
-  await executor.runDrain([chunk('a')])
+test('runDrain: an ocr step gated ON with a seam runs the screen-recognition drain stage', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'screen.ocr': true }, withScreenOcr(), { recognizeScreen: true })
+  await executor.runDrain([chunk('a'), screenChunk('img')])
+  assert.equal(spy.distillCalls.length, 1) // distill still ran
+  assert.deepEqual(spy.screenCalls, [{ stepId: 'screen-ocr', kind: 'ocr', count: 1 }])
+})
+
+test('runDrain: an ocr step gated OFF (default) is skipped SILENTLY — behavior-identical, seam never called', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'screen.ocr': false }, withScreenOcr(), { recognizeScreen: true })
+  await executor.runDrain([chunk('a'), screenChunk('img')])
   assert.equal(spy.distillCalls.length, 1)
-  assert.ok(spy.logs.some((l) => l.includes('screen-ocr') && l.includes('no executor path yet')))
+  assert.deepEqual(spy.screenCalls, [])
+  assert.ok(!spy.logs.some((l) => l.includes('screen-ocr'))) // no noise for the OFF default
+})
+
+test('runDrain: an ocr step gated ON with NO seam registered skips-with-log, never crashes; distill still runs', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'screen.ocr': true }, withScreenOcr())
+  await executor.runDrain([chunk('a'), screenChunk('img')])
+  assert.equal(spy.distillCalls.length, 1)
+  assert.ok(spy.logs.some((l) => l.includes('screen-ocr') && l.includes('no screen-recognition seam')))
+})
+
+test('runDrain: a screen-recognition throw PROPAGATES (drain re-queues) — NOT best-effort, and BEFORE distill runs', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'screen.ocr': true }, withScreenOcr(), { recognizeScreen: true, screenThrows: true })
+  await assert.rejects(() => executor.runDrain([screenChunk('img')]), /ocr down/)
+  assert.equal(spy.distillCalls.length, 0) // ocr runs before the distill gate, so distill never persisted
+})
+
+test('runDrain: screen recognition runs INDEPENDENTLY of distill.enabled (a frame is understood by OCR, not the distiller)', async () => {
+  const { executor, spy } = build({ 'distill.enabled': false, 'screen.ocr': true }, withScreenOcr(), { recognizeScreen: true })
+  await executor.runDrain([screenChunk('img')])
+  assert.equal(spy.distillCalls.length, 0) // distill OFF, correctly skipped
+  assert.deepEqual(spy.screenCalls, [{ stepId: 'screen-ocr', kind: 'ocr', count: 1 }]) // but screen still recognized
+})
+
+test('runDrain: a vlm step routes to the same seam carrying its kind', async () => {
+  const spec = defaultSpec()
+  spec.steps.splice(1, 0, { id: 'screen-vlm', kind: 'vlm', slot: 'vlm', trigger: 'drain', when: { flag: 'screen.ocr' }, params: {} })
+  const { executor, spy } = build({ 'distill.enabled': true, 'screen.ocr': true }, spec, { recognizeScreen: true })
+  await executor.runDrain([screenChunk('img')])
+  assert.deepEqual(spy.screenCalls, [{ stepId: 'screen-vlm', kind: 'vlm', count: 1 }])
 })
 
 test('runDrain: task-extract drain act — gated ON with a runner RUNS after the distill pass', async () => {
