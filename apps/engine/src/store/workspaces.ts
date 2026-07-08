@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Draft, Entity, EntityProvenance, Moment, Session, Workspace } from '@openinfo/contracts'
+import type { Distillate, Draft, Entity, EntityProvenance, Moment, OcrResult, Session, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { LayoutStore } from './layouts.js'
@@ -120,6 +120,33 @@ export class WorkspaceRegistry {
       ? (db.prepare('select body from distillates where session_id = ? order by created_at').all(sessionId) as { body: string }[])
       : (db.prepare('select body from distillates order by created_at').all() as { body: string }[])
     return rows.map((row) => JSON.parse(row.body) as Distillate)
+  }
+
+  /**
+   * Persist an OCR/VLM screen-understanding result to its workspace's OWN sqlite file (P4B). Mirrors
+   * saveDistillate exactly — session-scoped, workspace created on demand, idempotent per id — because an
+   * OcrResult is the screen-understanding analogue of a distillate (raw frames expire once understood,
+   * just as raw transcript chunks expire once distilled). Only this path writes OcrResults (DB-handle rule).
+   */
+  saveOcrResult(result: OcrResult): OcrResult {
+    this.ensureWorkspace({ id: result.workspaceId, name: result.workspaceId })
+    const db = this.openWorkspace(result.workspaceId)
+    db.prepare('insert or replace into ocr_results (id, session_id, created_at, body) values (?, ?, ?, ?)').run(
+      result.id,
+      result.sessionId,
+      result.createdAt,
+      JSON.stringify(result),
+    )
+    return result
+  }
+
+  /** List a workspace's OcrResults (default all), oldest first; `sessionId` narrows to one session. */
+  listOcrResults(workspaceId: string, sessionId?: string): OcrResult[] {
+    const db = this.openWorkspace(workspaceId)
+    const rows = sessionId
+      ? (db.prepare('select body from ocr_results where session_id = ? order by created_at').all(sessionId) as { body: string }[])
+      : (db.prepare('select body from ocr_results order by created_at').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as OcrResult)
   }
 
   /**
@@ -295,8 +322,8 @@ export class WorkspaceRegistry {
    * (Phase 3, the correction loop the router's mistakes require; IMPLEMENTATION §3 risk register).
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
    *
-   * WHAT MOVES: the session record, its distillates, moments, and drafts (everything keyed by
-   * sessionId). ENTITIES are workspace-level aggregates, not session-keyed, so they are re-aggregated
+   * WHAT MOVES: the session record, its distillates, moments, drafts, and OcrResults (everything keyed
+   * by sessionId). ENTITIES are workspace-level aggregates, not session-keyed, so they are re-aggregated
    * (see below), never blindly copied.
    *
    * CRASH-SAFETY (v0, honest): sqlite transactions are per-file, so a move across two files cannot be
@@ -334,6 +361,7 @@ export class WorkspaceRegistry {
     const distillates = this.listDistillates(fromWorkspaceId, sessionId)
     const moments = this.listMoments(fromWorkspaceId, sessionId)
     const drafts = this.listDrafts(fromWorkspaceId, sessionId)
+    const ocrResults = this.listOcrResults(fromWorkspaceId, sessionId)
     const movedDistillateIds = new Set(distillates.map((d) => d.id))
     const movedMomentIds = new Set(moments.map((m) => m.id))
 
@@ -376,6 +404,10 @@ export class WorkspaceRegistry {
         const moved: Draft = { ...draft, workspaceId: toWorkspaceId }
         toDb.prepare('insert or replace into drafts (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
       }
+      for (const result of ocrResults) {
+        const moved: OcrResult = { ...result, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into ocr_results (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
+      }
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
@@ -388,6 +420,7 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from moments where session_id = ?').run(sessionId)
       fromDb.prepare('delete from distillates where session_id = ?').run(sessionId)
       fromDb.prepare('delete from drafts where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from ocr_results where session_id = ?').run(sessionId)
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
@@ -537,6 +570,9 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists drafts (id text primary key, session_id text not null, created_at text not null, body text not null)',
+    ).run()
+    db.prepare(
+      'create table if not exists ocr_results (id text primary key, session_id text not null, created_at text not null, body text not null)',
     ).run()
     this.workspaceHandles.set(id, db)
     return db
