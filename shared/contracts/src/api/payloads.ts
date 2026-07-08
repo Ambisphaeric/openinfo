@@ -113,6 +113,30 @@ export const QueueStatus = Type.Object(
 export type QueueStatus = Static<typeof QueueStatus>
 
 /**
+ * The screen-OCR processor's status (GET /screen/status; P4B). The screen processor rides capture
+ * ingest (NOT the queue drain — it is not owned by queue/), so its health has no home on QueueStatus;
+ * this is that home. `enabled` echoes the `screen.ocr` flag (read per-frame). The counters are the
+ * frames the processor has seen since the engine started: `processed` produced an OcrResult + a
+ * distillate; `blank` were recognized as empty (a blank frame — persisted as neither, see PHASE4-NOTES);
+ * `skipped` were the companion ScreenFrameMeta chunks (utf8/json) it correctly ignores; `failed` threw
+ * an invoke error. `lastFailures` is a bounded ring of the most-recent classified failures — the same
+ * QueueFailure taxonomy the drain records, so "why nothing was recognized" reads identically. In-memory
+ * (resets on restart), value-free re keys (a QueueFailure carries a keyRef, never a value).
+ */
+export const ScreenStatus = Type.Object(
+  {
+    enabled: Type.Boolean({ description: 'the screen.ocr flag state (read per-frame)' }),
+    processed: Type.Integer({ minimum: 0, description: 'frames that produced an OcrResult + distillate' }),
+    blank: Type.Integer({ minimum: 0, description: 'frames recognized as empty (a blank frame; no record persisted)' }),
+    skipped: Type.Integer({ minimum: 0, description: 'companion ScreenFrameMeta (utf8/json) chunks correctly ignored' }),
+    failed: Type.Integer({ minimum: 0, description: 'frames whose OCR/VLM invoke threw (recorded in lastFailures)' }),
+    lastFailures: Type.Array(QueueFailure, { description: 'bounded ring of the most-recent classified frame failures (newest last)' }),
+  },
+  { $id: 'ScreenStatus', additionalProperties: false },
+)
+export type ScreenStatus = Static<typeof ScreenStatus>
+
+/**
  * One row of the relevant-now join (Index v0): a ranked entity together with the recent moments
  * that reference it. The score is the recency×frequency rank at query time; the joined moments
  * carry their own provenance so a surfaced entity's relevance is inspectable (product principle 1).

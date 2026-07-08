@@ -1,0 +1,110 @@
+{
+  "$id": "ScreenStatus",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "enabled",
+    "processed",
+    "blank",
+    "skipped",
+    "failed",
+    "lastFailures"
+  ],
+  "properties": {
+    "enabled": {
+      "description": "the screen.ocr flag state (read per-frame)",
+      "type": "boolean"
+    },
+    "processed": {
+      "minimum": 0,
+      "description": "frames that produced an OcrResult + distillate",
+      "type": "integer"
+    },
+    "blank": {
+      "minimum": 0,
+      "description": "frames recognized as empty (a blank frame; no record persisted)",
+      "type": "integer"
+    },
+    "skipped": {
+      "minimum": 0,
+      "description": "companion ScreenFrameMeta (utf8/json) chunks correctly ignored",
+      "type": "integer"
+    },
+    "failed": {
+      "minimum": 0,
+      "description": "frames whose OCR/VLM invoke threw (recorded in lastFailures)",
+      "type": "integer"
+    },
+    "lastFailures": {
+      "description": "bounded ring of the most-recent classified frame failures (newest last)",
+      "type": "array",
+      "items": {
+        "$id": "QueueFailure",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "class",
+          "endpoint",
+          "hint",
+          "at"
+        ],
+        "properties": {
+          "class": {
+            "description": "the detected failure class — the difference the founder asked the system to tell apart",
+            "anyOf": [
+              {
+                "const": "unreachable",
+                "type": "string"
+              },
+              {
+                "const": "timeout",
+                "type": "string"
+              },
+              {
+                "const": "auth",
+                "type": "string"
+              },
+              {
+                "const": "model-load",
+                "type": "string"
+              },
+              {
+                "const": "bad-response",
+                "type": "string"
+              },
+              {
+                "const": "reasoning-exhausted",
+                "type": "string"
+              }
+            ]
+          },
+          "endpoint": {
+            "description": "the endpoint name the invoke failed on (never a secret value)",
+            "type": "string"
+          },
+          "model": {
+            "description": "the model that was asked for, when the endpoint names one",
+            "type": "string"
+          },
+          "keyRef": {
+            "description": "the auth keyRef involved on an auth failure — the REFERENCE, never the value",
+            "type": "string"
+          },
+          "serverMessage": {
+            "description": "the server's own error text (e.g. LM Studio's \"Model … failed to load\"), captured verbatim",
+            "type": "string"
+          },
+          "hint": {
+            "description": "the one-line \"what to do about it\" step",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
