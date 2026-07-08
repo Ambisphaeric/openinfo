@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Wipe + fresh-install + run openinfo on a remote test machine.
+# Wipe + fresh-install + run openinfo on a remote test machine, from the pushed
+# GitHub main branch — NOT the local checkout. This deliberately skips whatever
+# unpushed/in-progress work is sitting in your local tree: the remote only ever
+# gets what has actually landed on origin/main. Push first if you want a change
+# reflected on the remote.
 # Run this FROM the machine with the source checkout; it drives everything
-# over ssh on the remote end. Override target/version via env vars, e.g.:
-#   REMOTE_HOST=10.0.0.5 REMOTE_USER=someone tools/redeploy-remote.sh
+# over ssh on the remote end. Override target/version/source via env vars, e.g.:
+#   REMOTE_HOST=10.0.0.5 REMOTE_USER=someone BRANCH=some-branch tools/redeploy-remote.sh
 set -euo pipefail
 
 LOCAL_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,7 +19,14 @@ REMOTE_USER="${REMOTE_USER:-someone}"
 REMOTE_HOST="${REMOTE_HOST:-192.168.1.100}"
 REMOTE_PATH="${REMOTE_PATH:-openinfo}"          # relative to remote $HOME
 NODE_VERSION="${NODE_VERSION:-24.18.0}"
+BRANCH="${BRANCH:-main}"
+REPO_URL="${REPO_URL:-$(git -C "$LOCAL_PATH" remote get-url origin 2>/dev/null || true)}"
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
+
+if [ -z "$REPO_URL" ]; then
+  echo "no REPO_URL set and no 'origin' remote found locally — set REPO_URL explicitly" >&2
+  exit 1
+fi
 
 # Guard against a misconfigured REMOTE_PATH nuking something unintended.
 case "$REMOTE_PATH" in
@@ -40,11 +51,9 @@ ssh "$REMOTE" '
 echo "==> [2/5] wiping ~/${REMOTE_PATH} on ${REMOTE}"
 ssh "$REMOTE" "rm -rf ~/${REMOTE_PATH} && mkdir -p ~/${REMOTE_PATH}"
 
-echo "==> [3/5] copying fresh source from ${LOCAL_PATH}"
-rsync -az --delete \
-  --exclude='node_modules' --exclude='dist' \
-  --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='spool/' \
-  -e ssh "${LOCAL_PATH}/" "${REMOTE}:~/${REMOTE_PATH}/"
+echo "==> [3/5] cloning ${BRANCH} from ${REPO_URL} onto ${REMOTE}"
+ssh "$REMOTE" "git clone --branch '${BRANCH}' --depth 1 '${REPO_URL}' ~/${REMOTE_PATH}"
+ssh "$REMOTE" "cd ~/${REMOTE_PATH} && echo '   deployed commit:' \$(git log -1 --oneline)"
 
 echo "==> [4/5] install + build on ${REMOTE} (node ${NODE_VERSION} via nvm)"
 ssh "$REMOTE" "
