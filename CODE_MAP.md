@@ -1,6 +1,6 @@
 # openinfo — code map
 
-**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup · onboarding discovery + Get-Started lens) · 2026-07-07
+**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup · onboarding discovery + Get-Started lens · the "watch it become a moment" Try-it loop on /setup) · 2026-07-08
 **Reads with:** [ARCHITECTURE.md](./ARCHITECTURE.md) (the what) · [IMPLEMENTATION.md](./IMPLEMENTATION.md) (the when)
 This file is the **where** — including where features that don't exist yet will land, so no later phase ever
 has to invent a home (the historical failure mode).
@@ -81,7 +81,7 @@ openinfo/
 | Fabric profiles + secrets (this slice) | P2 | `engine/fabric/{profiles,secrets}.ts` + profile/secret routes; live fabric = active profile |
 | First-run / fabric setup page (forms over profile+secret docs) | P2 (built) | `engine/surfaces/setup/` — GET /setup, ENGINE-served forms over the profile+secret routes (deviates from the earlier `client/surfaces/setup/` guess: served by the engine like the workbench §6, not a client webview; the tray opens it in the browser). No new engine capability. |
 | Onboarding discovery + Get-Started lens (this slice) | P2 (built) | `engine/fabric/discover.ts` + probe-list/capability-map seed docs; `GET /fabric/discover` (DiscoverResult); the capability lens + one-button "Use this setup" in `engine/surfaces/setup/` (composes the existing profile routes — no new write semantics) |
-| Say-something verification loop (slice b) | P2 | `client/surfaces/` — client-side "speak → watch it become a moment"; mic-permission prompt in-flow. Design-noted (ARCHITECTURE §8), not built |
+| Say-something verification loop (slice b) | P2 (built) | `engine/surfaces/setup/` — the Try-it card on `/setup` ("type/speak → watch it become a moment", live off the `moment.created` WS event). REVISED home: engine-served browser page, NOT the client (the browser owns the `getUserMedia` mic prompt; works for the remote-engine workflow too). Composes existing routes only (flags/sessions/capture/WS) — no new engine capability |
 | Engine-managed local runtimes / tier zero (slice c) | P2/P3 | `engine/fabric/endpoints/local.ts` — the `local` endpoint kind's runtime lifecycle (download + spawn); invoke/health already skip `local` gracefully. Design-noted, not built |
 | LAN sweep discovery (with permission) | future | `engine/fabric/discover.ts` — a consent-gated subnet sweep (cross-host rigs). Blocked on macOS Local-Network TCC (GUI-domain LaunchAgent; see ARCHITECTURE §8 platform note) |
 | macOS Keychain secret store | P7 | `engine/fabric/secrets.ts` — `KeychainSecretStore` behind the `SecretStore` interface (drop-in for the v0 file) |

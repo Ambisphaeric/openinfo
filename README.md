@@ -96,6 +96,14 @@ and shows the result — "Found LM Studio with 36 models". Click **Use this setu
 activates a `config-1` profile for you. No ports or model trivia. (The menu-bar tray opens `/setup` too,
 and flags it "⚠ Set up models…" while the llm slot is empty.)
 
+Third — **try it, right there.** Once a model is configured, `/setup` leads with a **Try it** card: type a
+sentence (or speak, if you have a transcription server) and watch openinfo turn it into a typed moment,
+live — glyph, text, and the one-line provenance (`via <endpoint> · <model>`). This is the product, not a
+test button. Your click turns on distillation (it says so; turn it back off any time under Advanced), and
+if nothing comes back the card tells you exactly where it stopped. Verified end-to-end against real
+LM Studio: "Let us ship the onboarding slice on Thursday…" came back as a `commitment` moment in ~17s on a
+warm 8B.
+
 ```bash
 open http://localhost:8787/setup          # macOS; or just visit it in any browser
 curl localhost:8787/fabric/discover       # the same detection, as JSON (servers + a config-1 suggestion)

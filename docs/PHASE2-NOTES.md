@@ -1363,3 +1363,89 @@ This machine really runs LM Studio :1234 (36 models incl. glm-ocr variants + qwe
   first-match today); dedicated CRUD routes for the probe-list / capability-map documents (editable via the
   store; seeded-template precedent); any change to profile/secret/invoke semantics (slice a) or the
   existing Advanced editor.
+
+---
+
+## Slice: the say-something verification loop — "watch it become a moment" (2026-07-08)
+
+Onboarding's last step is not a Test button, it is the product. After "Use this setup" (slice a) an llm
+endpoint exists; the user should immediately experience the core loop — their words → distill → a typed
+moment appearing live — and where it breaks, the honest error shows with the fix attached.
+
+### Decision: the loop lives on `/setup` (engine-served, browser), NOT the Electron client
+The slice-a design note (ARCHITECTURE §8, principle 5) tentatively homed this in `apps/client/`. **Revised
+here (founder-agreed):** it is a card on the engine-served `/setup` page instead. Why: (1) the browser owns
+the mic-permission UX (`getUserMedia`) — the simplest possible TCC story, no Electron entitlement dance;
+(2) it works for the founder's **remote-engine** workflow (any browser pointed at the engine, incl. a
+machine not running the client at all — the §6 "engine speaks HTTP" property); (3) it composes only
+existing routes, so it inherits the setup surface's pure-view.ts + thin-assets.ts discipline with zero new
+engine capability. The client HUD/tray stay exactly as they are. CODE_MAP row for (b) updated accordingly.
+
+### Where the card appears + its states
+`tryItHtml(data)` in `surfaces/setup/view.ts`, rendered by `renderSetupPage` right after the banner/lens,
+so it **leads the page once configured**. Entry condition: `liveFabric.slots.llm.length > 0` — i.e. the
+complement of the first-run/lens condition, so the lens (llm empty) and the Try-it card (llm present) are
+mutually exclusive on a normal flow. After "Use this setup" → `location.href='/setup'` → llm present → the
+card is the first thing you see. States (all asserted headless in `view.test.ts`):
+- **llm empty** ⇒ card hidden ('') — the lens/banner leads instead.
+- **llm present, no stt** ⇒ the **type path only** + an honest no-voice line ("No transcription server yet
+  — type above; audio arrives once you add a Hearing (stt) endpoint in Advanced setup").
+- **llm + stt** ⇒ **both paths**; the voice button + the consent line naming `distill.transcribe`.
+- **result** ⇒ `momentResultHtml(moment, elapsedSec)` (pure, tested): glyph (`MOMENT_GLYPHS`, ●◆▲✱) +
+  text + kind + the one-line provenance `via <endpoint> · <model>` (product principle 1) + elapsed seconds.
+
+### Flag consent — the click IS the consent
+The loop needs `distill.enabled` + `distill.moments` (+ `distill.transcribe` for voice). No silent flag
+flips: the card states plainly "Trying it turns on distillation (distill.enabled, distill.moments[, …])"
+and on submit the browser flips exactly those flags via the existing `PUT /flags/:key` (reading each flag's
+doc first and toggling only `default:true`, preserving scope/description/minTier). The flags ship OFF at
+install (`flag.examples.json`, unchanged). Turn-off is honest: they are listed under Advanced setup.
+
+### Drain latency — already prompt; no nudge route added
+`POST /capture/*` calls `queue.scheduleDrain` (a `setImmediate` guarded drain) — there is **no periodic
+timer** between capture and drain. So the capture→moment round-trip is bounded purely by the two llm calls
+(distill summary + moment extraction), not by any drain interval. An `awaitable drainNow` already exists
+(the Act slice, session-end) but is not needed here. **No `POST /queue/drain` route was added** — the
+existing scheduleDrain already makes the loop live, and adding one would touch drain semantics for nothing.
+
+### The browser script (assets.ts, thin, composes existing routes only)
+`SETUP_SCRIPT` gains: `enableFlags` (consent flip), `runTryit` (flip → `POST /sessions` on the seeded
+`mode-meeting`/`default` → `POST /capture/mic` → subscribe `/events` WS), `renderMoment` (builds the card
+via DOM `textContent`, reading `MOMENT_GLYPHS` from an embedded blob — the single glyph source, no divergent
+JS table), and `tryitVoice` (`getUserMedia` → `MediaRecorder` webm ~6s → base64 → the same base64 audio/webm
+CaptureChunk the Electron client emits). Progressive status: spooled → (distillate.updated) distilling →
+(moment.created) rendered. If nothing arrives in **15s**, `diagnose()` introspects with existing reads —
+`GET /flags` (did the flags stick?), `GET /fabric` (llm configured?), `POST /fabric/test` (llm reachable?),
+`GET /moments` (did it actually land?) — and prints WHERE it stopped with the fix. Authored without
+backticks / `${` / `</script` so it embeds safely (same rule as the rest of assets.ts).
+
+### Live verification (darwin, engine on :8908, scratch data dir, :8787 left alone, killed after)
+Real LM Studio :1234 (35+ models). Ran the exact routes the card drives:
+- `GET /fabric/discover` → lm-studio reachable, all chat models → llm, `lfm2.5-embedding-350m` → embed.
+- "Use this setup": `PUT /fabric/profiles/config-1` (from the suggestion) + activate → `GET /fabric`
+  reflected it. `GET /setup` then showed **the Try-it card leading, no banner, no lens** (verified in the
+  served HTML: `class="card tryit"`, type button, honest no-voice line, `modeId:"mode-meeting"` config blob).
+- **TYPE path, real round-trip:** flip flags → start session → `POST /capture/mic` a real sentence
+  ("Let us ship the onboarding slice on Thursday and Dana will write the release notes."). The **suggestion's
+  first model was a cold 35B that aborted the 30s invoke timeout** (a real first-run gotcha — logged
+  honestly, chunk re-queued, nothing lost). Repointed llm at a warm `lfm2.5-8b-a1b-mlx` (as a user would in
+  Advanced) and it produced, in **16.7s** (two llm calls): `[commitment] "Let us ship the onboarding slice
+  Thursday, and Dana will write the release notes." — via lm-studio · lfm2.5-8b-a1b-mlx`. That is the moment
+  the card renders live off `moment.created`.
+- **VOICE path** verified as far as a headless box allows: the e2e test drives a **canned base64 audio/webm
+  chunk through a fake stt server + the real distill path** → `moment.created` on the WS + the stt server
+  was hit. Live, adding an stt endpoint flipped the served page to show the voice button + the transcribe
+  consent line. **Remaining human step (browser-only, un-automatable):** click "Or speak", grant the mic
+  prompt, speak ~6s — the MediaRecorder → base64 → `POST /capture/mic` path is the same one the test exercises.
+- Emitted `SETUP_SCRIPT` passed `node --check` (valid JS after template escaping). Engine killed; :8908 clear.
+
+### Tests
+`view.test.ts` +8 (states hidden/type-only/both-paths, glyph map, provenance line, result render+escape,
+consent scoping, embedded config). `http.test.ts` +2 e2e (TYPE: flags→session→text chunk→drain→
+`moment.created` on WS + introspection trail; VOICE: canned webm→fake stt→transcribe→distill→moment on WS).
+Engine 134 pass, contracts 37 pass, client 71 pass (seam.test.ts TOCTOU flaked once, green on rerun).
+
+### Deferred (out of this slice)
+Engine-managed local runtimes / tier zero (c); the "no server at all → offer to download" branch; a
+`POST /queue/drain` nudge (not needed — scheduleDrain is already prompt); model quality ranking in the
+suggestion (cold-35B-first is the honest first-match today); any client/HUD change; auth on `/setup`.
