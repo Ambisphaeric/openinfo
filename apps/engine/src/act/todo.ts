@@ -180,6 +180,11 @@ export class TodoDocuments {
     return this.store.layouts.getLatest<TodoList>(TODO_KIND, sessionId)?.body
   }
 
+  /** Every session's to-do list (latest version of each) — the HUD's enumeration read. */
+  list(): TodoList[] {
+    return this.store.layouts.latestOfKind<TodoList>(TODO_KIND).map((doc) => doc.body)
+  }
+
   /**
    * Persist a to-do list, stamping `version` = latest stored version + 1 (LayoutStore keeps every
    * prior version — editable history). The body is validated against the contract before write (the

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
@@ -52,6 +52,7 @@ interface HandlerContext {
   voice: VoiceDocuments
   surfaces: SurfaceDocuments
   distill: DistillDocuments
+  todos: TodoDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
@@ -259,7 +260,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('surface.updated', (surface) => ws.broadcast('surface.updated', surface))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, queue, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, todos: todoDocs, queue, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -335,6 +336,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/drafts') return send(res, 200, readDrafts(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/todos') return send(res, 200, ctx.todos.list())
+  const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
+  if (req.method === 'GET' && todo?.[1]) return getTodo(res, ctx, decodeURIComponent(todo[1]))
+  if (req.method === 'PUT' && todo?.[1]) return putTodo(req, res, ctx, decodeURIComponent(todo[1]))
   if (req.method === 'GET' && url.pathname === '/layouts/surfaces') return send(res, 200, ctx.surfaces.list())
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
@@ -818,6 +823,33 @@ function readDrafts(store: WorkspaceRegistry, url: URL): Draft[] {
   if (!store.all().some((ws) => ws.id === workspaceId)) return []
   const sessionId = url.searchParams.get('session')
   return sessionId ? store.listDrafts(workspaceId, sessionId) : store.listDrafts(workspaceId)
+}
+
+/**
+ * Serve a session's to-do document by session id — the read seam the HUD renders (a resource route,
+ * no flag, mirroring GET /drafts and GET /layouts/surfaces/:id; the DATA is gated upstream by act.tasks
+ * which produces it). Unknown session ⇒ 404 (no list exists until extraction or a user edit creates it).
+ */
+function getTodo(res: ServerResponse, ctx: HandlerContext, sessionId: string): void {
+  const list = ctx.todos.get(sessionId)
+  if (!list) return send(res, 404, { error: `no to-do list for session: ${sessionId}` })
+  send(res, 200, list)
+}
+
+/**
+ * Persist an edited to-do document (everything user-configurable is a versioned, cloneable document —
+ * this is the editable half of the constrain/unconstrain loop). The body must validate as a TodoList
+ * and its sessionId must match the route; the store stamps the next version and preserves history, so
+ * the NEXT follow-up draft reads the user's edited items via {{todo}}. No flag — a document write is a
+ * resource route, not a gated behavior (rule 3, consistent with PUT /layouts/surfaces/:id).
+ */
+async function putTodo(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, sessionId: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('TodoList', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid TodoList', details: errors })
+  const incoming = body as TodoList
+  if (incoming.sessionId !== sessionId) return send(res, 400, { error: 'to-do list sessionId does not match route' })
+  send(res, 200, ctx.todos.save(incoming))
 }
 
 /**
