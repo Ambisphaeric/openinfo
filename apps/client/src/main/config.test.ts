@@ -42,3 +42,11 @@ test('mic + system-audio capture are opt-OUT: default ON, disabled only by an ex
   assert.equal(micOnly.micEnabled, true)
   assert.equal(micOnly.systemAudioEnabled, false)
 })
+
+test('focus watching is opt-OUT: default ON, disabled only by an explicit falsy OPENINFO_FOCUS token', () => {
+  assert.equal(resolveShellConfig({}).focusEnabled, true) // default ON — but a no-op unless route.detect is also on
+  for (const off of ['0', 'false', 'off', 'no', 'OFF']) {
+    assert.equal(resolveShellConfig({ OPENINFO_FOCUS: off }).focusEnabled, false)
+  }
+  assert.equal(resolveShellConfig({ OPENINFO_FOCUS: '1' }).focusEnabled, true) // any other value leaves it on
+})

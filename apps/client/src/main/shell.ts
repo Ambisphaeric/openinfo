@@ -1,7 +1,9 @@
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, type MenuItemConstructorOptions } from 'electron'
-import type { Fabric } from '@openinfo/contracts'
+import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, type ShellConfig } from './config.js'
 import { hudWindowSpec } from './window-options.js'
 import { buildTrayMenu, trayTooltip, type TrayState } from './tray-menu.js'
@@ -13,6 +15,8 @@ import { readSavedPosition, savePosition } from './window-store.js'
 import { EngineLink } from '../engine-link/index.js'
 import { CaptureController, type CaptureState } from '../capture/capture-controller.js'
 import { CAPTURE_CHANNELS, type CaptureSourceKind, type CaptureStatus, type RawSegment } from '../capture/protocol.js'
+import { FocusPoller, detectEnabledFrom, ROUTE_DETECT_FLAG } from '../capture/focus-poller.js'
+import type { FrontmostWindow } from '../capture/focus.js'
 
 /**
  * The Electron shell — the ONLY file that imports electron, and the one tests never import (all the
@@ -50,6 +54,11 @@ let needsSetup: boolean | undefined
 let engineLink: EngineLink | undefined
 let micController: CaptureController | undefined
 let systemController: CaptureController | undefined
+// The focus (foreground-window context) poller — main-process, session-INDEPENDENT, gated on the
+// engine's route.detect flag + the local OPENINFO_FOCUS opt-out. `focusActive` mirrors whether it is
+// currently watching, for the tray's quiet "· watching context" tooltip.
+let focusPoller: FocusPoller | undefined
+let focusActive = false
 
 // Drag state: while a drag is live, `dragTimer` polls the OS cursor and the window rides it, keeping
 // `dragOffset` (the grab point within the window) constant. `saveTimer` debounces persisting the origin.
@@ -67,6 +76,7 @@ const trayState = (): TrayState => ({
   systemCapturing: systemState === 'capturing',
   systemSilent,
   needsModelSetup: needsSetup,
+  watchingContext: focusActive,
 })
 
 const refreshTray = (): void => {
@@ -331,6 +341,75 @@ const applyCaptureLifecycle = (live: boolean): void => {
   }
 }
 
+const execFileAsync = promisify(execFile)
+
+/**
+ * Read the frontmost app + window title on macOS via `osascript` (System Events) — the ONE electron/OS
+ * edge of focus capture, kept thin (like the capture renderer) and out of CI. CHOSEN over a native
+ * module (active-win lineage) for v0 because it adds ZERO dependencies and no native prebuilds to trust
+ * for Electron 38 / macOS 26; the honest cost is a TCC grant.
+ *
+ * TCC: System Events reading another app's process/window needs **Accessibility** permission (System
+ * Settings → Privacy & Security → Accessibility → enable the running app — Electron in dev, the packaged
+ * app in prod). Until granted, osascript errors and this returns undefined (the poller keeps its last
+ * state, emits nothing — no crash, no partial signal). On modern macOS some window TITLES may be further
+ * gated (Screen Recording); the app NAME is the reliable floor. FUTURE: a reviewed native reader (a
+ * CoreGraphics/Accessibility module) replaces this behind the same `sample()` seam — swapping only HOW
+ * the frontmost window is read, not the poller/redaction/gating around it.
+ */
+const FRONTMOST_SCRIPT = [
+  'tell application "System Events"',
+  '  set frontApp to first application process whose frontmost is true',
+  '  set appName to name of frontApp',
+  '  set winTitle to ""',
+  '  try',
+  '    set winTitle to name of front window of frontApp',
+  '  end try',
+  'end tell',
+  'return appName & "\n" & winTitle',
+].join('\n')
+
+const readFrontmostWindow = async (): Promise<FrontmostWindow | undefined> => {
+  if (process.platform !== 'darwin') return undefined // Windows/Linux readers are a later slice (out of scope)
+  const { stdout } = await execFileAsync('osascript', ['-e', FRONTMOST_SCRIPT], { timeout: 2000 })
+  const [app, ...rest] = stdout.split('\n')
+  const appName = app?.trim()
+  if (!appName) return undefined
+  const windowTitle = rest.join('\n').trim()
+  return windowTitle ? { app: appName, windowTitle } : { app: appName }
+}
+
+/**
+ * Build the focus poller and reflect its active state into the tray. Focus capture is CONTEXT, not
+ * media: no hidden renderer, no session — it watches the foreground window to feed the engine's
+ * context-switch detector, gated on the engine's route.detect flag (fetched on connect, re-checked on
+ * `flag.changed`) AND the local OPENINFO_FOCUS opt-out. Emits via captureEphemeral (never spooled —
+ * stale focus is noise). Requires engineLink (built in setupCapture), so this runs after it.
+ */
+const setupFocus = (): void => {
+  const link = engineLink
+  if (!link) return
+  const runId = `${process.pid.toString(36)}-${Date.now().toString(36)}`
+  focusPoller = new FocusPoller({
+    sample: readFrontmostWindow,
+    emit: (chunk) => link.captureEphemeral(chunk),
+    workspaceId: cfg.workspace,
+    runId,
+    enabled: cfg.focusEnabled,
+    onActiveChange: (active) => {
+      focusActive = active
+      refreshTray()
+    },
+    log: (message) => console.log(message),
+  })
+  console.log(`[shell] focus capture ${cfg.focusEnabled ? 'enabled' : 'disabled by config'} — idle until the engine's route.detect flag is on`)
+}
+
+/** Apply the engine's route.detect flag to the poller (from the initial /flags read or a flag.changed event). */
+const applyDetectFlag = (on: boolean): void => {
+  focusPoller?.setDetectEnabled(cfg.focusEnabled && on)
+}
+
 /** Push live-session state from the engine WS (session.started/ended) — no polling; see engine-session.ts. */
 const connectEvents = (): void => {
   const wsUrl = `${cfg.engineUrl.replace(/^http/, 'ws')}/events`
@@ -345,6 +424,12 @@ const connectEvents = (): void => {
       if (parsed.name === 'fabric.changed' && parsed.payload) {
         needsSetup = needsModelSetup(parsed.payload as Fabric)
         refreshTray()
+      }
+      // The route.detect flag was flipped (PUT /flags/route.detect) — start/stop focus watching live,
+      // without a refetch (the event carries the Flag; its `default` is the effective value).
+      if (parsed.name === 'flag.changed' && parsed.payload) {
+        const flag = parsed.payload as Flag
+        if (flag.key === ROUTE_DETECT_FLAG) applyDetectFlag(flag.default)
       }
     } catch {
       /* ignore malformed frames */
@@ -368,6 +453,13 @@ const seedSessionState = async (): Promise<void> => {
     needsSetup = needsModelSetup(await session.fabric())
   } catch (err) {
     console.error('[shell] could not read fabric for setup nudge:', err)
+  }
+  // Seed focus watching from the engine's route.detect flag (best-effort — a failure just leaves focus
+  // idle rather than crashing). The WS `flag.changed` handler keeps it fresh after this.
+  try {
+    if (engineLink) applyDetectFlag(detectEnabledFrom(await engineLink.flags()))
+  } catch (err) {
+    console.error('[shell] could not read flags for focus gating:', err)
   }
   refreshTray()
 }
@@ -395,6 +487,7 @@ app.whenReady().then(() => {
   createCaptureWindow()
   createTray()
   setupCapture()
+  setupFocus()
   void seedSessionState()
   connectEvents()
   for (const { accelerator, command } of SHORTCUTS) {
@@ -409,5 +502,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   micController?.shutdown() // stop both streams cleanly if quitting mid-capture
   systemController?.shutdown()
+  focusPoller?.stop() // stop watching the foreground window
 })
 app.on('will-quit', () => globalShortcut.unregisterAll())

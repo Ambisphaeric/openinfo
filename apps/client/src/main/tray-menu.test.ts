@@ -33,6 +33,13 @@ test('the status header + tooltip reflect live-session state', () => {
   assert.match(trayTooltip(state({ sessionLive: false })), /idle/)
 })
 
+test('the tooltip gains a quiet "· watching context" note when focus polling is active (session or not)', () => {
+  assert.match(trayTooltip(state({ watchingContext: true })), /watching context/) // no session — focus is independent
+  assert.match(trayTooltip(state({ sessionLive: true, watchingContext: true })), /session live · watching context/)
+  assert.doesNotMatch(trayTooltip(state({ watchingContext: false })), /watching context/) // nothing when off
+  assert.doesNotMatch(trayTooltip(state({ sessionLive: true })), /watching context/)
+})
+
 test('rec indicator only shows for real audio; starting is a distinct honest state', () => {
   // capturing = ● rec (real audio); micStarting = warming up (no rec claim yet).
   assert.equal(trayStatusLabel(state({ sessionLive: true, capturing: true })), '● session live · ● rec (mic only)')

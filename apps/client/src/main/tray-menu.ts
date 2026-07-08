@@ -36,6 +36,13 @@ export interface TrayState {
    * until the fabric has been fetched, so the item stays quiet rather than crying wolf before we know.
    */
   needsModelSetup?: boolean | undefined
+  /**
+   * Is the client watching the foreground window for context (focus polling active — the engine's
+   * `route.detect` flag is on AND the local opt-out isn't set)? Adds a quiet "· watching context"
+   * note to the tooltip ONLY (privacy-honest: you can always see when context is being read), and it
+   * is INDEPENDENT of a session (focus flows outside sessions — it is what starts them). Nothing when off.
+   */
+  watchingContext?: boolean
 }
 
 export interface TrayMenuItem {
@@ -74,13 +81,21 @@ export const trayStatusLabel = (state: TrayState): string => {
   return '● session live'
 }
 
-/** The menu-bar tooltip — same signal, visible on hover without opening the menu. */
+/**
+ * The menu-bar tooltip — same session/capture signal, visible on hover without opening the menu, plus a
+ * quiet "· watching context" note whenever focus polling is active (session or not — focus is what
+ * starts sessions, so it runs independently). Nothing appended when context watching is off.
+ */
 export const trayTooltip = (state: TrayState): string => {
-  if (!state.sessionLive) return 'openinfo — idle'
-  if (state.micBlocked) return 'openinfo — session live (mic blocked)'
-  if (state.capturing) return `openinfo — session live ● rec (${recSourcesLabel(state)})`
-  if (state.micStarting) return 'openinfo — session live (mic starting…)'
-  return 'openinfo — session live'
+  const context = state.watchingContext ? ' · watching context' : ''
+  const base = ((): string => {
+    if (!state.sessionLive) return 'openinfo — idle'
+    if (state.micBlocked) return 'openinfo — session live (mic blocked)'
+    if (state.capturing) return `openinfo — session live ● rec (${recSourcesLabel(state)})`
+    if (state.micStarting) return 'openinfo — session live (mic starting…)'
+    return 'openinfo — session live'
+  })()
+  return `${base}${context}`
 }
 
 /**

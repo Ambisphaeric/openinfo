@@ -32,6 +32,17 @@ export interface ShellConfig {
    * safe. Same CONFIG-not-flag reasoning as `micEnabled`. Disable with OPENINFO_SYSTEM_AUDIO=0/false/off/no.
    */
   systemAudioEnabled: boolean
+  /**
+   * Whether the client watches the FOREGROUND WINDOW (which app/window/repo is in front) to feed the
+   * context-switch detector — a client-local opt-out, default ON. This is the SECOND, client-side gate
+   * on focus capture: the FIRST is the engine's `route.detect` flag (context detection is a workspace
+   * opt-in; without it the client never polls). Both must be open to poll. It is CONFIG, not a flag, for
+   * the same reason micEnabled is — it is how the client reads its own machine (an osascript poll of the
+   * frontmost window), it never touches the engine or its store, and whether focus signals MEAN anything
+   * is ALREADY gated engine-side by `route.detect`. Disable outright with OPENINFO_FOCUS=0/false/off/no
+   * (a privacy kill-switch that stops the polling entirely — not poll-and-drop). See PHASE3-NOTES.
+   */
+  focusEnabled: boolean
 }
 
 const DEFAULTS = {
@@ -66,5 +77,6 @@ export const resolveShellConfig = (env: Record<string, string | undefined> = pro
     surfaceId: env['OPENINFO_SURFACE'] ?? DEFAULTS.surfaceId,
     micEnabled: isEnabled(env['OPENINFO_MIC']),
     systemAudioEnabled: isEnabled(env['OPENINFO_SYSTEM_AUDIO']),
+    focusEnabled: isEnabled(env['OPENINFO_FOCUS']),
   }
 }

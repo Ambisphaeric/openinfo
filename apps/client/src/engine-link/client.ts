@@ -110,6 +110,22 @@ export class EngineLink {
     }
   }
 
+  /**
+   * Send a chunk WITHOUT the offline spool — fire-and-forget, dropped on failure. For EPHEMERAL,
+   * low-value-when-stale signals (focus/context): replaying "which window was focused 10 minutes ago"
+   * out of a spool is noise, not signal, so a focus chunk that can't reach the engine is simply dropped
+   * (the next poll re-announces the current context anyway). Audio capture uses `capture` (spooled) —
+   * a lost utterance is real data loss; a lost focus tick is not. Never throws (returns undefined on
+   * failure) so the caller's poll loop keeps running offline.
+   */
+  async captureEphemeral(chunk: CaptureChunk): Promise<Ack | undefined> {
+    try {
+      return await this.postChunk(chunk)
+    } catch {
+      return undefined
+    }
+  }
+
   async flush(): Promise<number> {
     if (this.flushing) return 0
     this.flushing = true
