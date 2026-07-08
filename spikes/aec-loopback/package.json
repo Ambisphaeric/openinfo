@@ -1,0 +1,13 @@
+{
+  "name": "spike-aec-loopback",
+  "private": true,
+  "version": "0.0.0",
+  "description": "THROWAWAY spike — does Electron capture macOS system audio via loopback, and which AEC removes speaker leakage from the mic? Not a workspace package; never imported.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}

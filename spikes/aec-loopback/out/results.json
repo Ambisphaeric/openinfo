@@ -1,0 +1,132 @@
+{
+  "platform": {
+    "devices": [
+      {
+        "kind": "audioinput",
+        "label": "Default - MacBook Pro Microphone (Built-in)",
+        "deviceId": "set"
+      },
+      {
+        "kind": "audioinput",
+        "label": "BlackHole 2ch (Virtual)",
+        "deviceId": "set"
+      },
+      {
+        "kind": "audioinput",
+        "label": "MacBook Pro Microphone (Built-in)",
+        "deviceId": "set"
+      },
+      {
+        "kind": "audioinput",
+        "label": "SonoBus Mic (Aggregate)",
+        "deviceId": "set"
+      },
+      {
+        "kind": "videoinput",
+        "label": "OBS Virtual Camera",
+        "deviceId": "set"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "Default - MacBook Pro Speakers (Built-in)",
+        "deviceId": "set"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "BlackHole 2ch (Virtual)",
+        "deviceId": "set"
+      },
+      {
+        "kind": "audiooutput",
+        "label": "MacBook Pro Speakers (Built-in)",
+        "deviceId": "set"
+      }
+    ],
+    "hasInput": true,
+    "permissions": {
+      "micStatus": "not-determined",
+      "screenStatus": "denied",
+      "askResult": false
+    }
+  },
+  "loopback": {
+    "gotStream": false,
+    "error": "AbortError: Error starting capture"
+  },
+  "configs": {
+    "A_ec_off": {
+      "micConstraints": {
+        "echoCancellation": false,
+        "noiseSuppression": false,
+        "autoGainControl": false
+      },
+      "appliedSettings": {
+        "ec": false,
+        "ns": false,
+        "agc": false
+      },
+      "toneGeneratorPeakRms": 0.17751239850248038,
+      "micRms_silence": 0,
+      "micRms_tone": 0,
+      "micRms_silence_db": -240,
+      "micRms_tone_db": -240,
+      "leakage_db": 0,
+      "loopbackRms_silence": 0,
+      "loopbackRms_tone": 0,
+      "loopbackCapturedTone": false,
+      "micLoopXcorr": null
+    },
+    "B_ec_on": {
+      "micConstraints": {
+        "echoCancellation": true,
+        "noiseSuppression": false,
+        "autoGainControl": false
+      },
+      "appliedSettings": {
+        "ec": true,
+        "ns": false,
+        "agc": false
+      },
+      "toneGeneratorPeakRms": 0.17751241220583458,
+      "micRms_silence": 0,
+      "micRms_tone": 0.00001656790140627146,
+      "micRms_silence_db": -240,
+      "micRms_tone_db": -95.61464944663612,
+      "leakage_db": 144.38535055336388,
+      "loopbackRms_silence": 0,
+      "loopbackRms_tone": 0,
+      "loopbackCapturedTone": false,
+      "micLoopXcorr": null
+    },
+    "C_ec_on_farend": {
+      "micConstraints": {
+        "echoCancellation": true,
+        "noiseSuppression": false,
+        "autoGainControl": false
+      },
+      "appliedSettings": {
+        "ec": true,
+        "ns": false,
+        "agc": false
+      },
+      "toneGeneratorPeakRms": 0.17751241220583458,
+      "micRms_silence": 0,
+      "micRms_tone": 0.000016565899614476752,
+      "micRms_silence_db": -240,
+      "micRms_tone_db": -95.61569896954283,
+      "leakage_db": 144.38430103045715,
+      "loopbackRms_silence": 0,
+      "loopbackRms_tone": 0,
+      "loopbackCapturedTone": false,
+      "micLoopXcorr": null
+    }
+  },
+  "notes": [],
+  "summary": {
+    "loopbackAudioTrack": false,
+    "micSignalLive": false,
+    "micRmsMax": 0.00001656790140627146,
+    "toneGeneratorWorking": true,
+    "note": "mic delivered DIGITAL SILENCE (headless/remote audio and/or mic TCC not granted) — AEC leakage NOT measurable in this run; see permissions"
+  }
+}

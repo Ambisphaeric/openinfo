@@ -956,3 +956,66 @@ globals — typed via one structural `globalThis` cast, the mount.ts trick, so t
   suffices for ffmpeg-backed servers); per-source on/off + cadence in a settings/palette UI (P6);
   diarization / voice→person (P7 — `me`/`them` is the free source-based split, not identity); packaging/
   signing. Audio-quality tuning (sample rate, VAD-gated segmentation to skip silence) is convergence-time.
+
+## Spike answer: AEC / loopback (retires the `glass-capture` row's remaining question)
+
+Throwaway spike in `spikes/aec-loopback/` (runnable in one command; `npm install && npm start`). It
+grants a `getDisplayMedia` request with `audio: 'loopback'` in the main process, then captures the mic
+in three configs — **A** `echoCancellation:false` (baseline), **B** `echoCancellation:true` (option 1,
+Chromium/OS AEC), **C** `echoCancellation:true` + the AEC3 far-end trick (option 2, loopback piped
+through a local `RTCPeerConnection` as a render reference) — while playing a known 440 Hz tone out the
+speakers, and measures mic RMS during tone vs silence (leakage) plus mic↔loopback cross-correlation.
+Machine: **darwin 25 (macOS 26.3.1), Electron 38.8.6, Node 25**.
+
+**Loopback verdict — native string loopback does NOT capture system audio on macOS.** Electron's own
+docs are explicit: the `callback({ audio: 'loopback' | 'loopbackWithMute' })` string form is *"Windows
+only for loopback."* On macOS `getDisplayMedia` grants a screen **video** track but **no system-audio
+track** from the string form. Empirically it failed even earlier here: `desktopCapturer.getSources`
+throws because **Screen Recording TCC is denied** (`getDisplayMedia → AbortError: Error starting
+capture`, `loopback.gotStream=false`). This matches why Glass shipped a compiled native helper
+(SystemAudioDump). **So loopback does NOT remove the need for a system-audio helper on macOS.** Two
+routes exist that a later slice must choose between, and it should be a design note before code:
+- **(a) Virtual audio device** — e.g. **BlackHole** (already installed on this dev machine; it enumerated
+  as both an input and output). Set it as (part of) the output device and capture it as an *input* via
+  ordinary `getUserMedia` — **no compiled/native code at all**, but requires installing/bundling an audio
+  driver and a multi-output-device routing step the user (or installer) must perform.
+- **(b) A small native module** using macOS 14.4+ **Core Audio process taps / ScreenCaptureKit** system
+  audio (the modern SystemAudioDump replacement). This is the "no external driver" path but reintroduces a
+  compiled helper — smaller and better-supported than Glass's, and the likely path if/when Electron
+  exposes macOS loopback natively (track the Electron `setDisplayMediaRequestHandler` loopback support).
+
+**AEC leakage numbers — NOT measurable in this automated run; two stacked walls, reported honestly, no
+faking.** (1) **Headless/remote audio:** the microphone delivers *digital silence* in this session —
+mic RMS `-inf dB` (all-zero samples) confirmed via **both** the Electron `getUserMedia` path **and** an
+independent `ffmpeg` avfoundation capture (`spikes/aec-loopback/measure-baseline.sh`, using ffmpeg's
+pre-existing mic TCC grant); a BlackHole loopback capture was silent too. The audio *devices enumerate*
+(MacBook Pro Microphone/Speakers, BlackHole, SonoBus) but no live acoustic signal is present, so there is
+nothing for AEC to remove and speaker output isn't audibly routed. (2) **TCC, on top:** Electron
+Microphone is `not-determined` and the non-interactive `askForMediaAccess` returned `false` (no human to
+click), and Screen Recording is `denied`. Either wall alone blocks the measurement; both are present.
+- **What WAS validated:** the harness is correct and the digital audio path works — the tone generator
+  produced **0.177 RMS** (self-monitored via an AnalyserNode on the tone node, `toneGeneratorWorking:true`
+  in `out/results.json`), WAV files are written per config, and the RMS/leakage/cross-correlation pipeline
+  runs end-to-end. Only a *live mic signal* + *granted permissions* are missing — both human/hardware, not
+  code. `out/results.json` records `summary.micSignalLive:false` and the full permission state.
+
+**Recommendation for the client system-audio + AEC slice** (docs-reasoned where measurement was blocked,
+and flagged as such): **default to option 1 — Chromium's built-in `echoCancellation:true`.** In our
+topology the far side's audio is *played through the local default output* (the user hears the call), and
+Chromium's AEC references exactly that render signal, so built-in EC is the zero-dependency path that
+should adequately cancel speaker→mic leakage. **Option 2 (the AEC3 far-end/`RTCPeerConnection` trick) is
+only needed if system audio is captured *without* being played locally** (a headless/muted-monitor case),
+which is not our HUD scenario — keep it as the documented fallback, not the default. **Option 3 (WASM AEC
+built from source) stays a last resort**, justified only if measured residual leakage with option 1 proves
+inadequate on real hardware. Note this ranking is not yet backed by a leakage-dB measurement on this
+machine — that is the one thing still open.
+
+**Still unanswered (needs a human on live-audio hardware, ~2 min):** the actual per-config leakage numbers
+(A vs B vs C in dB) and whether built-in EC is *adequate* vs. needs option 2/3. To complete the spike:
+`cd spikes/aec-loopback && npm install && npm start`, then (1) approve the **Microphone** prompt Electron
+raises (or enable Electron under System Settings ▸ Privacy & Security ▸ Microphone), (2) enable **Screen
+Recording** for Electron in System Settings ▸ Privacy & Security ▸ Screen Recording and **re-run** (screen
+grants need an app restart) — on a machine with a live mic + speakers this populates real numbers into
+`out/results.json` and writes listenable `out/mic_*.wav` / `out/loopback.wav`. The re-run will also
+resolve empirically whether granted Screen Recording yields a macOS system-audio track (expected: no,
+per the docs above — confirming route (a)/(b) is required).
