@@ -1,4 +1,4 @@
-import type { DiscoverResult, Endpoint, Fabric, FabricProfile } from '@openinfo/contracts'
+import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Moment } from '@openinfo/contracts'
 import { SETUP_CSS, SETUP_SCRIPT } from './assets.js'
 
 /**
@@ -264,11 +264,95 @@ const getStartedHtml = (discovery: DiscoverResult): string => {
   )
 }
 
+/**
+ * The Try-it card — slice (b), "say something, watch it become a moment" (ARCHITECTURE §8, principle
+ * 5). Onboarding's last step is not a Test button, it is the product: after config-1 is active (an llm
+ * endpoint exists) the user types a sentence (or speaks, when an stt endpoint exists) and watches it
+ * become a typed moment, live. The loop lives on /setup — engine-served, any browser — so the browser
+ * owns the mic-permission UX (the simplest TCC story) and the founder's remote-engine workflow works
+ * unchanged. Pure and exported so its states are asserted headless.
+ *
+ * States: llm empty ⇒ '' (hidden — the Get-Started lens/banner leads instead); llm present, stt empty
+ * ⇒ the type path only, with an honest no-voice line; llm+stt ⇒ both paths. The card states plainly
+ * that trying it turns on distillation — the user's click IS the consent (the browser flips the needed
+ * flags via the existing PUT /flags/:key on first use; nothing is flipped silently outside the card).
+ */
+
+/** Moment kind → glyph (ARCHITECTURE §3). The single source; embedded into the page so the browser
+ * (which builds the arrived moment's DOM live) reads the same map — no divergent second glyph table. */
+export const MOMENT_GLYPHS: Record<string, string> = {
+  commitment: '●',
+  question: '◆',
+  decision: '▲',
+  artifact: '✱',
+  mention: '＠',
+  note: '·',
+}
+
+export const momentGlyph = (kind: string): string => MOMENT_GLYPHS[kind] ?? '·'
+
+/** The one-line provenance a surfaced moment must carry (product principle 1): "via <endpoint> · <model>". */
+export const momentProvenanceLine = (moment: Pick<Moment, 'provenance'>): string => {
+  const p = moment.provenance
+  if (!p) return ''
+  return p.model ? `via ${p.endpoint} · ${p.model}` : `via ${p.endpoint}`
+}
+
+/**
+ * Pure render of the arrived moment as it appears in the Try-it result — glyph, text, provenance line,
+ * elapsed seconds. Tested headless; the browser builds the SAME shape via DOM (textContent, so no
+ * escaping duplication) reading MOMENT_GLYPHS from the embedded blob and this same provenance format.
+ */
+export const momentResultHtml = (moment: Moment, elapsedSec: number): string => {
+  const prov = momentProvenanceLine(moment)
+  return (
+    `<div class="moment-card kind-${escapeHtml(moment.kind)}">` +
+    `<span class="moment-glyph">${momentGlyph(moment.kind)}</span>` +
+    `<div class="moment-body"><div class="moment-text">${escapeHtml(moment.text)}</div>` +
+    `<div class="moment-meta"><span class="moment-kind">${escapeHtml(moment.kind)}</span>` +
+    (prov ? ` <span class="moment-prov">${escapeHtml(prov)}</span>` : '') +
+    ` <span class="moment-elapsed">${elapsedSec.toFixed(1)}s</span></div></div></div>`
+  )
+}
+
+const tryItHtml = (data: SetupData): string => {
+  if (data.liveFabric.slots.llm.length === 0) return ''
+  const hasStt = data.liveFabric.slots.stt.length > 0
+  const config = { workspaceId: 'default', modeId: 'mode-meeting', hasStt }
+  const consentFlags =
+    '<span class="mono">distill.enabled</span>, <span class="mono">distill.moments</span>' +
+    (hasStt ? ', <span class="mono">distill.transcribe</span> (for voice)' : '')
+  const voice = hasStt
+    ? '<button type="button" data-act="tryit-voice">Or speak (~6s)</button>' +
+      '<span class="tryit-voicenote">the browser will ask for your microphone</span>'
+    : '<span class="tryit-novoice">No transcription server yet — type above; audio arrives once you add ' +
+      'a Hearing (stt) endpoint in Advanced setup.</span>'
+  return (
+    '<div class="card tryit"><div class="gs-head">Try it — say something, watch it become a moment</div>' +
+    '<div class="sub">This is the product, not a test button: type a sentence and watch openinfo turn it ' +
+    'into a typed moment, live.</div>' +
+    `<div class="tryit-consent">Trying it turns on distillation (${consentFlags}). Turn it back off any ` +
+    'time under Advanced setup → the flags it lists.</div>' +
+    '<form class="tryit-form"><input id="tryit-text" autocomplete="off" ' +
+    'placeholder="Type a sentence — watch it become a moment." />' +
+    '<button type="button" class="primary" data-act="tryit-type">Watch it become a moment</button></form>' +
+    `<div class="tryit-voicebar">${voice}</div>` +
+    '<div class="tryit-status" id="tryit-status"></div>' +
+    '<div class="tryit-result" id="tryit-result"></div>' +
+    `<script type="application/json" id="tryit-config">${jsonForScript(config)}</script>` +
+    `<script type="application/json" id="moment-glyphs">${jsonForScript(MOMENT_GLYPHS)}</script>` +
+    '</div>'
+  )
+}
+
 /** Render the whole self-contained setup page. Pure — the engine route just hands it live data. */
 export const renderSetupPage = (data: SetupData): string => {
   const notice = firstRunNotice(data.liveFabric)
   const banner = notice ? `<div class="banner">⚠ ${escapeHtml(notice)}</div>` : ''
   const lens = data.discovery ? getStartedHtml(data.discovery) : ''
+  // The Try-it loop leads the page once an llm endpoint exists (config-1 active) — the moment onboarding
+  // becomes "experience it", not "configure it". Empty when no llm (the lens/banner lead instead).
+  const tryit = tryItHtml(data)
   const advanced =
     '<h2>Profiles</h2>' +
     profilesHtml(data) +
@@ -290,6 +374,7 @@ export const renderSetupPage = (data: SetupData): string => {
     '<p class="sub">Your first setting, not your last. Point a slot at a model server, save it as a profile, clone/switch as your rig changes.</p>' +
     banner +
     lens +
+    tryit +
     body +
     rowTemplateHtml(data.secretRefs) +
     `<script>${SETUP_SCRIPT}</script>` +

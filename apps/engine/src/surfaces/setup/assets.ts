@@ -76,6 +76,26 @@ details.advanced{margin-top:24px;border-top:1px solid var(--line);padding-top:8p
 details.advanced>summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.14em;
   text-transform:uppercase;color:var(--faint);padding:8px 0;list-style-position:inside}
 details.advanced[open]>summary{color:var(--muted)}
+.tryit{padding:18px 18px 16px}
+.tryit-consent{color:var(--muted);font-size:12px;margin:8px 0 4px}
+.tryit-form{display:flex;gap:9px;margin-top:14px;flex-wrap:wrap}
+.tryit-form input{flex:1;min-width:220px;background:#0c0e13;color:var(--ink);border:1px solid var(--line);
+  border-radius:7px;padding:8px 11px;font-size:13.5px}
+.tryit-voicebar{display:flex;gap:9px;align-items:center;margin-top:10px}
+.tryit-voicenote,.tryit-novoice{color:var(--faint);font-size:12px}
+.tryit-status{min-height:0;margin-top:14px;font-size:13px;color:var(--muted)}
+.tryit-status.ok{color:var(--ok)}.tryit-status.bad{color:var(--bad)}
+.tryit-result{margin-top:12px}
+.moment-card{display:flex;gap:12px;align-items:flex-start;border:1px solid rgba(77,164,122,.35);
+  background:rgba(77,164,122,.06);border-radius:11px;padding:14px 16px}
+.moment-glyph{font-size:18px;line-height:1.2;color:var(--ok);flex:none}
+.moment-body{flex:1;min-width:0}
+.moment-text{font-size:14.5px;font-weight:550;line-height:1.4}
+.moment-meta{margin-top:6px;display:flex;flex-wrap:wrap;gap:10px;align-items:baseline;
+  font-family:var(--mono);font-size:11px;color:var(--faint)}
+.moment-kind{color:var(--ok);text-transform:uppercase;letter-spacing:.08em}
+.moment-prov{color:var(--muted)}
+.moment-elapsed{margin-left:auto;color:var(--faint)}
 `
 
 /** Browser wiring: composes existing routes, reloads after mutations, tests endpoints inline. */
@@ -160,6 +180,119 @@ export const SETUP_SCRIPT = `
       jf('POST','/fabric/profiles/config-1/activate').then(function(r2){
         if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/setup';});});}
   function showAdvanced(){var d=document.getElementById('advanced'); if(d){d.open=true; d.scrollIntoView();}}
+  // --- Try-it: say something, watch it become a moment (slice b). Composes existing routes only:
+  // PUT /flags/:key (consent-flip), POST /sessions, POST /capture/:source, the /events WS, and the
+  // read endpoints for honest failure introspection. No new engine capability.
+  var tryit={session:null,ws:null,t0:0,done:false,timer:null};
+  function readJsonBlob(id){var el=document.getElementById(id); if(!el)return null; try{return JSON.parse(el.textContent);}catch(e){return null;}}
+  function tryitStatus(msg,cls){var el=document.getElementById('tryit-status'); if(!el)return; el.className='tryit-status'+(cls?' '+cls:''); el.textContent=msg;}
+  function enableFlags(keys){
+    return jf('GET','/flags').then(function(r){
+      var flags=(r.json||[]); var byKey={}; for(var i=0;i<flags.length;i++)byKey[flags[i].key]=flags[i];
+      var chain=Promise.resolve();
+      keys.forEach(function(k){
+        var f=byKey[k]; if(f&&f.default===true)return;
+        chain=chain.then(function(){
+          var body={key:k,default:true,scope:(f&&f.scope)||'engine',description:(f&&f.description)||k};
+          if(f&&f.minTier)body.minTier=f.minTier;
+          return jf('PUT','/flags/'+encodeURIComponent(k),body);
+        });
+      });
+      return chain;
+    });
+  }
+  function renderMoment(m){
+    var glyphs=readJsonBlob('moment-glyphs')||{}; var elapsed=(Date.now()-tryit.t0)/1000;
+    var res=document.getElementById('tryit-result'); res.textContent='';
+    var card=document.createElement('div'); card.className='moment-card kind-'+m.kind;
+    var g=document.createElement('span'); g.className='moment-glyph'; g.textContent=(glyphs[m.kind]||'\\u00b7'); card.appendChild(g);
+    var body=document.createElement('div'); body.className='moment-body';
+    var txt=document.createElement('div'); txt.className='moment-text'; txt.textContent=m.text; body.appendChild(txt);
+    var meta=document.createElement('div'); meta.className='moment-meta';
+    var kind=document.createElement('span'); kind.className='moment-kind'; kind.textContent=m.kind; meta.appendChild(kind);
+    if(m.provenance){var pv=document.createElement('span'); pv.className='moment-prov';
+      pv.textContent='via '+m.provenance.endpoint+(m.provenance.model?' \\u00b7 '+m.provenance.model:''); meta.appendChild(pv);}
+    var el=document.createElement('span'); el.className='moment-elapsed'; el.textContent=elapsed.toFixed(1)+'s'; meta.appendChild(el);
+    body.appendChild(meta); card.appendChild(body); res.appendChild(card);
+  }
+  function closeTryitWs(){if(tryit.ws){try{tryit.ws.close();}catch(e){} tryit.ws=null;}}
+  function openTryitWs(sessionId){
+    var proto=(location.protocol==='https:')?'wss://':'ws://'; var ws=new WebSocket(proto+location.host+'/events'); tryit.ws=ws;
+    ws.onmessage=function(ev){
+      var msg; try{msg=JSON.parse(ev.data);}catch(e){return;}
+      if(!msg||!msg.payload||msg.payload.sessionId!==sessionId)return;
+      if(msg.name==='distillate.updated'){if(!tryit.done)tryitStatus('Distilled the window \\u2014 extracting the moment\\u2026');}
+      else if(msg.name==='moment.created'){
+        tryit.done=true; if(tryit.timer)clearTimeout(tryit.timer);
+        tryitStatus('Here it is \\u2014 your words became a moment.','ok'); renderMoment(msg.payload);
+        jf('POST','/sessions/'+encodeURIComponent(sessionId)+'/end'); closeTryitWs();
+      }
+    };
+  }
+  function buildChunk(session,cfg,payload){
+    var base={id:'try-'+Date.now(),sessionId:session.id,workspaceId:cfg.workspaceId,source:'mic',sequence:0,capturedAt:new Date().toISOString()};
+    if(payload.audio){base.contentType=payload.contentType||'audio/webm'; base.encoding='base64'; base.data=payload.audio;}
+    else{base.contentType='text/plain'; base.encoding='utf8'; base.data=payload.text;}
+    return base;
+  }
+  function diagnose(session,cfg){
+    if(tryit.done)return;
+    Promise.all([jf('GET','/flags'),jf('GET','/fabric'),jf('GET','/moments?workspace='+encodeURIComponent(cfg.workspaceId)+'&session='+encodeURIComponent(session.id))]).then(function(rs){
+      var flags=rs[0].json||[]; var fabric=rs[1].json||{slots:{}}; var moments=rs[2].json||[];
+      if(moments&&moments.length){tryit.done=true; tryitStatus('The moment arrived.','ok'); renderMoment(moments[moments.length-1]); return;}
+      var byKey={}; flags.forEach(function(f){byKey[f.key]=f;});
+      var on=function(k){return byKey[k]&&byKey[k].default===true;};
+      if(!on('distill.enabled')||!on('distill.moments')){tryitStatus('The distillation flags did not stick \\u2014 open Advanced setup and check distill.enabled and distill.moments.','bad');return;}
+      var llm=(fabric.slots&&fabric.slots.llm)||[];
+      if(!llm.length){tryitStatus('No language model is configured \\u2014 add one under Advanced setup and activate it.','bad');return;}
+      var ep=llm[0];
+      jf('POST','/fabric/test',ep).then(function(tr){
+        var p=tr.json;
+        if(p&&p.ok){tryitStatus('The sentence spooled and the model at '+(ep.url||ep.name)+' is reachable, but no typed moment came back in time \\u2014 the model may be slow, or found nothing to type. Try a clear commitment or decision, e.g. "we will ship on Thursday".','bad');}
+        else{tryitStatus('The sentence spooled, but the language model at '+(ep.url||ep.name)+' is not responding'+((p&&p.hint)?' \\u2014 '+p.hint:'')+'. Start it, then try again.','bad');}
+      });
+    });
+  }
+  function runTryit(payload){
+    var cfg=readJsonBlob('tryit-config'); if(!cfg){tryitStatus('Try-it is unavailable on this page.','bad');return;}
+    closeTryitWs(); document.getElementById('tryit-result').textContent=''; tryit.done=false; if(tryit.timer)clearTimeout(tryit.timer);
+    var keys=['distill.enabled','distill.moments']; if(payload.audio)keys.push('distill.transcribe');
+    tryitStatus('Turning on distillation\\u2026');
+    enableFlags(keys).then(function(){
+      return jf('POST','/sessions',{workspaceId:cfg.workspaceId,modeId:cfg.modeId,title:'onboarding try-it'});
+    }).then(function(r){
+      if(!r||!r.ok){tryitStatus('Could not start a session'+(r?' ('+r.status+')':'')+'.','bad');return;}
+      var session=r.json; tryit.session=session; openTryitWs(session.id);
+      tryitStatus('Sending it to openinfo\\u2026');
+      return jf('POST','/capture/mic',buildChunk(session,cfg,payload)).then(function(cr){
+        if(!cr.ok){tryitStatus('Capture failed ('+cr.status+').','bad'); closeTryitWs(); return;}
+        tryit.t0=Date.now(); tryitStatus('Spooled \\u2014 the drain is distilling it now\\u2026');
+        tryit.timer=setTimeout(function(){diagnose(session,cfg);},15000);
+      });
+    }).catch(function(){tryitStatus('Something went wrong reaching the engine.','bad');});
+  }
+  function tryitType(){
+    var input=document.getElementById('tryit-text'); var text=(input&&input.value||'').trim();
+    if(!text){tryitStatus('Type a sentence first.','bad'); if(input)input.focus(); return;}
+    runTryit({text:text});
+  }
+  function tryitVoice(){
+    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){tryitStatus('This browser cannot record audio \\u2014 use the type path.','bad');return;}
+    tryitStatus('Requesting the microphone\\u2026');
+    navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+      var rec; try{rec=new MediaRecorder(stream,{mimeType:'audio/webm'});}catch(e){rec=new MediaRecorder(stream);}
+      var parts=[]; rec.ondataavailable=function(e){if(e.data&&e.data.size)parts.push(e.data);};
+      rec.onstop=function(){
+        stream.getTracks().forEach(function(t){t.stop();});
+        var blob=new Blob(parts,{type:rec.mimeType||'audio/webm'}); var reader=new FileReader();
+        reader.onloadend=function(){var s=String(reader.result); var comma=s.indexOf(','); var b64=comma>=0?s.slice(comma+1):s;
+          runTryit({audio:b64,contentType:(blob.type||'audio/webm').split(';')[0]});};
+        reader.readAsDataURL(blob);
+      };
+      rec.start(); tryitStatus('Listening\\u2026 speak now (about 6 seconds).');
+      setTimeout(function(){if(rec.state!=='inactive')rec.stop();},6000);
+    }).catch(function(err){tryitStatus('Microphone unavailable'+(err&&err.name?' ('+err.name+')':'')+' \\u2014 use the type path.','bad');});
+  }
   document.addEventListener('submit',function(e){e.preventDefault();});
   document.addEventListener('click',function(e){
     var b=e.target.closest('[data-act]'); if(!b)return;
@@ -179,6 +312,8 @@ export const SETUP_SCRIPT = `
     else if(act==='use-setup'){useSetup();}
     else if(act==='redetect'){location.href='/setup?discover=1';}
     else if(act==='show-advanced'){showAdvanced();}
+    else if(act==='tryit-type'){tryitType();}
+    else if(act==='tryit-voice'){tryitVoice();}
   });
 })();
 `

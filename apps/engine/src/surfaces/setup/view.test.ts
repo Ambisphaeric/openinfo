@@ -1,7 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { DiscoverResult, Fabric, FabricProfile } from '@openinfo/contracts'
-import { escapeHtml, firstRunNotice, jsonForScript, renderSetupPage, type SetupData } from './view.js'
+import type { DiscoverResult, Fabric, FabricProfile, Moment } from '@openinfo/contracts'
+import {
+  escapeHtml,
+  firstRunNotice,
+  jsonForScript,
+  momentGlyph,
+  momentProvenanceLine,
+  momentResultHtml,
+  renderSetupPage,
+  type SetupData,
+} from './view.js'
 
 const emptyFabric = (): Fabric => ({ slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } })
 
@@ -21,6 +30,20 @@ const data = (over: Partial<SetupData> = {}): SetupData => ({
   secretRefs: [],
   ...over,
 })
+
+/** Pull the raw JSON text out of a `<script type="application/json" id="X">…</script>` blob. */
+const extractBlob = (html: string, id: string): string => {
+  const open = `id="${id}">`
+  const start = html.indexOf(open) + open.length
+  return html.slice(start, html.indexOf('</script>', start))
+}
+
+/** Pull the Try-it consent line's text (scoped so page-wide script mentions don't leak into asserts). */
+const extractConsent = (html: string): string => {
+  const open = 'class="tryit-consent">'
+  const start = html.indexOf(open) + open.length
+  return html.slice(start, html.indexOf('</div>', start))
+}
 
 test('firstRunNotice fires only when the live llm slot is empty', () => {
   const n = firstRunNotice(emptyFabric())
@@ -142,4 +165,77 @@ test('lens NOTHING found ⇒ no Use button, honest "start a server" copy, re-det
   assert.match(html, /No local model server responded/)
   assert.match(html, /Start LM Studio or Ollama/)
   assert.match(html, /data-act="redetect"/)
+})
+
+// --- The Try-it loop (slice b): say something, watch it become a moment ---
+
+const withSttLlm = (): Fabric => ({
+  slots: {
+    ...emptyFabric().slots,
+    llm: [{ kind: 'http', name: 'lm', url: 'http://localhost:1234', api: 'openai-compat', model: 'qwen3-8b' }],
+    stt: [{ kind: 'http', name: 'whisper', url: 'http://localhost:9000', api: 'openai-compat', model: 'whisper-1' }],
+  },
+})
+
+const moment = (over: Partial<Moment> = {}): Moment => ({
+  id: 'm1', sessionId: 's1', workspaceId: 'default', at: '2026-07-07T15:00:00Z',
+  kind: 'commitment', text: 'we will ship on Thursday', refs: [], source: 'mic', confidence: 0.85,
+  provenance: { slot: 'llm', endpoint: 'llm.fast', model: 'qwen3-8b' }, ...over,
+})
+
+test('Try-it HIDDEN when no llm endpoint exists (the lens/banner leads instead)', () => {
+  const html = renderSetupPage(data({ liveFabric: emptyFabric() }))
+  assert.doesNotMatch(html, /class="card tryit"/)
+  assert.doesNotMatch(html, /data-act="tryit-type"/)
+})
+
+test('Try-it TYPE-ONLY when llm exists but no stt: type path + honest no-voice line, no voice button', () => {
+  const html = renderSetupPage(data({ liveFabric: withLlm() }))
+  assert.match(html, /class="card tryit"/)
+  assert.match(html, /data-act="tryit-type"/)
+  assert.match(html, /tryit-novoice/)
+  assert.match(html, /audio arrives once you add/)
+  assert.doesNotMatch(html, /data-act="tryit-voice"/)
+  // the consent copy names the flags it flips; distill.transcribe is NOT promised without stt
+  const consent = extractConsent(html)
+  assert.match(consent, /distill\.enabled/)
+  assert.match(consent, /distill\.moments/)
+  assert.doesNotMatch(consent, /distill\.transcribe/)
+  // the embedded config carries the seeded meeting mode + default workspace, hasStt false
+  const cfg = JSON.parse(extractBlob(html, 'tryit-config'))
+  assert.deepEqual(cfg, { workspaceId: 'default', modeId: 'mode-meeting', hasStt: false })
+})
+
+test('Try-it BOTH PATHS when llm + stt exist: voice button + distill.transcribe named in consent', () => {
+  const html = renderSetupPage(data({ liveFabric: withSttLlm() }))
+  assert.match(html, /data-act="tryit-type"/)
+  assert.match(html, /data-act="tryit-voice"/)
+  assert.match(extractConsent(html), /distill\.transcribe/)
+  assert.equal(JSON.parse(extractBlob(html, 'tryit-config')).hasStt, true)
+  // the glyph map is embedded (single source the browser reads to render the arrived moment)
+  assert.equal(JSON.parse(extractBlob(html, 'moment-glyphs')).commitment, '●')
+})
+
+test('momentGlyph maps every kind and falls back to a dot', () => {
+  assert.equal(momentGlyph('commitment'), '●')
+  assert.equal(momentGlyph('question'), '◆')
+  assert.equal(momentGlyph('decision'), '▲')
+  assert.equal(momentGlyph('artifact'), '✱')
+  assert.equal(momentGlyph('note'), '·')
+  assert.equal(momentGlyph('unknown-kind'), '·')
+})
+
+test('momentProvenanceLine is the one-line why (endpoint · model), model optional', () => {
+  assert.equal(momentProvenanceLine(moment()), 'via llm.fast · qwen3-8b')
+  assert.equal(momentProvenanceLine(moment({ provenance: { slot: 'llm', endpoint: 'llm.fast' } })), 'via llm.fast')
+  assert.equal(momentProvenanceLine({}), '')
+})
+
+test('momentResultHtml renders glyph, text, kind, provenance and elapsed seconds; escapes text', () => {
+  const html = momentResultHtml(moment({ text: '<b>ship</b> Thursday' }), 3.14159)
+  assert.match(html, /moment-glyph">●</)
+  assert.match(html, /&lt;b&gt;ship&lt;\/b&gt; Thursday/) // text is escaped
+  assert.match(html, /moment-kind">commitment</)
+  assert.match(html, /via llm\.fast · qwen3-8b/)
+  assert.match(html, /3\.1s<\/span>/) // elapsed, one decimal
 })
