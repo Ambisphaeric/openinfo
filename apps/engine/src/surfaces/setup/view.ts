@@ -64,7 +64,7 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
     return (
       `<div class="row readonly" data-kind="${escapeHtml(ep.kind)}" data-json='${escapeHtml(JSON.stringify(ep))}'>` +
       `<span class="ro">${escapeHtml(ep.kind)}: ${escapeHtml(ep.name)} — edit ${escapeHtml(ep.kind)} endpoints via the API</span>` +
-      `<div class="rowbtns"><button data-act="up" title="up">↑</button><button data-act="down" title="down">↓</button><button data-act="remove" title="remove">✕</button></div>` +
+      `<div class="rowbtns"><button type="button" data-act="up" title="up">↑</button><button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
       `</div>`
     )
   }
@@ -74,8 +74,8 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
     `<input class="f-url" autocomplete="off" value="${escapeHtml(ep.url)}" placeholder="http://host:port" />` +
     `<input class="f-model" autocomplete="off" value="${escapeHtml(ep.model ?? '')}" placeholder="model (optional)" />` +
     `<select class="f-keyref" title="key reference">${keyrefOptions(ep.auth?.keyRef, refs)}</select>` +
-    `<div class="rowbtns"><button data-act="test">Test</button><button data-act="up" title="up">↑</button>` +
-    `<button data-act="down" title="down">↓</button><button data-act="remove" title="remove">✕</button></div>` +
+    `<div class="rowbtns"><button type="button" data-act="test">Test</button><button type="button" data-act="up" title="up">↑</button>` +
+    `<button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
     `<div class="probe"></div></div>`
   )
 }
@@ -84,7 +84,7 @@ const liveSlotHtml = (key: string, endpoints: Endpoint[], refs: string[]): strin
   `<div class="slot" data-slot="${escapeHtml(key)}">` +
   `<div class="slk">${escapeHtml(key)}</div>` +
   `<div class="rows">${endpoints.map((ep) => endpointRowHtml(ep, refs)).join('')}</div>` +
-  `<div style="margin-top:9px"><button data-act="addrow" data-slot="${escapeHtml(key)}">+ add endpoint</button></div>` +
+  `<div style="margin-top:9px"><button type="button" data-act="addrow" data-slot="${escapeHtml(key)}">+ add endpoint</button></div>` +
   `</div>`
 
 const inertSlotHtml = (key: string, endpoints: Endpoint[]): string =>
@@ -105,10 +105,10 @@ const profilesHtml = (data: SetupData): string => {
         (isActive ? '<span class="badge active">active · live</span>' : '') +
         (isEditing ? '<span class="badge editing">editing</span>' : '')
       const actions =
-        (isActive ? '' : `<button data-act="activate" data-id="${escapeHtml(p.id)}">Activate</button>`) +
-        `<button data-act="clone" data-id="${escapeHtml(p.id)}">Clone</button>` +
+        (isActive ? '' : `<button type="button" data-act="activate" data-id="${escapeHtml(p.id)}">Activate</button>`) +
+        `<button type="button" data-act="clone" data-id="${escapeHtml(p.id)}">Clone</button>` +
         (isEditing ? '' : `<a href="/setup?edit=${encodeURIComponent(p.id)}">edit</a>`) +
-        (isActive ? '' : `<button data-act="delete" data-id="${escapeHtml(p.id)}">Delete</button>`)
+        (isActive ? '' : `<button type="button" data-act="delete" data-id="${escapeHtml(p.id)}">Delete</button>`)
       return (
         `<div class="card"><div class="prow">` +
         `<span class="pname">${escapeHtml(p.name)}</span> <span class="pid">${escapeHtml(p.id)} · v${p.version}</span>` +
@@ -141,7 +141,7 @@ const editorHtml = (data: SetupData): string => {
     `<script type="application/json" id="base-fabric">${base}</script>` +
     live +
     inert +
-    `<div style="margin-top:12px"><button class="primary" data-act="save">Save profile</button></div>` +
+    `<div style="margin-top:12px"><button type="button" class="primary" data-act="save">Save profile</button></div>` +
     `</form>`
   )
 }
@@ -152,7 +152,7 @@ const secretsHtml = (refs: string[]): string => {
         .map(
           (r) =>
             `<div class="row"><span class="ro">${escapeHtml(r)}</span><div class="rowbtns">` +
-            `<button data-act="delsecret" data-ref="${escapeHtml(r)}">Forget</button></div></div>`,
+            `<button type="button" data-act="delsecret" data-ref="${escapeHtml(r)}">Forget</button></div></div>`,
         )
         .join('')
     : '<div class="note" style="color:var(--faint)">No keys stored. Values are write-only — never shown here.</div>'
@@ -162,7 +162,7 @@ const secretsHtml = (refs: string[]): string => {
     `<div class="row" style="border-top:1px solid var(--line);margin-top:6px;padding-top:10px">` +
     `<input id="secret-ref" autocomplete="off" placeholder="keyRef (e.g. remote-llm-key)" />` +
     `<input id="secret-val" type="password" autocomplete="new-password" placeholder="value (stored, never re-shown)" />` +
-    `<div class="rowbtns"><button data-act="addsecret">Add key</button></div></div></div>`
+    `<div class="rowbtns"><button type="button" data-act="addsecret">Add key</button></div></div></div>`
   )
 }
 
@@ -173,8 +173,8 @@ const rowTemplateHtml = (refs: string[]): string =>
   `<input class="f-name" autocomplete="off" placeholder="name" /><input class="f-url" autocomplete="off" placeholder="http://host:port" />` +
   `<input class="f-model" autocomplete="off" placeholder="model (optional)" />` +
   `<select class="f-keyref" title="key reference">${keyrefOptions(undefined, refs)}</select>` +
-  `<div class="rowbtns"><button data-act="test">Test</button><button data-act="up" title="up">↑</button>` +
-  `<button data-act="down" title="down">↓</button><button data-act="remove" title="remove">✕</button></div>` +
+  `<div class="rowbtns"><button type="button" data-act="test">Test</button><button type="button" data-act="up" title="up">↑</button>` +
+  `<button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
   `<div class="probe"></div></div></template>`
 
 /** Render the whole self-contained setup page. Pure — the engine route just hands it live data. */

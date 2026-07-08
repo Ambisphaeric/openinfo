@@ -133,8 +133,10 @@ export const SETUP_SCRIPT = `
   function delSecret(ref){if(!confirm('Forget secret "'+ref+'"?'))return;
     jf('DELETE','/fabric/secrets/'+encodeURIComponent(ref)).then(function(r){
       if(!r.ok){alert('Delete failed ('+r.status+')');return;}location.reload();});}
+  document.addEventListener('submit',function(e){e.preventDefault();});
   document.addEventListener('click',function(e){
     var b=e.target.closest('[data-act]'); if(!b)return;
+    e.preventDefault();
     var act=b.dataset.act; var row=b.closest('.row');
     if(act==='test'){testRow(row);}
     else if(act==='remove'){row.remove();}
