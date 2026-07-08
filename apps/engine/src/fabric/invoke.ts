@@ -1,4 +1,4 @@
-import type { Endpoint, Fabric } from '@openinfo/contracts'
+import type { Endpoint, Fabric, VlmInvokeParams } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager } from './endpoints/local.js'
 import {
@@ -319,6 +319,136 @@ export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOption
   throw new AggregateInvokeError(
     'stt',
     `no stt endpoint answered${lines.length ? ` (${lines.join('; ')})` : ' (fabric stt slot is empty)'}`,
+    classified,
+  )
+}
+
+/**
+ * One recognized region — the invoke-side, provenance-free shape of an OcrResult block (a PaddleOCR box):
+ * text plus optional confidence and a bounding box in the FRAME PIXEL coordinate space (ScreenFrameMeta
+ * width/height). The slice-4 screen processor lifts these verbatim into the persisted `OcrResult.blocks`.
+ */
+export interface ScreenBlock {
+  text: string
+  confidence?: number
+  region?: { x: number; y: number; width: number; height: number }
+}
+
+/**
+ * The lightweight result of a screen-understanding invoke (ocr | vlm) — the OcrText body BEFORE the
+ * slice-4 processor stamps the full `OcrResult` envelope (id/sessionId/workspaceId/sourceChunks/createdAt).
+ * Mirrors LlmResult/SttResult: text + provenance. `blocks` is present only for a region-aware ocr runtime
+ * (a vlm produces prose and leaves it absent); `text` is populated uniformly for both slots ('' is a valid
+ * empty-frame / silent outcome, never an error — the caller reads `text` regardless of which slot ran).
+ */
+export interface ScreenTextResult {
+  text: string
+  blocks?: ScreenBlock[]
+  endpoint: string
+  model?: string
+  slot: 'ocr' | 'vlm'
+}
+
+/** Shared invoke options for the screen slots — the image + timeout ride the contract params, so these
+ * carry only key resolution and the local-runtime manager (mirroring InvokeOptions/SttOptions minus timeout). */
+export interface ScreenInvokeOptions {
+  /** resolve an endpoint's auth.keyRef to its secret value (injected as a bearer token). */
+  resolveKey?: SecretResolver
+  /** manages `local` endpoints' spawned runtimes (tier zero); absent ⇒ local endpoints are skipped. */
+  runtimeManager?: LocalRuntimeManager
+}
+
+/** A base64 image + its mime as an OpenAI-compat `image_url` data URI (`data:<mime>;base64,<bytes>`). */
+const imageDataUri = (image: string, contentType: string): string => `data:${contentType};base64,${image}`
+
+/**
+ * Call one http vlm endpoint speaking OpenAI-compatible VISION chat: a single user message whose `content`
+ * is an array of a text part (the prompt) and an `image_url` part carrying the frame as a data URI — what
+ * LM Studio / Ollama's OpenAI-compat serve for a qwen2.5-vl-class model. Parses `choices[0].message.content`
+ * (prose). Empty content ('') is a valid empty-frame outcome and is returned as-is; a MISSING content field
+ * is a `bad-response`. Throws a classified InvokeError on transport/protocol failure so the caller falls through.
+ */
+const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts: ScreenInvokeOptions): Promise<string> => {
+  const ctx = ctxOf(endpoint)
+  const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 60_000)
+  let response: Response
+  try {
+    const body: Record<string, unknown> = {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: params.prompt },
+            { type: 'image_url', image_url: { url: imageDataUri(params.image, params.contentType) } },
+          ],
+        },
+      ],
+      stream: false,
+    }
+    if (endpoint.model !== undefined) body['model'] = endpoint.model
+    response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...auth },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    throw classifyFetchError(error, ctx)
+  } finally {
+    clearTimeout(timeout)
+  }
+  if (!response.ok) throw classifyHttpResponse(response.status, await response.text().catch(() => ''), ctx)
+  let json: ChatCompletion
+  try {
+    json = (await response.json()) as ChatCompletion
+  } catch {
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the vision completions endpoint' })
+  }
+  const text = json.choices?.[0]?.message?.content
+  if (typeof text !== 'string') throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in vision response' })
+  return text // '' is a valid empty-frame result, not an error
+}
+
+/**
+ * Invoke the `vlm` slot: try endpoints in fabric order (order is fallback, first that answers wins),
+ * mirroring invokeLlm. http/openai-compat endpoints POST the OpenAI-compat vision-chat shape (prompt +
+ * image data URI); `local` resolves its spawned runtime to a localhost http server, then speaks the same
+ * chat (a managed vlm runtime is future — no v0 spec, so it falls through gracefully); `cloud` is out of
+ * scope. Produces prose (`text`, no `blocks`). An empty answer ('') is a normal result.
+ */
+export const invokeVlm = async (
+  fabric: Fabric,
+  params: VlmInvokeParams,
+  opts: ScreenInvokeOptions = {},
+): Promise<ScreenTextResult> => {
+  const endpoints = fabric.slots.vlm
+  const lines: string[] = []
+  const classified: ClassifiedFailure[] = []
+  for (const endpoint of endpoints) {
+    if (endpoint.kind === 'cloud') {
+      lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
+      continue
+    }
+    try {
+      const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint
+      if (http.api !== 'openai-compat') {
+        lines.push(`${endpoint.name}: unsupported api "${http.api}"`)
+        continue
+      }
+      const text = await callVlmHttp(http, params, opts)
+      const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'vlm' }
+      if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
+      return result
+    } catch (error) {
+      if (error instanceof InvokeError) classified.push(error.toFailure())
+      lines.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw new AggregateInvokeError(
+    'vlm',
+    `no vlm endpoint answered${lines.length ? ` (${lines.join('; ')})` : ' (fabric vlm slot is empty)'}`,
     classified,
   )
 }
