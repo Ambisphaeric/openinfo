@@ -1,0 +1,29 @@
+{
+  "$id": "CapabilitySlot",
+  "anyOf": [
+    {
+      "const": "stt",
+      "type": "string"
+    },
+    {
+      "const": "tts",
+      "type": "string"
+    },
+    {
+      "const": "llm",
+      "type": "string"
+    },
+    {
+      "const": "vlm",
+      "type": "string"
+    },
+    {
+      "const": "ocr",
+      "type": "string"
+    },
+    {
+      "const": "embed",
+      "type": "string"
+    }
+  ]
+}

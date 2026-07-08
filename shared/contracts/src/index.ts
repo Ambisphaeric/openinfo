@@ -13,6 +13,7 @@ export * from './config/surface.js'
 export * from './config/mode.js'
 export * from './config/promptTemplate.js'
 export * from './config/fabric.js'
+export * from './config/discovery.js'
 export * from './config/flag.js'
 export * from './api/routes.js'
 export * from './api/events.js'
@@ -31,6 +32,7 @@ import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surf
 import { Mode } from './config/mode.js'
 import { PromptTemplate } from './config/promptTemplate.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
+import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult } from './config/discovery.js'
 import { Flag } from './config/flag.js'
 import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe } from './api/payloads.js'
 
@@ -39,7 +41,8 @@ export const AllSchemas = {
   Moment, MomentKind, Entity, Distillate, Draft, Session, Workspace, Pin, Commitment, Watcher,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
-  Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile, Flag,
+  Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
+  CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, Flag,
   Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest,
   CloneProfileRequest, SecretRef, SecretValue, EndpointProbe,
 } as const

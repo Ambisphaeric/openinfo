@@ -1,0 +1,46 @@
+{
+  "$id": "ProbeList",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "probes"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "description": "store-stamped, monotonic; every prior version is kept",
+      "type": "integer"
+    },
+    "probes": {
+      "description": "checked in parallel; order is the suggestion tie-break",
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "url"
+        ],
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "url": {
+            "pattern": "^https?://",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "description": {
+      "type": "string"
+    }
+  }
+}

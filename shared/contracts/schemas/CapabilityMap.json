@@ -1,0 +1,114 @@
+{
+  "$id": "CapabilityMap",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "rules",
+    "default"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "description": "store-stamped, monotonic; every prior version is kept",
+      "type": "integer"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "any",
+          "slots"
+        ],
+        "properties": {
+          "any": {
+            "minItems": 1,
+            "description": "lowercased substrings; match = contains any",
+            "type": "array",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "slots": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "$id": "CapabilitySlot",
+              "anyOf": [
+                {
+                  "const": "stt",
+                  "type": "string"
+                },
+                {
+                  "const": "tts",
+                  "type": "string"
+                },
+                {
+                  "const": "llm",
+                  "type": "string"
+                },
+                {
+                  "const": "vlm",
+                  "type": "string"
+                },
+                {
+                  "const": "ocr",
+                  "type": "string"
+                },
+                {
+                  "const": "embed",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "default": {
+      "minItems": 1,
+      "description": "slots for a model that matched no rule (usually [llm])",
+      "type": "array",
+      "items": {
+        "$id": "CapabilitySlot",
+        "anyOf": [
+          {
+            "const": "stt",
+            "type": "string"
+          },
+          {
+            "const": "tts",
+            "type": "string"
+          },
+          {
+            "const": "llm",
+            "type": "string"
+          },
+          {
+            "const": "vlm",
+            "type": "string"
+          },
+          {
+            "const": "ocr",
+            "type": "string"
+          },
+          {
+            "const": "embed",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "id": "capability-map-default",
+  "version": 1,
+  "description": "Classify a model into capability slots by its NAME. Substrings are lowercased; a model matching several rules gets the UNION of their slots (a vision-language model is both vlm and llm). default applies only when no rule matches.",
+  "rules": [
+    { "any": ["embed"], "slots": ["embed"] },
+    { "any": ["ocr"], "slots": ["ocr"] },
+    { "any": ["-vl", "vlm", "vision"], "slots": ["vlm", "llm"] },
+    { "any": ["whisper", "parakeet"], "slots": ["stt"] },
+    { "any": ["kokoro", "tts"], "slots": ["tts"] }
+  ],
+  "default": ["llm"]
+}
