@@ -117,3 +117,155 @@ The executor (slice 2), typed queues (slice 3), the dynamic to-do seam (slice 4)
 `StepGate` · graph edges/fan-out on `WorkflowSpec` (the DAG, per workflow/README) · a "add a workflow
 step kind" CONTRIBUTING recipe (belongs with the executor that makes a kind runnable) · the
 `workflow.enabled` flag (slice 2 owns it).
+
+## PHASEB — screen capture + OCR/VLM invocation  *(P4B, Terminal B, branch `p4b-screen-ocr`)*
+
+The founder's flagship use case (OSS-contribution screen watching) and the least-built element: OCR/VLM
+existed only as contract slot names; nothing invoked them and screen capture was pending. P4B is the whole
+vertical — this note is self-contained across its four slices (contracts, fabric invocation, client
+capture, and the slice-4 processor+router that stitches capture → OCR → surfaces).
+
+### Contracts
+- **`ScreenFrameMeta`** (`records/screen.ts`, slice 1): a frame is an IMAGE riding the EXISTING
+  `CaptureChunk` transport (`source:'screen'`, `encoding:'base64'`, a `ScreenContentType` mime) — no new
+  chunk type. Its typed descriptor (displayId/width/height/scale, + a future `deltaScore` Δ-gate hook)
+  travels as a COMPANION `source:'screen'` utf8/json chunk, exactly the way a `FocusSignal` does — emitted
+  adjacent to the image chunk at the next sequence, correlated by capture order. `capturedAt` is not
+  restated (it already lives on the CaptureChunk).
+- **`OcrResult`** (`records/ocr.ts`, slice 1): the screen-understanding analogue of a `Distillate` —
+  id/sessionId/workspaceId/sourceChunks/text/provenance(slot `ocr`|`vlm`, endpoint, model?)/schemaVersion/
+  createdAt, plus an OPTIONAL `blocks[]` (per-region text+confidence+pixel box) present for a region-aware
+  OCR runtime and absent for a VLM (prose). `OCR_RESULT_SCHEMA_VERSION = 1`.
+- **`OcrInvokeParams`/`VlmInvokeParams`** (`config/invoke.ts`, slice 1): engine-agnostic invoke requests
+  (image + contentType, + the VLM prompt) — name WHAT to understand, never WHICH endpoint.
+- **`ScreenStatus`** (`api/payloads.ts`, slice 4): the processor's health — `enabled` + processed/blank/
+  skipped/failed counters + a `QueueFailure[]` ring. The processor rides capture INGEST, not the queue
+  drain, so its health has no home on `QueueStatus`; this is that home. Routes: `GET /screen/results`
+  (`OcrResult[]`) + `GET /screen/status` (`ScreenStatus`), phase 4. Schemas regenerated (+1: ScreenStatus).
+
+### Fabric
+- **`api:'paddle-serving'`** dialect + widened `AggregateInvokeError` slot to `ocr`/`vlm` (slice 2).
+- **`invokeOcr` / `invokeVlm`** (`fabric/invoke.ts`, slice 2) — mirror `invokeLlm`/`invokeStt` (fabric-order
+  fall-through, first-healthy-wins, classified failures, keyRef→Bearer at invoke time). `invokeVlm`: an
+  OpenAI-compat VISION chat (text part + `image_url` data URI). `invokeOcr`: an http `paddle-serving`
+  endpoint speaks the PaddleHub `POST /predict/ocr_system` `{"images":[b64]}` contract (region-aware
+  blocks); an http `openai-compat` endpoint filling the ocr slot falls back GRACEFULLY to VLM-transcription
+  with a default recognition prompt (prose, no blocks — the dialect field decides). Empty text `''` is a
+  normal blank-frame outcome, never an error. Bench measures the ocr+vlm slots like every other slot.
+
+### Client capture
+- Screen is a THIRD capture source (`protocol.ts`), opt-in via `cfg.screenEnabled` (`OPENINFO_SCREEN`).
+  Captured in the MAIN process (`desktopCapturer` polled at `cfg.screenIntervalMs`,
+  `NativeImage.toJPEG(70)`, physical-pixel thumbnail for retina) — NOT a hidden renderer, so it does not
+  ride the `capture:*` IPC. Each frame ships as TWO CaptureChunks: the image (`image/jpeg`, base64, seq N)
+  and its companion `ScreenFrameMeta` (`application/json`, utf8, seq N+1), both `scr-` id-prefixed,
+  same `capturedAt`. Screen-Recording TCC: an empty grab (grant pending) skips the frame, never ships
+  black. `ws.ts` now frames RFC 6455 extended payload lengths so a large frame broadcast can't crash the
+  event feed.
+
+### Screen processor + router  *(slice 4, this terminal's final slice)*
+- **Module home:** a new `apps/engine/src/screen/`. CODE_MAP §3 previously homed OCR at `distill/ … ocr`;
+  reconciled honestly — the fabric OCR/VLM *invocation* lives in `fabric/invoke.ts` (with the other
+  slots), and the screen *processor + router* get their own `screen/` module (one concern per file:
+  `processor.ts`, `router.ts`, `registry.ts`, `index.ts`). Screen understanding is not the transcript
+  distiller — a frame is understood by OCR, not by the rolling-merge distiller — so it is not a `distill/`
+  stage.
+- **Processor** (`screen/processor.ts`): subscribes to `capture.received`, gated per-frame on the new
+  `screen.ocr` flag (read like the drain's distill flags — flip needs no restart). It acts ONLY on
+  `source:'screen'` IMAGE chunks; the companion `application/json` meta chunk is skipped-and-counted;
+  non-screen chunks are ignored. It invokes the fabric `ocr` slot (`invokeOcr` — paddle-serving OR the
+  openai-compat VLM fallback; it builds NO slot-picking policy beyond what invoke already does), stamps a
+  full `OcrResult` (blocks carried through when present) and persists it, then constructs a `Distillate`
+  DIRECTLY (no extra llm pass) so the standard surfaces read the screen text. Runs INDEPENDENTLY of
+  `distill.enabled` (screen ≠ transcript).
+- **Empty-frame policy (decision):** empty recognized text is a BLANK frame — persist NEITHER an OcrResult
+  NOR a distillate (nothing to say) but COUNT it (`blank`), so `/screen/status` stays honest about frames
+  seen. Cheapest honest choice; a blank OcrResult would be DB noise no surface wants.
+- **Distillate voice (decision):** `Distillate` requires a voice vector, but no voice/register pass runs
+  over OCR text (it is transcription, not rewriting). The honest fill is `scope:'global'` + `NEUTRAL_DIALS`.
+  `windowStart == windowEnd == the frame's capturedAt` (a single frame is one instant).
+- **Errors:** `process()` NEVER throws — an `AggregateInvokeError` is classified (via
+  `describeInvokeFailure`) into a bounded `QueueFailure` ring exposed by `status()`; any other error is
+  logged. The wiring subscribes fire-and-forget (`void process(chunk)`), so a slow/failing OCR can neither
+  block nor 500 the ingest path (`bus.publish('capture.received')` awaits its subscribers).
+- **Event naming (decision):** the processor publishes `distillate.updated` (so the EXISTING WS feed +
+  surfaces see the frame's understanding) and an engine-internal `ocr.completed` (the raw `OcrResult`).
+  `ocr.completed` is deliberately NOT added to the contract WS `Events` map — there is no WS consumer for
+  it yet, and adding a WS broadcast would cost a second line in the P4A-owned `http.ts` (forbidden). A
+  future screen-aware HUD surface can subscribe on the internal bus and gain a broadcast then.
+- **Router** (`screen/router.ts`): `GET /screen/results?workspace=&session=` (persisted OcrResults;
+  accepts `sessionId` too) + `GET /screen/status`. Read routes ⇒ NOT flag-gated (CONTRIBUTING rule 3 — the
+  DATA is gated upstream by `screen.ocr`). Reaches the processor's in-memory status via a `WeakMap(store →
+  processor)` bridge (`registry.ts`), because the router is called with only the HandlerContext and the
+  processor is constructed after `createEngineApp`. Structural context type ⇒ the router never imports the
+  P4A-owned `http.ts`.
+- **Store** (`store/workspaces.ts`): a new `ocr_results` table + `saveOcrResult`/`listOcrResults` mirroring
+  the distillate methods; `moveSession` copies+deletes OcrResults with a rerouted session (session-keyed,
+  like distillates/drafts). Only `store/` opens a DB (rule 2).
+
+### Wiring
+`wireScreenOcr(app)` in `screen/index.ts`, called from `main.ts` AFTER `createEngineApp` (out of the
+P4A-owned `http.ts`). It reconstructs `FabricDocuments` + `FileSecretStore` over the app's store EXACTLY
+as `http.ts` does (same DB ⇒ same active-profile live fabric, same chmod-600 secret store), builds the
+processor, registers it in the WeakMap, and subscribes it to `capture.received`. No `LocalRuntimeManager`
+is constructed here — a managed local ocr/vlm runtime is future (invokeOcr falls through `local` endpoints
+gracefully; the real v0 paths are http paddle-serving / openai-compat, which need none). The single P4B
+line in `http.ts` is the `/screen` mount (`handleScreen`), added as its own commit.
+
+### Tests
+Contracts **58** (unchanged mapping; ScreenStatus has no example file). Engine **315** (+8 screen:
+7 processor unit — recognizes via the fabric ocr slot over a fake paddle → OcrResult(+blocks)+distillate
+persisted+published; flag off ⇒ untouched, invoke never called; companion meta chunk skipped+counted;
+empty text ⇒ blank (neither record); non-screen chunk ignored; AggregateInvokeError classified into the
+ring and NOT thrown; ring bounded to failureRingSize keeping newest — plus 1 e2e: engine up → PUT /fabric
+(ocr→fake paddle) → PUT /flags/screen.ocr → POST /capture/screen (image + meta) → poll GET /screen/results
+→ assert OcrResult + the distillate on the standard feed (there is NO /query distillates source — the
+"assert distillate via /query" brief was inaccurate; distillates surface via `distillate.updated` + store)
+→ GET /screen/status = processed:1/skipped:1/failed:0). `pnpm -r build && pnpm -r test` green; the one
+failure seen under `pnpm -r test` was the pre-existing client `engine-link/seam` TOCTOU flake (11≠10),
+which passes 3/3 in isolation — unrelated to engine-only P4B changes.
+
+### Live verification (what was real, what was faked)
+Engine run STANDALONE from the worktree dist on port **8799** (`OPENINFO_DATA=<tmp> OPENINFO_PORT=8799
+node apps/engine/dist/main.js`; wired via `main.js`'s `wireScreenOcr`), NO workflow executor.
+- **REAL:** the OCR model. Probed localhost — LM Studio live on :1234 serving `glm-ocr@q8_0` (a genuine
+  GLM-OCR vision model). Wired it into the live fabric's `ocr` slot (`PUT /fabric`, api `openai-compat`);
+  invokeOcr took the VLM-transcription fallback path.
+- **FAKED:** the frame. macOS `screencapture -x -t jpg` was TCC-denied here ("could not create image from
+  display"), so per the plan I fell back to a generated fixture — a PIL-rendered 640×200 JPEG reading
+  "OpenInfo P4B live OCR check".
+- **Result:** `POST /capture/screen` (ack ok) → glm-ocr recognized the text verbatim →
+  `GET /screen/results` returned one OcrResult (`text: "\nOpenInfo P4B live OCR check"`, slot `ocr`,
+  endpoint `lmstudio-glm-ocr`, model `glm-ocr@q8_0`); `GET /screen/status` = enabled, processed:1,
+  failed:0. Direct sqlite check of the workspace DB confirmed BOTH the `ocr_results` row and the companion
+  `distillates` row (text trimmed to "OpenInfo P4B live OCR check", slot ocr, window == capturedAt).
+  Engine killed after (confirmed down).
+
+### Rule-7 check (definition of done)
+- **Routes:** two READ routes added (`/screen/results`, `/screen/status`) — declared in
+  `contracts/api/routes.ts`. Read routes are NOT flag-gated (rule 3). No skill references them (the one
+  shipped skill, `add-a-block`, only enumerates the flags/routes ITS recipe touches — surface documents —
+  and no recipe adds an engine READ route), so nothing in `skills/` goes stale.
+- **Flag:** `screen.ocr` added (default OFF, engine, T1) — it gates the screen-OCR PROCESSING behavior
+  (rule 3). No skill enumerates flags beyond `add-a-block`'s upstream-flag note for block SOURCES; this
+  slice adds no block source, so that note needs no `screen.ocr` entry (it would, only if a later slice
+  adds an OCR-backed block source — recorded as the one conditional touch-point).
+- **Recipes:** no CONTRIBUTING recipe references the new surfaces; the nearest ("add a fabric runtime")
+  is about endpoints, already true for the paddle/VLM dialects from slice 2. Nothing to update.
+- **CODE_MAP:** §1 tree gains the `screen/` module + the client screen-capture note; §3 reconciles the
+  `distill/ … ocr` placeholder and adds rows for the screen processor/router, the `screen.ocr` flag, and
+  the client screen source. Done in this same docs commit.
+
+### Deferred (out of this slice, by scope)
+- **Δ-gating** — the `ScreenFrameMeta.deltaScore` hook exists but no gate reads it; the client captures on
+  a fixed cadence (screenshot-diff threshold vs OCR cost is the `delta-gate` spike, CODE_MAP §4).
+- **`runtime:'paddle'` managed-local** — a spawned PaddleOCR runtime (invokeOcr falls through `local` ocr
+  endpoints today; no `RUNTIME_SPECS` entry). Same future as a managed local vlm; no `LocalRuntimeManager`
+  in the screen wiring until then.
+- **Workflow-step integration** — `ocr`/`vlm` are homed in the `WorkflowStepKind` union (P4A slice 1) but
+  the screen processor rides capture ingest directly today; folding screen understanding into the workflow
+  executor as an `ocr`/`vlm` step is the small JOINT slice after P4A's executor and this both land.
+- **`capture.received` payload slimming** — `http.ts` rebroadcasts the FULL CaptureChunk (incl. the base64
+  image) over the event feed; slimming that is an http.ts-owned (P4A) concern, not this branch's.
+- **A distillates read route / `/query` distillates source** — screen distillates currently surface only
+  via `distillate.updated` + the workspace DB; a first-class read surface is unscoped here.
