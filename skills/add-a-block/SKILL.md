@@ -5,12 +5,39 @@ description: Add a new block to one of your surfaces (HUD, workbench) by editing
 
 # Add a block
 
-1. Fetch the target surface document: `GET /layouts/surfaces/{id}`.
-2. Choose a block type from `GET /contracts/block-types` (built-ins) — prefer built-ins over custom.
-3. Compose the block object; validate it against `GET /contracts/Block` (JSON Schema) BEFORE writing.
-4. Insert into `stack` at the position the user asked for; set `show`, `top`, `collapsed` explicitly.
-5. `PUT /layouts/surfaces/{id}` — the engine revalidates; on 422 read the error, fix, retry once.
-6. Tell the user the flag key if the block type is flagged, and how to revert (documents are versioned;
-   `POST /layouts/surfaces/{id}/rollback`).
+Adding a block is a pure document edit — you fetch a surface, splice a block into its `stack`, and PUT
+it back. No application code, no new route. Every step below is a real engine call; verify each against
+`shared/contracts/src/api/routes.ts`.
 
-Never: edit application code for a block addition; invent block types; write a document that fails validation.
+1. Fetch the target surface document: `GET /layouts/surfaces/{id}` (200 → a `Surface`; 404 if no such
+   id — e.g. `surf-openinfo-hud` is the shipped HUD). **Keep this exact document** — it is how you revert
+   (step 6).
+2. Choose a block type. The built-ins are the enum at `GET /contracts/BlockTypeName` (a JSON Schema whose
+   members are the valid `block` values: `now` · `moments` · `relevant-now` · `ledger` · `pinned-doc` ·
+   `hint` · `ask` · `custom`). Prefer a built-in over `custom`.
+3. Compose the block object and validate it against the `Block` schema — fetch it with
+   `GET /contracts/Block` (returns the JSON Schema) — BEFORE writing. A data block needs a `query`
+   (`{ source, params, top? }`, where `source` is one of relevant-now/moments/sessions/entities/ledger/
+   pins); set `show` (`always` | `on-match` | `manual`) and optionally `collapsed`/`top`. A layout block
+   like `now` needs no query.
+4. Insert the block into the surface's `stack` array at the position the user asked for.
+5. Save by PUTting the WHOLE surface document back: `PUT /layouts/surfaces/{id}`. The body must be a full
+   `Surface` whose `id` matches the route. The engine revalidates the whole document and **stamps the next
+   `version` itself** — your `version` field is required by the schema (integer ≥ 1) but its value is
+   ignored on save; the store increments the latest stored version. On success `200` returns the saved
+   document with the bumped version. On **`400`** the body is `{ "error": "invalid Surface", "details":
+   [ ... ] }` — read `details` (e.g. `"/stack/0/block: Expected union value"`), fix, retry once.
+6. Revert: **there is no rollback endpoint** (`POST /layouts/surfaces/{id}/rollback` does not exist). The
+   engine keeps every prior version internally, but the API way to undo is to PUT back the document you
+   kept from step 1 — the engine stamps a new version whose shape matches the pre-edit one. So: hold the
+   pre-edit document; to undo, PUT it again.
+
+Saving a surface is **not** behind a flag (serving/saving a layout is a resource route, not a gated
+behavior). But a block only shows DATA when its source is populated, and the sources are gated upstream:
+`moments`/`relevant-now`/`entities` need `distill.enabled` (+ `distill.moments` / `distill.index`) ON, and
+`ledger` (P4) / `pins` (P3) have no backing store yet so they render empty-but-explainable. Tell the user
+which upstream flag a data block depends on so an empty block reads as expected, not broken.
+
+Never: edit application code to add a block; invent a block type (`BlockTypeName` is append-only — a NEW
+built-in type is the CONTRIBUTING "Add a built-in block type" Tier-B recipe, not a document edit); write a
+document that fails validation.
