@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
-import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, toQueueFailure, type SecretStore } from '../fabric/index.js'
+import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
@@ -241,6 +241,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/fabric') return send(res, 200, ctx.fabric.load())
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/fabric/discover') return discover(res, ctx)
+  if (req.method === 'POST' && url.pathname === '/fabric/scan') return scanFabric(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/fabric/local/models') return send(res, 200, ctx.models.statuses())
   if (req.method === 'POST' && url.pathname === '/fabric/local/download') return downloadModel(req, res, ctx)
   if (req.method === 'POST' && url.pathname === '/fabric/test') return testEndpoint(req, res, ctx)
@@ -385,6 +386,33 @@ function getSurfaceEditor(res: ServerResponse, ctx: HandlerContext, id: string):
  */
 async function discover(res: ServerResponse, ctx: HandlerContext): Promise<void> {
   const result = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap())
+  send(res, 200, result)
+}
+
+/**
+ * The host-scan (POST /fabric/scan) — pick host, scan common ports, list models, get a
+ * capabilities list; backing the Endpoints editor's Scan button. Exactly one of url|host: an exact
+ * url probes that base URL; a bare host tries the probe-list DOCUMENT's ports against it. Models come
+ * back classified through the capability map; failures come back in the invoke taxonomy's classes.
+ * POSTURE: the engine is localhost-only (auth is P7) and this is a USER-DIRECTED probe of a host the
+ * user typed — a few GETs to /v1/models, not an unsolicited subnet sweep (that consent-gated LAN sweep
+ * stays future). Fresh per call (no cache, the founder's explicit call); value-free re keys — the
+ * keyRef resolves server-side and no response ever carries key material.
+ */
+async function scanFabric(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('ScanRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid ScanRequest', details: errors })
+  const request = body as ScanRequest
+  if ((request.url !== undefined) === (request.host !== undefined)) {
+    return send(res, 400, { error: 'provide exactly one of url or host' })
+  }
+  if (request.host !== undefined && /[/:@\s]/.test(request.host)) {
+    return send(res, 400, { error: 'host must be a bare hostname or IP (no scheme, port, or path)' })
+  }
+  const result = await scanHosts(request, ctx.discovery.probeList(), ctx.discovery.capabilityMap(), {
+    resolveKey: (ref) => ctx.secrets.resolve(ref),
+  })
   send(res, 200, result)
 }
 

@@ -1830,3 +1830,171 @@ test('e2e: PUT a surface edit → surface.updated on the WS with the changed lay
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// --- HOST-SCAN + MODEL-DROPDOWN: POST /fabric/scan ---
+
+/** A fake OpenAI-compatible model server; optionally demands a bearer on /v1/models (the auth case). */
+const startModelServer = async (ids: string[], opts: { requireKey?: string } = {}) => {
+  const server = createServer((req, res) => {
+    if (opts.requireKey !== undefined && req.headers.authorization !== `Bearer ${opts.requireKey}`) {
+      res.writeHead(401, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'missing bearer token' }))
+      return
+    }
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ object: 'list', data: ids.map((id) => ({ id })) }))
+      return
+    }
+    res.writeHead(404)
+    res.end()
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}`, port: String(address.port) }
+}
+
+test('POST /fabric/scan url: classified models; body must carry exactly one of url|host', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const up = await startModelServer(['ornith-1.0-9b', 'glm-ocr@q8_0', 'whisper-large-v3'])
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const scan = async (body: unknown) => fetch(`${base}/fabric/scan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+    const res = await scan({ url: up.url })
+    assert.equal(res.status, 200)
+    const result = (await res.json()) as { hosts: { url: string; reachable: boolean; authRequired: boolean; models: { id: string; slots: string[] }[] }[] }
+    assert.equal(result.hosts.length, 1)
+    assert.equal(result.hosts[0]!.reachable, true)
+    assert.deepEqual(result.hosts[0]!.models, [
+      { id: 'ornith-1.0-9b', slots: ['llm'] },
+      { id: 'glm-ocr@q8_0', slots: ['ocr'] },
+      { id: 'whisper-large-v3', slots: ['stt'] },
+    ])
+
+    // neither url nor host, both, and a non-bare host all 400 — the request semantics are exact
+    assert.equal((await scan({})).status, 400)
+    assert.equal((await scan({ url: up.url, host: 'localhost' })).status, 400)
+    assert.equal((await scan({ host: 'http://localhost' })).status, 400)
+    assert.equal((await scan({ host: 'localhost:1234' })).status, 400)
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /fabric/scan host: sweeps the probe-list DOCUMENT ports; dead port classified unreachable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const a = await startModelServer(['ornith-1.0-9b'])
+  const b = await startModelServer(['kokoro-82m'])
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    // The ports are a DOCUMENT (a user on a nonstandard port edits it) — point it at the fakes + a dead port.
+    app.store.layouts.put('discovery-probes', 'probes-default', {
+      id: 'probes-default',
+      version: 1,
+      probes: [
+        { name: 'a', url: `http://localhost:${a.port}` },
+        { name: 'b', url: `http://localhost:${b.port}` },
+        { name: 'dead', url: 'http://localhost:1' },
+      ],
+    })
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const res = await fetch(`${base}/fabric/scan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ host: '127.0.0.1' }) })
+    assert.equal(res.status, 200)
+    const result = (await res.json()) as { hosts: { url: string; reachable: boolean; models: { id: string }[]; error?: { class: string; hint: string } }[] }
+    assert.equal(result.hosts.length, 3)
+    assert.equal(result.hosts[0]!.url, `http://127.0.0.1:${a.port}`)
+    assert.deepEqual(result.hosts[0]!.models.map((m) => m.id), ['ornith-1.0-9b'])
+    assert.deepEqual(result.hosts[1]!.models.map((m) => m.id), ['kokoro-82m'])
+    assert.equal(result.hosts[2]!.reachable, false)
+    assert.equal(result.hosts[2]!.error?.class, 'unreachable')
+    assert.match(result.hosts[2]!.error?.hint ?? '', /is the server running/)
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => a.server.close(() => resolve()))
+    await new Promise<void>((resolve) => b.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /fabric/scan auth: 401 → authRequired; store the key, rescan with keyRef → models; value-free', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const up = await startModelServer(['ornith-1.0-9b'], { requireKey: 'sk-real-value-9871' })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const scan = async (body: unknown) =>
+      (await (await fetch(`${base}/fabric/scan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json()) as {
+        hosts: { reachable: boolean; authRequired: boolean; models: { id: string }[]; error?: { class: string; hint: string } }[]
+      }
+
+    // 1. keyless scan → the server wants a key (the editor highlights the keyRef selector on this)
+    const locked = await scan({ url: up.url })
+    assert.equal(locked.hosts[0]!.reachable, true)
+    assert.equal(locked.hosts[0]!.authRequired, true)
+    assert.equal(locked.hosts[0]!.error?.class, 'auth')
+
+    // 2. the user stores the key by REFERENCE and rescans with the keyRef → the models appear
+    await fetch(`${base}/fabric/secrets/rig-key`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: 'sk-real-value-9871' }) })
+    const unlocked = await scan({ url: up.url, keyRef: 'rig-key' })
+    assert.equal(unlocked.hosts[0]!.authRequired, false)
+    assert.deepEqual(unlocked.hosts[0]!.models.map((m) => m.id), ['ornith-1.0-9b'])
+
+    // value-free discipline: no ScanResult ever carries key material
+    assert.ok(!JSON.stringify(locked).includes('sk-real-value-9871'))
+    assert.ok(!JSON.stringify(unlocked).includes('sk-real-value-9871'))
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('scan → select → save round-trip: a scanned model id lands intact in the profile document', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const up = await startModelServer(['ornith-1.0-9b', 'qwen3-8b'])
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+
+    // scan, pick the founder's model from the discovered list (what the dropdown does)…
+    const result = (await (await fetch(`${base}/fabric/scan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: up.url }) })).json()) as {
+      hosts: { url: string; models: { id: string }[] }[]
+    }
+    const picked = result.hosts[0]!.models.find((m) => m.id === 'ornith-1.0-9b')
+    assert.ok(picked, 'the scanned list must contain the model')
+
+    // …save it into a profile through the existing routes, then read the document back
+    const profile: FabricProfile = {
+      id: 'scan-rt', name: 'Scan round-trip', version: 1,
+      fabric: { slots: { stt: [], tts: [], llm: [{ kind: 'http', name: 'lm-studio', url: result.hosts[0]!.url, api: 'openai-compat', model: picked!.id }], vlm: [], ocr: [], embed: [] } },
+    }
+    const put = await fetch(`${base}/fabric/profiles/scan-rt`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+    assert.equal(put.status, 200)
+    const stored = (await (await fetch(`${base}/fabric/profiles/scan-rt`)).json()) as FabricProfile
+    const ep = stored.fabric.slots.llm[0]
+    assert.ok(ep && ep.kind === 'http')
+    assert.equal(ep.model, 'ornith-1.0-9b')
+    assert.equal(ep.url, result.hosts[0]!.url)
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
