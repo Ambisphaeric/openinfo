@@ -233,6 +233,48 @@ fabric:
 - Per-node override in modes: a distill node says `use: llm.smart`, a hint block says `use: llm.fast`. Named
   tiers, so swapping hardware means editing the fabric doc, not every mode.
 
+### Fabric profiles, secrets & the setup surface (design note — 2026-07-07)
+
+The fabric above describes *one* slot→endpoints map. But a user's rig is not fixed: config 1 is an 8B in
+LM Studio; config 2 moves the smart tier to a 27B on another host over http; config 3 adds a 4B OCR box and
+parakeet STT here, TTS there, some of it over tailscale at acceptable-degraded speed. **Every such
+combination is a document** (§2's rule, applied to the fabric) — named, versioned, cloneable, switchable.
+
+- **FabricProfile.** A named, versioned document `{ id, name, version, fabric, description? }` whose `fabric`
+  is exactly the existing §8 `Fabric` shape (full slot→endpoints map). Profiles are stored like every other
+  config document (LayoutStore in `_meta.db`, one row per version — cloning is copying a document, history is
+  kept, a wrong document can't ship). Seeded examples ship: `lm-studio-local`, `ollama-local`,
+  `remote-http-template`.
+- **The live fabric IS a profile.** One "active profile" pointer names which profile is live; *activating* a
+  profile makes its map the fabric that health/bench/invoke run against. **`GET`/`PUT /fabric` stays** as the
+  active-profile view for backward compatibility: `GET /fabric` returns the active profile's map; `PUT /fabric`
+  edits the active profile in place (bumping its version). The pre-profiles single fabric doc is the fallback
+  when no profile is active (fresh installs and the ungated quickstart keep an empty `llm` slot — seeded
+  profiles are inert until explicitly activated, so nothing changes what `GET /fabric` returns until a user
+  opts in). Switching rigs = `POST …/activate`; the live fabric swaps atomically and a `fabric.changed` event
+  announces the new map to any listener (HUD, setup page).
+- **Secrets never live in documents.** An endpoint that needs a credential carries `auth: { keyRef }` — a
+  *name*, never a value. The value lives in an **engine-side secret store**, addressed by ref. v0 is a
+  chmod-600 JSON file kept in its own `secrets/` directory beside the workspace DBs (never inside any `.db`,
+  so it is never part of a one-file workspace export; env-overridable). The store is an **interface**
+  (`set`/`delete`/`resolve`/`listRefs`) so the macOS **Keychain** implementation slots in at P7 (§3) with no
+  caller change. The API is **write-only**: you `PUT` a value, you `DELETE` it, you `GET` the list of *refs* —
+  no route, event, GET response, document, or export ever carries key material. This is deliberately the same
+  never-echo-to-UI discipline the app already uses; the secret is injected **only at invoke time** as
+  `Authorization: Bearer <resolved>` for the http endpoint that declared the ref. A missing/unresolvable ref
+  makes that endpoint **fail health/invoke gracefully** — it falls through to the next endpoint in fabric
+  order, never crashes, and never logs the key (only the ref name appears in a failure list). Header choice:
+  `Authorization: Bearer` (the OpenAI-compatible convention these endpoints already speak); a bespoke header
+  would be an additive `auth.header`/`auth.scheme` field later, not a v0 concern.
+- **The setup surface** (next slice, *not* built here) is forms-over-documents served by the engine, exactly
+  like the coming WYSIWYG editors (§6): a page to name/clone/activate profiles, wire slot→endpoint rows across
+  hosts, and enter/forget keys through the write-only secret API. It composes only over the routes below — it
+  needs no new engine capability, consistent with the P6 "forms over documents, no new engine capability
+  allowed" rule.
+- **No flag.** Profiles and secrets are resource routes (like `/sessions`, `/layouts/surfaces`), not gated
+  processing behaviors — the established no-flag line. What a profile *switches on* (distill/act) is already
+  gated; a `fabric.profiles` flag would gate nothing not already gated.
+
 ---
 
 ## 9. What transplants, from where

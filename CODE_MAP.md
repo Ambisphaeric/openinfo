@@ -24,7 +24,8 @@ openinfo/
 │  ├─ store/                    P1   ← loom packages/store + sqlite-vec
 │  │                                 workspace-registry (DB-FILE PER WORKSPACE) · sessions (P2: manual start/stop lifecycle) · distillates/moments/entities/drafts (P2) · graph (P3) · layouts (P2)
 │  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
-│  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm chat-completions · stt /v1/audio/transcriptions multipart — both openai-compat, first-healthy-wins)
+│  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm chat-completions · stt /v1/audio/transcriptions multipart — both openai-compat, first-healthy-wins; keyRef→Authorization: Bearer at invoke time)
+│  │                                 profiles (named/versioned/cloneable slot-maps; active = live fabric; GET/PUT /fabric = active view) · secrets (SecretStore interface; v0 chmod-600 JSON in secrets/, keychain P7 — write-only API, refs never values)
 │  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG) — NOT built: P2 primitives wired direct at their seams; DAG deferred until multi/chained acts (see workflow/README)
 │  ├─ distill/                  P2   merge · distiller · transcribe (audio→text pre-distill drain stage via stt slot; mic="me"/system-audio="them" speaker split) · moments (typed extraction) · parse (defensive JSON, shared) · defaults/documents (template+mode docs) │ ocr (P3)
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
@@ -76,6 +77,9 @@ openinfo/
 | Google Docs pin ingestion (auth) | P3 | `engine/index/ingest/gdoc.ts` + flag `ingest.gdoc` |
 | Gmail/calendar write scopes | P7+ | new `engine/connect/` module (design note first, per rule 5) |
 | Cloud endpoints (Gemini Live, Anthropic) | P7 | `engine/fabric/endpoints/cloud.ts` (keychain) |
+| Fabric profiles + secrets (this slice) | P2 | `engine/fabric/{profiles,secrets}.ts` + profile/secret routes; live fabric = active profile |
+| First-run / fabric setup page (forms over profile+secret docs) | next | `client/surfaces/setup/` over the profile + secret routes — no new engine capability |
+| macOS Keychain secret store | P7 | `engine/fabric/secrets.ts` — `KeychainSecretStore` behind the `SecretStore` interface (drop-in for the v0 file) |
 | Drift steering (comparator + chains) | P5 | `engine/voice/{comparator,chains}.ts`; card/glyph = HUD blocks |
 | TTS whisper (chain terminus) | P5 | `fabric` tts slot + chain step `tts` |
 | Explore canvas (lenses, branches) | P6 | `workbench/explore/` + `engine/surfaces/custom-blocks.ts` |
