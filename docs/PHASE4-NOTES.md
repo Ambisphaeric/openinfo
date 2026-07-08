@@ -338,3 +338,161 @@ cleared immediately; the non-empty backlog path is unit-covered).
   (throw → no sample) as-is so a failing model does not poison the drain-rate with 0-chunk fast "successes".
 - The to-do DOCUMENT slice 4 adds is a store surface, not a queue concern; `GET /queue` stays a pure spool
   status view (no workflow/act state leaks into it — the executor/queue separation from slice 2 holds).
+
+## Slice: Dynamic to-do seam (prompt engine v0)  *(P4A, Terminal A, branch p4a-workflow)*
+
+The fourth and final P4A slice lands the founder's **constrain/unconstrain loop**: a `task-extract` act
+CONSTRAINS a meeting's distillates+moments into a structured, editable to-do array; a follow-up draft
+UN-CONSTRAINS it back into prose via a `{{todo}}` template variable. Everything is a document: the to-do
+list is a versioned, editable `TodoList` a user can PUT and the next draft reflects.
+
+### Contracts added (all additive)
+- **`TodoList`** (`config/todo.ts`): the editable session to-do document. House envelope (`id·name·version·
+  description?`) + `sessionId·workspaceId·items[]`, keyed in the store by session id.
+- **`TodoItem`**: `{ id, text, done?, provenance?, createdAt }` — id/createdAt server-stamped (the model
+  controls only `text`), `done` a user checkmark extraction never sets.
+- **`TodoProvenance`**: `{ sessionId?, distillateId?, momentId? }` — the extraction trail (all optional; a
+  user-added item has only its session). Registered in `index.ts`, seeded `examples/todo.session.json`,
+  schemas regenerated 64 → 67.
+
+### DECISION — the drain-vs-session-end tension: task-extract rides the DRAIN as a best-effort ACT
+The mandate's design tension (does task-extract accumulate DURING the session on the drain, or run once at
+session-end?) is resolved in favor of the **drain**, because the founder value ("a mid-meeting draft
+live-updates from ACCUMULATED follow-ups") requires the to-do to grow across the meeting — session-end-only
+cannot demonstrate accumulation. Reconciled with slice 3's "keep to-do extraction an act, not a drain
+stage" warning as follows:
+- task-extract is a `kind: act, trigger: 'drain'` step. The executor's `runDrain` runs drain-triggered acts
+  AFTER the coalesced distill pass, via a NEW `drainActs` map whose runner signature is `(chunks, step)` —
+  a drain has no single live session, so the runner derives its affected `(workspaceId, sessionId)` pairs
+  from the batch (like the distiller's `groupBySession`). This is the honest signature divergence from the
+  slice-2 `acts` (session-end) map, which stays `(session, step)`.
+- It is an ACT, not a chunk-consuming drain STAGE: it consumes no drained chunks and produces no distillate;
+  it reads the session's ALREADY-persisted, accumulated distillates+moments and merges into the to-do doc.
+- **BEST-EFFORT**: a runner throw is CAUGHT + logged, never re-propagated. The slice-2/3 seam "throw →
+  re-queue" is for distill/transcribe (chunk work that must retry); a task-extract failure must NOT re-queue
+  the batch, because the batch already distilled — a re-queue would re-run distill and duplicate distillates.
+  `DrainSample` is still recorded ONLY on processor success (unchanged) — a caught act throw leaves the drain
+  a success, so a failing extractor never poisons the drain rate with a re-queue.
+- **The DrainSample WART (stated honestly).** When `act.tasks` is ON, task-extract's llm call happens inside
+  the drain processor, so its time IS included in the file's `DrainSample.ms` → the observed drain rate is a
+  mixed cost and the ETA slightly inflates. This is DECLARED, not hidden: (1) `act.tasks` is OFF by default,
+  so the default ETA/`byKind`/`overflow` from slice 3 is byte-for-byte unpolluted (the slice-1/2/3
+  behavior-identical proof holds); (2) when a user opts in, the extra time genuinely IS work happening on the
+  drain, so counting it is defensible, just conflated. The clean fix (bill only the distill sub-call, or run
+  drain-acts outside the sample-timed region) needs the spool to distinguish billable sub-work — deferred.
+- The alternative slice-3 blessed (session-end only, no pollution, reuse `(session,step)`) was rejected only
+  because it cannot show mid-meeting accumulation. `TaskExtractor.extractForSession` is public, so a future
+  session-end or mid-meeting-draft trigger can call it without the drain if that tradeoff is ever wanted.
+
+### DECISION — the to-do document shape: kind `todo-list`, key = session id, in _meta.db
+`TodoDocuments` mirrors `SurfaceDocuments`/`WorkflowDocuments`: versioned records in `_meta.db` via
+`LayoutStore`, kind `todo-list`, **key = the owning session id** (so it is addressable as `/todos/:sessionId`
+and the `id` field equals the session id). `save()` stamps `version` = latest+1 and contract-validates the
+body before write; `upsert()` merges extracted candidates into the existing list (creating it if absent).
+NOT seeded — a session has no to-do until its first extraction or first user edit.
+- **Per-session (not per-workspace)**: a mid-meeting draft reflects THIS meeting's follow-ups; per-session is
+  the natural grain and matches how the draft is per-session.
+- **WART (stated)**: these documents live in the workspace-GLOBAL `_meta.db` keyed by session id, NOT in the
+  per-workspace record DBs where distillates/moments/drafts live. That is correct for a *document* (flags,
+  surfaces, modes, workflows are all global config docs) — the to-do is a document, not a record — and
+  session ids are globally unique uuids, so the key never collides. A move-session (reroute) does NOT carry
+  the to-do doc today (records move; this global config doc does not) — noted as deferred.
+
+### The `{{todo}}` mechanism — prompt engine v0
+One well-defined dynamic-document variable, resolved at act-compose time. `composeFollowUpDraft` takes an
+optional `todo: TodoItem[]`; `renderTodo(items)` produces the `{{todo}}` value: **empty → `''`** so the
+template section is HONESTLY OMITTED (there is no conditional in `interpolateTemplate` — a dumb `{{var}}`
+replace where unknown/empty resolves to ''; the empty-state is expressed by rendering nothing), **non-empty →
+a titled bullet list** ("Accumulated follow-ups so far…", `done` items struck `[x]`). The default follow-up
+template body gains a `{{todo}}` block + an instruction to fold the running to-do into next-steps. The Actor
+reads the session's to-do doc FRESH per draft (`TodoDocuments.get`), so a user's PUT-edited list is what THIS
+draft interpolates.
+- **What a fuller prompt engine adds later (deferred)**: conditionals/iteration/partials in the template
+  grammar, whitespace control, a declared variable catalogue with types, and per-variable resolvers (so a
+  template can reference `{{moments.commitments}}` or `{{entities.relevant}}`, not just the one to-do var).
+  v0 is deliberately ONE variable resolved from ONE document — the smallest real instance of the loop.
+
+### The constrain/unconstrain demonstration (which proof shows what)
+- **End-to-end over the real spool** — `http.test.ts` "task-extract accumulates a to-do over the drain, the
+  draft un-constrains it via {{todo}}, and the doc is editable": whole loop ON (`workflow.enabled` +
+  `distill.enabled` + `distill.moments` + `act.enabled` + `act.tasks`); capture → the DRAIN's task-extract
+  ACCUMULATES an item, visible MID-MEETING over `GET /todos/:sessionId` → session end drains-first (final
+  extract) then the follow-up draft body CONTAINS that item (the draft interpolated `{{todo}}`) → a user PUTs
+  an edited `items` array and `GET` reflects it version-bumped (the editable document over HTTP).
+- **The user-edit → NEXT draft proof** — `act/draft.test.ts` "a user-edited to-do doc is reflected in the
+  next draft": a to-do doc is `save()`d with a hand-added item (what `PUT /todos/:id` does), then
+  `Actor.runFollowUpDraft` composes a draft whose body contains the user's item. This is the editable-document
+  half done at the compose level because there is **no re-draft route** in the HTTP surface yet (a draft runs
+  once at session-end); a mid-meeting-draft / re-draft trigger is deferred (see below).
+- **Unit** (`act/todo.test.ts` 10, `draft.test.ts` +2, `executor.test.ts` +5): merge dedupe (normalized-text,
+  preserves user `done`), compose empty/parse-text·task·string/dropped/unparseable-resample, `TodoDocuments`
+  version-bump, `TaskExtractor` accumulate-across-drains + empty-session-no-doc, `{{todo}}` non-empty-reaches /
+  empty-omitted, and the executor drain-act gates (ON-runs / OFF-silent / no-runner-skip-with-log /
+  throw-caught-best-effort / distill-OFF-no-run).
+
+### New flag + routes
+- **Flag** `act.tasks` (default OFF, engine, T1) — the one new gated behavior (CONTRIBUTING rule 3), seeded via
+  `flag.examples.json`. task-extract runs only under `workflow.enabled` + `act.tasks` (+ `distill.enabled`,
+  since it rides the distill pass — distill OFF → the drain returns early → task-extract does not run).
+- **Routes** (additive, phase 4, no flag — resource routes like `/drafts`/`/layouts/surfaces`): `GET /todos`
+  (list all), `GET /todos/:id` (one, 404 if none), `PUT /todos/:id` (edit — validated, sessionId must match
+  the route). The founder can now SEE the to-do list; the HUD renders it later off these.
+
+### Dedupe wart (stated)
+Merge dedupe is normalized-text equality only (trim/lowercase/collapse whitespace — identical to store's
+`normalizeEntityName`). No stemming, no paraphrase/semantic dedupe: "Send Dana the deck" and "Send the deck
+to Dana" are two items. Good enough for v0; a semantic dedupe (embedding-based, or an llm merge pass) is
+deferred. Existing items (incl. user edits + `done`) are always preserved across a re-extraction — the
+dedupe only suppresses NEW candidates, it never mutates or drops what is already there.
+
+### Rule-7 check (definition of done)
+- **Flag** (rule 3): `act.tasks` added (the one new gated behavior). The routes are resource read/write, no
+  flag (consistent with `/drafts`, `/layouts/surfaces`).
+- **Recipes/skills**: grepped `skills/` + `CONTRIBUTING.md` for `task-extract|todo|{{|follow-up|act kind|
+  /drafts|prompt engine`. The only hit is the Tier-B table's "new act kind" line — a recipe that STILL does
+  not exist (deferred since slice 2). No `skills/` file references acts, templates, drafts, or the to-do; the
+  add-a-block skill and the block/settings/watcher/runtime recipes are untouched by this slice, so nothing
+  there is stale. task-extract's shape (a `drainActs` runner + a document + a gating flag) is now a de-facto
+  pattern a future "add an act kind" recipe could codify — noted as deferred, not written (a recipe is a rail
+  a local model follows blindly; writing one before a second act proves the pattern would be premature).
+- **Contracts**: additive only (`TodoList`/`TodoItem`/`TodoProvenance` + example + regenerated schemas; three
+  additive `/todos` Routes rows). Existing examples still validate.
+- **CODE_MAP**: `config/todo.ts` note on the config row; `act/` row updated (task-extract BUILT); a new
+  "Dynamic to-do seam (prompt engine v0)" built row; `flags/` note (`act.tasks`).
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Contracts **54** (+1: `todo.session.json`), engine
+**330** (312 slice-3 baseline + 10 `act/todo.test.ts` + 2 `draft.test.ts` + 5 `executor.test.ts` net + 2
+`http.test.ts` — the to-do e2e + the `/todos` route test − 1 removed stray-act executor test), client **139**.
+Flakes: the pre-listed drain-timing e2e / client-seam TOCTOU did not recur on the clean per-suite runs; a
+network-probe test (`POST /fabric/test`) timed out ONCE under `pnpm -r test` sandbox network stall and passed
+in 37 ms in isolation (environmental, unrelated to this slice — not touched here). LIVE check: `createEngineApp`
+on :8931 — `/routes` lists the three `/todos` rows, `/flags` carries `act.tasks` (default false), `GET /todos`
+→ `[]`, `GET /todos/none` → 404, `/contracts` lists `TodoList`/`TodoItem`. Killed after.
+
+### Deferred (out of this slice, by scope)
+- A **re-draft / mid-meeting-draft trigger** (so an edited to-do re-composes a live draft over HTTP without
+  ending the session) — `TaskExtractor.extractForSession` + `Actor.runFollowUpDraft` are both public and ready;
+  only a route/trigger is missing.
+- **Semantic dedupe** (embedding/llm merge) over the normalized-text v0.
+- **The DrainSample clean fix** (bill only the distill sub-call when a drain act rides the pass).
+- **Carrying the to-do doc on move-session** (reroute) — records move today; this global config doc does not.
+- **A fuller prompt engine** (conditionals/iteration/partials, a typed variable catalogue) over the one
+  `{{todo}}` variable.
+- **An "add an act kind" CONTRIBUTING recipe** — the pattern now has two acts (follow-up-draft, task-extract);
+  a recipe could codify `drainActs`/`acts` + document + flag, but is left until a third act pressures it.
+
+### P4A CLOSE-OUT + the P4A×P4B joint slice
+P4A (all four slices: WorkflowSpec contract → executor v0 → typed queues+ETA → dynamic to-do seam) is
+COMPLETE on branch `p4a-workflow` in the openinfo-p4a worktree, pending merge to main after P4B settles. What
+the small **P4A×P4B joint slice** (screen understanding as a workflow step) will need from P4A's side:
+- The executor's `ocr`/`vlm` drain kinds are still skip-with-log (no runner). The joint slice registers their
+  runners the way this slice registered `task-extract` — but as DRAIN STAGES (chunk-consuming, produce a
+  distillate/screen-result), NOT best-effort acts, so they DO feed the `DrainSample`/`byKind` like distill.
+  Use the `drainActs` best-effort pattern ONLY for derived acts; screen OCR/VLM invocation is real drain work.
+- Screen chunks already classify to the `screen` queue kind (slice 3, no P4B import) — the executor just needs
+  P4B's `invokeOcr`/`invokeVlm` injected as seams (mirroring the `distill`/`transcribe` seam injection) and the
+  `ocr`/`vlm` steps' `slot`/`when` honored. The `WorkflowStep` contract already homes `ocr`/`vlm` kinds.
+- One mount concern only: `api/http.ts` is P4A-owned; the joint slice adds the OCR/VLM seam wiring there
+  (P4B adds at most one router mount line per its own charter). No contract change should be needed — the
+  WorkflowStep kinds and screen-chunk records already exist on both branches.
