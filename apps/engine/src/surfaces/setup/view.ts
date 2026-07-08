@@ -1,4 +1,4 @@
-import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelStatus, Moment, QueueStatus, Session, Surface } from '@openinfo/contracts'
+import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelStatus, Moment, QueueStatus, ScanResult, Session, Surface } from '@openinfo/contracts'
 
 /**
  * The setup views — forms over the profile + secret documents (ARCHITECTURE §8), served by the engine
@@ -98,6 +98,129 @@ export const firstRunNotice = (liveFabric: Fabric): string | null =>
     ? 'Nothing configured yet — distill won’t run until an llm endpoint exists. Add one to a profile below and activate it.'
     : null
 
+// --- The host-scan → model-dropdown views (HOST-SCAN + MODEL-DROPDOWN slice) -----------------------
+// Typing a full model id by hand is error-prone — Scan the server, list its
+// models, pick from a dropdown, see a capabilities list. These are the PURE decisions the browser
+// mirrors (the same discipline as tryItDiagnosis / MOMENT_GLYPHS): grouping, labels, summary, and the
+// row states — asserted headless here, rebuilt as DOM by the thin script in assets.ts.
+
+/** One scanned host / one scanned model, as POST /fabric/scan returns them. */
+export type ScannedHost = ScanResult['hosts'][number]
+export type ScannedModel = ScannedHost['models'][number]
+
+/** The dropdown's escape-hatch option value — choosing it restores the free-text model input. */
+export const CUSTOM_MODEL_OPTION = '__custom__'
+
+/** Slot → the human word the capabilities summary uses (llm reads as chat; the rest keep their name). */
+const SUMMARY_LABEL: Record<string, string> = { llm: 'chat' }
+
+/**
+ * The capabilities summary, compacted: "30 chat · 3 vlm · 2 ocr · 1 embed". Counts models per
+ * classified slot (a multi-slot model counts in each), largest first, ties in canonical slot order.
+ * Empty models ⇒ '' (the caller says "no models loaded" instead). Pure.
+ */
+export const capabilitySummary = (models: ScannedModel[]): string => {
+  const counts = new Map<string, number>()
+  for (const model of models) for (const slot of model.slots) counts.set(slot, (counts.get(slot) ?? 0) + 1)
+  const order = (slot: string): number => {
+    const at = ALL_SLOTS.indexOf(slot as (typeof ALL_SLOTS)[number])
+    return at === -1 ? ALL_SLOTS.length : at
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || order(a[0]) - order(b[0]))
+    .map(([slot, n]) => `${n} ${SUMMARY_LABEL[slot] ?? slot}`)
+    .join(' · ')
+}
+
+/**
+ * Group scanned models for ONE slot's dropdown: models whose classified slots match the row's slot
+ * FIRST, everything else under the divider — alphabetical within each group (36 models must scan by
+ * eye). Pure.
+ */
+export const groupModelsForSlot = (models: ScannedModel[], slot: string): { matching: ScannedModel[]; other: ScannedModel[] } => {
+  const sorted = [...models].sort((a, b) => a.id.localeCompare(b.id))
+  return {
+    matching: sorted.filter((m) => m.slots.includes(slot as ScannedModel['slots'][number])),
+    other: sorted.filter((m) => !m.slots.includes(slot as ScannedModel['slots'][number])),
+  }
+}
+
+/** A dropdown option's text: the model id plus its capability chips — "ornith-1.0-9b — llm". Pure. */
+export const modelOptionLabel = (model: ScannedModel): string =>
+  model.slots.length > 0 ? `${model.id} — ${model.slots.join('/')}` : model.id
+
+/**
+ * The discovered-model dropdown that replaces the free-text model field after a scan. Slot-matching
+ * models lead, the rest sit under an "other models" divider, every option carries its capability
+ * chips, and the final "custom…" option restores free text — the user is never trapped. A current
+ * value the server did not report is kept as its own selected option (never silently dropped); an
+ * empty current gets a "(pick a model)" placeholder. Pure — the browser builds the same shape via DOM.
+ */
+export const modelDropdownHtml = (models: ScannedModel[], slot: string, current: string): string => {
+  const { matching, other } = groupModelsForSlot(models, slot)
+  const known = models.some((m) => m.id === current)
+  const option = (m: ScannedModel): string =>
+    `<option value="${escapeHtml(m.id)}"${m.id === current ? ' selected' : ''}>${escapeHtml(modelOptionLabel(m))}</option>`
+  const head =
+    current === ''
+      ? '<option value="" selected>(pick a model)</option>'
+      : known
+        ? ''
+        : `<option value="${escapeHtml(current)}" selected>${escapeHtml(current)} (current — not reported by this server)</option>`
+  return (
+    '<select class="f-model" title="model — discovered by scan">' +
+    head +
+    (matching.length ? `<optgroup label="${escapeHtml(slot)} — matches this slot">${matching.map(option).join('')}</optgroup>` : '') +
+    (other.length ? `<optgroup label="other models">${other.map(option).join('')}</optgroup>` : '') +
+    `<option value="${CUSTOM_MODEL_OPTION}">custom…</option></select>`
+  )
+}
+
+export interface ScanStatus {
+  kind: 'ok' | 'none' | 'auth' | 'dead'
+  text: string
+}
+
+/**
+ * The row-detail line for ONE scanned host — the same copy discipline as the generation probe (class:
+ * message — hint). ok ⇒ the found-count + the capabilities summary; authRequired ⇒ "this server wants
+ * a key" + the classified hint (the keyRef selector is highlighted beside it); dead ⇒ the classified
+ * error + hint. Pure — the browser mirrors this branch order.
+ */
+export const scanStatusLine = (host: ScannedHost): ScanStatus => {
+  if (host.reachable && !host.authRequired) {
+    if (host.models.length === 0) return { kind: 'none', text: 'reachable — no models loaded on this server' }
+    const n = host.models.length
+    return { kind: 'ok', text: `found ${n} model${n === 1 ? '' : 's'} — ${capabilitySummary(host.models)} — pick one in the model dropdown` }
+  }
+  if (host.authRequired) {
+    const hint = host.error?.hint ?? 'add a key in Settings → Keys and reference it via keyRef'
+    return { kind: 'auth', text: `this server wants a key — ${hint} — then Scan again` }
+  }
+  const e = host.error
+  if (!e) return { kind: 'dead', text: 'no answer from this server' }
+  return { kind: 'dead', text: `${e.class}${e.message ? `: ${e.message}` : ''} — ${e.hint}` }
+}
+
+/**
+ * The bare host in a URL-field value, for the "scan common ports on <host>" offer: a full URL yields
+ * its hostname; a schemeless value yields everything before the first '/' or ':'. Empty/unreadable ⇒
+ * undefined (no offer). Pure — the browser mirrors it.
+ */
+export const bareHostOf = (value: string): string | undefined => {
+  const v = value.trim()
+  if (v === '') return undefined
+  if (/^https?:\/\//i.test(v)) {
+    try {
+      return new URL(v).hostname || undefined
+    } catch {
+      return undefined
+    }
+  }
+  const host = v.split('/')[0]!.split(':')[0]!
+  return host || undefined
+}
+
 const keyrefOptions = (selected: string | undefined, refs: string[]): string =>
   ['<option value="">(no key)</option>']
     .concat(refs.map((r) => `<option value="${escapeHtml(r)}"${r === selected ? ' selected' : ''}>${escapeHtml(r)}</option>`))
@@ -116,8 +239,9 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
   return (
     `<div class="row" data-kind="http" data-api="${escapeHtml(ep.api)}">` +
     `<input class="f-name" autocomplete="off" value="${escapeHtml(ep.name)}" placeholder="name" />` +
-    `<input class="f-url" autocomplete="off" value="${escapeHtml(ep.url)}" placeholder="http://host:port" />` +
-    `<input class="f-model" autocomplete="off" value="${escapeHtml(ep.model ?? '')}" placeholder="model (optional)" />` +
+    `<input class="f-url" autocomplete="off" value="${escapeHtml(ep.url)}" placeholder="http://host:port (or a bare host to scan)" />` +
+    `<button type="button" data-act="scan" title="Scan this server: list its models and see what it can do — no typing model names">Scan</button>` +
+    `<input class="f-model" autocomplete="off" value="${escapeHtml(ep.model ?? '')}" placeholder="model (optional — Scan fills a dropdown)" />` +
     `<select class="f-keyref" title="key reference">${keyrefOptions(ep.auth?.keyRef, refs)}</select>` +
     `<div class="rowbtns"><button type="button" data-act="test">Test</button>` +
     `<button type="button" disabled title="Benchmark measures real tok/s on this hardware — coming with the capability-benchmarking system (see Diagnostics → Benchmarks).">Benchmark</button>` +
@@ -210,8 +334,9 @@ export const secretsHtml = (refs: string[]): string => {
 export const rowTemplateHtml = (refs: string[]): string =>
   `<template id="row-tpl">` +
   `<div class="row" data-kind="http" data-api="openai-compat">` +
-  `<input class="f-name" autocomplete="off" placeholder="name" /><input class="f-url" autocomplete="off" placeholder="http://host:port" />` +
-  `<input class="f-model" autocomplete="off" placeholder="model (optional)" />` +
+  `<input class="f-name" autocomplete="off" placeholder="name" /><input class="f-url" autocomplete="off" placeholder="http://host:port (or a bare host to scan)" />` +
+  `<button type="button" data-act="scan" title="Scan this server: list its models and see what it can do — no typing model names">Scan</button>` +
+  `<input class="f-model" autocomplete="off" placeholder="model (optional — Scan fills a dropdown)" />` +
   `<select class="f-keyref" title="key reference">${keyrefOptions(undefined, refs)}</select>` +
   `<div class="rowbtns"><button type="button" data-act="test">Test</button>` +
   `<button type="button" disabled title="Benchmark measures real tok/s on this hardware — coming with the capability-benchmarking system (see Diagnostics → Benchmarks).">Benchmark</button>` +

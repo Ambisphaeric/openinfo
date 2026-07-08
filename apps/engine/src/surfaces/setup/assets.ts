@@ -56,7 +56,10 @@ a:hover{text-decoration:underline}
 .row .ro{flex:1;color:var(--muted);font-size:12.5px;font-family:var(--mono)}
 .rowbtns{display:flex;gap:5px}
 .probe{flex-basis:100%;font-family:var(--mono);font-size:11.5px;color:var(--muted);padding-left:2px;min-height:0}
-.probe.ok{color:var(--ok)}.probe.bad{color:var(--bad)}
+.probe.ok{color:var(--ok)}.probe.bad{color:var(--bad)}.probe.warn{color:var(--warn)}
+.probe button.hostbtn{font-size:11px;padding:2px 8px;margin-left:6px;font-family:var(--mono);vertical-align:baseline}
+.row select.f-model{max-width:300px}
+.row .f-keyref.attn{border-color:rgba(217,161,59,.7);box-shadow:0 0 0 3px rgba(217,161,59,.15)}
 .secrets .row input{width:auto}#secret-ref{width:180px}#secret-val{flex:1;min-width:180px}
 .getstarted{padding:18px 18px 16px}
 .gs-head{font-size:16px;font-weight:650;letter-spacing:-.01em;margin-bottom:2px}
@@ -154,6 +157,121 @@ export const SETUP_SCRIPT = `
       probe.className='probe '+(bad?'bad':'ok');
       probe.textContent=parts.join(' \\u00b7 ');
     });
+  }
+  // --- Host-scan → model dropdown (HOST-SCAN + MODEL-DROPDOWN). These mirror the PURE, node-tested
+  // decisions in view.ts (capabilitySummary / groupModelsForSlot / modelOptionLabel / modelDropdownHtml /
+  // scanStatusLine / bareHostOf) — same discipline as the Try-it diagnose mirror. POST /fabric/scan only.
+  var SLOT_ORDER=['llm','stt','tts','vlm','ocr','embed'];
+  var SUMMARY_LABEL={llm:'chat'};
+  function capSummary(models){
+    var counts={}; models.forEach(function(m){(m.slots||[]).forEach(function(s){counts[s]=(counts[s]||0)+1;});});
+    var slots=Object.keys(counts);
+    slots.sort(function(a,b){var d=counts[b]-counts[a]; if(d)return d;
+      var ia=SLOT_ORDER.indexOf(a),ib=SLOT_ORDER.indexOf(b);
+      return (ia<0?SLOT_ORDER.length:ia)-(ib<0?SLOT_ORDER.length:ib);});
+    return slots.map(function(s){return counts[s]+' '+(SUMMARY_LABEL[s]||s);}).join(' \\u00b7 ');
+  }
+  function modelOptionLabel(m){return (m.slots&&m.slots.length)?m.id+' \\u2014 '+m.slots.join('/'):m.id;}
+  function slotOfRow(row){var s=row.closest('.slot'); return s?(s.dataset.slot||''):'';}
+  function buildModelSelect(row,models){
+    var slot=slotOfRow(row);
+    var old=row.querySelector('.f-model'); if(!old)return;
+    var current=(old.value||'').trim(); if(current==='__custom__')current='';
+    var sorted=models.slice().sort(function(a,b){return a.id<b.id?-1:(a.id>b.id?1:0);});
+    var matching=[],other=[];
+    sorted.forEach(function(m){((m.slots||[]).indexOf(slot)>=0?matching:other).push(m);});
+    var known=models.some(function(m){return m.id===current;});
+    var sel=document.createElement('select'); sel.className='f-model'; sel.title='model \\u2014 discovered by scan';
+    function opt(value,label,selected){var o=document.createElement('option'); o.value=value; o.textContent=label; if(selected)o.selected=true; return o;}
+    if(current===''){sel.appendChild(opt('','(pick a model)',true));}
+    else if(!known){sel.appendChild(opt(current,current+' (current \\u2014 not reported by this server)',true));}
+    function group(label,list){if(!list.length)return; var g=document.createElement('optgroup'); g.label=label;
+      list.forEach(function(m){g.appendChild(opt(m.id,modelOptionLabel(m),m.id===current));}); sel.appendChild(g);}
+    group(slot+' \\u2014 matches this slot',matching);
+    group('other models',other);
+    sel.appendChild(opt('__custom__','custom\\u2026',false));
+    row.dataset.customModel=current;
+    old.parentNode.replaceChild(sel,old);
+  }
+  function bareHost(v){
+    v=(v||'').trim(); if(!v)return null;
+    if(/^https?:\\/\\//i.test(v)){try{return (new URL(v)).hostname||null;}catch(e){return null;}}
+    var h=v.split('/')[0].split(':')[0]; return h||null;
+  }
+  function renderScanResult(row,h){
+    var probe=row.querySelector('.probe'); var kr=row.querySelector('.f-keyref');
+    if(h.reachable&&!h.authRequired){
+      if(kr)kr.classList.remove('attn');
+      if(h.models.length){buildModelSelect(row,h.models);
+        probe.className='probe ok';
+        probe.textContent='found '+h.models.length+' model'+(h.models.length===1?'':'s')+' \\u2014 '+capSummary(h.models)+' \\u2014 pick one in the model dropdown';}
+      else{probe.className='probe'; probe.textContent='reachable \\u2014 no models loaded on this server';}
+      return;
+    }
+    if(h.authRequired){
+      probe.className='probe warn';
+      probe.textContent='this server wants a key \\u2014 '+((h.error&&h.error.hint)||'add a key in Settings \\u2192 Keys and reference it via keyRef')+' \\u2014 then Scan again';
+      if(kr)kr.classList.add('attn');
+      return;
+    }
+    probe.className='probe bad';
+    probe.textContent=h.error?(h.error.class+(h.error.message?': '+h.error.message:'')+' \\u2014 '+h.error.hint):'no answer from this server';
+  }
+  function hostBtn(probe,act,data,label){
+    var btn=document.createElement('button'); btn.type='button'; btn.className='hostbtn'; btn.dataset.act=act;
+    if(data.host)btn.dataset.host=data.host; if(data.url)btn.dataset.url=data.url; btn.textContent=label;
+    probe.appendChild(document.createTextNode(' ')); probe.appendChild(btn);
+  }
+  function renderHostChoices(row,live,chosenUrl){
+    var chosen=null; for(var i=0;i<live.length;i++){if(live[i].url===chosenUrl){chosen=live[i];break;}}
+    if(!chosen)chosen=live[0];
+    row.__scanHosts=live;
+    row.querySelector('.f-url').value=chosen.url;
+    renderScanResult(row,chosen);
+    var probe=row.querySelector('.probe');
+    live.forEach(function(h){
+      if(h.url===chosen.url)return;
+      hostBtn(probe,'scan-use',{url:h.url},'or use '+h.url+' ('+(h.authRequired?'wants a key':h.models.length+' model'+(h.models.length===1?'':'s'))+')');
+    });
+  }
+  function scanBody(row,body){var kr=row.querySelector('.f-keyref'); if(kr&&kr.value)body.keyRef=kr.value; return body;}
+  function scanHostPorts(row,host){
+    var probe=row.querySelector('.probe'); probe.className='probe'; probe.textContent='scanning common ports on '+host+'\\u2026';
+    jf('POST','/fabric/scan',scanBody(row,{host:host})).then(function(r){
+      if(!r.ok){probe.className='probe bad'; probe.textContent='scan failed ('+r.status+((r.json&&r.json.error)?': '+r.json.error:'')+')'; return;}
+      var hosts=(r.json&&r.json.hosts)||[];
+      var live=hosts.filter(function(h){return h.reachable||h.authRequired;});
+      if(!live.length){
+        probe.className='probe bad';
+        probe.textContent='nothing answered on '+host+' \\u2014 tried '+hosts.map(function(h){var p=h.url.split(':'); return ':'+p[p.length-1];}).join(' \\u00b7 ');
+        return;
+      }
+      renderHostChoices(row,live,live[0].url);
+    });
+  }
+  function scanRow(row){
+    var probe=row.querySelector('.probe'); probe.className='probe'; probe.textContent='scanning\\u2026';
+    var url=row.querySelector('.f-url').value.trim();
+    if(!url){probe.className='probe bad'; probe.textContent='enter a URL (or a bare host) first'; return;}
+    if(!/^https?:\\/\\//i.test(url)){
+      var h=bareHost(url);
+      if(!h){probe.className='probe bad'; probe.textContent='could not read a host from that \\u2014 use http://host:port or a bare host'; return;}
+      scanHostPorts(row,h); return;
+    }
+    jf('POST','/fabric/scan',scanBody(row,{url:url})).then(function(r){
+      if(!r.ok){probe.className='probe bad'; probe.textContent='scan failed ('+r.status+((r.json&&r.json.error)?': '+r.json.error:'')+')'; return;}
+      var host=(r.json&&r.json.hosts&&r.json.hosts[0]);
+      if(!host){probe.className='probe bad'; probe.textContent='scan returned nothing'; return;}
+      renderScanResult(row,host);
+      if(!host.reachable&&!host.authRequired){
+        var bh=bareHost(url);
+        if(bh)hostBtn(row.querySelector('.probe'),'scan-host',{host:bh},'scan common ports on '+bh);
+      }
+    });
+  }
+  function useScanHost(row,url){
+    var live=row.__scanHosts||[];
+    renderHostChoices(row,live,url);
   }
   function saveEditor(){
     var form=document.getElementById('editor');
@@ -368,11 +486,26 @@ export const SETUP_SCRIPT = `
     }).catch(function(err){tryitStatus('Microphone unavailable'+(err&&err.name?' ('+err.name+')':'')+' \\u2014 use the type path.','bad');});
   }
   document.addEventListener('submit',function(e){e.preventDefault();});
+  // The dropdown's escape hatch: choosing "custom…" swaps the select back to a free-text model
+  // input (pre-filled with the last typed value) — the user is never trapped in the discovered list.
+  document.addEventListener('change',function(e){
+    var t=e.target;
+    if(!t||!t.classList||!t.classList.contains('f-model')||t.tagName!=='SELECT')return;
+    if(t.value!=='__custom__')return;
+    var row=t.closest('.row');
+    var inp=document.createElement('input'); inp.className='f-model'; inp.autocomplete='off';
+    inp.placeholder='model (optional \\u2014 Scan fills a dropdown)';
+    inp.value=(row&&row.dataset.customModel)||'';
+    t.parentNode.replaceChild(inp,t); inp.focus();
+  });
   document.addEventListener('click',function(e){
     var b=e.target.closest('[data-act]'); if(!b)return;
     e.preventDefault();
     var act=b.dataset.act; var row=b.closest('.row');
     if(act==='test'){testRow(row);}
+    else if(act==='scan'){scanRow(row);}
+    else if(act==='scan-host'){scanHostPorts(row,b.dataset.host);}
+    else if(act==='scan-use'){useScanHost(row,b.dataset.url);}
     else if(act==='remove'){row.remove();}
     else if(act==='up'){var p=row.previousElementSibling; if(p&&p.classList.contains('row'))row.parentNode.insertBefore(row,p);}
     else if(act==='down'){var n=row.nextElementSibling; if(n&&n.classList.contains('row'))row.parentNode.insertBefore(n,row);}

@@ -2,19 +2,26 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { DiscoverResult, Fabric, FabricProfile, Moment } from '@openinfo/contracts'
 import {
+  bareHostOf,
+  capabilitySummary,
   editorHtml,
   escapeHtml,
   firstRunNotice,
   getStartedHtml,
+  groupModelsForSlot,
   jsonForScript,
+  modelDropdownHtml,
   momentGlyph,
   momentProvenanceLine,
   momentResultHtml,
   profilesHtml,
   rowTemplateHtml,
+  scanStatusLine,
   secretsHtml,
   tryItHtml,
   tryItDiagnosis,
+  type ScannedHost,
+  type ScannedModel,
   type SetupData,
 } from './view.js'
 
@@ -378,4 +385,106 @@ test('the arrived moment and the flag/no-llm guards precede the three truths', (
   assert.equal(tryItDiagnosis({ hasMoment: true, distillReady: true, pendingFiles: 0 }).kind, 'arrived')
   assert.equal(tryItDiagnosis({ hasMoment: false, distillReady: false, pendingFiles: 0 }).kind, 'flags')
   assert.equal(tryItDiagnosis({ hasMoment: false, distillReady: true, pendingFiles: 0 }).kind, 'no-llm')
+})
+
+// --- HOST-SCAN + MODEL-DROPDOWN: the pure scan-result views the browser mirrors ---
+
+const m = (id: string, slots: ScannedModel['slots']): ScannedModel => ({ id, slots })
+
+const scannedHost = (over: Partial<ScannedHost> = {}): ScannedHost => ({
+  url: 'http://localhost:1234', reachable: true, authRequired: false, models: [], ...over,
+})
+
+test('capabilitySummary: counts per slot, largest first, llm reads as chat, multi-slot counts in each', () => {
+  const models = [
+    m('a-7b', ['llm']), m('b-3b', ['llm']), m('c-1b', ['llm']),
+    m('glm-ocr', ['ocr']), m('qwen-vl', ['llm', 'vlm']),
+    m('nomic-embed', ['embed']), m('whisper', ['stt']),
+  ]
+  // llm: 4 (incl. the vl model) · then ties (1 each) in canonical slot order: stt, vlm, ocr, embed
+  assert.equal(capabilitySummary(models), '4 chat · 1 stt · 1 vlm · 1 ocr · 1 embed')
+  assert.equal(capabilitySummary([]), '')
+})
+
+test('groupModelsForSlot: slot-matching models first, others separate, alphabetical within groups', () => {
+  const models = [m('zeta-9b', ['llm']), m('whisper-v3', ['stt']), m('alpha-3b', ['llm']), m('kokoro', ['tts'])]
+  const groups = groupModelsForSlot(models, 'llm')
+  assert.deepEqual(groups.matching.map((x) => x.id), ['alpha-3b', 'zeta-9b'])
+  assert.deepEqual(groups.other.map((x) => x.id), ['kokoro', 'whisper-v3'])
+})
+
+test('modelDropdownHtml: matching optgroup leads, divider for others, capability chips, custom escape', () => {
+  const models = [m('ornith-1.0-9b', ['llm']), m('glm-ocr', ['ocr']), m('qwen-vl', ['llm', 'vlm'])]
+  const html = modelDropdownHtml(models, 'llm', 'ornith-1.0-9b')
+  // a real select with the row's field class — the save path reads .f-model unchanged
+  assert.match(html, /<select class="f-model"/)
+  // grouping: the slot-matching group appears before the "other models" divider
+  const matchAt = html.indexOf('llm — matches this slot')
+  const otherAt = html.indexOf('other models')
+  assert.ok(matchAt >= 0 && otherAt > matchAt)
+  // capability chips ride each option label
+  assert.match(html, /ornith-1\.0-9b — llm</)
+  assert.match(html, /qwen-vl — llm\/vlm</)
+  assert.match(html, /glm-ocr — ocr</)
+  // the current model is selected; the escape hatch is always last
+  assert.match(html, /value="ornith-1\.0-9b" selected/)
+  assert.match(html, /<option value="__custom__">custom…<\/option><\/select>$/)
+})
+
+test('modelDropdownHtml: empty current gets a placeholder; an unknown current is kept, never dropped', () => {
+  const models = [m('a-7b', ['llm'])]
+  assert.match(modelDropdownHtml(models, 'llm', ''), /<option value="" selected>\(pick a model\)<\/option>/)
+  const kept = modelDropdownHtml(models, 'llm', 'my-custom-model')
+  assert.match(kept, /value="my-custom-model" selected>my-custom-model \(current — not reported by this server\)/)
+})
+
+test('modelDropdownHtml escapes hostile model ids', () => {
+  const html = modelDropdownHtml([m('<script>alert(1)</script>', ['llm'])], 'llm', '')
+  assert.ok(!html.includes('<script>'))
+  assert.match(html, /&lt;script&gt;/)
+})
+
+test('scanStatusLine ok: found-count + the capabilities summary (the founder\'s list)', () => {
+  const status = scanStatusLine(scannedHost({
+    models: [m('a-7b', ['llm']), m('b-3b', ['llm']), m('glm-ocr', ['ocr']), m('whisper', ['stt'])],
+  }))
+  assert.equal(status.kind, 'ok')
+  assert.equal(status.text, 'found 4 models — 2 chat · 1 stt · 1 ocr — pick one in the model dropdown')
+})
+
+test('scanStatusLine: reachable-but-empty, authRequired (hint + rescan nudge), and dead (class: message — hint)', () => {
+  assert.equal(scanStatusLine(scannedHost()).kind, 'none')
+  const auth = scanStatusLine(scannedHost({
+    authRequired: true,
+    error: { class: 'auth', hint: 'add a key in Settings → Keys and reference it via keyRef' },
+  }))
+  assert.equal(auth.kind, 'auth')
+  assert.match(auth.text, /^this server wants a key — add a key in Settings → Keys/)
+  assert.match(auth.text, /then Scan again$/)
+  const dead = scanStatusLine(scannedHost({
+    reachable: false,
+    error: { class: 'unreachable', message: 'ECONNREFUSED', hint: 'is the server running? check the URL http://localhost:9' },
+  }))
+  assert.equal(dead.kind, 'dead')
+  assert.equal(dead.text, 'unreachable: ECONNREFUSED — is the server running? check the URL http://localhost:9')
+})
+
+test('bareHostOf: full URLs yield the hostname; bare values yield the host; junk yields undefined', () => {
+  assert.equal(bareHostOf('http://192.168.1.40:1234'), '192.168.1.40')
+  assert.equal(bareHostOf('localhost'), 'localhost')
+  assert.equal(bareHostOf('myhost:1234'), 'myhost')
+  assert.equal(bareHostOf('rig.local/path'), 'rig.local')
+  assert.equal(bareHostOf(''), undefined)
+  assert.equal(bareHostOf('http://'), undefined)
+})
+
+test('every http endpoint row (and the template) carries the Scan button beside the URL field', () => {
+  const html = editorHtml(data())
+  const scanAt = html.indexOf('data-act="scan"')
+  assert.ok(scanAt >= 0, 'the editor row must offer Scan')
+  // beside the URL field: Scan sits between f-url and f-model in the row
+  const urlAt = html.indexOf('class="f-url"')
+  const modelAt = html.indexOf('class="f-model"')
+  assert.ok(urlAt < scanAt && scanAt < modelAt)
+  assert.match(rowTemplateHtml([]), /data-act="scan"/)
 })
