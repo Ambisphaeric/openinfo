@@ -1,0 +1,39 @@
+{
+  "$id": "ScreenFrameMeta",
+  "additionalProperties": false,
+  "description": "decoded descriptor of a source:\"screen\" frame — travels as its own utf8/json CaptureChunk, not in the image chunk",
+  "type": "object",
+  "required": [
+    "displayId",
+    "width",
+    "height"
+  ],
+  "properties": {
+    "displayId": {
+      "minLength": 1,
+      "description": "which display/monitor the frame was captured from",
+      "type": "string"
+    },
+    "width": {
+      "minimum": 1,
+      "description": "frame pixel width — the coordinate frame OcrResult regions map into",
+      "type": "integer"
+    },
+    "height": {
+      "minimum": 1,
+      "description": "frame pixel height",
+      "type": "integer"
+    },
+    "scale": {
+      "minimum": 1,
+      "description": "backing-scale factor (retina); logical px × scale = physical px",
+      "type": "number"
+    },
+    "deltaScore": {
+      "minimum": 0,
+      "maximum": 1,
+      "description": "future Δ-gate: how much this frame changed vs the last kept one — unread until the gate exists",
+      "type": "number"
+    }
+  }
+}
