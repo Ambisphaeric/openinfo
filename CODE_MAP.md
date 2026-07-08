@@ -24,9 +24,9 @@ openinfo/
 │  ├─ store/                    P1   ← loom packages/store + sqlite-vec
 │  │                                 workspace-registry (DB-FILE PER WORKSPACE) · sessions (P2: manual start/stop lifecycle) · distillates/moments/entities/drafts (P2) · graph (P3) · layouts (P2)
 │  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
-│  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm openai-compat)
+│  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm chat-completions · stt /v1/audio/transcriptions multipart — both openai-compat, first-healthy-wins)
 │  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG) — NOT built: P2 primitives wired direct at their seams; DAG deferred until multi/chained acts (see workflow/README)
-│  ├─ distill/                  P2   merge · distiller · moments (typed extraction) · parse (defensive JSON, shared) · defaults/documents (template+mode docs) │ ocr (P3)
+│  ├─ distill/                  P2   merge · distiller · transcribe (audio→text pre-distill drain stage via stt slot; mic="me"/system-audio="them" speaker split) · moments (typed extraction) · parse (defensive JSON, shared) · defaults/documents (template+mode docs) │ ocr (P3)
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
 │  ├─ index/                    P2   extract (entities) · rank (recency×frequency) · relevant (relevant-now join) │ P3: canon · ingest/ (pdf, gdoc)
 │  ├─ act/                      P2   the Act primitive: draft (follow-up-draft on session end) · defaults/documents (act template) │ P3+: task-extract · nudge · exports

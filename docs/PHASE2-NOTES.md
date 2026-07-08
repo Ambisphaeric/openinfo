@@ -653,3 +653,111 @@ Read of the current capture/distill/fabric wiring, to scope the NEXT slice hones
   packaging/signing/notarization (a plain `electron .` dev run is the deliverable); Windows/Linux polish.
 - Settings/editors/palette UI; a tray "engine picker"; multi-workspace tray targeting (one workspace today).
 - Tray click / ⌘\ keypress automated UI tests (need a display-bearing harness, e.g. Playwright-for-Electron).
+
+## Slice: STT in the fabric + transcription riding the drain (the engine half of real-capture)
+
+The shell slice's audio findings (above) were the scope: `CaptureChunk` accepted base64 audio but the
+distiller dropped everything non-`utf8`, and the `stt` slot was wired to nothing (`bench` health probe
+only). This slice makes audio mean something — the ENGINE half. Client capture (mic/loopback/AEC) is a
+separate pending slice; this ships only what the engine needs so that when audio arrives it becomes
+distilled text/moments/entities exactly like typed capture does today.
+
+### `invokeStt` — mirrors `invokeLlm`, the stt slot's first-healthy-wins seam
+`fabric/invoke.ts::invokeStt(fabric, audio, opts)` iterates `fabric.slots.stt` in fabric order (first
+that answers wins), POSTing the OpenAI-compatible **`/v1/audio/transcriptions` multipart** shape
+(`model` + `file` form fields; whisper.cpp / faster-whisper-server style local servers) for `http`
+endpoints. `local` is a stub (skipped) and `cloud` is out of scope — **identical handling to invokeLlm**
+(offline local runtimes land with managed runtimes later; cloud is enhancement, never dependency). The
+`file` part's filename is sniffed from `contentType` (`audio/wav`→`audio.wav`, `audio/mpeg`→`audio.mp3`,
+…) so the transcriber can detect the container. Returns `{ text, endpoint, model?, slot: 'stt' }` — same
+provenance shape as `LlmResult`, so a transcribed chunk is traceable to the endpoint/model that made it.
+- **Error/timeout semantics (consistent with invokeLlm):** throws on transport OR protocol failure
+  (`!response.ok`, or a response with no string `text`) so the caller falls through to the next endpoint;
+  if none answer it throws with the per-endpoint failure list. Timeout defaults to **60s** (vs invokeLlm's
+  30s) — audio decode + transcription can outlast a chat completion — overridable via `opts.timeoutMs`.
+- **Empty transcript (`''`) is a valid SILENCE result, not an error** — a transcriber that answers must
+  return a string `text`; missing `text` is the protocol error, `''` is normal silence.
+
+### Transcription as a pre-distill DRAIN STAGE (`distill/transcribe.ts`), not inside the distiller
+`transcribeChunks(chunks, { invoke, language? })` runs in the drain processor **before** the distiller's
+`isText` filter: base64 `audio/*` chunks are transcribed via the stt slot and rewritten as `utf8`
+`text/plain` chunks (**source preserved**), then flow into the ordinary distill pass unchanged. It lives
+as a distill-pipeline stage (like moments/index ride the same pass) but runs as a distinct processor step
+in `http.ts` — the distiller stays audio-agnostic; it only ever sees text, exactly as before.
+- **How audio is identified:** `encoding === 'base64' && contentType startsWith 'audio/'`. This is the
+  contract the client capture slice emits for mic/system-audio (e.g. `audio/wav`, `audio/webm`). Base64
+  chunks with a non-audio contentType (screen frames — `image/*`) are **NOT** audio and **pass through
+  untouched** (the distiller's `isText` then drops them; OCR is P3, deliberately not built here). `utf8`
+  chunks are already text and are never sent to stt.
+- **Failure = transport failure = re-queue.** `transcribeChunks` never swallows an `invoke` error; it
+  propagates → the drain processor throws → `CaptureQueue` renames the spool file back to pending (the
+  existing retry-at-idle). Nothing is lost; the raw audio stays durably spooled until a later drain
+  transcribes it. This is precisely how distill behaves with no llm endpoint up today.
+- **Silence is a zero-text outcome, not an error:** an empty transcript yields NO text chunk (dropped,
+  logged). If every chunk is silence the window produces no distillate — a normal empty result.
+
+### Speaker attribution for free — the me/them split carried as a transcript-line PREFIX
+The capture SOURCE is the speaker: `mic` is the user (**"me"**), loopback `system-audio` is the far side
+(**"them"**). `speakerLabel(source)` maps this (other sources have no speaker in v0). The mechanism —
+chosen as the least-invasive carry — is **the distiller's window-transcript builder prefixes each line
+with its chunk's speaker label** (`me: …` / `them: …`; bare for sourceless kinds). Rationale for prefix
+over per-chunk stamping: a merge window can mix mic + system-audio chunks, so there is no single window
+speaker to stamp; the prefix puts the attribution exactly where every downstream prompt already reads it
+(`{{transcript}}` feeds the summary AND the moment/entity extraction prompts unchanged). The moments
+extractor then echoes it into `Moment.speaker` when the model emits one (`Moment.speaker` is documented
+as "person entity id or raw label" — `me`/`them` is a raw label until voice→person identity, which is
+**P7**; this is explicitly **NOT diarization** — it's the physical capture split, so it costs nothing).
+Transcription preserves `source` on the produced text chunk so this split survives the audio→text step.
+
+### Contract touch — `CaptureSource` gains `system-audio` (additive)
+`CaptureSource` (api/payloads.ts) and `Moment.source` (records/moment.ts — a parallel inline union, kept
+in lockstep) gain `'system-audio'`, appended. Additive and backward-compatible, mirroring the
+`Moment.provenance` precedent: every Phase-0/1/2 example still validates. `Moment.source` had to change
+too because a transcribed system-audio chunk keeps `source: 'system-audio'`, and a moment extracted over
+it stamps that source — the full-record `Value.Check` in the moments extractor would otherwise drop it.
+Schemas regenerated (`pnpm --filter @openinfo/contracts gen` → CaptureSource/CaptureChunk/Moment/
+RelevantEntity), new `captureChunk.system-audio.json` example (base64 `audio/wav`) validates.
+
+### Flag — `distill.transcribe` (OFF, scope engine, minTier T1), NOT `capture.stt`
+Named into the distill family (`distill.enabled` → `distill.moments`/`distill.index`/`distill.transcribe`)
+because it is a STAGE of the distill pass, gated by `distill.enabled`, and read per-drain like its
+siblings (an API flip takes effect without restart). `capture.stt` was rejected: it would imply a
+capture-side concern independent of distill, which contradicts the gating decision below.
+- **Interaction (decided + documented): transcription only runs INSIDE `distill.enabled`.** There is no
+  persistence path for transcribed-but-undistilled text in v0 — the drain consumes raw chunks and emits
+  distillates; it has no "transcribed chunk" store, and re-spooling transcribed text as fresh chunks
+  would be a durable-capture feature of its own. So running stt when nothing will distill the result is
+  pure waste. Therefore: `distill.enabled` off ⇒ raw chunks (audio included) are GC'd unprocessed exactly
+  as all capture is today (the Phase-1 no-op-GC path) — flipping `distill.transcribe` alone does nothing.
+  `distill.enabled` on + `distill.transcribe` off ⇒ today's behavior (audio spooled, dropped by `isText`).
+  `distill.enabled` on + `distill.transcribe` on ⇒ audio transcribed then distilled. Not a hard *code*
+  dependency (transcribe is a plain function); a wiring-level gate, same spirit as moments/index requiring
+  distill.enabled.
+
+### Tests (+11 engine: 79 total; contracts 28; client 29 — all green, `pnpm -r build`/`-r test`)
+- `fabric/stt.test.ts` — invokeStt against a fake in-process STT http server (mirrors the fake-llm
+  pattern): multipart shape (model + `filename="audio.wav"`) + provenance; empty-transcript silence;
+  first-healthy fallthrough; empty-slot throws + local/cloud skipped.
+- `distill/transcribe.test.ts` — unit (injected fake stt): audio→text with source preserved, silence
+  dropped, screen-frame + utf8 passthrough (stt never called), transport failure propagates. E2e (fake
+  stt + fake llm chained through the real `CaptureQueue` drain processor): audio→transcribe→distill with
+  **me/them prefixes asserted in the llm prompt**; a transport failure re-queues the spool file (pending
+  stays 1, nothing distilled); flag-off = current behavior (audio dropped, no llm call).
+
+### What the client capture slice can now rely on
+- POST a `CaptureChunk` with `encoding: 'base64'`, `contentType: 'audio/<container>'` (e.g. `audio/wav`,
+  `audio/webm`), `source: 'mic'` (the user) or `source: 'system-audio'` (loopback / far side) to
+  `/capture/:source`. With `distill.enabled` + `distill.transcribe` on and an `stt` http endpoint in the
+  fabric, it is transcribed and distilled into the same distillates/moments/entities as text capture.
+- The me/them speaker split is automatic from `source` — the client does NOT need to diarize or label.
+- Everything degrades safely offline: no stt endpoint up ⇒ the file re-queues (retry-at-idle), never lost.
+- Unchanged: the seam itself (`POST /capture` + offline spool) and text capture end-to-end. This slice
+  added no client code and touched no client shell (the concurrent window-drag slice owns that).
+
+### Deferred (out of this slice, by scope)
+- Client OS capture (getUserMedia / system-audio loopback / AEC — the glass transplant, pending a spike);
+  OCR / screen understanding (P3, screen `image/*` frames pass through untouched); engine-managed local
+  stt runtimes (http endpoints only, like llm); diarization / voice→person identity (P7 — `me`/`them` is
+  a raw label, not an entity id); retry-at-idle `llm.smart`/`stt` re-transcription upgrades (the queue
+  seam supports it, endpoint tiering still unwired); a durable transcribed-text store for transcribe-
+  without-distill (no consumer for it yet — see flag interaction).
