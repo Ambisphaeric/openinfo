@@ -18,12 +18,16 @@ const surface: Surface = {
 class FakeTransport implements HudTransport {
   live: Session[] = []
   moments: Moment[] = []
+  /** the surface document served — the test can swap it to simulate a /setup layout edit */
+  surfaceDoc: Surface = surface
   private handler: ((event: { name: string; payload: unknown }) => void) | undefined
   surfaceCalls = 0
+  lastSurfaceId: string | undefined
 
-  surface(): Promise<Surface> {
+  surface(id: string): Promise<Surface> {
     this.surfaceCalls += 1
-    return Promise.resolve(surface)
+    this.lastSurfaceId = id
+    return Promise.resolve(this.surfaceDoc)
   }
   query(query: BlockQuery): Promise<QueryResult> {
     const items = query.source === 'moments' ? this.moments : []
@@ -38,8 +42,8 @@ class FakeTransport implements HudTransport {
       this.handler = undefined
     }
   }
-  fire(name: string): void {
-    this.handler?.({ name, payload: {} })
+  fire(name: string, payload: unknown = {}): void {
+    this.handler?.({ name, payload })
   }
 }
 
@@ -87,6 +91,47 @@ test('the HUD loads a surface, renders once, and re-queries on live WS events', 
   await tick()
   assert.match(renderToHtml(panel), /class="livedot off"/)
 
+  hud.stop()
+})
+
+test('the HUD renders the configured surface id (client config / ?surface=)', async () => {
+  const transport = new FakeTransport()
+  const hud = new Hud({ transport, onRender: () => undefined, surfaceId: 'surf-glass-minimal' })
+  await hud.start()
+  assert.equal(transport.lastSurfaceId, 'surf-glass-minimal')
+  hud.stop()
+})
+
+test('the HUD hot-reloads when surface.updated arrives for ITS surface id', async () => {
+  const transport = new FakeTransport()
+  transport.live = [session()]
+  transport.moments = [moment('written answer to Dana', '2026-07-07T14:44:00Z')]
+  let panel: VElement | undefined
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme', now: () => new Date('2026-07-07T14:47:00Z') })
+
+  await hud.start()
+  assert.equal(transport.surfaceCalls, 1)
+  assert.equal(transport.lastSurfaceId, 'surf-openinfo-hud')
+  assert.match(renderToHtml(panel!), /class="g mk c">●/) // the moments block renders the commitment
+
+  // a /setup edit removes the moments block; the engine emits surface.updated for this surface
+  transport.surfaceDoc = { ...surface, version: 2, stack: surface.stack.filter((b) => b.block !== 'moments') }
+  transport.fire('surface.updated', { id: 'surf-openinfo-hud' })
+  await tick()
+
+  assert.equal(transport.surfaceCalls, 2) // the document was refetched, not just re-hydrated
+  assert.doesNotMatch(renderToHtml(panel!), /class="g mk c">●/) // the moments block is gone from the layout
+  hud.stop()
+})
+
+test('surface.updated for a DIFFERENT surface id is ignored', async () => {
+  const transport = new FakeTransport()
+  const hud = new Hud({ transport, onRender: () => undefined, workspace: 'acme' })
+  await hud.start()
+  assert.equal(transport.surfaceCalls, 1)
+  transport.fire('surface.updated', { id: 'surf-someone-else' })
+  await tick()
+  assert.equal(transport.surfaceCalls, 1) // not refetched — the HUD renders exactly one surface
   hud.stop()
 })
 

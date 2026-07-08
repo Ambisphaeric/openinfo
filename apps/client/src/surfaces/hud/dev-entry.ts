@@ -90,8 +90,12 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const g = globalThis as unknown as DevGlobal
   const doc = g.document
   if (!doc) return
-  const engineParam = new URLSearchParams(g.location?.search ?? '').get('engine')
+  const params = new URLSearchParams(g.location?.search ?? '')
+  const engineParam = params.get('engine')
   const baseUrl = options.baseUrl ?? engineParam ?? 'http://127.0.0.1:8787'
+  // Which surface the HUD renders: explicit option wins, else ?surface= from the URL, else the default
+  // (the Electron shell passes ?surface from ShellConfig.surfaceId; the browser dev harness accepts it too).
+  const resolvedSurfaceId = options.surfaceId ?? params.get('surface') ?? undefined
 
   const style = doc.createElement('style')
   style.textContent = hudStyles
@@ -110,7 +114,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const hud = new Hud({
     transport: new BrowserTransport(baseUrl),
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
-    ...(options.surfaceId !== undefined ? { surfaceId: options.surfaceId } : {}),
+    ...(resolvedSurfaceId !== undefined ? { surfaceId: resolvedSurfaceId } : {}),
     onRender: (node) => {
       if (!mounted) {
         mountSurface(panel, node, { copy })

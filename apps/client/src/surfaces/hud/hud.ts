@@ -56,8 +56,22 @@ export class Hud {
     this.surface = await this.transport.surface(this.surfaceId)
     await this.refresh()
     this.unsubscribe = this.transport.subscribe((event) => {
+      // A layout edit to THIS surface (surface.updated over the WS, PHASE3-NOTES) hot-reloads the
+      // document — the founder edits the HUD in /setup and it re-renders within a second, no restart.
+      // Events for OTHER surfaces are ignored (the HUD renders exactly one).
+      if (event.name === 'surface.updated') {
+        const payload = event.payload as { id?: unknown } | null
+        if (payload && payload.id === this.surfaceId) void this.reloadSurface()
+        return
+      }
       if (REFRESH_EVENTS.has(event.name)) void this.scheduleRefresh()
     })
+  }
+
+  /** Re-fetch the surface document (a layout edit), then re-hydrate + render through the coalescer. */
+  async reloadSurface(): Promise<void> {
+    this.surface = await this.transport.surface(this.surfaceId)
+    await this.scheduleRefresh()
   }
 
   stop(): void {

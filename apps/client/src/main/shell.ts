@@ -177,7 +177,12 @@ const createHudWindow = (): void => {
   console.log(`[shell] HUD window created — content-protection: ${spec.hardening.contentProtection ? 'ON' : 'off'}`)
 
   restoreHudPosition()
-  void hudWindow.loadFile(HUD_HTML, { search: new URLSearchParams({ engine: cfg.engineUrl }).toString() })
+  // Pass BOTH the engine URL and the configured surface id (ShellConfig.surfaceId, resolved env >
+  // client.json > default surf-openinfo-hud) so the HUD renders the chosen layout — the minimal honest
+  // switch for "point a HUD at a different surface" (PHASE3-NOTES).
+  void hudWindow.loadFile(HUD_HTML, {
+    search: new URLSearchParams({ engine: cfg.engineUrl, surface: cfg.surfaceId }).toString(),
+  })
   hudWindow.on('moved', scheduleSavePosition) // OS-level moves; the custom drag also persists on drag-end
   hudWindow.on('closed', () => (hudWindow = undefined))
 }
