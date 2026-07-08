@@ -1,4 +1,11 @@
-import type { AttributionEvidence, AttributionPattern, FocusSignal, WorkspaceHints } from '@openinfo/contracts'
+import type { AttributionEvidence, AttributionPattern, CalendarSignal, FocusSignal, WorkspaceHints } from '@openinfo/contracts'
+
+/**
+ * A routing signal the detector scores — a FocusSignal (foreground window/repo) or a CalendarSignal
+ * (current/imminent meeting). The two carry DISJOINT fields, so a hint pattern only matches the signal
+ * type that carries its field; both flow through the ONE sustain-window scoring below.
+ */
+export type Signal = FocusSignal | CalendarSignal
 
 /**
  * A FocusSignal with the wall-clock time it was captured (a focus CaptureChunk's `capturedAt`). The
@@ -8,6 +15,19 @@ export interface TimedFocusSignal {
   at: string
   signal: FocusSignal
 }
+
+/**
+ * A CalendarSignal with the wall-clock time it was captured (the collector's poll time). Like a
+ * TimedFocusSignal, `at` is CAPTURE time (when the meeting was observed to be current), not the event's
+ * start — the detector windows by observation time so an ongoing meeting sustains presence.
+ */
+export interface TimedCalendarSignal {
+  at: string
+  signal: CalendarSignal
+}
+
+/** One timed routing signal in the detector's stream — focus or calendar. */
+export type TimedSignal = TimedFocusSignal | TimedCalendarSignal
 
 /**
  * The detector's tuning knobs (v0 constants; the ONLY place to tune sustain/thrash behavior).
@@ -41,37 +61,53 @@ export interface DetectionResult {
 
 const ms = (iso: string): number => Date.parse(iso)
 
-/** repoPath → 'repo'; windowTitle/app → 'window'. Calendar/voice kinds arrive in later slices. */
+/** repoPath → 'repo'; eventTitle/attendee → 'calendar'; windowTitle/app → 'window'. (voice: P7). */
 const evidenceKind = (field: AttributionPattern['field']): AttributionEvidence['kind'] =>
-  field === 'repoPath' ? 'repo' : 'window'
+  field === 'repoPath' ? 'repo' : field === 'eventTitle' || field === 'attendee' ? 'calendar' : 'window'
 
 const detailOf = (p: AttributionPattern): string => {
   const how = p.contains !== undefined ? `contains "${p.contains}"` : p.prefix !== undefined ? `prefix "${p.prefix}"` : 'matches'
   return `${p.field} ${how}`
 }
 
+/**
+ * The candidate string(s) a pattern's field reads off a signal: one for the scalar focus/calendar fields,
+ * the whole attendee list for `attendee` (any attendee may satisfy the matcher). A field the signal type
+ * doesn't carry (a focus field on a calendar signal, or vice-versa) yields none — patterns only match
+ * their own signal type, since the two field sets are disjoint.
+ */
+const fieldValues = (field: AttributionPattern['field'], signal: Signal): string[] => {
+  if (field === 'attendee') {
+    const attendees = (signal as CalendarSignal).attendees
+    return Array.isArray(attendees) ? attendees : []
+  }
+  const value = (signal as Record<string, unknown>)[field]
+  return typeof value === 'string' ? [value] : []
+}
+
 /** Does one pattern match one signal? Case-insensitive; when both matchers are set, both must hold. */
-const patternMatches = (pattern: AttributionPattern, signal: FocusSignal): boolean => {
-  const value = signal[pattern.field as keyof FocusSignal]
-  if (value === undefined) return false
-  const haystack = value.toLowerCase()
+const patternMatches = (pattern: AttributionPattern, signal: Signal): boolean => {
   if (pattern.contains === undefined && pattern.prefix === undefined) return false
-  if (pattern.contains !== undefined && !haystack.includes(pattern.contains.toLowerCase())) return false
-  if (pattern.prefix !== undefined && !haystack.startsWith(pattern.prefix.toLowerCase())) return false
-  return true
+  return fieldValues(pattern.field, signal).some((raw) => {
+    const haystack = raw.toLowerCase()
+    if (pattern.contains !== undefined && !haystack.includes(pattern.contains.toLowerCase())) return false
+    if (pattern.prefix !== undefined && !haystack.startsWith(pattern.prefix.toLowerCase())) return false
+    return true
+  })
 }
 
 /** The matching patterns of one workspace's hints against one signal (empty ⇒ no match). */
-const matchingPatterns = (hints: WorkspaceHints, signal: FocusSignal): AttributionPattern[] =>
+const matchingPatterns = (hints: WorkspaceHints, signal: Signal): AttributionPattern[] =>
   hints.patterns.filter((p) => patternMatches(p, signal))
 
 /** Sum of matched-pattern weights — one signal's score for one workspace. */
-const scoreFor = (hints: WorkspaceHints, signal: FocusSignal): number =>
+const scoreFor = (hints: WorkspaceHints, signal: Signal): number =>
   matchingPatterns(hints, signal).reduce((sum, p) => sum + p.weight, 0)
 
 /**
- * Pure context-switch detection (Detector v0). Given an ordered stream of timed FocusSignals, every
- * workspace's attribution hints, and the workspace the user is CURRENTLY attributed to (the live
+ * Pure context-switch detection (Detector v0). Given an ordered stream of timed signals (FocusSignals
+ * and/or CalendarSignals — both scored the same way, one buffer), every workspace's attribution hints,
+ * and the workspace the user is CURRENTLY attributed to (the live
  * session's workspace, or undefined when nothing is live), decide whether the day has segmented into
  * a new workspace.
  *
@@ -93,7 +129,7 @@ const scoreFor = (hints: WorkspaceHints, signal: FocusSignal): number =>
  * is the distinct matched hints of the winner across the window, as AttributionEvidence.
  */
 export function detectSwitch(
-  signals: readonly TimedFocusSignal[],
+  signals: readonly TimedSignal[],
   hints: readonly WorkspaceHints[],
   currentWorkspaceId: string | undefined,
   config: DetectorConfig = DEFAULT_DETECTOR_CONFIG,

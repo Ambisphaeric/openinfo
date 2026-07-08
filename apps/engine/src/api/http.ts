@@ -24,6 +24,10 @@ export interface EngineApp {
   server: ReturnType<typeof createServer>
   bus: EventBus<EngineEvents>
   store: WorkspaceRegistry
+  /** The context-switch router (route.detect). Exposed so the engine-side calendar collector, mounted
+   * POST-createEngineApp by startCalendarCollector (P4C), feeds the SAME detector buffer the focus drain
+   * feeds — mirroring how wireScreenOcr reaches the screen processor from main.ts. */
+  attributor: Attributor
   close: () => Promise<void>
 }
 
@@ -285,6 +289,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     server,
     bus,
     store,
+    attributor,
     close: async () => {
       ws.close()
       runtime.shutdown() // kill any spawned local runtimes (tier zero)

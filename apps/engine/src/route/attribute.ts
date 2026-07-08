@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Session } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { DEFAULT_DETECTOR_CONFIG, detectSwitch, type DetectionResult, type DetectorConfig, type TimedFocusSignal } from './detector.js'
+import { DEFAULT_DETECTOR_CONFIG, detectSwitch, type DetectionResult, type DetectorConfig, type TimedSignal } from './detector.js'
 import type { HintsDocuments } from './hints.js'
 
 export type AttributionEvent = 'session.started' | 'session.ended' | 'session.switched'
@@ -47,7 +47,7 @@ export class Attributor {
   private readonly newId: () => string
   private readonly log: (message: string) => void
   /** recent signals, kept to 2× the sustain window so the detector always has a full window to judge. */
-  private buffer: TimedFocusSignal[] = []
+  private buffer: TimedSignal[] = []
 
   constructor(deps: AttributorDeps) {
     this.store = deps.store
@@ -61,10 +61,12 @@ export class Attributor {
   }
 
   /**
-   * Observe a batch of focus signals (extracted from one drained spool file), update the rolling
-   * buffer, run detection, and act on a switch. Returns the DetectionResult (for tests/logging).
+   * Observe a batch of routing signals — focus signals extracted from one drained spool file, OR calendar
+   * signals from the engine-side collector — update the rolling buffer, run detection, and act on a switch.
+   * Both feed the SAME buffer so calendar meeting-presence and focus window/repo participate in one
+   * sustain-window contest. Returns the DetectionResult (for tests/logging).
    */
-  async observe(signals: readonly TimedFocusSignal[]): Promise<DetectionResult> {
+  async observe(signals: readonly TimedSignal[]): Promise<DetectionResult> {
     for (const s of signals) this.buffer.push(s)
     this.buffer.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
     if (this.buffer.length > 0) {
