@@ -5,7 +5,7 @@ import { isFlagEnabled } from '../flags/read.js'
 import { ScreenOcrProcessor, type ScreenOcrInvoke } from './processor.js'
 import { registerScreenProcessor } from './registry.js'
 
-export { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenOcrProcessorDeps } from './processor.js'
+export { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenVlmInvoke, type ScreenOcrProcessorDeps } from './processor.js'
 export { handleScreen, type ScreenRouterContext } from './router.js'
 export { getScreenProcessor, registerScreenProcessor } from './registry.js'
 
