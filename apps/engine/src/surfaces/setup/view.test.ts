@@ -83,12 +83,76 @@ test('the active profile is marked, and a non-active profile offers Activate + D
   assert.doesNotMatch(html, /data-act="activate" data-id="lm-studio-local"/)
 })
 
-test('llm + stt are editable rows; tts/vlm/ocr/embed are present-but-inert with a note', () => {
+test('ALL SIX slots are fully editable containers with an add-endpoint button', () => {
   const html = renderSetupPage(data())
-  assert.match(html, /data-slot="llm"/)
-  assert.match(html, /data-slot="stt"/)
-  assert.doesNotMatch(html, /data-slot="tts"/) // inert slots are not editable containers
-  assert.match(html, /not wired/) // the inert note
+  for (const slot of ['llm', 'stt', 'tts', 'vlm', 'ocr', 'embed']) {
+    assert.match(html, new RegExp(`data-slot="${slot}"`)) // every slot is an editable container
+    assert.match(html, new RegExp(`data-act="addrow" data-slot="${slot}"`)) // every slot can add endpoints
+  }
+})
+
+test('each slot carries an honest usage note — informational, never gating', () => {
+  const html = renderSetupPage(data())
+  // llm/stt say what they power today
+  assert.match(html, /powers distill, drafts, and the core pass today/)
+  assert.match(html, /powers call transcription today/)
+  // the not-yet-invoked slots say "stored … wired in a later phase … configure freely"
+  assert.match(html, /speech .*wired in a later phase \(P5\)\. Configure it freely/)
+  assert.match(html, /vision is wired in a later phase\. Configure it freely/)
+  assert.match(html, /screen reading is wired in a later phase \(P3\)\. Configure it freely/)
+  assert.match(html, /recall \/ vector search is wired in a later phase \(P3\)\. Configure it freely/)
+  // the old inert language is gone — nothing is "not wired" / inert on the page
+  assert.doesNotMatch(html, /not wired/)
+})
+
+test('adding an endpoint to tts is possible (the founder repro): tts is an editable slot with add-row', () => {
+  // The tts slot renders as a full editable container (data-slot + add-endpoint), exactly like llm —
+  // the browser clones #row-tpl into it, so kokoro can be added from the page (no raw API calls).
+  const html = renderSetupPage(data())
+  assert.match(html, /<div class="slot" data-slot="tts">/)
+  assert.match(html, /data-act="addrow" data-slot="tts"/)
+  assert.match(html, /id="row-tpl"/) // the template the add-row clones a fresh editable http row from
+})
+
+test('a full fabric (endpoints in EVERY slot) renders each slot as editable rows the save path reads', () => {
+  // The save path (assets.ts saveEditor) collects every `.slot[data-slot]` and rebuilds it from its
+  // `.row` children, so a complete DOM here proves the round-trip loses nothing. Pure-piece proof;
+  // the API-level round-trip lives in http.test.ts.
+  const full: Fabric = {
+    slots: {
+      llm: [{ kind: 'http', name: 'llm-a', url: 'http://h1:1234', api: 'openai-compat', model: 'qwen' }],
+      stt: [{ kind: 'http', name: 'stt-a', url: 'http://h2:9000', api: 'openai-compat', model: 'whisper' }],
+      tts: [{ kind: 'http', name: 'kokoro', url: 'http://h3:8880', api: 'openai-compat', model: 'kokoro' }],
+      vlm: [{ kind: 'http', name: 'vlm-a', url: 'http://h4:1235', api: 'openai-compat', model: 'qwen-vl' }],
+      ocr: [{ kind: 'http', name: 'ocr-a', url: 'http://h5:1236', api: 'openai-compat' }],
+      embed: [{ kind: 'http', name: 'emb-a', url: 'http://h6:1237', api: 'openai-compat', model: 'nomic' }],
+    },
+  }
+  const html = renderSetupPage(data({ editing: profile({ fabric: full }) }))
+  // each slot's own URL field is present (the row the save path reads back)
+  for (const url of ['http://h1:1234', 'http://h2:9000', 'http://h3:8880', 'http://h4:1235', 'http://h5:1236', 'http://h6:1237'])
+    assert.match(html, new RegExp(`value="${url.replace(/[.]/g, '\\.')}"`))
+  // the base-fabric blob carries the whole map (memoryBudgetMb + any slot the DOM might not rewrite);
+  // it is html-escaped (attr-safe), so unescape before parsing
+  const blob = extractBlob(html, 'base-fabric').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+  const parsed = JSON.parse(blob) as Fabric
+  assert.equal(parsed.slots.tts[0]!.name, 'kokoro')
+  assert.equal(parsed.slots.embed[0]!.name, 'emb-a')
+})
+
+test('a non-http (local) endpoint renders as a read-only row that round-trips via data-json', () => {
+  // local endpoints (tier-zero starter models) are not editable in the form, but the row carries the
+  // full endpoint as data-json so the save path (rowToEndpoint) re-emits it byte-for-byte — untouched
+  // even when http rows are added/removed around it.
+  const local = { kind: 'local' as const, name: 'starter-llm', runtime: 'llama.cpp' as const, model: 'qwen2.5-1.5b' }
+  const withLocal: Fabric = { slots: { ...emptyFabric().slots, llm: [local] } }
+  const html = renderSetupPage(data({ editing: profile({ fabric: withLocal }) }))
+  assert.match(html, /class="row readonly" data-kind="local"/)
+  // the data-json attribute holds the exact endpoint, html-escaped; unescaping + parse yields it back
+  const m = html.match(/data-json='([^']*)'/)
+  assert.ok(m, 'the local row must carry a data-json blob')
+  const roundTripped = JSON.parse(m![1]!.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'))
+  assert.deepEqual(roundTripped, local)
 })
 
 test('keyRef dropdown offers the stored refs; the editable http row carries the endpoint fields', () => {

@@ -15,15 +15,23 @@ import { SETUP_CSS, SETUP_SCRIPT } from './assets.js'
  * barebones — the FIRST setting, not a settings empire.
  */
 
-/** The slots that actually drive processing today (fully editable); the rest are shown inert. */
-const LIVE_SLOTS: ReadonlyArray<keyof Fabric['slots']> = ['llm', 'stt']
-const INERT_SLOTS: ReadonlyArray<keyof Fabric['slots']> = ['tts', 'vlm', 'ocr', 'embed']
+/**
+ * EVERY slot is a fully editable document field. A profile is a document that legitimately holds
+ * endpoints in all six slots (the founder's own rig configures tts/vlm/ocr), so the page does not gate
+ * DOCUMENT editing on whether the engine invokes a slot yet. v0 shipped llm+stt editable with
+ * tts/vlm/ocr/embed present-but-inert; that scope line outgrew its use (see PHASE2-NOTES). Each slot
+ * now carries an honest, INFORMATIONAL usage note — never a gate: llm/stt say what they power today;
+ * the rest say the endpoint is stored and wired in a later phase, configure it freely now.
+ */
+const ALL_SLOTS: ReadonlyArray<keyof Fabric['slots']> = ['llm', 'stt', 'tts', 'vlm', 'ocr', 'embed']
 
-const INERT_NOTE: Record<string, string> = {
-  tts: 'text-to-speech — not wired to processing yet (P5 whisper chain).',
-  vlm: 'vision — not wired yet.',
-  ocr: 'screen OCR — not wired yet (P3).',
-  embed: 'embeddings — not wired yet (P3 recall/vector search).',
+const SLOT_NOTE: Record<string, string> = {
+  llm: 'powers distill, drafts, and the core pass today.',
+  stt: 'powers call transcription today.',
+  tts: 'stored — speech (reading results aloud) is wired in a later phase (P5). Configure it freely now.',
+  vlm: 'stored — vision is wired in a later phase. Configure it freely now.',
+  ocr: 'stored — screen reading is wired in a later phase (P3). Configure it freely now.',
+  embed: 'stored — recall / vector search is wired in a later phase (P3). Configure it freely now.',
 }
 
 export interface SetupData {
@@ -99,19 +107,14 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
   )
 }
 
-const liveSlotHtml = (key: string, endpoints: Endpoint[], refs: string[]): string =>
+/** One fully editable slot: the honest usage note, its endpoint rows, and "+ add endpoint". */
+const slotHtml = (key: string, endpoints: Endpoint[], refs: string[]): string =>
   `<div class="slot" data-slot="${escapeHtml(key)}">` +
   `<div class="slk">${escapeHtml(key)}</div>` +
+  `<div class="note">${escapeHtml(SLOT_NOTE[key] ?? 'stored — configure it freely.')}</div>` +
   `<div class="rows">${endpoints.map((ep) => endpointRowHtml(ep, refs)).join('')}</div>` +
   `<div style="margin-top:9px"><button type="button" data-act="addrow" data-slot="${escapeHtml(key)}">+ add endpoint</button></div>` +
   `</div>`
-
-const inertSlotHtml = (key: string, endpoints: Endpoint[]): string =>
-  `<div class="slot">` +
-  `<div class="slk">${escapeHtml(key)}</div>` +
-  `<div class="note">${escapeHtml(INERT_NOTE[key] ?? 'not wired yet.')}` +
-  (endpoints.length ? ` <span class="mono">(${endpoints.length} endpoint${endpoints.length === 1 ? '' : 's'} kept)</span>` : '') +
-  `</div></div>`
 
 /** The profile list: name/id/description, the active + editing badges, and the per-profile actions. */
 const profilesHtml = (data: SetupData): string => {
@@ -152,14 +155,12 @@ const editorHtml = (data: SetupData): string => {
     ? escapeHtml(JSON.stringify({ id: editing.id, name: editing.name, version: editing.version, description: editing.description }))
     : ''
   const base = escapeHtml(JSON.stringify(fabric))
-  const live = LIVE_SLOTS.map((k) => liveSlotHtml(k, fabric.slots[k], refs)).join('')
-  const inert = INERT_SLOTS.map((k) => inertSlotHtml(k, fabric.slots[k])).join('')
+  const slots = ALL_SLOTS.map((k) => slotHtml(k, fabric.slots[k], refs)).join('')
   return (
     `<form id="editor" data-target-id="${editing ? escapeHtml(editing.id) : ''}" data-profile='${meta}'>` +
     `<div class="sub">Editing ${target}. Add/reorder endpoints, wire a key by reference, then Save.</div>` +
     `<script type="application/json" id="base-fabric">${base}</script>` +
-    live +
-    inert +
+    slots +
     `<div style="margin-top:12px"><button type="button" class="primary" data-act="save">Save profile</button></div>` +
     `</form>`
   )

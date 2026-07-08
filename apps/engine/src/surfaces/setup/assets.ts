@@ -46,7 +46,7 @@ a:hover{text-decoration:underline}
 .slot{border:1px solid var(--line);border-radius:9px;padding:11px 12px;margin-bottom:10px}
 .slot .slk{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
   color:var(--accent);font-weight:600;margin-bottom:8px}
-.slot .note{color:var(--faint);font-size:12px}
+.slot .note{color:var(--faint);font-size:12px;margin-bottom:8px}
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:7px;padding:7px 0;border-top:1px solid var(--line)}
 .row:first-child{border-top:0}
 .row input,.row select{background:#0c0e13;color:var(--ink);border:1px solid var(--line);
