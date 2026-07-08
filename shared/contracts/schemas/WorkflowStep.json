@@ -1,0 +1,120 @@
+{
+  "$id": "WorkflowStep",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "params"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "kind": {
+      "$id": "WorkflowStepKind",
+      "description": "append-only closed union of workflow step primitives",
+      "anyOf": [
+        {
+          "const": "transcribe",
+          "type": "string"
+        },
+        {
+          "const": "ocr",
+          "type": "string"
+        },
+        {
+          "const": "vlm",
+          "type": "string"
+        },
+        {
+          "const": "distill",
+          "type": "string"
+        },
+        {
+          "const": "moments",
+          "type": "string"
+        },
+        {
+          "const": "index",
+          "type": "string"
+        },
+        {
+          "const": "act",
+          "type": "string"
+        }
+      ]
+    },
+    "slot": {
+      "description": "fabric capability slot",
+      "anyOf": [
+        {
+          "const": "stt",
+          "type": "string"
+        },
+        {
+          "const": "tts",
+          "type": "string"
+        },
+        {
+          "const": "llm",
+          "type": "string"
+        },
+        {
+          "const": "vlm",
+          "type": "string"
+        },
+        {
+          "const": "ocr",
+          "type": "string"
+        },
+        {
+          "const": "embed",
+          "type": "string"
+        }
+      ]
+    },
+    "templateId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "when": {
+      "$id": "StepGate",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "flag"
+      ],
+      "properties": {
+        "flag": {
+          "minLength": 1,
+          "description": "a Flag key; the step runs only when this flag is enabled",
+          "type": "string"
+        }
+      }
+    },
+    "trigger": {
+      "description": "which seam fires this step; default drain",
+      "anyOf": [
+        {
+          "const": "drain",
+          "type": "string"
+        },
+        {
+          "const": "session-end",
+          "type": "string"
+        }
+      ]
+    },
+    "params": {
+      "default": {},
+      "type": "object",
+      "patternProperties": {
+        "^(.*)$": {}
+      }
+    }
+  }
+}

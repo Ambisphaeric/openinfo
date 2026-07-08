@@ -11,7 +11,7 @@ const examplesDir = join(here, '..', 'examples')
 
 // filename convention: <schemaLowerCamel>.<label>.json ; flag.examples.json is an array of Flag
 const fileSchema: Record<string, keyof typeof AllSchemas> = {
-  register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface',
+  register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface', workflow: 'WorkflowSpec',
   flag: 'Flag', workspaceHints: 'WorkspaceHints', commitment: 'Commitment', workspace: 'Workspace', moment: 'Moment',
   captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',

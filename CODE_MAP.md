@@ -13,7 +13,7 @@ has to invent a home (the historical failure mode).
 openinfo/
 ├─ shared/contracts/            P0   the only shared dependency; typed seam
 │  ├─ src/records/              P0   commitment, moment, entity, session, workspace, pin
-│  ├─ src/config/               P0   surface(block/action), mode, voice, fabric, flag
+│  ├─ src/config/               P0   surface(block/action), mode, voice, fabric, flag · workflow (P4A: WorkflowSpec — ordered flag-gated steps document; the pipeline as a cloneable doc)
 │  ├─ src/api/                  P0   HTTP routes + WS events (names, payloads)
 │  ├─ src/query/                P0   block query DSL (grammar, types)
 │  └─ schemas/                  P0   generated JSON Schema — language-neutral (Rust-portable)
@@ -29,7 +29,7 @@ openinfo/
 │  │                                 discover (P2: probe-list + capability-map docs → GET /fabric/discover: parallel probe /v1/models, classify by name, synthesize a config-1 suggestion — smaller-model-first ranking; LAN sweep later)
 │  │                                 scan (P3: POST /fabric/scan — user-directed host-scan for the Endpoints editor: exact url, or bare host × the probe-list ports; classified via the invoke taxonomy; value-free re keys; never cached)
 │  │                                 local runtimes (P2 tier zero: endpoints/local.ts spawn/health/kill/bounded-restart of llama.cpp/whisper.cpp · local-models.ts download+resume+size-check · local-{documents,defaults}.ts starter catalog · GET /fabric/local/models · POST /fabric/local/download)
-│  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG) — NOT built: P2 primitives wired direct at their seams; DAG deferred until multi/chained acts (see workflow/README)
+│  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG) — NOT built: P2 primitives wired direct at their seams; DAG deferred until multi/chained acts (see workflow/README). P4A slice 1 (SHIPPED): the WorkflowSpec CONTRACT (shared/contracts config/workflow.ts) + seeded workflow.default.json mirroring the hardcoded pipeline; executor is slice 2
 │  ├─ distill/                  P2   merge · distiller · transcribe (audio→text pre-distill drain stage via stt slot; mic="me"/system-audio="them" speaker split) · moments (typed extraction) · parse (defensive JSON, shared) · defaults/documents (template+mode docs) │ ocr (P3)
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
 │  ├─ index/                    P2   extract (entities) · rank (recency×frequency) · relevant (relevant-now join) │ P3: canon · ingest/ (pdf, gdoc)

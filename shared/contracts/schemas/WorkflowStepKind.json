@@ -1,0 +1,34 @@
+{
+  "$id": "WorkflowStepKind",
+  "description": "append-only closed union of workflow step primitives",
+  "anyOf": [
+    {
+      "const": "transcribe",
+      "type": "string"
+    },
+    {
+      "const": "ocr",
+      "type": "string"
+    },
+    {
+      "const": "vlm",
+      "type": "string"
+    },
+    {
+      "const": "distill",
+      "type": "string"
+    },
+    {
+      "const": "moments",
+      "type": "string"
+    },
+    {
+      "const": "index",
+      "type": "string"
+    },
+    {
+      "const": "act",
+      "type": "string"
+    }
+  ]
+}

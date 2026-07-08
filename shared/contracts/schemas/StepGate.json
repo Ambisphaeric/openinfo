@@ -1,0 +1,15 @@
+{
+  "$id": "StepGate",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "flag"
+  ],
+  "properties": {
+    "flag": {
+      "minLength": 1,
+      "description": "a Flag key; the step runs only when this flag is enabled",
+      "type": "string"
+    }
+  }
+}
