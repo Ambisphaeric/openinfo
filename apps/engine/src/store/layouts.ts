@@ -33,6 +33,37 @@ export class LayoutStore {
     }
   }
 
+  /**
+   * The latest version of every key under a kind (one row per key). Lets a documents module list
+   * its records — e.g. fabric profiles — without a store-schema change and without an index doc.
+   */
+  latestOfKind<T>(kind: string): VersionedDocument<T>[] {
+    const rows = this.db
+      .prepare(
+        `select kind, key, version, body, created_at from documents d
+         where kind = ? and version = (select max(version) from documents where kind = d.kind and key = d.key)
+         order by key`,
+      )
+      .all(kind) as DocumentRow[]
+    return rows.map((row) => ({
+      kind: row.kind,
+      key: row.key,
+      version: row.version,
+      body: JSON.parse(row.body) as T,
+      createdAt: row.created_at,
+    }))
+  }
+
+  /**
+   * Hard-delete every version of a (kind, key) — the one place the append-only version history is
+   * discarded, used when a user removes a config document they own (e.g. a fabric profile). Returns
+   * whether any row existed. Not used for records; documents only.
+   */
+  delete(kind: string, key: string): boolean {
+    const info = this.db.prepare('delete from documents where kind = ? and key = ?').run(kind, key)
+    return info.changes > 0
+  }
+
   put<T>(kind: string, key: string, body: T): VersionedDocument<T> {
     const current = this.getLatest<unknown>(kind, key)
     const version = (current?.version ?? 0) + 1
