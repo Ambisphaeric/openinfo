@@ -197,3 +197,20 @@ test('a request with neither url nor host scans nothing (the route 400s before t
   assert.deepEqual(result.hosts, [])
   assert.ok(result.scannedAt)
 })
+
+test('Ollama-with-no-models shape ({"object":"list","data":null}) is reachable with zero models, not bad-response', async () => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ object: 'list', data: null }))
+  })
+  const url = await listen(server)
+  try {
+    const result = await scanHosts({ url }, seededProbeList, MAP)
+    assert.equal(result.hosts[0]!.reachable, true)
+    assert.equal(result.hosts[0]!.authRequired, false)
+    assert.deepEqual(result.hosts[0]!.models, [])
+    assert.equal(result.hosts[0]!.error, undefined)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})

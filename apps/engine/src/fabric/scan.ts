@@ -120,11 +120,14 @@ const scanOne = async (
     } catch {
       return dead(new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from /v1/models' }))
     }
-    if (!Array.isArray(json.data)) {
+    // Ollama with ZERO models pulled answers {"object":"list","data":null} — a LIVE OpenAI-compatible
+    // server with nothing loaded, not a bad response (found scanning the real thing). Honest empty list.
+    const entries = Array.isArray(json.data) ? json.data : json.data === null && (json as { object?: unknown }).object === 'list' ? [] : undefined
+    if (entries === undefined) {
       return dead(new InvokeError('bad-response', ctx, { serverMessage: 'unexpected /v1/models shape (no data array)' }))
     }
     const models: ScannedHost['models'] = []
-    for (const entry of json.data) {
+    for (const entry of entries) {
       const id = (entry as { id?: unknown })?.id
       if (typeof id === 'string' && id.length > 0) models.push({ id, slots: classifyModel(map, id) })
     }
