@@ -167,6 +167,64 @@ test('lens NOTHING found ⇒ no Use button, honest "start a server" copy, re-det
   assert.match(html, /data-act="redetect"/)
 })
 
+// --- Tier zero: the starter-model offer in the NOTHING-found state (slice c) ---
+
+const nothingFound = () =>
+  discover({
+    servers: [{ name: 'lm-studio', url: 'http://localhost:1234', reachable: false, models: [], error: 'fetch failed' }],
+    suggestion: { slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } },
+  })
+
+const starterModel = (over: Partial<import('@openinfo/contracts').StarterModel> = {}): import('@openinfo/contracts').StarterModel => ({
+  id: 'qwen2.5-1.5b', slot: 'llm', runtime: 'llama.cpp', name: 'Qwen2.5 1.5B',
+  filename: 'q.gguf', url: 'https://x/q.gguf', sizeBytes: 1_120_000_000, ...over,
+})
+
+test('starter offer: binary present + absent ⇒ Download button with honest size', () => {
+  const html = renderSetupPage(data({
+    discovery: nothingFound(),
+    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'absent' }],
+  }))
+  assert.match(html, /Or download a starter model/)
+  assert.match(html, /data-act="download-model"/)
+  assert.match(html, /Download \(~1\.1 GB\)/)
+  assert.match(html, /llm · llama\.cpp · ~1\.1 GB/)
+})
+
+test('starter offer: binary MISSING ⇒ the brew line + re-check, no download', () => {
+  const html = renderSetupPage(data({
+    discovery: nothingFound(),
+    localModels: [{ model: starterModel(), runtimeAvailable: false, installHint: 'brew install llama.cpp', state: 'absent' }],
+  }))
+  assert.match(html, /brew install llama\.cpp/)
+  assert.match(html, /data-act="redetect"/)
+  assert.doesNotMatch(html, /data-act="download-model"/)
+})
+
+test('starter offer: downloading shows progress; ready shows "Use this model"', () => {
+  const downloading = renderSetupPage(data({
+    discovery: nothingFound(),
+    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'downloading', downloadedBytes: 560_000_000, totalBytes: 1_120_000_000 }],
+  }))
+  assert.match(downloading, /downloading… 50%/)
+  const ready = renderSetupPage(data({
+    discovery: nothingFound(),
+    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'ready' }],
+  }))
+  assert.match(ready, /data-act="use-starter"/)
+  assert.match(ready, /data-runtime="llama\.cpp"/)
+  assert.match(ready, /Use this model/)
+})
+
+test('starter offer: only shown in the NOTHING-found state (not when a suggestion applies)', () => {
+  const html = renderSetupPage(data({
+    discovery: discover(), // has a usable llm suggestion
+    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'absent' }],
+  }))
+  assert.doesNotMatch(html, /Or download a starter model/)
+  assert.match(html, /data-act="use-setup"/) // the found suggestion leads instead
+})
+
 // --- The Try-it loop (slice b): say something, watch it become a moment ---
 
 const withSttLlm = (): Fabric => ({

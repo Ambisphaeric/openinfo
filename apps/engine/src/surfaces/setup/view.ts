@@ -1,4 +1,4 @@
-import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Moment } from '@openinfo/contracts'
+import type { DiscoverResult, Endpoint, Fabric, FabricProfile, LocalModelStatus, Moment } from '@openinfo/contracts'
 import { SETUP_CSS, SETUP_SCRIPT } from './assets.js'
 
 /**
@@ -42,6 +42,12 @@ export interface SetupData {
    * Absent ⇒ render the page exactly as before (llm already configured, not re-detecting).
    */
   discovery?: DiscoverResult
+  /**
+   * Starter-model catalog + local state (tier zero) — shown in the lens's NOTHING-FOUND state so a user
+   * with no server can still reach a working setup: "No local model server responded → download a
+   * starter model". Present only alongside `discovery`.
+   */
+  localModels?: LocalModelStatus[]
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */
@@ -240,7 +246,60 @@ const capabilityRowHtml = (fabric: Fabric, row: CapabilityRow): string => {
   )
 }
 
-const getStartedHtml = (discovery: DiscoverResult): string => {
+/** Human size label from bytes ("~1.1 GB", "~148 MB") — honest approximate sizing in the offer. */
+const humanSize = (bytes: number): string =>
+  bytes >= 1_000_000_000 ? `~${(bytes / 1_000_000_000).toFixed(1)} GB` : `~${Math.round(bytes / 1_000_000)} MB`
+
+/** One starter-model row: download / progress / ready+use / brew-hint-when-binary-missing / error. */
+const starterRowHtml = (m: LocalModelStatus): string => {
+  const model = m.model
+  const meta = `<span class="starter-meta">${escapeHtml(model.slot)} · ${escapeHtml(model.runtime)} · ${humanSize(model.sizeBytes)}</span>`
+  const dataAttrs =
+    `data-id="${escapeHtml(model.id)}" data-runtime="${escapeHtml(model.runtime)}" data-slot="${escapeHtml(model.slot)}" data-name="${escapeHtml(model.name)}"`
+  let control: string
+  if (!m.runtimeAvailable) {
+    // The binary is missing — show exactly how to get it, plus a re-check (no silent failure).
+    control =
+      `<div class="starter-hint">needs <span class="mono">${escapeHtml(model.runtime)}</span> — run <code>${escapeHtml(m.installHint ?? '')}</code>, then ` +
+      '<button type="button" data-act="redetect">re-check</button></div>'
+  } else if (m.state === 'ready') {
+    control = `<button type="button" class="primary" data-act="use-starter" ${dataAttrs}>Use this model</button>`
+  } else if (m.state === 'downloading') {
+    const pct = m.totalBytes ? Math.floor(((m.downloadedBytes ?? 0) / m.totalBytes) * 100) : undefined
+    control = `<span class="starter-progress" data-id="${escapeHtml(model.id)}">downloading… ${pct !== undefined ? `${pct}%` : `${Math.round((m.downloadedBytes ?? 0) / 1_000_000)} MB`}</span>`
+  } else if (m.state === 'error') {
+    control =
+      `<span class="starter-error">${escapeHtml(m.error ?? 'download failed')}</span> ` +
+      `<button type="button" data-act="download-model" ${dataAttrs}>Retry</button>`
+  } else {
+    control = `<button type="button" data-act="download-model" ${dataAttrs}>Download (${humanSize(model.sizeBytes)})</button>`
+  }
+  return (
+    `<div class="starter" data-id="${escapeHtml(model.id)}">` +
+    `<div class="starter-body"><div class="starter-name">${escapeHtml(model.name)} ${meta}</div>` +
+    (model.description ? `<div class="starter-desc">${escapeHtml(model.description)}</div>` : '') +
+    `</div><div class="starter-control">${control}</div></div>`
+  )
+}
+
+/**
+ * Tier-zero offer (ARCHITECTURE §8 slice c): shown in the NOTHING-FOUND state so a user with no model
+ * server still reaches a working setup. Lists vetted small models with honest sizes + runtime
+ * availability; one click downloads (progress polled), then "Use this model" writes a `local` endpoint
+ * into config-1 (via the existing profile routes) and the engine spawns it. Binary missing ⇒ the brew
+ * line + a re-check instead of a dead end.
+ */
+const starterOfferHtml = (models: LocalModelStatus[]): string => {
+  if (models.length === 0) return ''
+  return (
+    '<div class="starter-offer"><div class="starter-head">Or download a starter model</div>' +
+    '<div class="sub">No server needed — openinfo can fetch a small model and run it for you (llama.cpp for chat, whisper.cpp for audio).</div>' +
+    models.map(starterRowHtml).join('') +
+    '</div>'
+  )
+}
+
+const getStartedHtml = (discovery: DiscoverResult, localModels: LocalModelStatus[]): string => {
   const reachable = discovery.servers.filter((s) => s.reachable)
   const modelCount = reachable.reduce((n, s) => n + s.models.length, 0)
   const canApply = discovery.suggestion.slots.llm.length > 0
@@ -251,14 +310,17 @@ const getStartedHtml = (discovery: DiscoverResult): string => {
   const action = canApply
     ? '<button type="button" class="primary" data-act="use-setup">Use this setup</button>' +
       '<button type="button" data-act="redetect">Re-run detection</button>'
-    : '<div class="sub">Start LM Studio or Ollama (or add a remote host in Advanced setup), then re-run detection.</div>' +
+    : '<div class="sub">Start LM Studio or Ollama (or add a remote host in Advanced setup), then re-run detection — or download a starter model below.</div>' +
       '<button type="button" data-act="redetect">Re-run detection</button>'
+  // Tier zero leads the nothing-found state — a dead end becomes an offer.
+  const starter = canApply ? '' : starterOfferHtml(localModels)
   return (
     '<div class="card getstarted"><div class="gs-head">Get started</div>' +
     `<div class="sub">${escapeHtml(summary)} openinfo detects what it can do — no ports or model trivia to configure.</div>` +
     `<div class="caps">${rows}</div>` +
     `<script type="application/json" id="suggestion">${jsonForScript(discovery.suggestion)}</script>` +
     `<div class="gs-actions">${action}</div>` +
+    starter +
     '<div class="sub gs-adv">Want full control? <a href="#advanced" data-act="show-advanced">Advanced setup</a> — profiles, cross-host endpoints, keys.</div>' +
     '</div>'
   )
@@ -349,7 +411,7 @@ const tryItHtml = (data: SetupData): string => {
 export const renderSetupPage = (data: SetupData): string => {
   const notice = firstRunNotice(data.liveFabric)
   const banner = notice ? `<div class="banner">⚠ ${escapeHtml(notice)}</div>` : ''
-  const lens = data.discovery ? getStartedHtml(data.discovery) : ''
+  const lens = data.discovery ? getStartedHtml(data.discovery, data.localModels ?? []) : ''
   // The Try-it loop leads the page once an llm endpoint exists (config-1 active) — the moment onboarding
   // becomes "experience it", not "configure it". Empty when no llm (the lens/banner lead instead).
   const tryit = tryItHtml(data)

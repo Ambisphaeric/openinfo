@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { chmodSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
@@ -1020,3 +1021,166 @@ const startFakeSttReply = async (reply: string): Promise<{ server: Server; url: 
   assert.ok(address && typeof address === 'object')
   return { server, url: `http://127.0.0.1:${address.port}`, hits: () => hits }
 }
+
+// --- Slice (c): engine-managed local runtimes / tier zero ---
+
+/**
+ * A FAKE local runtime binary: a node script that serves /health + /v1/chat/completions with the same
+ * moment-producing branching as startFakeLlm, so a spawned local endpoint drives distill→moments end to
+ * end. Real spawn (the engine's LocalRuntimeManager), fake model server — the CI-safe tier-zero e2e.
+ */
+const writeFakeRuntime = (dir: string): string => {
+  const src =
+    '#!/usr/bin/env node\n' +
+    "const { createServer } = require('node:http')\n" +
+    'const args = process.argv.slice(2)\n' +
+    "const port = Number(args[args.indexOf('--port') + 1])\n" +
+    'createServer((req, res) => {\n' +
+    "  let body = ''\n" +
+    "  req.on('data', (c) => (body += c))\n" +
+    "  req.on('end', () => {\n" +
+    "    if (req.url === '/health') { res.writeHead(200); res.end('{\"status\":\"ok\"}'); return }\n" +
+    "    if (req.url === '/v1/chat/completions') {\n" +
+    "      const p = JSON.parse(body || '{}'); const prompt = (p.messages && p.messages[0] && p.messages[0].content) || ''\n" +
+    "      const content = prompt.includes('JSON array of entities')\n" +
+    '        ? \'[{"kind":"person","name":"Dana"}]\'\n' +
+    "        : prompt.includes('Return ONLY a JSON array')\n" +
+    '          ? \'[{"kind":"commitment","text":"ship Thursday","speaker":"user","confidence":0.85}]\'\n' +
+    "          : 'they agreed to ship Thursday.'\n" +
+    "      res.writeHead(200, { 'content-type': 'application/json' })\n" +
+    '      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content } }] })); return\n' +
+    '    }\n' +
+    '    res.writeHead(404); res.end()\n' +
+    '  })\n' +
+    "}).listen(port, '127.0.0.1')\n"
+  const bin = join(dir, 'fake-runtime')
+  writeFileSync(bin, src)
+  chmodSync(bin, 0o755)
+  return bin
+}
+
+/** A blob download server (>100KB so it clears the truncation floor), Range-capable. */
+const startBlobServer = async (): Promise<{ server: Server; url: string }> => {
+  const blob = Buffer.alloc(200_000, 7)
+  const server = createServer((req, res) => {
+    const range = req.headers.range
+    if (range) {
+      const start = Number(/bytes=(\d+)-/.exec(range)?.[1] ?? '0')
+      const slice = blob.subarray(start)
+      res.writeHead(206, { 'content-length': String(slice.length), 'content-range': `bytes ${start}-${blob.length - 1}/${blob.length}` })
+      res.end(slice)
+    } else {
+      res.writeHead(200, { 'content-length': String(blob.length) })
+      res.end(blob)
+    }
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}/fake.gguf` }
+}
+
+test('GET /fabric/local/models returns the seeded catalog with runtime availability; POST download 404s unknown', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const models = (await (await fetch(`${base}/fabric/local/models`)).json()) as { model: { id: string }; runtimeAvailable: boolean; state: string }[]
+    assert.ok(models.length >= 2)
+    assert.ok(models.some((m) => m.model.id === 'qwen2.5-1.5b-instruct-q4'))
+    for (const m of models) assert.equal(typeof m.runtimeAvailable, 'boolean')
+    const notFound = await fetch(`${base}/fabric/local/download`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'ghost' }),
+    })
+    assert.equal(notFound.status, 404)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('e2e (tier zero): nothing found → download a starter model → local endpoint active → Try-it yields a moment via the spawned runtime', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const binDir = await mkdtemp(join(tmpdir(), 'openinfo-bin-'))
+  const fakeBin = writeFakeRuntime(binDir)
+  const blob = await startBlobServer()
+  const app = createEngineApp({
+    dataRoot: dir,
+    log: () => undefined,
+    localRuntime: {
+      findBinary: () => fakeBin,
+      specs: { 'llama.cpp': { runtime: 'llama.cpp', binaryNames: ['fake-runtime'], installHint: 'x', args: (m, p) => ['--port', String(p), '-m', m], healthPath: '/health', chat: true } },
+      readyTimeoutMs: 6_000,
+    },
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    setProbes(app, []) // nothing found → the nothing-found lens
+    // a starter catalog pointing at the blob server + our fake runtime
+    app.store.layouts.put('starter-models', 'starter-models-default', {
+      id: 'starter-models-default', version: 2,
+      models: [{ id: 'fake-llm', slot: 'llm', runtime: 'llama.cpp', name: 'Fake LLM', filename: 'fake.gguf', url: blob.url, sizeBytes: 200_000 }],
+    })
+
+    // 1) the nothing-found lens leads with the starter offer + a download button (binary is available)
+    const html = await (await fetch(`${base}/setup`)).text()
+    assert.match(html, /No local model server responded/)
+    assert.match(html, /Or download a starter model/)
+    assert.match(html, /data-act="download-model"/)
+
+    // 2) download the starter model (the explicit-click route), then poll until ready
+    const dl = await fetch(`${base}/fabric/local/download`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'fake-llm' }),
+    })
+    assert.equal(dl.status, 200)
+    await eventuallyHttp(async () => {
+      const models = (await (await fetch(`${base}/fabric/local/models`)).json()) as { model: { id: string }; state: string }[]
+      assert.equal(models.find((m) => m.model.id === 'fake-llm')!.state, 'ready')
+    }, 6000)
+
+    // 3) "Use this model": write config-1 with a LOCAL endpoint + activate (the existing profile routes)
+    const put = await fetch(`${base}/fabric/profiles/config-1`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'config-1', name: 'Config 1', version: 1, fabric: { slots: { stt: [], tts: [], llm: [{ kind: 'local', name: 'starter-llm', runtime: 'llama.cpp', model: 'fake-llm' }], vlm: [], ocr: [], embed: [] } } }),
+    })
+    assert.equal(put.status, 200)
+    assert.equal((await fetch(`${base}/fabric/profiles/config-1/activate`, { method: 'POST' })).status, 200)
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    assert.equal(fabric.slots.llm[0]!.kind, 'local')
+
+    // 4) Try-it TYPE path: flags on → session → text chunk → moment.created on WS, produced by the SPAWNED runtime
+    const sub = await openEvents(base)
+    try {
+      await enableFlag(base, 'distill.enabled')
+      await enableFlag(base, 'distill.moments')
+      const started = (await (await fetch(`${base}/sessions`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting', title: 'tier-zero try-it' }),
+      })).json()) as Session
+      const chunk: CaptureChunk = {
+        id: 'tz-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0,
+        capturedAt: new Date().toISOString(), contentType: 'text/plain', encoding: 'utf8', data: 'we should ship Thursday',
+      }
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(chunk) })
+      await eventuallyHttp(async () => {
+        assert.ok(sub.events.some((e) => e.name === 'moment.created' && e.payload.sessionId === started.id))
+      }, 8000)
+      const created = sub.events.find((e) => e.name === 'moment.created' && e.payload.sessionId === started.id)!.payload as unknown as Moment
+      assert.ok(created.text.length > 0)
+      assert.equal(created.provenance?.endpoint, 'starter-llm') // produced by the spawned local runtime
+    } finally {
+      sub.close()
+    }
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => blob.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+    await rm(binDir, { recursive: true, force: true })
+  }
+})

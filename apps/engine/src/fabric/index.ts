@@ -15,6 +15,7 @@ export {
   RUNTIME_SPECS,
   type LocalEndpoint,
   type RuntimeSpec,
+  type LocalRuntimeSpecs,
   type SpawnState,
 } from './endpoints/local.js'
 export { LocalModelStore, downloadModel, type DownloadProgress } from './local-models.js'

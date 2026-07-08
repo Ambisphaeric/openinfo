@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type FabricProfile, type Flag, type Moment, type RelevantEntity, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
-import { DiscoveryDocuments, FabricDocuments, FileSecretStore, checkEndpoint, discoverFabric, invokeStt, type SecretStore } from '../fabric/index.js'
+import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeStt, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
@@ -29,6 +29,17 @@ export interface EngineOptions {
   dataDir?: string
   onCapture?: (chunk: CaptureChunk) => void
   log?: (message: string) => void
+  /**
+   * Override the local-runtime manager wiring (tier zero) — a testability seam so an e2e can spawn a
+   * FAKE runtime binary instead of a real llama.cpp/whisper.cpp. Production leaves this unset (real
+   * binary discovery on PATH + Homebrew locations).
+   */
+  localRuntime?: {
+    findBinary?: (spec: import('../fabric/index.js').RuntimeSpec) => string | undefined
+    freePort?: () => Promise<number>
+    specs?: import('../fabric/index.js').LocalRuntimeSpecs
+    readyTimeoutMs?: number
+  }
 }
 
 interface HandlerContext {
@@ -40,6 +51,8 @@ interface HandlerContext {
   surfaces: SurfaceDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
+  runtime: LocalRuntimeManager
+  models: LocalModelStore
   onCapture?: (chunk: CaptureChunk) => void
   log: (message: string) => void
 }
@@ -59,6 +72,20 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const actDocs = new ActDocuments(store)
   const surfaces = new SurfaceDocuments(store)
   const discovery = new DiscoveryDocuments(store)
+  const starterModels = new StarterModelsDocuments(store)
+  // Tier zero (ARCHITECTURE §8, slice c): the engine downloads + spawns managed local runtimes.
+  // The model store maps a `local` endpoint's model ref to its on-disk path; the runtime manager
+  // spawns llama.cpp/whisper.cpp on demand and is threaded into invoke/health so local endpoints
+  // ride the SAME seams as http ones. Models live under the data root models/ dir.
+  const models = new LocalModelStore(join(store.dataDir, 'models'), () => starterModels.models())
+  const runtime = new LocalRuntimeManager({
+    modelPath: (endpoint) => models.resolvePath(endpoint),
+    log,
+    ...(options.localRuntime?.findBinary ? { findBinary: options.localRuntime.findBinary } : {}),
+    ...(options.localRuntime?.freePort ? { freePort: options.localRuntime.freePort } : {}),
+    ...(options.localRuntime?.specs ? { specs: options.localRuntime.specs } : {}),
+    ...(options.localRuntime?.readyTimeoutMs !== undefined ? { readyTimeoutMs: options.localRuntime.readyTimeoutMs } : {}),
+  })
   ensureDefaultFlags(store)
   fabric.ensureDefaults()
   voice.ensureDefaults()
@@ -66,6 +93,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   actDocs.ensureDefaults()
   surfaces.ensureDefaults()
   discovery.ensureDefaults()
+  starterModels.ensureDefaults()
 
   const distiller = new Distiller({
     store,
@@ -73,6 +101,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     fabric,
     docs: distillDocs,
     resolveKey,
+    runtimeManager: runtime,
     publish: (distillate) => bus.publish('distillate.updated', distillate),
     publishMoment: (moment) => bus.publish('moment.created', moment),
     publishEntity: (entity) => bus.publish('entity.updated', entity),
@@ -93,7 +122,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     // when nothing will distill it is pure waste (see PHASE2-NOTES). A transcription transport failure
     // propagates → the drain re-queues the file (retry-at-idle), exactly like distill/moments.
     const ready = isFlagEnabled(store, 'distill.transcribe')
-      ? await transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey }), log })
+      ? await transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }), log })
       : chunks
     await distiller.distillChunks(ready, {
       extractMoments: isFlagEnabled(store, 'distill.moments'),
@@ -112,6 +141,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     fabric,
     docs: actDocs,
     resolveKey,
+    runtimeManager: runtime,
     mode: (id) => distillDocs.mode(id),
     publish: (draft) => bus.publish('draft.created', draft),
     log,
@@ -138,7 +168,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, queue, store, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, queue, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -154,6 +184,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     store,
     close: async () => {
       ws.close()
+      runtime.shutdown() // kill any spawned local runtimes (tier zero)
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
       store.close()
     },
@@ -172,6 +203,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/fabric') return send(res, 200, ctx.fabric.load())
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/fabric/discover') return discover(res, ctx)
+  if (req.method === 'GET' && url.pathname === '/fabric/local/models') return send(res, 200, ctx.models.statuses())
+  if (req.method === 'POST' && url.pathname === '/fabric/local/download') return downloadModel(req, res, ctx)
   if (req.method === 'POST' && url.pathname === '/fabric/test') return testEndpoint(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/fabric/profiles') return send(res, 200, ctx.fabric.profiles.list())
   const profileClone = url.pathname.match(/^\/fabric\/profiles\/([^/]+)\/clone$/)
@@ -250,7 +283,7 @@ async function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): Pro
     liveFabric,
     editing,
     secretRefs: ctx.secrets.listRefs(),
-    ...(discovery !== undefined ? { discovery } : {}),
+    ...(discovery !== undefined ? { discovery, localModels: ctx.models.statuses() } : {}),
   })
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
   res.end(html)
@@ -268,6 +301,23 @@ async function discover(res: ServerResponse, ctx: HandlerContext): Promise<void>
 }
 
 /**
+ * Begin downloading ONE starter model into the data root models/ dir (tier zero, slice c). The EXPLICIT
+ * user click — never auto-downloads. The download runs in the background (resume + size check); this
+ * returns the model's current LocalModelStatus immediately and the browser polls GET /fabric/local/models
+ * for progress. Unknown model id ⇒ 404. Once ready, the "Set up a starter model" flow writes a `local`
+ * endpoint into config-1 through the existing profile routes (no new write semantics), and the runtime
+ * manager spawns it on the first invoke/health.
+ */
+async function downloadModel(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('LocalDownloadRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid LocalDownloadRequest', details: errors })
+  const status = ctx.models.download((body as LocalDownloadRequest).modelId)
+  if (!status) return send(res, 404, { error: `no such starter model: ${(body as LocalDownloadRequest).modelId}` })
+  send(res, 200, status)
+}
+
+/**
  * Test-button backing: probe ONE endpoint's reachability (the setup page's per-row Test). A thin,
  * read-only helper over the existing health check (fabric/health.ts) — it never invokes a model, it
  * pings. The keyRef (if any) is resolved from the secret store and injected as a bearer for the
@@ -280,7 +330,7 @@ async function testEndpoint(req: IncomingMessage, res: ServerResponse, ctx: Hand
   const errors = validationErrors('Endpoint', body)
   if (errors.length > 0) return send(res, 400, { error: 'invalid Endpoint', details: errors })
   const endpoint = body as Endpoint
-  const health = await checkEndpoint(endpoint, 4_000, (ref) => ctx.secrets.resolve(ref))
+  const health = await checkEndpoint(endpoint, 4_000, (ref) => ctx.secrets.resolve(ref), ctx.runtime)
   const probe: EndpointProbe = { ok: health.ok }
   if (health.latencyMs !== undefined) probe.latencyMs = health.latencyMs
   const tokPerSec = endpoint.measured?.tokPerSec

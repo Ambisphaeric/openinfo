@@ -72,6 +72,19 @@ a:hover{text-decoration:underline}
 .cap-missing{color:var(--muted);font-size:12.5px}
 .gs-actions{display:flex;gap:9px;align-items:center;margin-top:14px}
 .gs-adv{margin-top:12px;font-size:12.5px}
+.starter-offer{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.starter-head{font-size:13.5px;font-weight:600;margin-bottom:2px}
+.starter{display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.starter:first-of-type{border-top:0}
+.starter-body{flex:1;min-width:0}
+.starter-name{font-size:13px;font-weight:550}
+.starter-meta{font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-left:6px}
+.starter-desc{color:var(--muted);font-size:12px;margin-top:2px}
+.starter-control{flex:none;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.starter-hint{color:var(--muted);font-size:12px}
+.starter-hint code{font-family:var(--mono);background:#0c0e13;border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+.starter-progress{color:var(--accent);font-family:var(--mono);font-size:12px}
+.starter-error{color:var(--bad);font-size:12px}
 details.advanced{margin-top:24px;border-top:1px solid var(--line);padding-top:8px}
 details.advanced>summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.14em;
   text-transform:uppercase;color:var(--faint);padding:8px 0;list-style-position:inside}
@@ -180,6 +193,37 @@ export const SETUP_SCRIPT = `
       jf('POST','/fabric/profiles/config-1/activate').then(function(r2){
         if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/setup';});});}
   function showAdvanced(){var d=document.getElementById('advanced'); if(d){d.open=true; d.scrollIntoView();}}
+  // --- Tier zero: download + run a starter model (slice c). Composes existing routes only:
+  // POST /fabric/local/download (explicit click), GET /fabric/local/models (poll progress), then
+  // "Use this model" writes a local endpoint into config-1 via the existing profile routes.
+  function pollStarter(modelId){
+    jf('GET','/fabric/local/models').then(function(r){
+      var list=r.json||[]; var m=null; for(var i=0;i<list.length;i++){if(list[i].model.id===modelId){m=list[i];break;}}
+      if(!m)return;
+      if(m.state==='ready'||m.state==='error'){location.reload();return;}
+      var el=document.querySelector('.starter[data-id="'+modelId+'"] .starter-control');
+      if(el){var pct=m.totalBytes?Math.floor((m.downloadedBytes||0)/m.totalBytes*100):null;
+        el.textContent='downloading\\u2026 '+(pct!=null?pct+'%':Math.round((m.downloadedBytes||0)/1000000)+' MB');}
+      setTimeout(function(){pollStarter(modelId);},1500);
+    });
+  }
+  function downloadStarter(btn){
+    var id=btn.dataset.id; var el=btn.closest('.starter-control'); if(el)el.textContent='starting download\\u2026';
+    jf('POST','/fabric/local/download',{modelId:id}).then(function(r){
+      if(!r.ok){alert('Download failed ('+r.status+')');location.reload();return;}
+      pollStarter(id);
+    });
+  }
+  function useStarter(btn){
+    var slot=btn.dataset.slot; var runtime=btn.dataset.runtime; var id=btn.dataset.id; var name=btn.dataset.name;
+    var slots={stt:[],tts:[],llm:[],vlm:[],ocr:[],embed:[]};
+    slots[slot]=[{kind:'local',name:'starter-'+slot,runtime:runtime,model:id}];
+    var profile={id:'config-1',name:'Config 1',version:1,fabric:{slots:slots},description:'Local starter model ('+name+').'};
+    jf('PUT','/fabric/profiles/config-1',profile).then(function(r){
+      if(!r.ok){alert('Setup failed ('+r.status+')');return;}
+      jf('POST','/fabric/profiles/config-1/activate').then(function(r2){
+        if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/setup';});});
+  }
   // --- Try-it: say something, watch it become a moment (slice b). Composes existing routes only:
   // PUT /flags/:key (consent-flip), POST /sessions, POST /capture/:source, the /events WS, and the
   // read endpoints for honest failure introspection. No new engine capability.
@@ -310,6 +354,8 @@ export const SETUP_SCRIPT = `
     else if(act==='addsecret'){addSecret();}
     else if(act==='delsecret'){delSecret(b.dataset.ref);}
     else if(act==='use-setup'){useSetup();}
+    else if(act==='download-model'){downloadStarter(b);}
+    else if(act==='use-starter'){useStarter(b);}
     else if(act==='redetect'){location.href='/setup?discover=1';}
     else if(act==='show-advanced'){showAdvanced();}
     else if(act==='tryit-type'){tryitType();}
