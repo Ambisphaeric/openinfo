@@ -1019,3 +1019,98 @@ grants need an app restart) — on a machine with a live mic + speakers this pop
 `out/results.json` and writes listenable `out/mic_*.wav` / `out/loopback.wav`. The re-run will also
 resolve empirically whether granted Screen Recording yields a macOS system-audio track (expected: no,
 per the docs above — confirming route (a)/(b) is required).
+
+## Slice: Fabric profiles + secrets (the dial-able rig — save/clone/switch model setups)
+
+The founder's frame: a first model setup ("config 1") is a *named* configuration that is by no means
+the last — 8B in LM Studio today, a 27B on another host + a 4B OCR box + parakeet STT here / TTS there
+tomorrow, some of it over tailscale. Any slot→endpoint composition across hosts must be composable,
+saveable, cloneable, switchable; hosts + keys are remembered. This is the repo philosophy applied to
+the fabric: everything user-configurable is a versioned, cloneable document. Design note landed first
+(ARCHITECTURE §8, per CODE_MAP rule 5). ENGINE + CONTRACTS only — the setup page is the next slice.
+
+### The live fabric IS a profile — GET/PUT /fabric stays as the active-profile view (backward compat)
+The open question ("does PUT /fabric still exist and what does it mean when a profile is active") was
+decided as the note recommended:
+- `FabricProfile { id, name, version, fabric, description? }` reuses the existing `Fabric` shape
+  verbatim (`fabric` field) — additive reuse, not a fork; existing Fabric callers/examples untouched.
+- `FabricDocuments.load()` (the live fabric) = the ACTIVE profile's map, else the pre-profiles legacy
+  `config/fabric` doc, else empty. `save()` (PUT /fabric) edits the ACTIVE profile in place (version
+  bump) when one is active, else writes the legacy doc. So GET/PUT /fabric behave EXACTLY as before
+  for anyone who never touches profiles — the seeded example profiles are **inert until activated**, so
+  a fresh install's `GET /fabric` is still the empty map and the README quickstart's "llm slot ships
+  empty" promise holds (verified live on :8905). Activation swaps the live fabric atomically; health/
+  bench/invoke all run against `fabric.load()`, so they follow the active profile with no change.
+- **Delete guards the live fabric:** deleting the active profile is refused (409, "activate another
+  first") rather than silently emptying what invoke runs against.
+
+### Secrets — write-only API, never echoed, injected only at invoke time
+- Endpoints carry `auth: { keyRef }` (http variant only; additive optional) — a *name*, never a value.
+  cloud's existing `auth: 'keychain'` is untouched (P7).
+- `SecretStore` is an **interface** (`set`/`delete`/`resolve`/`has`/`listRefs`) so the macOS Keychain
+  backend slots in at P7 with zero caller change (CODE_MAP §3). v0 is `FileSecretStore`: one chmod-600
+  JSON file in its OWN `secrets/` dir under the data root — decided over the note's "parent dir" wording
+  for test isolation + because the export unit is a single workspace `.db`, so a sibling file is never
+  in an export regardless; `OPENINFO_SECRETS` overrides for a fully external path. The file is created
+  lazily (a fresh install writes nothing) and re-chmod-600 on every write even if it pre-existed.
+- **The never-echo guarantee, and how it is enforced + tested:** the value enters ONLY via
+  `PUT /fabric/secrets/:ref` (SecretValue, a request-only schema). It leaves ONLY via `resolve()` at
+  invoke time, injected into the outbound request as `Authorization: Bearer <resolved>`. Every read
+  path returns a bare `SecretRef` (`{ref}`, no value field): the write response, the delete response,
+  and `GET /fabric/secrets` (list of refs). No document, GET /fabric response, or event carries key
+  material — an endpoint only ever holds the keyRef. Tests assert this by **grepping the serialized
+  response/event text** for the actual secret value and asserting absence (PUT/DELETE/list responses,
+  GET /fabric, and the fabric.changed event payload), while asserting the keyRef IS present.
+- **Header choice:** `Authorization: Bearer` (the OpenAI-compatible convention these endpoints already
+  speak). A bespoke header would be an additive `auth.header`/`auth.scheme` field later — not v0.
+- **keyRef resolution lives in `fabric/invoke.ts::authHeaders`** (one place): for an http endpoint with
+  `auth.keyRef`, resolve via the injected `resolveKey`; if it resolves, add the bearer header; if NOT
+  (no resolver, or unknown ref) **throw before any fetch** so the invoke loop catches it, records
+  `<name>: missing secret for keyRef "<ref>"` (the REF, never the value), and falls through to the next
+  endpoint in fabric order — never crashes, never logs the key. `health.checkEndpoint` mirrors this:
+  an authed endpoint with an unresolvable ref reports `ok:false` (graceful), and a resolvable one gets
+  the bearer header on the ping. The distiller, actor, and the stt transcribe stage thread the engine's
+  `secrets.resolve` as `resolveKey`; omitting it (unit tests) means auth-less endpoints work and authed
+  ones fall through — the correct degraded behavior.
+
+### Events + routes the setup-page slice can rely on (exact surface)
+- `fabric.changed` → `Fabric` (the now-live map; keyRefs only). Emitted on activate, on PUT /fabric,
+  and when the active profile is edited. WS-broadcast like the other events.
+- Profiles: `GET /fabric/profiles` (`FabricProfile[]`), `GET|PUT|DELETE /fabric/profiles/:id`
+  (PUT create/update — version-bumped; DELETE 200/404/409-if-active), `POST /fabric/profiles/:id/clone`
+  (CloneProfileRequest `{id, name?}` → the clone; 409 on duplicate id, 404 on unknown source),
+  `POST /fabric/profiles/:id/activate` (→ the activated profile; 404 unknown).
+- Secrets: `GET /fabric/secrets` (`SecretRef[]`), `PUT /fabric/secrets/:ref` (SecretValue → SecretRef),
+  `DELETE /fabric/secrets/:ref` (→ SecretRef; 404 unknown). All value-free responses.
+
+### Store — profiles are config documents in _meta.db; two small LayoutStore additions
+Profiles live via `LayoutStore` like every other config document (kind `fabric-profile`, key = id; the
+active pointer is kind `config` key `active-profile`). Two general, minimal store additions rather than
+an index-doc hack: `latestOfKind` (latest version per key of a kind — the listing primitive) and
+`delete` (hard-delete all versions of a key — the one place version history is discarded, for a config
+doc the user explicitly removes). DB-handle rule intact: only store/ opens a handle; FabricProfiles/
+FabricDocuments ask it to read/write.
+
+### Seeded profiles (documents, not code)
+`lm-studio-local` (LM Studio :1234, openai-compat, one llm), `ollama-local` (Ollama :11434, one llm + a
+nomic embedder), `remote-http-template` (a multi-host template: a bigger llm on one box + stt on
+another, each authed by keyRef with NO value — clone it, edit URLs/models, wire keys, activate). Seeded
+only when absent (never clobbers a user edit) and mirrored as validated `fabricProfile.*.json` examples.
+
+### No flag — deliberately (consistent with sessions/HUD/shell)
+Profiles + secrets are resource routes, not gated processing behaviors — the established no-flag line.
+What a profile switches on (distill/act) is already gated; a `fabric.profiles` flag would gate nothing
+not already gated. (Confirmed, as the task asked.)
+
+### Tests + status (contracts 33 · client 65 · engine 97 — all green; `pnpm -r build`/`-r test`)
++5 contracts examples (3 profiles + 2 secrets), +18 engine (profiles CRUD/clone/activate/version-bump
++ backward-compat load/save; secret round-trip + 0600 + no-leak; llm & stt keyRef injection + graceful
+fall-through; API profile CRUD + never-echo security asserts + an e2e proving activation swaps what the
+distiller invokes and the profile's keyRef reaches the fake server's Authorization header). Live-checked
+on :8905 (:8787 untouched). The known apps/client seam.test.ts port-TOCTOU flake did not recur; a drain-
+timing flake in the new activation e2e under concurrent `-r test` load was hardened with a longer wait.
+
+### Deferred (out of this slice, by scope)
+- The setup page / any client UI (next slice — forms over the routes above, no new engine capability);
+  actual macOS Keychain backend (interface only); cloud endpoint kind; onboarding first-run detection;
+  OpenRouter-style model catalogs; migration tooling; a bespoke non-bearer auth header.

@@ -29,7 +29,7 @@ Verified from a clean tree (macOS, Node 22+, pnpm 9). Clone to a rendered HUD:
 ```bash
 pnpm install
 pnpm -r build          # contracts → engine + client (workbench is a Phase-4 scaffold)
-pnpm -r test           # contracts schema-validation + engine (67) + client (29)
+pnpm -r test           # contracts schema-validation (33) + engine (97) + client (65)
 
 # start the engine daemon — localhost:8787 by default, data under ~/.openinfo/data
 node apps/engine/dist/main.js            # OPENINFO_PORT / OPENINFO_DATA to override
@@ -102,6 +102,26 @@ Without an endpoint, capture is still accepted and durably spooled; the drain si
 to `/capture/mic` and the drain distills it into moments/entities the HUD then surfaces. End the
 session (`POST /sessions/:id/end`) and — with `act.enabled` on — a follow-up draft is prepared from
 the session's summaries within seconds; fetch it at `GET /drafts?workspace=default&session=<id>`.
+
+**Your fabric is a saveable, switchable document.** `GET`/`PUT /fabric` is the *active profile* — a
+named, cloneable slot→endpoint map. Ship different rigs (an 8B in LM Studio; a 27B on another host + a
+4B OCR box + parakeet STT here / TTS there) as profiles and switch between them:
+
+```bash
+curl localhost:8787/fabric/profiles                          # lm-studio-local, ollama-local, remote-http-template (seeded, inert)
+curl -sX POST localhost:8787/fabric/profiles/lm-studio-local/activate   # its map is now the live fabric
+```
+
+Remote endpoints remember their host and reference a key by name — never a value. Set the value once
+(write-only; it lives in a chmod-600 store, never in a document, GET response, or event):
+
+```bash
+curl -sX PUT localhost:8787/fabric/secrets/remote-llm-key -H 'content-type: application/json' -d '{"value":"sk-…"}'
+curl localhost:8787/fabric/secrets                            # [{"ref":"remote-llm-key"}] — refs only, never values
+```
+
+The key is injected as `Authorization: Bearer …` only at invoke time; a missing key just makes that
+endpoint fall through to the next. A forms-over-documents setup page for all this is the next slice.
 
 ---
 
