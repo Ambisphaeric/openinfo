@@ -23,6 +23,15 @@ export type ActRunner = (session: Session, step: WorkflowStep) => Promise<void>
  */
 export type DrainActRunner = (chunks: readonly CaptureChunk[], step: WorkflowStep) => Promise<void>
 
+/**
+ * A DRAIN screen-recognition runner (the `ocr`/`vlm` steps, P4A×P4B joint slice) — takes the drained
+ * CHUNKS and the step (which names the slot via `kind`/`slot` and carries a `vlm` prompt in `params`),
+ * consumes the batch's screen frames, and persists an OcrResult + a distillate per recognized frame
+ * (= screenProcessor.runOnDrain, over invokeOcr/invokeVlm). A DRAIN STAGE, not a best-effort act: a throw
+ * PROPAGATES so the queue re-queues the batch (retry-at-idle), exactly like `transcribe`/`distill`.
+ */
+export type ScreenRunner = (chunks: readonly CaptureChunk[], step: WorkflowStep) => Promise<void>
+
 export interface WorkflowExecutorDeps {
   store: WorkspaceRegistry
   docs: WorkflowDocuments
@@ -30,6 +39,12 @@ export interface WorkflowExecutorDeps {
   distill: (chunks: readonly CaptureChunk[], opts: DistillOptions) => Promise<unknown>
   /** the pre-distill transcription stage (= transcribeChunks bound to the stt slot). Throws PROPAGATE. */
   transcribe: (chunks: readonly CaptureChunk[]) => Promise<CaptureChunk[]>
+  /**
+   * the screen-understanding drain stage (= screenProcessor.runOnDrain over invokeOcr/invokeVlm). Drives
+   * the `ocr`/`vlm` drain steps. Optional (absent ⇒ those steps skip-with-log). A throw PROPAGATES →
+   * the drain re-queues, so this is REAL drain work, not the best-effort `drainActs` pattern.
+   */
+  recognizeScreen?: ScreenRunner
   /** flush pending chunks before the session-end acts (= queue.drainNow) — the drain-first flush. */
   drainNow: () => Promise<void>
   /** SESSION-END act runners by step id; the `follow-up-draft` act = actor.runFollowUpDraft. */
@@ -71,12 +86,22 @@ export class WorkflowExecutor {
   async runDrain(chunks: readonly CaptureChunk[]): Promise<void> {
     const doc = this.deps.docs.active()
     const drainSteps = doc.steps.filter((s) => seamOf(s) === 'drain')
-    // Honest handling of kinds with no drain path yet — skip-with-log, never crash (the default doc has
-    // none of these on the drain; this is defensive against an edited document).
+    // Screen understanding (ocr/vlm) is a REAL drain stage — chunk-consuming, producing persisted
+    // OcrResults + distillates (P4A×P4B joint slice). It runs FIRST, in document order among the screen
+    // steps, and INDEPENDENTLY of distill.enabled: a frame is understood by OCR, not by the transcript
+    // distiller (mirrors the ingest processor, which runs regardless of distill.enabled). Each step is
+    // gated by its own when-flag (OFF ⇒ skipped SILENTLY, so the default drain stays behavior-identical).
+    // A throw PROPAGATES (re-queue at idle) — NOT the best-effort drainActs pattern. Running BEFORE the
+    // distill gate means an OCR failure re-queues before distill persists anything (clean retry for the
+    // screen-only batches that are the flagship case). A gated-ON step with no seam skips-with-log.
     for (const step of drainSteps) {
-      if (step.kind === 'ocr' || step.kind === 'vlm') {
-        this.log(`workflow ${doc.id}: step '${step.id}' (${step.kind}) skipped — no executor path yet (P4B owns invocation)`)
+      if (step.kind !== 'ocr' && step.kind !== 'vlm') continue
+      if (!this.flagOn(step.when)) continue
+      if (!this.deps.recognizeScreen) {
+        this.log(`workflow ${doc.id}: step '${step.id}' (${step.kind}) skipped — no screen-recognition seam registered`)
+        continue
       }
+      await this.deps.recognizeScreen(chunks, step)
     }
 
     const distillStep = drainSteps.find((s) => s.kind === 'distill')
