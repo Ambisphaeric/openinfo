@@ -34,10 +34,12 @@ const harness = (over: Partial<MicControllerDeps> = {}) => {
 test('happy path: start → capture segments → end flushes the final in-flight segment → idle', async () => {
   const h = harness()
   await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
-  assert.equal(h.controller.currentState, 'capturing')
+  // Start intent only: the renderer is told to start, but no audio has flowed → `starting`, NOT rec.
+  assert.equal(h.controller.currentState, 'starting')
   assert.deepEqual(h.control, ['start'])
 
   await h.controller.onSegment(seg())
+  assert.equal(h.controller.currentState, 'capturing') // first real segment → ● rec lights up
   await h.controller.onSegment(seg())
   assert.deepEqual(h.captured.map((c) => c.sequence), [1, 2]) // monotonic within the run
   assert.ok(h.captured.every((c) => c.sessionId === 'A' && c.source === 'mic'))
@@ -56,6 +58,28 @@ test('happy path: start → capture segments → end flushes the final in-flight
   // A stray segment after full stop is ignored (no active run).
   await h.controller.onSegment(seg())
   assert.equal(h.captured.length, 3)
+})
+
+test('rec-indicator: transitions requesting → starting → capturing, ● rec only on real audio', async () => {
+  const h = harness()
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  // The state-change trail proves rec (capturing) is NOT asserted on the start intent.
+  assert.deepEqual(h.states, ['requesting', 'starting'])
+  await h.controller.onSegment(seg())
+  assert.deepEqual(h.states, ['requesting', 'starting', 'capturing'])
+  // A second segment does not re-fire the transition (idempotent once capturing).
+  await h.controller.onSegment(seg())
+  assert.deepEqual(h.states, ['requesting', 'starting', 'capturing'])
+})
+
+test('rec-indicator: a session that ends before the first segment still stops the renderer', async () => {
+  const h = harness()
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'starting') // no segment ever arrived
+  h.controller.onSessionEnded()
+  assert.deepEqual(h.control, ['start', 'stop']) // renderer still told to stop (it held a stream)
+  await h.controller.onCaptureStopped()
+  assert.equal(h.controller.currentState, 'idle')
 })
 
 test('privacy default: no session ⇒ nothing captured (segments before a start are dropped)', async () => {
@@ -109,9 +133,10 @@ test('auto-end → immediate restart serializes runs: the old final segment keep
   await h.controller.onSegment(seg()) // A's final segment — must still be tagged A
   await h.controller.onCaptureStopped() // A done → queued B begins
   assert.deepEqual(h.control, ['start', 'stop', 'start'])
-  assert.equal(h.controller.currentState, 'capturing')
+  assert.equal(h.controller.currentState, 'starting') // B started, no B audio yet → not rec
 
   await h.controller.onSegment(seg()) // now under B, sequence reset to 1
+  assert.equal(h.controller.currentState, 'capturing') // B's first segment → rec
   const tags = h.captured.map((c) => `${c.sessionId}#${c.sequence}`)
   assert.deepEqual(tags, ['A#1', 'A#2', 'B#1'])
 })

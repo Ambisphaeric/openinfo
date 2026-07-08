@@ -12,12 +12,20 @@ import type { MicStatus, RawSegment } from './protocol.js'
  * Privacy default: capture strictly follows the session lifecycle the tray already controls. No
  * session live ⇒ nothing is captured. The session IS the consent gesture (see config.ts), so on a
  * session start we start the mic; on end we stop it and flush whatever segment was in flight.
+ *
+ * Recording-indicator honesty (see PHASE2-NOTES): granting permission + telling the renderer to
+ * start does NOT mean audio is flowing yet — getUserMedia + the first MediaRecorder segment take a
+ * beat. So the state machine distinguishes `starting` (permission granted, renderer told to start,
+ * but no segment has arrived) from `capturing` (the first real segment has arrived — audio is
+ * genuinely being recorded). The tray's `● rec` reflects `capturing` ONLY, so the dot never claims
+ * to be recording before a byte of audio exists. `starting → capturing` happens on the first segment.
  */
 
 export type MicState =
   | 'idle' // no session / not capturing
   | 'requesting' // asking the OS for mic permission
-  | 'capturing' // a session is live and segments are flowing
+  | 'starting' // permission granted, renderer told to start — waiting for the first real segment
+  | 'capturing' // the first segment arrived: audio is genuinely flowing (drives ● rec)
   | 'denied' // the OS (or the user) refused mic access — capture disabled, session unaffected
   | 'error' // the renderer reported a capture error — capture stopped, session unaffected
 
@@ -68,7 +76,9 @@ export class MicCaptureController {
   /** The session ended — stop the renderer; the final in-flight segment still flows in under the old ids. */
   onSessionEnded(): void {
     this.pendingStart = undefined
-    if (this.state === 'capturing' && this.context) {
+    // Both `starting` and `capturing` mean the renderer was told to start (it holds an open stream),
+    // so either way we must stop it — even if the first segment never arrived (a very short session).
+    if ((this.state === 'capturing' || this.state === 'starting') && this.context) {
       this.stopping = true
       this.deps.control.stop() // renderer emits its last segment, then `stopped` → onCaptureStopped
       return
@@ -80,6 +90,9 @@ export class MicCaptureController {
   /** A finished segment arrived from the renderer — wrap and send it while a run owns a context. */
   async onSegment(segment: RawSegment): Promise<void> {
     if (!this.context) return // no active run (stray segment after stop, or capture never started)
+    // The FIRST real segment is when recording is genuinely happening — flip `starting → capturing`
+    // so `● rec` lights up on real audio, not on the start intent. (No-op once already capturing.)
+    if (this.state === 'starting') this.setState('capturing')
     this.sequence += 1
     const chunk = segmentToChunk(segment, this.context, this.sequence)
     try {
@@ -118,7 +131,7 @@ export class MicCaptureController {
   /** App is quitting mid-capture — tell the renderer to stop cleanly (best-effort, no await). */
   shutdown(): void {
     this.pendingStart = undefined
-    if (this.state === 'capturing') this.deps.control.stop()
+    if (this.state === 'capturing' || this.state === 'starting') this.deps.control.stop()
     this.reset()
   }
 
@@ -139,7 +152,9 @@ export class MicCaptureController {
     this.context = context
     this.sequence = 0
     this.stopping = false
-    this.setState('capturing')
+    // `starting`, NOT `capturing`: the renderer is told to start, but no audio has flowed yet. The
+    // first segment (onSegment) promotes us to `capturing` — that is when ● rec honestly lights up.
+    this.setState('starting')
     this.deps.control.start()
   }
 
