@@ -201,6 +201,7 @@
                         "type": "string"
                       },
                       "api": {
+                        "description": "the endpoint's wire dialect. openai-compat: /v1/chat|audio (llm/stt/vlm). paddle-serving: a PaddleOCR-class HTTP runtime (POST /predict/ocr_system, {images:[base64]}) — the ocr slot's non-openai dialect, additive alongside whisper.cpp's non-/v1 precedent. native: reserved.",
                         "anyOf": [
                           {
                             "const": "openai-compat",
@@ -208,6 +209,10 @@
                           },
                           {
                             "const": "native",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle-serving",
                             "type": "string"
                           }
                         ]
@@ -399,6 +404,7 @@
                         "type": "string"
                       },
                       "api": {
+                        "description": "the endpoint's wire dialect. openai-compat: /v1/chat|audio (llm/stt/vlm). paddle-serving: a PaddleOCR-class HTTP runtime (POST /predict/ocr_system, {images:[base64]}) — the ocr slot's non-openai dialect, additive alongside whisper.cpp's non-/v1 precedent. native: reserved.",
                         "anyOf": [
                           {
                             "const": "openai-compat",
@@ -406,6 +412,10 @@
                           },
                           {
                             "const": "native",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle-serving",
                             "type": "string"
                           }
                         ]
@@ -597,6 +607,7 @@
                         "type": "string"
                       },
                       "api": {
+                        "description": "the endpoint's wire dialect. openai-compat: /v1/chat|audio (llm/stt/vlm). paddle-serving: a PaddleOCR-class HTTP runtime (POST /predict/ocr_system, {images:[base64]}) — the ocr slot's non-openai dialect, additive alongside whisper.cpp's non-/v1 precedent. native: reserved.",
                         "anyOf": [
                           {
                             "const": "openai-compat",
@@ -604,6 +615,10 @@
                           },
                           {
                             "const": "native",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle-serving",
                             "type": "string"
                           }
                         ]
@@ -795,6 +810,7 @@
                         "type": "string"
                       },
                       "api": {
+                        "description": "the endpoint's wire dialect. openai-compat: /v1/chat|audio (llm/stt/vlm). paddle-serving: a PaddleOCR-class HTTP runtime (POST /predict/ocr_system, {images:[base64]}) — the ocr slot's non-openai dialect, additive alongside whisper.cpp's non-/v1 precedent. native: reserved.",
                         "anyOf": [
                           {
                             "const": "openai-compat",
@@ -802,6 +818,10 @@
                           },
                           {
                             "const": "native",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle-serving",
                             "type": "string"
                           }
                         ]
@@ -993,6 +1013,7 @@
                         "type": "string"
                       },
                       "api": {
+                        "description": "the endpoint's wire dialect. openai-compat: /v1/chat|audio (llm/stt/vlm). paddle-serving: a PaddleOCR-class HTTP runtime (POST /predict/ocr_system, {images:[base64]}) — the ocr slot's non-openai dialect, additive alongside whisper.cpp's non-/v1 precedent. native: reserved.",
                         "anyOf": [
                           {
                             "const": "openai-compat",
@@ -1000,6 +1021,10 @@
                           },
                           {
                             "const": "native",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle-serving",
                             "type": "string"
                           }
                         ]
@@ -1191,6 +1216,7 @@
                         "type": "string"
                       },
                       "api": {
+                        "description": "the endpoint's wire dialect. openai-compat: /v1/chat|audio (llm/stt/vlm). paddle-serving: a PaddleOCR-class HTTP runtime (POST /predict/ocr_system, {images:[base64]}) — the ocr slot's non-openai dialect, additive alongside whisper.cpp's non-/v1 precedent. native: reserved.",
                         "anyOf": [
                           {
                             "const": "openai-compat",
@@ -1198,6 +1224,10 @@
                           },
                           {
                             "const": "native",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle-serving",
                             "type": "string"
                           }
                         ]

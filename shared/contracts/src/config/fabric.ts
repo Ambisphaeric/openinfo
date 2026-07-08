@@ -41,7 +41,10 @@ export const Endpoint = Type.Union(
         kind: Type.Literal('http'),
         name: Type.String(),
         url: Type.String({ pattern: '^https?://' }),
-        api: Type.Union(['openai-compat', 'native'].map((a) => Type.Literal(a))),
+        api: Type.Union(['openai-compat', 'native', 'paddle-serving'].map((a) => Type.Literal(a)), {
+          description:
+            "the endpoint's wire dialect. openai-compat: /v1/chat|audio (llm/stt/vlm). paddle-serving: a PaddleOCR-class HTTP runtime (POST /predict/ocr_system, {images:[base64]}) — the ocr slot's non-openai dialect, additive alongside whisper.cpp's non-/v1 precedent. native: reserved.",
+        }),
         model: Type.Optional(Type.String()),
         auth: EndpointAuth,
         measured: Measured,

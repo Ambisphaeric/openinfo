@@ -99,10 +99,10 @@ export class InvokeError extends Error {
  * failures so a caller can surface the real reason (the drain records it; the generate probe reports it).
  */
 export class AggregateInvokeError extends Error {
-  readonly slot: 'llm' | 'stt'
+  readonly slot: 'llm' | 'stt' | 'ocr' | 'vlm'
   readonly failures: ClassifiedFailure[]
 
-  constructor(slot: 'llm' | 'stt', message: string, failures: ClassifiedFailure[]) {
+  constructor(slot: 'llm' | 'stt' | 'ocr' | 'vlm', message: string, failures: ClassifiedFailure[]) {
     super(message)
     this.name = 'AggregateInvokeError'
     this.slot = slot
