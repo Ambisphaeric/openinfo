@@ -49,9 +49,11 @@ export const seededProfiles: readonly FabricProfile[] = [
       'A template for a multi-host rig: a bigger LLM on one box and STT on another, reached over http (LAN or tailscale). Each authed endpoint names a key by keyRef — set the values via PUT /fabric/secrets/:ref; they never live in this document. Clone this, edit the URLs/models, wire your keys, then activate.',
     fabric: {
       slots: {
-        stt: [{ kind: 'http', name: 'remote-stt', url: 'http://192.168.1.51:9000', api: 'openai-compat', auth: { keyRef: 'remote-stt-key' } }],
+        // Placeholder URLs are deliberately localhost — a made-up LAN IP reads as a real machine
+        // on the user's own subnet (it happened). Replace host:port with your actual boxes.
+        stt: [{ kind: 'http', name: 'remote-stt', url: 'http://localhost:9000', api: 'openai-compat', auth: { keyRef: 'remote-stt-key' } }],
         tts: [],
-        llm: [{ kind: 'http', name: 'remote-llm', url: 'http://192.168.1.50:8000', api: 'openai-compat', model: 'qwen3-27b', auth: { keyRef: 'remote-llm-key' } }],
+        llm: [{ kind: 'http', name: 'remote-llm', url: 'http://localhost:8000', api: 'openai-compat', model: 'qwen3-27b', auth: { keyRef: 'remote-llm-key' } }],
         vlm: [],
         ocr: [],
         embed: [],

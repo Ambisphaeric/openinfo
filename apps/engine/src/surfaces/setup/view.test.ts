@@ -71,7 +71,7 @@ test('llm + stt are editable rows; tts/vlm/ocr/embed are present-but-inert with 
 test('keyRef dropdown offers the stored refs; the editable http row carries the endpoint fields', () => {
   const html = renderSetupPage(data({ secretRefs: ['remote-llm-key'] }))
   assert.match(html, /<option value="remote-llm-key"/)
-  assert.match(html, /class="f-url" value="http:\/\/localhost:1234"/)
+  assert.match(html, /class="f-url" autocomplete="off" value="http:\/\/localhost:1234"/)
 })
 
 test('secrets section lists refs (names only) and never a value; empty shows the write-only note', () => {

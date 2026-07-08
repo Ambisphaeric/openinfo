@@ -70,9 +70,9 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
   }
   return (
     `<div class="row" data-kind="http" data-api="${escapeHtml(ep.api)}">` +
-    `<input class="f-name" value="${escapeHtml(ep.name)}" placeholder="name" />` +
-    `<input class="f-url" value="${escapeHtml(ep.url)}" placeholder="http://host:port" />` +
-    `<input class="f-model" value="${escapeHtml(ep.model ?? '')}" placeholder="model (optional)" />` +
+    `<input class="f-name" autocomplete="off" value="${escapeHtml(ep.name)}" placeholder="name" />` +
+    `<input class="f-url" autocomplete="off" value="${escapeHtml(ep.url)}" placeholder="http://host:port" />` +
+    `<input class="f-model" autocomplete="off" value="${escapeHtml(ep.model ?? '')}" placeholder="model (optional)" />` +
     `<select class="f-keyref" title="key reference">${keyrefOptions(ep.auth?.keyRef, refs)}</select>` +
     `<div class="rowbtns"><button data-act="test">Test</button><button data-act="up" title="up">↑</button>` +
     `<button data-act="down" title="down">↓</button><button data-act="remove" title="remove">✕</button></div>` +
@@ -160,8 +160,8 @@ const secretsHtml = (refs: string[]): string => {
     `<div class="card secrets"><div class="slk" style="color:var(--accent)">keys (by reference)</div>` +
     list +
     `<div class="row" style="border-top:1px solid var(--line);margin-top:6px;padding-top:10px">` +
-    `<input id="secret-ref" placeholder="keyRef (e.g. remote-llm-key)" />` +
-    `<input id="secret-val" type="password" placeholder="value (stored, never re-shown)" />` +
+    `<input id="secret-ref" autocomplete="off" placeholder="keyRef (e.g. remote-llm-key)" />` +
+    `<input id="secret-val" type="password" autocomplete="new-password" placeholder="value (stored, never re-shown)" />` +
     `<div class="rowbtns"><button data-act="addsecret">Add key</button></div></div></div>`
   )
 }
@@ -170,8 +170,8 @@ const secretsHtml = (refs: string[]): string => {
 const rowTemplateHtml = (refs: string[]): string =>
   `<template id="row-tpl">` +
   `<div class="row" data-kind="http" data-api="openai-compat">` +
-  `<input class="f-name" placeholder="name" /><input class="f-url" placeholder="http://host:port" />` +
-  `<input class="f-model" placeholder="model (optional)" />` +
+  `<input class="f-name" autocomplete="off" placeholder="name" /><input class="f-url" autocomplete="off" placeholder="http://host:port" />` +
+  `<input class="f-model" autocomplete="off" placeholder="model (optional)" />` +
   `<select class="f-keyref" title="key reference">${keyrefOptions(undefined, refs)}</select>` +
   `<div class="rowbtns"><button data-act="test">Test</button><button data-act="up" title="up">↑</button>` +
   `<button data-act="down" title="down">↓</button><button data-act="remove" title="remove">✕</button></div>` +
