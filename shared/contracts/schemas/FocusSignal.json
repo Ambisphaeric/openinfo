@@ -1,0 +1,24 @@
+{
+  "$id": "FocusSignal",
+  "additionalProperties": false,
+  "description": "decoded content of a source:\"focus\" CaptureChunk — foreground context, not a transcript",
+  "type": "object",
+  "required": [
+    "app"
+  ],
+  "properties": {
+    "app": {
+      "minLength": 1,
+      "description": "foreground application name, e.g. \"Code\", \"Slack\", \"zoom.us\"",
+      "type": "string"
+    },
+    "windowTitle": {
+      "description": "the active window title, e.g. \"detector.ts — openinfo\"",
+      "type": "string"
+    },
+    "repoPath": {
+      "description": "git repo root of the foreground editor/terminal, when derivable",
+      "type": "string"
+    }
+  }
+}

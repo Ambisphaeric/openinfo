@@ -19,10 +19,30 @@ export const JsonSchema = Type.Record(Type.String(), Type.Unknown(), { $id: 'Jso
 export type JsonSchema = Static<typeof JsonSchema>
 
 export const CaptureSource = Type.Union(
-  ['mic', 'screen', 'calendar', 'repo', 'camera', 'system-audio'].map((s) => Type.Literal(s)),
-  { $id: 'CaptureSource', description: 'mic = the user; system-audio = the far side of a call (loopback) — the free me/them split' },
+  ['mic', 'screen', 'calendar', 'repo', 'camera', 'system-audio', 'focus'].map((s) => Type.Literal(s)),
+  { $id: 'CaptureSource', description: 'mic = the user; system-audio = the far side of a call (loopback) — the free me/them split; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript' },
 )
 export type CaptureSource = Static<typeof CaptureSource>
+
+/**
+ * The decoded payload of a `source: 'focus'` CaptureChunk (Phase 3 context-switch detection). Focus
+ * chunks travel as ORDINARY CaptureChunks — `encoding: 'utf8'`, `contentType: 'application/json'`,
+ * `data` = JSON.stringify(FocusSignal) — so the client, spool, and drain need no new transport; the
+ * route/detector decodes them here. It is machine-global foreground context (which app/window/repo is
+ * in front), NOT speech: the drain routes it to the detector and EXCLUDES it from distill transcripts,
+ * moments, and entity extraction (a focus signal is evidence for *where* a session belongs, never
+ * content *in* one). v0 signals are `app`, `windowTitle`, `repoPath`; calendar/voice-presence signals
+ * arrive as their own sources in later slices.
+ */
+export const FocusSignal = Type.Object(
+  {
+    app: Type.String({ minLength: 1, description: 'foreground application name, e.g. "Code", "Slack", "zoom.us"' }),
+    windowTitle: Type.Optional(Type.String({ description: 'the active window title, e.g. "detector.ts — openinfo"' })),
+    repoPath: Type.Optional(Type.String({ description: 'git repo root of the foreground editor/terminal, when derivable' })),
+  },
+  { $id: 'FocusSignal', additionalProperties: false, description: 'decoded content of a source:"focus" CaptureChunk — foreground context, not a transcript' },
+)
+export type FocusSignal = Static<typeof FocusSignal>
 
 export const CaptureChunk = Type.Object(
   {

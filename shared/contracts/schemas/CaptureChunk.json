@@ -31,7 +31,7 @@
     },
     "source": {
       "$id": "CaptureSource",
-      "description": "mic = the user; system-audio = the far side of a call (loopback) — the free me/them split",
+      "description": "mic = the user; system-audio = the far side of a call (loopback) — the free me/them split; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript",
       "anyOf": [
         {
           "const": "mic",
@@ -55,6 +55,10 @@
         },
         {
           "const": "system-audio",
+          "type": "string"
+        },
+        {
+          "const": "focus",
           "type": "string"
         }
       ]

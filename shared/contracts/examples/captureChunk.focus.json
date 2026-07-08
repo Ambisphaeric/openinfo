@@ -1,0 +1,11 @@
+{
+  "id": "chunk-0003",
+  "sessionId": "session-demo",
+  "workspaceId": "sales",
+  "source": "focus",
+  "sequence": 3,
+  "capturedAt": "2026-07-07T14:00:05Z",
+  "contentType": "application/json",
+  "encoding": "utf8",
+  "data": "{\"app\":\"Code\",\"windowTitle\":\"detector.ts — openinfo\",\"repoPath\":\"/Users/dev/openinfo\"}"
+}
