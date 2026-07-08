@@ -1,12 +1,14 @@
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, type MenuItemConstructorOptions } from 'electron'
 import { resolveShellConfig, type ShellConfig } from './config.js'
 import { hudWindowSpec } from './window-options.js'
 import { buildTrayMenu, trayTooltip, type TrayState } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
 import { EngineSessionClient, SessionLiveState } from './engine-session.js'
 import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './tray-icon.js'
+import { grabOffset, draggedOrigin, resolveStartupPosition, type ScreenPoint } from './window-position.js'
+import { readSavedPosition, savePosition } from './window-store.js'
 
 /**
  * The Electron shell — the ONLY file that imports electron, and the one tests never import (all the
@@ -18,6 +20,7 @@ import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const HUD_HTML = path.join(__dirname, '..', '..', 'hud.html')
+const PRELOAD_JS = path.join(__dirname, 'preload.cjs') // .cts source → CommonJS preload (see preload.cts)
 
 const cfg: ShellConfig = resolveShellConfig()
 const session = new EngineSessionClient(cfg.engineUrl)
@@ -26,6 +29,12 @@ const liveState = new SessionLiveState(cfg.workspace)
 let hudWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let connected = false
+
+// Drag state: while a drag is live, `dragTimer` polls the OS cursor and the window rides it, keeping
+// `dragOffset` (the grab point within the window) constant. `saveTimer` debounces persisting the origin.
+let dragTimer: ReturnType<typeof setInterval> | undefined
+let dragOffset: ScreenPoint | undefined
+let saveTimer: ReturnType<typeof setTimeout> | undefined
 
 const trayState = (): TrayState => ({
   visible: hudWindow?.isVisible() ?? false,
@@ -82,7 +91,11 @@ const dispatch = (command: ShellCommand): void => {
 
 const createHudWindow = (): void => {
   const spec = hudWindowSpec()
-  hudWindow = new BrowserWindow(spec.browserWindow)
+  hudWindow = new BrowserWindow({
+    ...spec.browserWindow,
+    // The one bridge the renderer needs: the drag channel (preload.cts). Nothing node-bound crosses.
+    webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
+  })
 
   // Method-only hardening (no constructor-option equivalent):
   hudWindow.setContentProtection(spec.hardening.contentProtection)
@@ -92,8 +105,58 @@ const createHudWindow = (): void => {
   })
   console.log(`[shell] HUD window created — content-protection: ${spec.hardening.contentProtection ? 'ON' : 'off'}`)
 
+  restoreHudPosition()
   void hudWindow.loadFile(HUD_HTML, { search: new URLSearchParams({ engine: cfg.engineUrl }).toString() })
+  hudWindow.on('moved', scheduleSavePosition) // OS-level moves; the custom drag also persists on drag-end
   hudWindow.on('closed', () => (hudWindow = undefined))
+}
+
+/** Open where we last left the HUD — but only if that spot is still on a connected display, else center. */
+const restoreHudPosition = (): void => {
+  if (!hudWindow) return
+  const { width, height } = hudWindow.getBounds()
+  const displays = screen.getAllDisplays().map((d) => d.workArea)
+  const start = resolveStartupPosition(readSavedPosition(app.getPath('userData')), { width, height }, displays)
+  if (start) {
+    hudWindow.setPosition(start.x, start.y)
+    console.log(`[shell] HUD position restored to ${start.x},${start.y}`)
+  } else {
+    hudWindow.center()
+    console.log('[shell] no usable saved HUD position — centered')
+  }
+}
+
+/** Persist the current origin, debounced so a drag (many move events) writes once it settles. */
+const scheduleSavePosition = (): void => {
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    saveTimer = undefined
+    if (!hudWindow) return
+    const { x, y } = hudWindow.getBounds()
+    savePosition(app.getPath('userData'), { x, y })
+  }, 400)
+}
+
+/** Begin following the cursor: capture the grab offset now, then move the window each tick to keep it. */
+const startWindowDrag = (): void => {
+  if (!hudWindow || dragTimer) return
+  const { x, y } = hudWindow.getBounds()
+  dragOffset = grabOffset(screen.getCursorScreenPoint(), { x, y })
+  dragTimer = setInterval(() => {
+    if (!hudWindow || !dragOffset) return
+    const next = draggedOrigin(screen.getCursorScreenPoint(), dragOffset)
+    hudWindow.setPosition(next.x, next.y)
+  }, 16)
+}
+
+/** Stop following the cursor and remember where we ended up. Idempotent (a stray end is a no-op). */
+const endWindowDrag = (): void => {
+  if (dragTimer) {
+    clearInterval(dragTimer)
+    dragTimer = undefined
+  }
+  dragOffset = undefined
+  scheduleSavePosition()
 }
 
 const createTray = (): void => {
@@ -136,6 +199,8 @@ const seedSessionState = async (): Promise<void> => {
 app.whenReady().then(() => {
   app.dock?.hide() // menu-bar-only agent (no dock icon), like a Glass-style companion
   liveState.onChange(() => refreshTray())
+  ipcMain.on('hud:drag-start', () => startWindowDrag())
+  ipcMain.on('hud:drag-end', () => endWindowDrag())
   createHudWindow()
   createTray()
   void seedSessionState()
