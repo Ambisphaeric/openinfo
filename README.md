@@ -67,8 +67,34 @@ HUD**. The tray also toggles the session — **Start Session / End Session** —
 live (**● rec** while the mic is capturing); **Quit** exits. While a session is live the client captures
 the **microphone** and streams timed audio chunks to the engine (macOS will ask for mic permission the
 first time — click Allow; denial disables audio only, the session/text path is unaffected). No session
-live ⇒ nothing is captured. (Dev run only — no packaging/signing yet; system-audio/loopback + screen
-capture are still pending.)
+live ⇒ nothing is captured. (Screen capture is still pending.)
+
+**Or build a real, double-clickable menu-bar app** (a proper macOS `.app` bundle — this is what makes the
+OS ask for **microphone / Local Network permission under the app's own name**; the `electron .` dev run
+above is unsigned and has no bundle identity, so macOS attributes its requests to the launching terminal
+and the app's own dialogs never appear):
+
+```bash
+pnpm --filter @openinfo/client package
+# → apps/client/release/openinfo-darwin-arm64/openinfo.app  (arm64, ad-hoc signed with `codesign -s -`)
+
+open apps/client/release/openinfo-darwin-arm64/openinfo.app     # or double-click it in Finder
+```
+
+The packaged app reads its engine URL from **`~/.openinfo/client.json`** (a double-clicked app inherits no
+env), else an env var, else `http://127.0.0.1:8787`:
+
+```bash
+echo '{"engineUrl":"http://127.0.0.1:8787"}' > ~/.openinfo/client.json   # optional; env still overrides
+```
+
+On first run, if a model isn't set up yet the app opens **`/setup`** in your browser once. If the mic is
+denied, the tray shows a **"Microphone blocked — Open Settings…"** item that jumps to the right pane; if the
+engine can't be reached the tray says so (and hints at Local Network permission for a non-local engine).
+**Ad-hoc signing caveat:** the identity changes on every `package`, so macOS re-prompts for permissions after
+a rebuild. **Accessibility** (for window-title context detection) is granted per-app in System Settings →
+Privacy & Security → Accessibility — there is no Info.plist key for it. (Dev/ad-hoc only — no notarization,
+auto-update, or Windows/Linux packaging.)
 
 **Or render it in a plain browser** (same HUD, same transport — handy without Electron):
 
