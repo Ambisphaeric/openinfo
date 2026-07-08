@@ -25,6 +25,13 @@ export interface ShellConfig {
    * nothing the engine can see. See PHASE2-NOTES (config-not-flags line).
    */
   micEnabled: boolean
+  /**
+   * Whether the client ALSO captures system audio (the far side of a call — "them") while a session is
+   * live, from a BlackHole-like virtual input. Client-local, default ON — but it only ever activates if
+   * such a device is actually present (no device ⇒ a silent no-op, mic-only capture), so the default is
+   * safe. Same CONFIG-not-flag reasoning as `micEnabled`. Disable with OPENINFO_SYSTEM_AUDIO=0/false/off/no.
+   */
+  systemAudioEnabled: boolean
 }
 
 const DEFAULTS = {
@@ -35,8 +42,8 @@ const DEFAULTS = {
   surfaceId: 'surf-openinfo-hud',
 } as const
 
-/** OPENINFO_MIC is opt-OUT: unset ⇒ on; only an explicit falsy token disables mic capture. */
-const isMicEnabled = (raw: string | undefined): boolean =>
+/** OPENINFO_MIC / OPENINFO_SYSTEM_AUDIO are opt-OUT: unset ⇒ on; only an explicit falsy token disables. */
+const isEnabled = (raw: string | undefined): boolean =>
   raw === undefined || !['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase())
 
 /** Trim a trailing slash so `${engineUrl}${path}` never doubles up. */
@@ -57,6 +64,7 @@ export const resolveShellConfig = (env: Record<string, string | undefined> = pro
     workspace: env['OPENINFO_WORKSPACE'] ?? DEFAULTS.workspace,
     modeId: env['OPENINFO_MODE'] ?? DEFAULTS.modeId,
     surfaceId: env['OPENINFO_SURFACE'] ?? DEFAULTS.surfaceId,
-    micEnabled: isMicEnabled(env['OPENINFO_MIC']),
+    micEnabled: isEnabled(env['OPENINFO_MIC']),
+    systemAudioEnabled: isEnabled(env['OPENINFO_SYSTEM_AUDIO']),
   }
 }

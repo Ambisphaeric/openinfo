@@ -11,8 +11,8 @@ import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './
 import { grabOffset, draggedOrigin, resolveStartupPosition, type ScreenPoint } from './window-position.js'
 import { readSavedPosition, savePosition } from './window-store.js'
 import { EngineLink } from '../engine-link/index.js'
-import { MicCaptureController, type MicState } from '../capture/mic-controller.js'
-import { MIC_CHANNELS, type MicStatus, type RawSegment } from '../capture/protocol.js'
+import { CaptureController, type CaptureState } from '../capture/capture-controller.js'
+import { CAPTURE_CHANNELS, type CaptureSourceKind, type CaptureStatus, type RawSegment } from '../capture/protocol.js'
 
 /**
  * The Electron shell — the ONLY file that imports electron, and the one tests never import (all the
@@ -26,7 +26,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const HUD_HTML = path.join(__dirname, '..', '..', 'hud.html')
 const CAPTURE_HTML = path.join(__dirname, '..', '..', 'capture.html')
 const PRELOAD_JS = path.join(__dirname, 'preload.cjs') // .cts source → CommonJS preload (see preload.cts)
-const MIC_PRELOAD_JS = path.join(__dirname, '..', 'capture', 'mic-preload.cjs') // .cts → CommonJS (see mic-preload.cts)
+const CAPTURE_PRELOAD_JS = path.join(__dirname, '..', 'capture', 'capture-preload.cjs') // .cts → CommonJS (see capture-preload.cts)
 
 const cfg: ShellConfig = resolveShellConfig()
 const session = new EngineSessionClient(cfg.engineUrl)
@@ -36,7 +36,11 @@ let hudWindow: BrowserWindow | undefined
 let captureWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let connected = false
-let micState: MicState = 'idle'
+let micState: CaptureState = 'idle'
+let systemState: CaptureState = 'idle'
+// The far side ("them") is present but delivering pure silence (device found, nothing routed) — the tray
+// says so honestly instead of claiming to record it. Flipped by the system controller's onSilence.
+let systemSilent = false
 // Whether the live fabric's llm slot is empty — drives the tray's prominent "⚠ Set up models…"
 // first-run nudge. Undefined until the fabric is fetched, so the tray stays quiet before we know.
 let needsSetup: boolean | undefined
@@ -44,7 +48,8 @@ let needsSetup: boolean | undefined
 // the capture window). EngineLink is the capture path (POST /capture/mic + the offline spool); the
 // tray keeps its own tiny EngineSessionClient — EngineLink is introduced here only because capture spools.
 let engineLink: EngineLink | undefined
-let micController: MicCaptureController | undefined
+let micController: CaptureController | undefined
+let systemController: CaptureController | undefined
 
 // Drag state: while a drag is live, `dragTimer` polls the OS cursor and the window rides it, keeping
 // `dragOffset` (the grab point within the window) constant. `saveTimer` debounces persisting the origin.
@@ -59,6 +64,8 @@ const trayState = (): TrayState => ({
   capturing: micState === 'capturing',
   micStarting: micState === 'requesting' || micState === 'starting',
   micBlocked: micState === 'denied',
+  systemCapturing: systemState === 'capturing',
+  systemSilent,
   needsModelSetup: needsSetup,
 })
 
@@ -195,15 +202,16 @@ const createTray = (): void => {
 
 /**
  * The hidden capture window — never shown, no content-protection needed (nothing on screen to hide).
- * It hosts the one place getUserMedia can run (a Chromium renderer); the mic-preload bridge and the
- * compiled renderer (mic-renderer.ts) stream finished audio segments to the main process over IPC.
- * `backgroundThrottling: false` keeps recording steady while the app is a background menu-bar agent.
+ * It hosts the one place getUserMedia can run (a Chromium renderer); the capture-preload bridge and the
+ * compiled renderer (capture-renderer.ts) stream finished audio segments — mic AND system-audio, both in
+ * this ONE window — to the main process over IPC. `backgroundThrottling: false` keeps recording steady
+ * while the app is a background menu-bar agent.
  */
 const createCaptureWindow = (): void => {
   captureWindow = new BrowserWindow({
     show: false,
     webPreferences: {
-      preload: MIC_PRELOAD_JS,
+      preload: CAPTURE_PRELOAD_JS,
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
@@ -211,63 +219,115 @@ const createCaptureWindow = (): void => {
   })
   void captureWindow.loadFile(CAPTURE_HTML)
   captureWindow.on('closed', () => (captureWindow = undefined))
-  console.log('[shell] hidden capture window created — mic renderer host')
+  console.log('[shell] hidden capture window created — mic + system-audio renderer host')
 }
 
 /**
  * Ask the OS for microphone access before the first capture. On macOS this is the TCC prompt
  * (askForMediaAccess resolves false once denied — the user must re-grant in System Settings, and the
- * controller then keeps capture disabled without crashing; the session/text path is unaffected).
- * Non-macOS has no such gate here, so it resolves true and the Chromium permission handler governs.
+ * controller then keeps capture disabled without crashing; the session/text path is unaffected). The
+ * SAME grant covers system-audio too: a BlackHole-like device is an audio INPUT, so it lives under the
+ * one Microphone TCC — no separate permission. Non-macOS has no such gate here, so it resolves true and
+ * the Chromium permission handler governs.
  */
-const requestMicPermission = async (): Promise<boolean> => {
+const requestAudioPermission = async (): Promise<boolean> => {
   if (process.platform !== 'darwin') return true
   try {
     const status = systemPreferences.getMediaAccessStatus('microphone')
     console.log(`[shell] mic access status before request: ${status}`)
     return await systemPreferences.askForMediaAccess('microphone')
   } catch (err) {
-    console.error('[shell] mic permission request failed:', err)
+    console.error('[shell] audio permission request failed:', err)
     return false
   }
 }
 
-/** Build the mic-capture controller and wire the renderer IPC. The session lifecycle drives it. */
-const setupMicCapture = (): void => {
+// The mic + system-audio controllers both start on the same session-start and share ONE Microphone TCC
+// grant, so their permission requests are deduped to a single in-flight prompt: the first caller triggers
+// the real ask, the second awaits the same promise. Reset once resolved, so a LATER session re-checks
+// (permission may have been granted/revoked in System Settings between sessions).
+let permissionInFlight: Promise<boolean> | undefined
+const sharedAudioPermission = (): Promise<boolean> => {
+  if (!permissionInFlight) {
+    permissionInFlight = requestAudioPermission().finally(() => {
+      permissionInFlight = undefined
+    })
+  }
+  return permissionInFlight
+}
+
+/** Route a per-source IPC message (segment/stopped/status) to the controller that owns that source. */
+const controllerFor = (source: CaptureSourceKind): CaptureController | undefined =>
+  source === 'mic' ? micController : systemController
+
+/**
+ * Build the capture controllers (one per source — mic "me" + system-audio "them") and wire the shared
+ * renderer IPC. Both drive the ONE hidden window over source-tagged channels; the session lifecycle
+ * drives both. The mic path is unchanged from the mic-only slice; system-audio rhymes with it and only
+ * activates when a BlackHole-like device is present (else it reports no-device and stays a silent no-op).
+ */
+const setupCapture = (): void => {
   engineLink = new EngineLink({ baseUrl: cfg.engineUrl, spoolDir: path.join(app.getPath('userData'), 'capture-spool') })
   engineLink.startFlushLoop() // drain spooled chunks once the engine is reachable again (offline-safe)
   const link = engineLink
-  micController = new MicCaptureController({
+  micController = new CaptureController({
+    source: 'mic',
     enabled: cfg.micEnabled,
     capture: (chunk) => link.capture(chunk),
     control: {
-      start: () => captureWindow?.webContents.send(MIC_CHANNELS.start),
-      stop: () => captureWindow?.webContents.send(MIC_CHANNELS.stop),
+      start: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.start, 'mic'),
+      stop: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.stop, 'mic'),
     },
-    requestPermission: requestMicPermission,
+    requestPermission: sharedAudioPermission,
     onStateChange: (state) => {
       micState = state
       refreshTray()
     },
     log: (message) => console.log(message),
   })
-  ipcMain.on(MIC_CHANNELS.segment, (_event, segment: RawSegment) => void micController?.onSegment(segment))
-  ipcMain.on(MIC_CHANNELS.stopped, () => void micController?.onCaptureStopped())
-  ipcMain.on(MIC_CHANNELS.status, (_event, status: MicStatus) => micController?.onStatus(status))
-  console.log(`[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} (follows the session lifecycle)`)
+  systemController = new CaptureController({
+    source: 'system-audio',
+    enabled: cfg.systemAudioEnabled,
+    capture: (chunk) => link.capture(chunk),
+    control: {
+      start: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.start, 'system-audio'),
+      stop: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.stop, 'system-audio'),
+    },
+    requestPermission: sharedAudioPermission,
+    onStateChange: (state) => {
+      systemState = state
+      if (state !== 'capturing') systemSilent = false // no live capture ⇒ no silence claim either way
+      refreshTray()
+    },
+    onSilence: (silent) => {
+      systemSilent = silent
+      refreshTray()
+    },
+    log: (message) => console.log(message),
+  })
+  ipcMain.on(CAPTURE_CHANNELS.segment, (_event, segment: RawSegment) => void controllerFor(segment.source)?.onSegment(segment))
+  ipcMain.on(CAPTURE_CHANNELS.stopped, (_event, source: CaptureSourceKind) => void controllerFor(source)?.onCaptureStopped())
+  ipcMain.on(CAPTURE_CHANNELS.status, (_event, status: CaptureStatus) => controllerFor(status.source)?.onStatus(status))
+  console.log(`[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} (both follow the session lifecycle)`)
 }
 
 /**
- * Mirror the session's live state into mic capture: a live session starts the mic (its ids tag the
- * chunks), ending it stops + flushes the final segment. This is the whole "the tray toggle is the mic
- * switch, zero new UI" wiring — capture strictly follows the session the tray already controls.
+ * Mirror the session's live state into BOTH capture sources: a live session starts mic + system-audio
+ * (its ids tag the chunks), ending it stops + flushes each final segment. This is the whole "the tray
+ * toggle is the capture switch, zero new UI" wiring — capture strictly follows the session the tray
+ * already controls. System-audio self-resolves to a no-op if no BlackHole-like device is present.
  */
 const applyCaptureLifecycle = (live: boolean): void => {
   if (live) {
     const sessionId = liveState.liveSessionId
-    if (sessionId) void micController?.onSessionStarted({ sessionId, workspaceId: cfg.workspace })
+    if (sessionId) {
+      const context = { sessionId, workspaceId: cfg.workspace }
+      void micController?.onSessionStarted(context)
+      void systemController?.onSessionStarted(context)
+    }
   } else {
     micController?.onSessionEnded()
+    systemController?.onSessionEnded()
   }
 }
 
@@ -326,7 +386,7 @@ app.whenReady().then(() => {
   createHudWindow()
   createCaptureWindow()
   createTray()
-  setupMicCapture()
+  setupCapture()
   void seedSessionState()
   connectEvents()
   for (const { accelerator, command } of SHORTCUTS) {
@@ -338,5 +398,8 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   /* keep the app alive as a menu-bar agent even with the HUD hidden/closed */
 })
-app.on('before-quit', () => micController?.shutdown()) // stop the mic cleanly if quitting mid-capture
+app.on('before-quit', () => {
+  micController?.shutdown() // stop both streams cleanly if quitting mid-capture
+  systemController?.shutdown()
+})
 app.on('will-quit', () => globalShortcut.unregisterAll())

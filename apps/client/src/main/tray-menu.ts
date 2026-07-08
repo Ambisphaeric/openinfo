@@ -22,6 +22,14 @@ export interface TrayState {
   micStarting?: boolean
   /** Was mic access refused? Shows a clear indication; the session/text path still works. */
   micBlocked?: boolean
+  /** Is system audio (the far side — "them") genuinely being captured too? (drives "mic + system"). */
+  systemCapturing?: boolean
+  /**
+   * Is the system-audio device present but delivering pure silence (nothing routed through it yet)? Shown
+   * honestly as "system silent" rather than pretending to record — the user must route output through the
+   * virtual device (or wear headphones). Only meaningful while `systemCapturing`.
+   */
+  systemSilent?: boolean
   /**
    * Does the live fabric's llm slot have no endpoint? Then nothing can distill — the tray surfaces
    * "Set up models…" prominently (⚠) as the first-run onboarding nudge (see PHASE2-NOTES). Undefined
@@ -41,15 +49,27 @@ export interface TrayMenuItem {
 }
 
 /**
+ * Which sources the `● rec` indicator honestly covers, given the second (system-audio) stream:
+ * `mic + system` when the far side is genuinely flowing, `mic; system silent` when the system-audio
+ * device is present but nothing is routed through it (so we do NOT claim to record it), and `mic only`
+ * when there is no system-audio device (or it isn't capturing). Only meaningful while the mic captures.
+ */
+export const recSourcesLabel = (state: TrayState): string => {
+  if (!state.systemCapturing) return 'mic only'
+  return state.systemSilent ? 'mic; system silent' : 'mic + system'
+}
+
+/**
  * The disabled status line at the top of the menu — the at-a-glance live indicator. When a session
- * is live it also reflects the mic: `● rec` while capturing (privacy-honest — you can always see the
- * mic is on) or `mic blocked` if access was refused (the session still runs, only audio is off).
+ * is live it also reflects capture: `● rec (mic + system)` / `(mic only)` / `(mic; system silent)`
+ * while capturing (privacy-honest — you can always see what is on) or `mic blocked` if access was
+ * refused (the session still runs, only audio is off).
  */
 export const trayStatusLabel = (state: TrayState): string => {
   if (!state.connected) return '○ connecting…'
   if (!state.sessionLive) return '○ no session'
   if (state.micBlocked) return '● session live · mic blocked'
-  if (state.capturing) return '● session live · ● rec'
+  if (state.capturing) return `● session live · ● rec (${recSourcesLabel(state)})`
   if (state.micStarting) return '● session live · ○ mic…'
   return '● session live'
 }
@@ -58,7 +78,7 @@ export const trayStatusLabel = (state: TrayState): string => {
 export const trayTooltip = (state: TrayState): string => {
   if (!state.sessionLive) return 'openinfo — idle'
   if (state.micBlocked) return 'openinfo — session live (mic blocked)'
-  if (state.capturing) return 'openinfo — session live ● rec'
+  if (state.capturing) return `openinfo — session live ● rec (${recSourcesLabel(state)})`
   if (state.micStarting) return 'openinfo — session live (mic starting…)'
   return 'openinfo — session live'
 }

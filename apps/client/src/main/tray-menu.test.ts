@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTrayMenu, setupItemLabel, trayStatusLabel, trayTooltip, type TrayState } from './tray-menu.js'
+import { buildTrayMenu, recSourcesLabel, setupItemLabel, trayStatusLabel, trayTooltip, type TrayState } from './tray-menu.js'
 
 const state = (over: Partial<TrayState> = {}): TrayState => ({ visible: false, sessionLive: false, connected: true, ...over })
 
@@ -35,11 +35,27 @@ test('the status header + tooltip reflect live-session state', () => {
 
 test('rec indicator only shows for real audio; starting is a distinct honest state', () => {
   // capturing = ● rec (real audio); micStarting = warming up (no rec claim yet).
-  assert.equal(trayStatusLabel(state({ sessionLive: true, capturing: true })), '● session live · ● rec')
+  assert.equal(trayStatusLabel(state({ sessionLive: true, capturing: true })), '● session live · ● rec (mic only)')
   assert.equal(trayStatusLabel(state({ sessionLive: true, micStarting: true })), '● session live · ○ mic…')
   assert.doesNotMatch(trayStatusLabel(state({ sessionLive: true, micStarting: true })), /rec/)
   assert.match(trayTooltip(state({ sessionLive: true, capturing: true })), /rec/)
   assert.match(trayTooltip(state({ sessionLive: true, micStarting: true })), /starting/)
+})
+
+test('rec indicator names the sources honestly: mic only vs mic + system vs system silent', () => {
+  const cap = (over: Partial<TrayState>) => trayStatusLabel(state({ sessionLive: true, capturing: true, ...over }))
+  // No system device (or not capturing) → mic only.
+  assert.equal(recSourcesLabel(state({ capturing: true })), 'mic only')
+  assert.equal(cap({}), '● session live · ● rec (mic only)')
+  // System audio genuinely flowing → mic + system.
+  assert.equal(recSourcesLabel(state({ capturing: true, systemCapturing: true })), 'mic + system')
+  assert.equal(cap({ systemCapturing: true }), '● session live · ● rec (mic + system)')
+  // System device present but nothing routed (pure silence) → say so, don't pretend to record it.
+  assert.equal(recSourcesLabel(state({ capturing: true, systemCapturing: true, systemSilent: true })), 'mic; system silent')
+  assert.equal(cap({ systemCapturing: true, systemSilent: true }), '● session live · ● rec (mic; system silent)')
+  // The tooltip mirrors the same source honesty.
+  assert.match(trayTooltip(state({ sessionLive: true, capturing: true, systemCapturing: true })), /mic \+ system/)
+  assert.match(trayTooltip(state({ sessionLive: true, capturing: true, systemCapturing: true, systemSilent: true })), /system silent/)
 })
 
 test('the "Set up models…" item is prominent (⚠) only when the llm slot is empty', () => {

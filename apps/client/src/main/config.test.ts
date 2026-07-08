@@ -26,3 +26,19 @@ test('workspace / mode / surface are overridable', () => {
   assert.equal(cfg.modeId, 'mode-x')
   assert.equal(cfg.surfaceId, 'surf-y')
 })
+
+test('mic + system-audio capture are opt-OUT: default ON, disabled only by an explicit falsy token', () => {
+  const on = resolveShellConfig({})
+  assert.equal(on.micEnabled, true)
+  assert.equal(on.systemAudioEnabled, true) // default ON — but a no-op unless a virtual device is present
+  for (const off of ['0', 'false', 'off', 'no', 'OFF']) {
+    assert.equal(resolveShellConfig({ OPENINFO_MIC: off }).micEnabled, false)
+    assert.equal(resolveShellConfig({ OPENINFO_SYSTEM_AUDIO: off }).systemAudioEnabled, false)
+  }
+  // Any other value leaves capture ON (only the explicit tokens disable).
+  assert.equal(resolveShellConfig({ OPENINFO_SYSTEM_AUDIO: '1' }).systemAudioEnabled, true)
+  // The two toggles are independent.
+  const micOnly = resolveShellConfig({ OPENINFO_SYSTEM_AUDIO: 'off' })
+  assert.equal(micOnly.micEnabled, true)
+  assert.equal(micOnly.systemAudioEnabled, false)
+})
