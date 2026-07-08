@@ -1,4 +1,4 @@
-import type { DiscoverResult, Endpoint, Fabric, FabricProfile, LocalModelStatus, Moment } from '@openinfo/contracts'
+import type { DiscoverResult, Endpoint, Fabric, FabricProfile, LocalModelStatus, Moment, Surface } from '@openinfo/contracts'
 import { SETUP_CSS, SETUP_SCRIPT } from './assets.js'
 
 /**
@@ -56,6 +56,10 @@ export interface SetupData {
    * starter model". Present only alongside `discovery`.
    */
   localModels?: LocalModelStatus[]
+  /** All surface (HUD layout) documents, for the "HUD layout" section's list + edit links. */
+  surfaces?: Surface[]
+  /** The surface id the HUD renders by default (client config) — marked in the list. */
+  defaultSurfaceId?: string
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */
@@ -408,6 +412,28 @@ const tryItHtml = (data: SetupData): string => {
   )
 }
 
+/**
+ * The HUD-layout section — the HUD-customization gap finding, made discoverable from
+ * /setup. Lists every surface (seeded + user), marks the one the HUD renders by default, and links each
+ * to its forms editor (/setup?surface=<id>). Pure and exported so its states are asserted headless.
+ */
+export const hudLayoutSection = (surfaces: Surface[], defaultSurfaceId: string | undefined): string => {
+  if (surfaces.length === 0) return ''
+  const rows = surfaces
+    .map((s) => {
+      const isDefault = s.id === defaultSurfaceId
+      const badge = isDefault ? '<span class="badge active">HUD default</span>' : ''
+      return (
+        `<div class="prow"><span class="pname">${escapeHtml(s.name)}</span> ` +
+        `<span class="pid">${escapeHtml(s.id)} · v${s.version} · ${escapeHtml(s.context)} · ${s.stack.length} block${s.stack.length === 1 ? '' : 's'}</span>` +
+        badge +
+        `<span class="spacer"></span><a href="/setup?surface=${encodeURIComponent(s.id)}">edit layout</a></div>`
+      )
+    })
+    .join('')
+  return `<div class="card">${rows}</div>`
+}
+
 /** Render the whole self-contained setup page. Pure — the engine route just hands it live data. */
 export const renderSetupPage = (data: SetupData): string => {
   const notice = firstRunNotice(data.liveFabric)
@@ -416,13 +442,17 @@ export const renderSetupPage = (data: SetupData): string => {
   // The Try-it loop leads the page once an llm endpoint exists (config-1 active) — the moment onboarding
   // becomes "experience it", not "configure it". Empty when no llm (the lens/banner lead instead).
   const tryit = tryItHtml(data)
+  const hudLayout = data.surfaces && data.surfaces.length
+    ? '<h2>HUD layout</h2>' + hudLayoutSection(data.surfaces, data.defaultSurfaceId)
+    : ''
   const advanced =
     '<h2>Profiles</h2>' +
     profilesHtml(data) +
     '<h2>Edit endpoints</h2>' +
     editorHtml(data) +
     '<h2>Keys</h2>' +
-    secretsHtml(data.secretRefs)
+    secretsHtml(data.secretRefs) +
+    hudLayout
   // When the lens leads (first run / re-detect) the full editor lives behind an "Advanced setup"
   // disclosure — one decision at a time. Otherwise the page is exactly as before (sections open).
   const body = data.discovery

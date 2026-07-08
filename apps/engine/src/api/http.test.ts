@@ -293,6 +293,89 @@ test('GET /modes serves the seeded mode documents (the fixed contract drift)', a
   }
 })
 
+test('GET /setup?surface serves the HUD-layout editor; unknown surface 404s', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const res = await fetch(`${base}/setup?surface=surf-openinfo-hud`)
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get('content-type') ?? '', /text\/html/)
+    const html = await res.text()
+    assert.match(html, /HUD layout/)
+    assert.match(html, /id="base-surface"/)
+    assert.match(html, /data-act="surface-save"/)
+    assert.match(html, /data-act="surface-clone"/)
+    assert.match(html, /id="add-block-type"/)
+
+    // the main /setup page surfaces a discoverable "HUD layout" section
+    assert.match(await (await fetch(`${base}/setup`)).text(), /HUD layout/)
+
+    // unknown surface ⇒ 404 (HTML, with a way back)
+    const nf = await fetch(`${base}/setup?surface=surf-nope`)
+    assert.equal(nf.status, 404)
+    assert.match(await nf.text(), /No such surface/)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('surface round-trip: a form edit (reorder + top/collapsed) preserves query params, use, actions, custom', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const put = (id: string, body: unknown): Promise<Response> =>
+      fetch(`${base}/layouts/surfaces/${id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+    const rich: Surface = {
+      id: 'surf-rich', name: 'Rich', context: 'deep-work', version: 1,
+      stack: [
+        { block: 'now' },
+        {
+          block: 'relevant-now', id: 'blk-rel', top: 4, show: 'always',
+          query: { source: 'relevant-now', params: { session: 'current', k: 'v' }, top: 4 },
+          use: { llm: 'llm.smart', register: 'reg-boardroom' },
+          actions: [{ id: 'a1', label: 'Copy', verb: 'copy', params: {} }],
+        },
+        { block: 'custom', id: 'blk-c', show: 'manual', custom: { htmlEndpoint: '/custom/x.html' } },
+      ],
+    }
+    assert.equal((await put('surf-rich', rich)).status, 200)
+    const stored = (await (await fetch(`${base}/layouts/surfaces/surf-rich`)).json()) as Surface
+
+    // exactly what the editor's buildSurface does: reuse the ORIGINAL block objects (preserving the
+    // form-invisible fields) and overwrite ONLY the managed fields (top/collapsed), reordered.
+    const rel = { ...stored.stack[1]!, top: 2, collapsed: true }
+    const edited: Surface = { ...stored, stack: [stored.stack[0]!, stored.stack[2]!, rel] }
+    assert.equal((await put('surf-rich', edited)).status, 200)
+
+    const reloaded = (await (await fetch(`${base}/layouts/surfaces/surf-rich`)).json()) as Surface
+    assert.deepEqual(reloaded.stack.map((b) => b.block), ['now', 'custom', 'relevant-now']) // reorder applied
+    const r = reloaded.stack.find((b) => b.block === 'relevant-now')!
+    assert.equal(r.top, 2)
+    assert.equal(r.collapsed, true)
+    // the form-invisible fields survived the edit verbatim
+    assert.deepEqual(r.query?.params, { session: 'current', k: 'v' })
+    assert.deepEqual(r.use, { llm: 'llm.smart', register: 'reg-boardroom' })
+    assert.equal(r.actions?.length, 1)
+    const custom = reloaded.stack.find((b) => b.block === 'custom')!
+    assert.deepEqual(custom.custom, { htmlEndpoint: '/custom/x.html' })
+    assert.equal(custom.id, 'blk-c')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('POST /query compiles block queries to store calls (moments, relevant-now, empty ledger)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })
@@ -1484,6 +1567,45 @@ test('route.detect ON: a brief sub-sustain burst does not fire (thrash resistanc
     await new Promise((r) => setTimeout(r, 200))
     const live = (await (await fetch(`${base}/sessions?workspace=sales&live=true`)).json()) as Session[]
     assert.equal(live.length, 0)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('e2e: PUT a surface edit → surface.updated on the WS with the changed layout (HUD hot-reload path)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const hud = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
+    const sub = await openEvents(base)
+    try {
+      // the founder scenario, via the editor's API path: collapse moments + drop relevant-now top to 2
+      const stack = hud.stack.map((b) =>
+        b.block === 'moments' ? { ...b, collapsed: true } : b.block === 'relevant-now' ? { ...b, top: 2 } : b,
+      )
+      const putRes = await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...hud, stack }),
+      })
+      assert.equal(putRes.status, 200)
+
+      // the WS carried surface.updated for THIS surface, with the edit — this is what the HUD refetches on
+      await new Promise((r) => setTimeout(r, 150))
+      const evt = sub.events.find((e) => e.name === 'surface.updated')
+      assert.ok(evt, 'surface.updated must be broadcast')
+      const payload = evt!.payload as unknown as Surface
+      assert.equal(payload.id, 'surf-openinfo-hud')
+      assert.equal(payload.version, 2)
+      assert.equal(payload.stack.find((b) => b.block === 'moments')?.collapsed, true)
+      assert.equal(payload.stack.find((b) => b.block === 'relevant-now')?.top, 2)
+    } finally {
+      sub.close()
+    }
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })

@@ -12,7 +12,7 @@ import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from 
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
-import { SurfaceDocuments, compileQuery, renderSetupPage } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, renderSetupPage, renderSurfaceEditorPage, defaultHudSurface } from '../surfaces/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -291,6 +291,9 @@ async function saveFabric(req: IncomingMessage, res: ServerResponse, ctx: Handle
  * the first profile, else the legacy live fabric. localhost-only posture (no auth) is a P7 concern.
  */
 async function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): Promise<void> {
+  // ?surface=<id> opens the HUD-layout editor for that surface (mirrors ?edit=<id> for a fabric profile).
+  const surfaceParam = url.searchParams.get('surface')
+  if (surfaceParam !== null) return getSurfaceEditor(res, ctx, surfaceParam)
   const profiles = ctx.fabric.profiles.list()
   const activeId = ctx.fabric.profiles.activeId()
   const editParam = url.searchParams.get('edit')
@@ -311,8 +314,30 @@ async function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): Pro
     liveFabric,
     editing,
     secretRefs: ctx.secrets.listRefs(),
+    surfaces: ctx.surfaces.list(),
+    defaultSurfaceId: defaultHudSurface.id,
     ...(discovery !== undefined ? { discovery, localModels: ctx.models.statuses() } : {}),
   })
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+  res.end(html)
+}
+
+/**
+ * Serve the HUD-layout editor for one surface (GET /setup?surface=<id>) — forms over the surface
+ * document, the HUD-customization gap fix. Composes only the surface routes the
+ * browser script calls (GET/PUT /layouts/surfaces[/:id]); no new engine capability. Unknown id ⇒ a
+ * plain 404 HTML page with a way back (not a JSON error — this is a browser surface). The HUD default
+ * is the shipped surface id (the client's own config picks which surface it renders; the engine marks
+ * the shipped default).
+ */
+function getSurfaceEditor(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const surface = ctx.surfaces.get(id)
+  if (!surface) {
+    res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' })
+    res.end(`<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;background:#101216;color:#e8eaee;padding:40px"><p>No such surface: <code>${id.replace(/[&<>]/g, '')}</code>.</p><p><a style="color:#e06a3c" href="/setup">← back to setup</a></p></body>`)
+    return
+  }
+  const html = renderSurfaceEditorPage({ surface, surfaces: ctx.surfaces.list(), defaultSurfaceId: defaultHudSurface.id })
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
   res.end(html)
 }
