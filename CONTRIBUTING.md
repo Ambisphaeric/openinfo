@@ -52,6 +52,28 @@ Each recipe lists exact files, in order. Follow them literally; deviation means 
    `apps/client/src/surfaces/block-renderer/renderer.test.ts`; and, if you added a source, a `compileQuery`
    case in `apps/engine/src/surfaces/query.test.ts`. Run `pnpm -r test` and the evals smoke.
 
+### Add a settings section
+The engine-served Settings surface (`GET /settings`, formerly `/setup`) is a sidebar of sections behind ONE
+registry — mirroring the block-renderer registry. Adding a section is a module + a line.
+1. `apps/engine/src/surfaces/settings/sections/<name>.ts` — the section body: a pure `render(data: SetupData)
+   → string` function (no I/O, no DOM). Reuse the existing helpers (`escapeHtml`, `jsonForScript`) and the
+   shared CSS classes (`.card`, `.sub`, `.stat-*`, `.feat-*`). If it needs live data the shell doesn't yet
+   assemble, add an OPTIONAL field to `SetupData` (`setup/view.ts`) and populate it in `getSettings`
+   (`api/http.ts`) — cheap in-process reads only; network work (like discovery) runs only when that section
+   is the active one.
+2. Register it in `apps/engine/src/surfaces/settings/registry.ts` — one entry in `SECTIONS`
+   (`{ id, group, label, render, liveDot? }`). Pick a `group` from `GROUP_ORDER` (top · models · pipeline ·
+   surfaces · diagnostics · bottom); a new group means adding it to `GROUP_ORDER` + `GROUP_LABEL`. `liveDot`
+   is optional — a cheap, server-rendered sidebar dot/count (no polling).
+3. No flag. Serving a settings section is a read surface, not a gated engine behavior (rule 3). If the section
+   WRITES, compose an EXISTING route from its thin browser script (the Features section flips flags via
+   `PUT /flags/:key`; the editor uses the fabric/surface routes) — no new engine capability (the P6 rule).
+   A per-section `<script>` IIFE is fine; concat it into `SETTINGS_SCRIPT` (`settings/assets.ts`).
+4. Tests: assert the section render is non-empty and shows its key content in
+   `apps/engine/src/surfaces/settings/shell.test.ts` (or a colocated `sections/<name>.test.ts` for richer
+   cases); if you added a `SetupData` field, cover its assembly in `apps/engine/src/api/http.test.ts`. Run
+   `pnpm -r test`.
+
 ### Add a ledger watcher — FUTURE (P4; `engine/ledger/` is a scaffold today, README only)
 The ledger and its watchers are Phase 4 — the module is not built yet, so this recipe describes the intended
 shape, not files you can edit now. When P4 lands:

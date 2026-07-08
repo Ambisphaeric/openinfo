@@ -9,10 +9,11 @@ Adding a block is a pure document edit — you fetch a surface, splice a block i
 it back. No application code, no new route. Every step below is a real engine call; verify each against
 `shared/contracts/src/api/routes.ts`.
 
-**Prefer the forms editor when a human is driving.** `GET /setup?surface={id}` is an engine-served
-HUD-layout editor (forms over the surface document): reorder/add/remove blocks, toggle `collapsed`, set
-`top`/`show`, rename, clone, or edit raw JSON, then Save. `/setup` also lists every surface under "HUD
-layout". The steps below are the API path (for scripts/agents); the editor uses these exact routes.
+**Prefer the forms editor when a human is driving.** `GET /settings/hud-layout?surface={id}` is an
+engine-served HUD-layout editor (forms over the surface document): reorder/add/remove blocks, toggle
+`collapsed`, set `top`/`show`, rename, clone, or edit raw JSON, then Save. Settings → HUD layout lists
+every surface. (The old `/setup?surface=` URL 301s here.) The steps below are the API path (for
+scripts/agents); the editor uses these exact routes.
 
 1. Enumerate surfaces with `GET /layouts/surfaces` (→ `Surface[]`), or fetch one directly:
    `GET /layouts/surfaces/{id}` (200 → a `Surface`; 404 if no such id — e.g. `surf-openinfo-hud` is the

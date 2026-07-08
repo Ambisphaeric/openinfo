@@ -44,7 +44,7 @@ curl localhost:8787/registers                 # the 5 built-in voice registers
 curl localhost:8787/layouts/surfaces                     # every HUD layout (seeded + yours)
 curl localhost:8787/layouts/surfaces/surf-openinfo-hud   # the HUD, as a document
 # edit it with forms (reorder/add/remove blocks, top, collapsed, clone) — no JSON by hand:
-open http://localhost:8787/setup?surface=surf-openinfo-hud    # the HUD-layout editor (also linked from /setup)
+open http://localhost:8787/settings/hud-layout?surface=surf-openinfo-hud    # the HUD-layout editor (also under Settings → HUD layout)
 
 # start a session, then ask the HUD's relevant-now block for data
 curl -sX POST localhost:8787/sessions -H 'content-type: application/json' \
@@ -91,7 +91,8 @@ env), else an env var, else `http://127.0.0.1:8787`:
 echo '{"engineUrl":"http://127.0.0.1:8787"}' > ~/.openinfo/client.json   # optional; env still overrides
 ```
 
-On first run, if a model isn't set up yet the app opens **`/setup`** in your browser once. If the mic is
+On first run, if a model isn't set up yet the app opens **`/settings`** in your browser once (landing on
+Get started). If the mic is
 denied, the tray shows a **"Microphone blocked — Open Settings…"** item that jumps to the right pane; if the
 engine can't be reached the tray says so (and hints at Local Network permission for a non-local engine).
 **Ad-hoc signing caveat:** the identity changes on every `package`, so macOS re-prompts for permissions after
@@ -120,27 +121,27 @@ for f in distill.enabled distill.moments distill.index act.enabled; do
 ```
 
 Second — **the distill pass needs an OpenAI-compatible LLM endpoint** (Ollama, LM Studio, mlx). The
-`llm` slot ships empty. **Open `/setup` — it detects your local model servers and offers one button.**
-On first run the page leads with a Get-Started capability checklist (Hearing · Thinking · Reading ·
-Speaking): it probes the well-known local servers (LM Studio :1234, Ollama :11434, kokoro :8880, common
-whisper ports), reads what each has actually loaded (`GET /v1/models`), classifies every model by name,
-and shows the result — "Found LM Studio with 36 models". Click **Use this setup** and it writes and
-activates a `config-1` profile for you. No ports or model trivia. (The menu-bar tray opens `/setup` too,
-and flags it "⚠ Set up models…" while the llm slot is empty.) **No server at all?** The nothing-found
+`llm` slot ships empty. **Open `/settings` — its Get started section detects your local model servers and
+offers one button.** On first run the page leads with a Get-Started capability checklist (Hearing ·
+Thinking · Reading · Speaking): it probes the well-known local servers (LM Studio :1234, Ollama :11434,
+kokoro :8880, common whisper ports), reads what each has actually loaded (`GET /v1/models`), classifies
+every model by name, and shows the result — "Found LM Studio with 36 models". Click **Use this setup** and
+it writes and activates a `config-1` profile for you. No ports or model trivia. (The menu-bar tray opens
+`/settings` too, and flags it "⚠ Set up models…" while the llm slot is empty.) **No server at all?** The nothing-found
 state offers **"Download a starter model"** — the engine fetches a small vetted model (llama.cpp for
 chat, whisper.cpp for audio) into its data dir and runs it for you, so tier zero still reaches a working
 setup. If the runtime binary is missing it shows the exact `brew install` line instead of a dead end.
 
-Third — **try it, right there.** Once a model is configured, `/setup` leads with a **Try it** card: type a
+Third — **try it, right there.** Once a model is configured, `/settings` has a **Try it** section: type a
 sentence (or speak, if you have a transcription server) and watch openinfo turn it into a typed moment,
 live — glyph, text, and the one-line provenance (`via <endpoint> · <model>`). This is the product, not a
-test button. Your click turns on distillation (it says so; turn it back off any time under Advanced), and
+test button. Your click turns on distillation (it says so; turn it back off any time under Features), and
 if nothing comes back the card tells you exactly where it stopped. Verified end-to-end against real
 LM Studio: "Let us ship the onboarding slice on Thursday…" came back as a `commitment` moment in ~17s on a
 warm 8B.
 
 ```bash
-open http://localhost:8787/setup          # macOS; or just visit it in any browser
+open http://localhost:8787/settings       # macOS; or just visit it in any browser (/setup 301s here)
 curl localhost:8787/fabric/discover       # the same detection, as JSON (servers + a config-1 suggestion)
 ```
 
@@ -180,7 +181,8 @@ curl localhost:8787/fabric/secrets                            # [{"ref":"remote-
 
 The key is injected as `Authorization: Bearer …` only at invoke time; a missing key just makes that
 endpoint fall through to the next. All of this — profiles, endpoints, keys, per-endpoint testing —
-is what the **`/setup`** page above drives, so you rarely need the raw curls. (Localhost-only, no
+is what the **`/settings`** page above drives (Models group: Endpoints · Profiles · Keys · Local
+runtimes), so you rarely need the raw curls. (Localhost-only, no
 auth yet — a P7 concern.)
 
 ---
