@@ -44,6 +44,31 @@ export const FocusSignal = Type.Object(
 )
 export type FocusSignal = Static<typeof FocusSignal>
 
+/**
+ * A calendar routing signal (Phase 4 context-switch detection — the SECOND staged routing signal after
+ * focus). The title + attendees of the current/imminent Calendar.app event, decoded by route/calendar.ts
+ * and fed to the SAME detector as focus: it is routing CONTEXT (evidence for *which meeting* — hence which
+ * workspace — the user is in), never content *in* a session, so the drain excludes it from transcripts/
+ * moments/entities exactly as it does a FocusSignal. `attendees` are display names and/or emails as
+ * Calendar.app exposes them (matched case-insensitively against `attendee` hint patterns); `eventTitle`
+ * matches `eventTitle` patterns. Optional fields are OMITTED when unknown so the payload stays minimal.
+ *
+ * Unlike a FocusSignal (client-collected, carried as a `source:'focus'` CaptureChunk), v0 calendar signals
+ * are collected ENGINE-side (route/calendar-collector.ts polls Calendar.app via osascript) and fed
+ * DIRECTLY to the detector — the `calendar` CaptureSource stays reserved for a later chunk-transported path.
+ */
+export const CalendarSignal = Type.Object(
+  {
+    eventTitle: Type.String({ minLength: 1, description: 'the event title/summary, e.g. "openinfo weekly sync"' }),
+    attendees: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { description: 'attendee display names and/or emails, as Calendar.app exposes them' })),
+    calendarName: Type.Optional(Type.String({ description: 'the calendar the event belongs to, e.g. "Work"' })),
+    startsAt: Type.Optional(IsoTime),
+    endsAt: Type.Optional(IsoTime),
+  },
+  { $id: 'CalendarSignal', additionalProperties: false, description: 'decoded content of a calendar routing signal — meeting context, not a transcript' },
+)
+export type CalendarSignal = Static<typeof CalendarSignal>
+
 export const CaptureChunk = Type.Object(
   {
     id: Id,
