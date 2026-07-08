@@ -1311,3 +1311,128 @@ test('POST /sessions/:id/reroute — 404 unknown, 400 same/unknown workspace, 40
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ── Context-switch detection (route.detect) — focus chunks through the REAL spool ──────────────
+const salesHints = { workspaceId: 'sales', patterns: [{ field: 'repoPath', contains: 'acme-crm', weight: 0.7 }] }
+const focusStream = async (base: string, count: number, stepSec = 10): Promise<void> => {
+  // Sequential so each append fully lands before the next POST — avoids racing the spool drain's
+  // rename. Each focus chunk carries its own sessionId (a distinct spool file), so no chunk can be
+  // lost to a mid-drain append; the detector ignores the chunk's sessionId/workspaceId anyway.
+  for (let i = 0; i < count; i += 1) {
+    await fetch(`${base}/capture/focus`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        id: `fx-${i}`, sessionId: `focus-${i}`, workspaceId: 'default', source: 'focus', sequence: i,
+        capturedAt: new Date(Date.UTC(2026, 6, 7, 14, 0, 0) + i * stepSec * 1000).toISOString(),
+        contentType: 'application/json', encoding: 'utf8',
+        data: JSON.stringify({ app: 'Chrome', windowTitle: 'Acme — Salesforce', repoPath: '/Users/dev/acme-crm' }),
+      }),
+    })
+  }
+}
+
+test('route.detect ON: sustained focus signals auto-start a session with the detector evidence trail', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-detect-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    app.store.ensureWorkspace({ id: 'sales', name: 'Sales' })
+    app.store.layouts.put('workspace-hints', 'sales', salesHints)
+    await enableFlag(base, 'route.detect')
+
+    await focusStream(base, 11)
+
+    await eventuallyHttp(async () => {
+      const live = (await (await fetch(`${base}/sessions?workspace=sales&live=true`)).json()) as Session[]
+      assert.equal(live.length, 1)
+      assert.ok(live[0]!.attribution.confidence < 1)
+      assert.ok(live[0]!.attribution.evidence.some((e) => e.kind === 'repo'))
+      assert.ok(!live[0]!.attribution.evidence.some((e) => e.kind === 'manual'))
+    })
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('route.detect: a live session in another workspace is auto-ended and session.switched is emitted', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-detect-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    app.store.ensureWorkspace({ id: 'sales', name: 'Sales' })
+    app.store.layouts.put('workspace-hints', 'sales', salesHints)
+    await enableFlag(base, 'route.detect')
+
+    const switched: Session[] = []
+    app.bus.subscribe('session.switched', (s) => { switched.push(s) })
+
+    // a manual live session in 'default' — the switch must end it and move to 'sales'
+    await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })
+    await focusStream(base, 11)
+
+    await eventuallyHttp(async () => {
+      assert.equal(switched.length, 1)
+      assert.equal(switched[0]!.workspaceId, 'sales')
+      const defLive = (await (await fetch(`${base}/sessions?workspace=default&live=true`)).json()) as Session[]
+      assert.equal(defLive.length, 0) // W1 auto-ended
+      const salesLive = (await (await fetch(`${base}/sessions?workspace=sales&live=true`)).json()) as Session[]
+      assert.equal(salesLive.length, 1)
+    })
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('route.detect OFF (default): even a fully sustained stream does nothing', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-detect-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    app.store.ensureWorkspace({ id: 'sales', name: 'Sales' })
+    app.store.layouts.put('workspace-hints', 'sales', salesHints)
+
+    await focusStream(base, 11) // flag OFF (default) → the detector never runs
+    await new Promise((r) => setTimeout(r, 200))
+    const live = (await (await fetch(`${base}/sessions?workspace=sales&live=true`)).json()) as Session[]
+    assert.equal(live.length, 0)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('route.detect ON: a brief sub-sustain burst does not fire (thrash resistance)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-detect-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    app.store.ensureWorkspace({ id: 'sales', name: 'Sales' })
+    app.store.layouts.put('workspace-hints', 'sales', salesHints)
+    await enableFlag(base, 'route.detect')
+
+    await focusStream(base, 3) // 3 signals span only 20s — well under the 90s sustain window
+    await new Promise((r) => setTimeout(r, 200))
+    const live = (await (await fetch(`${base}/sessions?workspace=sales&live=true`)).json()) as Session[]
+    assert.equal(live.length, 0)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

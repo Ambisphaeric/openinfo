@@ -8,7 +8,7 @@ import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeStt, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
-import { rerouteSession } from '../route/index.js'
+import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
@@ -71,6 +71,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const voice = new VoiceDocuments(store)
   const distillDocs = new DistillDocuments(store)
   const actDocs = new ActDocuments(store)
+  const hintsDocs = new HintsDocuments(store)
   const surfaces = new SurfaceDocuments(store)
   const discovery = new DiscoveryDocuments(store)
   const starterModels = new StarterModelsDocuments(store)
@@ -92,6 +93,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   voice.ensureDefaults()
   distillDocs.ensureDefaults()
   actDocs.ensureDefaults()
+  hintsDocs.ensureDefaults()
   surfaces.ensureDefaults()
   discovery.ensureDefaults()
   starterModels.ensureDefaults()
@@ -114,7 +116,24 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // and require distill.enabled — all three flags are read per-drain, so flipping any of them over
   // the API takes effect without a restart. Moment.refs linking needs BOTH extras on: with
   // distill.index alone entities still index, but there are no same-pass moments to link.
+  // Context-switch detection (route.detect, OFF by default — a flagged engine-processing behavior,
+  // CONTRIBUTING rule 3). The router holds a rolling buffer of focus signals and auto-starts/switches
+  // sessions into the workspace whose hints sustain dominance (see route/attribute.ts). It runs
+  // INDEPENDENTLY of distill.enabled: focus is context for routing, not content to distill.
+  const attributor = new Attributor({
+    store,
+    hints: hintsDocs,
+    modeId: () => distillDocs.mode().id,
+    publish: (event, session) => bus.publish(event, session),
+    log,
+  })
   const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
+    // Focus chunks feed the detector, never the distiller (distill hygiene, PHASE3-NOTES). Read the
+    // flag per-drain like the distill flags, so flipping it takes effect without a restart.
+    if (isFlagEnabled(store, 'route.detect')) {
+      const signals = extractFocusSignals(chunks, log)
+      if (signals.length > 0) await attributor.observe(signals)
+    }
     if (!isFlagEnabled(store, 'distill.enabled')) return
     // Transcription is a pre-distill drain stage (distill.transcribe, OFF by default). It rewrites
     // base64 audio/* chunks (mic → "me", system-audio → "them") to utf8 text via the stt slot BEFORE
@@ -165,6 +184,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
   bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
+  bus.subscribe('session.switched', (session) => ws.broadcast('session.switched', session))
   bus.subscribe('session.rerouted', (session) => ws.broadcast('session.rerouted', session))
   bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))

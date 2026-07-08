@@ -42,8 +42,15 @@ export interface DistillerDeps {
   log?: (message: string) => void
 }
 
-/** Only utf8 text chunks distill in v0; screen/base64 frames defer to OCR (P3). */
-const isText = (chunk: CaptureChunk): boolean => chunk.encoding === 'utf8'
+/**
+ * Only utf8 TEXT chunks distill in v0; screen/base64 frames defer to OCR (P3). Focus chunks are ALSO
+ * utf8 (source 'focus', contentType application/json) but are foreground CONTEXT for the router, never
+ * speech — they are excluded explicitly (by source AND contentType) so they can never leak into a
+ * transcript, moment, or entity. Distill hygiene is enforced HERE (the transcript-builder path) in
+ * addition to the drain routing focus to the detector — belt and suspenders (see PHASE3-NOTES).
+ */
+const isText = (chunk: CaptureChunk): boolean =>
+  chunk.encoding === 'utf8' && chunk.source !== 'focus' && chunk.contentType !== 'application/json'
 
 const groupBySession = (chunks: readonly CaptureChunk[]): Map<string, CaptureChunk[]> => {
   const groups = new Map<string, CaptureChunk[]>()
