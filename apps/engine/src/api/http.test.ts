@@ -670,3 +670,77 @@ test('e2e: activating a profile swaps what the distiller invokes, and its keyRef
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }
 })
+
+test('GET /setup serves the self-contained page (skeleton, seeded profiles, first-run banner, ?edit)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const res = await fetch(`${base}/setup`)
+    assert.equal(res.status, 200)
+    assert.match(res.headers.get('content-type') ?? '', /text\/html/)
+    const html = await res.text()
+    assert.match(html, /openinfo · model setup/)
+    assert.match(html, /id="row-tpl"/) // the add-endpoint template is present
+    // fresh install: the live fabric's llm slot is empty ⇒ the first-run banner shows
+    assert.match(html, /class="banner"/)
+    // seeded profiles are listed and are inert (none active ⇒ each offers Activate)
+    assert.match(html, /data-act="activate" data-id="lm-studio-local"/)
+    // ?edit selects which profile the editor opens
+    const edited = await (await fetch(`${base}/setup?edit=ollama-local`)).text()
+    assert.match(edited, /data-target-id="ollama-local"/)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /fabric/test probes an endpoint: reachable+latency, 401 hint, unresolved-keyRef hint', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  // a fake server whose GET status we can flip (health checks GET the base url)
+  let status = 200
+  const upstream = createServer((_req, res) => { res.writeHead(status); res.end('ok') })
+  await new Promise<void>((resolve) => upstream.listen(0, resolve))
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const upAddr = upstream.address()
+    const appAddr = app.server.address()
+    assert.ok(upAddr && typeof upAddr === 'object' && appAddr && typeof appAddr === 'object')
+    const url = `http://127.0.0.1:${upAddr.port}`
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const probe = async (endpoint: unknown) =>
+      (await (await fetch(`${base}/fabric/test`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(endpoint) })).json()) as { ok: boolean; latencyMs?: number; error?: string; hint?: string }
+
+    // reachable
+    status = 200
+    const ok = await probe({ kind: 'http', name: 'lm', url, api: 'openai-compat' })
+    assert.equal(ok.ok, true)
+    assert.equal(typeof ok.latencyMs, 'number')
+
+    // 401 with no keyRef ⇒ honest hint to add a key
+    status = 401
+    const unauth = await probe({ kind: 'http', name: 'lm', url, api: 'openai-compat' })
+    assert.equal(unauth.ok, false)
+    assert.match(unauth.error ?? '', /HTTP 401/)
+    assert.match(unauth.hint ?? '', /authorization required/)
+
+    // an endpoint whose keyRef has no stored value fails gracefully with an actionable hint (no fetch)
+    const missing = await probe({ kind: 'http', name: 'lm', url, api: 'openai-compat', auth: { keyRef: 'nope' } })
+    assert.equal(missing.ok, false)
+    assert.match(missing.error ?? '', /unresolved secret keyRef/)
+    assert.match(missing.hint ?? '', /no value stored/)
+
+    // invalid body ⇒ 400
+    const bad = await fetch(`${base}/fabric/test`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ nope: true }) })
+    assert.equal(bad.status, 400)
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => upstream.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})

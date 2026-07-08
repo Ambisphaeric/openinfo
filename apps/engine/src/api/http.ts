@@ -2,16 +2,16 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Entity, type Fabric, type FabricProfile, type Flag, type Moment, type RelevantEntity, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type FabricProfile, type Flag, type Moment, type RelevantEntity, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
-import { FabricDocuments, FileSecretStore, invokeStt, type SecretStore } from '../fabric/index.js'
+import { FabricDocuments, FileSecretStore, checkEndpoint, invokeStt, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
-import { SurfaceDocuments, compileQuery } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, renderSetupPage } from '../surfaces/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -165,8 +165,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/contracts') return send(res, 200, Object.keys(AllSchemas))
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
+  if (req.method === 'GET' && url.pathname === '/setup') return getSetup(res, ctx, url)
   if (req.method === 'GET' && url.pathname === '/fabric') return send(res, 200, ctx.fabric.load())
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
+  if (req.method === 'POST' && url.pathname === '/fabric/test') return testEndpoint(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/fabric/profiles') return send(res, 200, ctx.fabric.profiles.list())
   const profileClone = url.pathname.match(/^\/fabric\/profiles\/([^/]+)\/clone$/)
   if (req.method === 'POST' && profileClone?.[1]) return cloneProfile(req, res, ctx, decodeURIComponent(profileClone[1]))
@@ -214,6 +216,69 @@ async function saveFabric(req: IncomingMessage, res: ServerResponse, ctx: Handle
   const saved = ctx.fabric.save(body as Fabric)
   await ctx.bus.publish('fabric.changed', ctx.fabric.load())
   send(res, 200, saved)
+}
+
+/**
+ * Serve the setup surface (ARCHITECTURE §8): forms over the profile + secret documents, rendered as
+ * a self-contained HTML page. The FIRST engine-served surface (CODE_MAP homes it under
+ * engine/surfaces/setup/). It composes only the existing profile/secret/fabric routes — no new engine
+ * capability. `?edit=<id>` selects which profile the editor opens; default is the active profile, else
+ * the first profile, else the legacy live fabric. localhost-only posture (no auth) is a P7 concern.
+ */
+function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): void {
+  const profiles = ctx.fabric.profiles.list()
+  const activeId = ctx.fabric.profiles.activeId()
+  const editParam = url.searchParams.get('edit')
+  const editing = editParam
+    ? profiles.find((p) => p.id === editParam)
+    : (activeId ? profiles.find((p) => p.id === activeId) : profiles[0])
+  const html = renderSetupPage({
+    profiles,
+    activeId,
+    liveFabric: ctx.fabric.load(),
+    editing,
+    secretRefs: ctx.secrets.listRefs(),
+  })
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+  res.end(html)
+}
+
+/**
+ * Test-button backing: probe ONE endpoint's reachability (the setup page's per-row Test). A thin,
+ * read-only helper over the existing health check (fabric/health.ts) — it never invokes a model, it
+ * pings. The keyRef (if any) is resolved from the secret store and injected as a bearer for the
+ * probe, so an authed endpoint is tested honestly; a 401/403 or an unresolved keyRef becomes an
+ * actionable `hint`. The body is an Endpoint (the row's current, possibly-unsaved values), so a user
+ * can test before saving. Any previously MEASURED tok/s on the endpoint doc is echoed (not measured here).
+ */
+async function testEndpoint(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('Endpoint', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid Endpoint', details: errors })
+  const endpoint = body as Endpoint
+  const health = await checkEndpoint(endpoint, 4_000, (ref) => ctx.secrets.resolve(ref))
+  const probe: EndpointProbe = { ok: health.ok }
+  if (health.latencyMs !== undefined) probe.latencyMs = health.latencyMs
+  const tokPerSec = endpoint.measured?.tokPerSec
+  if (tokPerSec !== undefined) probe.tokPerSec = tokPerSec
+  if (!health.ok && health.error !== undefined) {
+    probe.error = health.error
+    const hint = probeHint(health.error, endpoint)
+    if (hint !== undefined) probe.hint = hint
+  }
+  send(res, 200, probe)
+}
+
+/** Map a probe failure to an actionable next step — the honest "why it failed, what to do" line. */
+function probeHint(error: string, endpoint: Endpoint): string | undefined {
+  const keyRef = endpoint.kind === 'http' ? endpoint.auth?.keyRef : undefined
+  if (/unresolved secret keyRef/.test(error)) return 'no value stored for this keyRef yet — add it under Keys below'
+  if (/HTTP 401|HTTP 403/.test(error)) {
+    return keyRef !== undefined
+      ? `authorization rejected — the stored value for keyRef "${keyRef}" may be wrong`
+      : 'authorization required — add a key under Keys below and reference it via keyRef'
+  }
+  return undefined
 }
 
 /** Serve one fabric profile document by id. Unknown id ⇒ 404. */

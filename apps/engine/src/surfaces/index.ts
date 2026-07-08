@@ -1,3 +1,4 @@
 export { SurfaceDocuments } from './documents.js'
 export { defaultHudSurface, defaultGlassMinimalSurface } from './defaults.js'
 export { compileQuery } from './query.js'
+export { renderSetupPage, firstRunNotice, type SetupData } from './setup/view.js'
