@@ -1701,3 +1701,63 @@ Engine on **:8910** (scratch `OPENINFO_DATA`); processes killed after; **:8787 /
   in a palette UI (P6); diarization / voice→person (P7 — `me`/`them` stays the free source split). No engine
   or contract change was needed or made.
 
+## Slice: /setup edits ALL six slots — retiring the setup-surface v0 "present-but-inert" line
+
+This revisits the **setup-surface slice** above (the `LIVE_SLOTS`/`INERT_SLOTS` split). That slice drew a
+deliberate v0 scope line: an endpoint editor for **llm + stt** only, with `tts/vlm/ocr/embed` shown
+**present-but-inert** ("not wired yet") because only llm/stt have engine invoke paths today. The founder hit
+the wall it created — he could not add a **kokoro tts** or a **vlm** from the page and had to configure them
+through raw API calls. The line has outgrown its use: a profile is a **document** that legitimately holds
+endpoints in all six slots, and the page shouldn't gate DOCUMENT editing on whether the engine invokes a slot
+yet. So all six slots now get the full editor treatment; the honest-usage information moves from a *gate* to a
+*note*.
+
+### What changed (page only — view/script/tests; zero engine or contract change)
+- **`view.ts`**: `LIVE_SLOTS`/`INERT_SLOTS` + `INERT_NOTE` collapsed into a single `ALL_SLOTS` +
+  `SLOT_NOTE`. `inertSlotHtml` is deleted; `liveSlotHtml`→`slotHtml` now renders **every** slot as a full
+  editable container (rows + keyRef dropdown + Test + reorder/remove + "+ add endpoint"), each carrying a
+  one-line **informational** usage note (never a gate): llm/stt say what they power **today**; tts/vlm/ocr/embed
+  say the endpoint is *stored* and *wired in a later phase* (tts→P5 speech, ocr→P3 screen reading, embed→P3
+  recall, vlm→later) — "configure it freely now". `editorHtml` maps `ALL_SLOTS` instead of live-then-inert.
+- **`assets.ts`**: unchanged behaviour — one CSS line (`.slot .note` gets `margin-bottom`) so the note sits
+  above the rows. The browser `saveEditor` already collected every `.slot[data-slot]` and rebuilt it from its
+  `.row` children; now that every slot IS a `data-slot` container, all six round-trip through the same path.
+- The type-discipline the earlier fixes (c2893ad/02ad059) established is untouched: rows stay `type="button"`,
+  the submit handler still `preventDefault`s, inputs keep `autocomplete="off"`.
+
+### Save-path verdict — was it lossy? Local endpoints preserved?
+**Not lossy** — the v0 save was already safe (inert slots survived via the embedded `base-fabric` blob), and it
+stays safe now that every slot is rebuilt from its rows. The `data-json` non-http path is the load-bearing
+piece: a **`local`** endpoint (tier-zero starter model) renders as a **read-only** row (kind + name, "edit via
+the API") that carries its full JSON in `data-json`, so `rowToEndpoint` re-emits it byte-for-byte even when http
+rows are added/removed/reordered around it. Decision, documented: **local endpoints render as a readable
+non-editable row while the http rows around them stay fully editable** — fine for v0 (no form for `runtime`/
+model-path yet; edit those via the API). Proven two ways: a pure render test (all six slots emit `data-slot`
+containers with a row per endpoint + a local row whose `data-json` round-trips) and an **API-level round-trip**
+in `http.test.ts` (PUT llm+local-stt → save-add-tts → save-add-vlm → GET: llm intact, the local stt endpoint
+survives both edits byte-for-byte, tts + vlm present).
+
+### Test button for all slots
+`POST /fabric/test` is **endpoint-shaped, not slot-aware** — it validates an `Endpoint` and GETs the base URL,
+so a tts/vlm URL probes exactly like an llm one (kokoro/LM Studio answer the GET). No change needed; the honest
+`{ ok, latencyMs?, error?, hint? }` semantics carry over unchanged.
+
+### Tests + status (contracts 40 · client 84 · engine 173 — all green; `pnpm -r build`/`-r test`)
+- engine `surfaces/setup/view.test.ts`: the old "llm+stt editable, tts/vlm/ocr/embed inert" assertion is
+  **replaced** by all-six-editable reality — all-slot container + add-row rendering, per-slot usage notes
+  (informational, "not wired" gone), the founder's exact tts add-row repro, full-fabric all-slot rendering, and
+  local-endpoint `data-json` preservation.
+- engine `api/http.test.ts`: +1 full-fabric API round-trip (the founder repro at the route level).
+
+### Live verification (darwin, engine on :8911; :8787/:1234/:11434 left alone; process killed after)
+Drove the founder's exact scenario over the API as the page's JS does: PUT a `rig` profile (llm http + a
+**local** stt starter) → re-PUT adding **kokoro tts** (`http://192.168.1.105:8880`, model `kokoro`) → re-PUT
+adding a **vlm** → activate → `GET /fabric/profiles/rig`: **llm intact, the local stt endpoint preserved
+byte-for-byte through both edits, tts=kokoro, vlm present** (version 3). `GET /setup?edit=rig`: the **tts slot
+renders as a full editable container** — `data-slot="tts"`, the honest P5 note, the kokoro row (name/url/model/
+keyRef + Test/↑/↓/✕), and **"+ add endpoint"** — identical to llm/stt; the local stt row is a read-only
+`data-kind="local"` row; **no "not wired" copy anywhere**. `POST /fabric/test` on the kokoro shape returned an
+honest `{ ok:false, error:"fetch failed" }` (that host isn't reachable from this machine — on the founder's rig
+it answers). Page opened in the default browser. Ceiling (as prior slices): a pixel screenshot isn't automated;
+the served markup + every API link the page drives are exercised above.
+
