@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
-import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeStt, type SecretStore } from '../fabric/index.js'
+import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, toQueueFailure, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
@@ -149,7 +149,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
       extractMoments: isFlagEnabled(store, 'distill.moments'),
       extractEntities: isFlagEnabled(store, 'distill.index'),
     })
-  })
+    // When a drain re-queues (a transcribe/distill invoke failed), classify WHY and record it on the queue
+    // so GET /queue, Status, and the Try-it card surface the real reason instead of re-queuing silently
+    // forever (the founder's wall). A model-load failure's hint is enriched with the loaded-model suggestion.
+  }, toQueueFailure)
 
   // Act v0 (the first Act node): the follow-up draft. It rides session END, not the chunk drain —
   // see PHASE2-NOTES for the direct-trigger (vs DAG) and ≤60s decisions. On session.ended, when
@@ -223,6 +226,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/contracts') return send(res, 200, Object.keys(AllSchemas))
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
+  if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, await ctx.queue.status())
   // /setup is the former name of the Settings surface — 301 to /settings, preserving any subpath +
   // query (?edit=, ?surface=, ?discover=). The old URL must keep working (README/skills/first-run).
   if (req.method === 'GET' && (url.pathname === '/setup' || url.pathname.startsWith('/setup/'))) {
@@ -410,10 +414,18 @@ async function downloadModel(req: IncomingMessage, res: ServerResponse, ctx: Han
  * can test before saving. Any previously MEASURED tok/s on the endpoint doc is echoed (not measured here).
  */
 async function testEndpoint(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
-  const body = await readJson(req)
-  const errors = validationErrors('Endpoint', body)
+  const raw = await readJson(req)
+  // `probe` + `slot` are additive TEST-request fields, stripped before Endpoint validation (the Endpoint
+  // schema is additionalProperties:false, and they are not part of the stored document). `probe:'generate'`
+  // asks for a REAL 1-token completion through the invoke path; `slot` lets the server skip generation for
+  // an stt row (a generation probe needs audio — out of scope).
+  const probeMode = (raw as { probe?: unknown }).probe
+  const slot = (raw as { slot?: unknown }).slot
+  const { probe: _p, slot: _s, ...rest } = raw as Record<string, unknown>
+  const errors = validationErrors('Endpoint', rest)
   if (errors.length > 0) return send(res, 400, { error: 'invalid Endpoint', details: errors })
-  const endpoint = body as Endpoint
+  const endpoint = rest as Endpoint
+
   const health = await checkEndpoint(endpoint, 4_000, (ref) => ctx.secrets.resolve(ref), ctx.runtime)
   const probe: EndpointProbe = { ok: health.ok }
   if (health.latencyMs !== undefined) probe.latencyMs = health.latencyMs
@@ -424,7 +436,42 @@ async function testEndpoint(req: IncomingMessage, res: ServerResponse, ctx: Hand
     const hint = probeHint(health.error, endpoint)
     if (hint !== undefined) probe.hint = hint
   }
+  if (probeMode === 'generate') probe.generate = await runGenerateProbe(endpoint, typeof slot === 'string' ? slot : undefined, ctx)
   send(res, 200, probe)
+}
+
+/**
+ * Run a REAL-generation probe against ONE endpoint — a minimal 1-token completion through the ACTUAL
+ * invoke path, so a server that pings 200 but can't load its model (the founder's LM Studio 400) is
+ * caught honestly and CLASSIFIED (unreachable/timeout/auth/model-load/bad-response). An stt endpoint is
+ * skipped-with-note (audio is out of scope). On a model-load failure the hint gains the loaded-model
+ * suggestion (what the server DOES have). Value-free re keys — an auth failure names the keyRef only.
+ */
+async function runGenerateProbe(endpoint: Endpoint, slot: string | undefined, ctx: HandlerContext): Promise<GenerateProbe> {
+  if (slot === 'stt') {
+    return { ok: false, skipped: true, note: 'a generation probe needs audio — not run for stt endpoints' }
+  }
+  const genFabric: Fabric = { slots: { stt: [], tts: [], llm: [endpoint], vlm: [], ocr: [], embed: [] } }
+  const started = performance.now()
+  try {
+    await invokeLlm(genFabric, [{ role: 'user', content: 'ping' }], {
+      maxTokens: 1,
+      timeoutMs: 8_000,
+      resolveKey: (ref) => ctx.secrets.resolve(ref),
+      runtimeManager: ctx.runtime,
+    })
+    return { ok: true, latencyMs: Math.round(performance.now() - started) }
+  } catch (error) {
+    const classified = describeInvokeFailure(error)
+    if (!classified) return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    const hint = await enrichFailureHint(classified)
+    return {
+      ok: false,
+      class: classified.class,
+      ...(classified.serverMessage !== undefined ? { error: classified.serverMessage } : {}),
+      hint,
+    }
+  }
 }
 
 /** Map a probe failure to an actionable next step — the honest "why it failed, what to do" line. */

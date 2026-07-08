@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { CaptureChunk, QueueStatus } from '@openinfo/contracts'
+import type { CaptureChunk, QueueFailure, QueueStatus } from '@openinfo/contracts'
 
 const safeName = (value: string): string => value.replace(/[^a-zA-Z0-9._-]/g, '_')
 
@@ -11,13 +11,27 @@ const safeName = (value: string): string => value.replace(/[^a-zA-Z0-9._-]/g, '_
  */
 export type DrainProcessor = (chunks: CaptureChunk[]) => Promise<void>
 
+/**
+ * Classify a drain-processor throw into the surface-ready QueueFailure (INVOKE-RESILIENCE). Injected so
+ * the queue stays free of any invoke/fabric dependency (it only calls this) — wired in api/http.ts to the
+ * fabric's toQueueFailure. Returns undefined for a non-invoke error (kept unclassified, still logged).
+ */
+export type DrainFailureDescriber = (error: unknown, at: string) => Promise<QueueFailure | undefined>
+
 export class CaptureQueue {
   private drainedFiles = 0
   private draining = false
+  // Operational status, NOT a document (justification, per the slice brief): the last drain failure and
+  // last drain success are ephemeral runtime facts about THIS engine process — they carry no user intent,
+  // are recomputed every run, and have no version history worth keeping. So they live in memory on the
+  // queue (surfaced via status()/GET /queue/WS), exactly like drainedFiles, not in the store.
+  private lastFailure?: QueueFailure
+  private lastSuccessAt?: string
 
   constructor(
     private readonly queueDir: string,
     private readonly processor?: DrainProcessor,
+    private readonly describeFailure?: DrainFailureDescriber,
   ) {}
 
   async append(chunk: CaptureChunk): Promise<void> {
@@ -35,6 +49,8 @@ export class CaptureQueue {
       pendingBytes,
       drainedFiles: this.drainedFiles,
       updatedAt: new Date().toISOString(),
+      ...(this.lastFailure !== undefined ? { lastFailure: this.lastFailure } : {}),
+      ...(this.lastSuccessAt !== undefined ? { lastSuccessAt: this.lastSuccessAt } : {}),
     }
   }
 
@@ -79,7 +95,15 @@ export class CaptureQueue {
         try {
           await this.processor(await this.parse(draining))
         } catch (error) {
-          logger(`queue drain processor failed on ${file}, re-queued: ${error instanceof Error ? error.message : String(error)}`)
+          // The drain no longer re-queues SILENTLY (the founder's wall): classify why it failed and record
+          // it so GET /queue / Status / the Try-it card can surface the real reason. A non-invoke error
+          // (undescribable) is still logged and re-queued, just without a class — no false diagnosis.
+          const at = new Date().toISOString()
+          const failure = this.describeFailure ? await this.describeFailure(error, at) : undefined
+          if (failure) this.lastFailure = failure
+          logger(
+            `queue drain processor failed on ${file}, re-queued: ${failure ? `[${failure.class}] ${failure.hint}` : error instanceof Error ? error.message : String(error)}`,
+          )
           await rename(draining, pending).catch(() => undefined)
           continue
         }
@@ -88,6 +112,7 @@ export class CaptureQueue {
       }
       await rm(draining, { force: true })
       this.drainedFiles += 1
+      this.lastSuccessAt = new Date().toISOString()
     }
   }
 

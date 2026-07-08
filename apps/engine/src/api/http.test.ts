@@ -983,6 +983,165 @@ test('POST /fabric/test probes an endpoint: reachable+latency, 401 hint, unresol
   }
 })
 
+// --- INVOKE-RESILIENCE: the real-generation probe + GET /queue ---
+
+/**
+ * A fake OpenAI-compatible server for the generate probe: the base GET (health ping) always 200s; the
+ * completions call answers per `chat` ({status, body}); /v1/models lists `modelIds` (for the suggestion).
+ */
+const startFakeChat = async (chat: { status: number; body: string }, modelIds: string[] = []) => {
+  const server = createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ object: 'list', data: modelIds.map((id) => ({ id })) }))
+      return
+    }
+    if (req.url === '/v1/chat/completions') {
+      res.writeHead(chat.status, { 'content-type': 'application/json' })
+      res.end(chat.body)
+      return
+    }
+    res.writeHead(200); res.end('ok') // base-url GET (the ping)
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}` }
+}
+
+test('POST /fabric/test probe:generate — ping + REAL generation; llm success reports both', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const up = await startFakeChat({ status: 200, body: JSON.stringify({ choices: [{ message: { content: 'ok' } }] }) })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const probe = (await (await fetch(`${base}/fabric/test`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'http', name: 'lm', url: up.url, api: 'openai-compat', model: 'qwen', probe: 'generate', slot: 'llm' }),
+    })).json()) as { ok: boolean; generate?: { ok: boolean; latencyMs?: number } }
+    assert.equal(probe.ok, true) // reachable
+    assert.equal(probe.generate?.ok, true) // AND generation succeeded
+    assert.equal(typeof probe.generate?.latencyMs, 'number')
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /fabric/test probe:generate — a pings-200-but-model-load-400 server is caught HONESTLY', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  // The founder's exact wall: the base GET answers (reachable), the completion 400s "failed to load", and
+  // the server reports a smaller model it DOES have — so the hint gains the loaded-model suggestion.
+  const up = await startFakeChat(
+    { status: 400, body: JSON.stringify({ error: 'Model "qwen3.5-35b" failed to load. Error: failed to allocate buffer' }) },
+    ['qwen3.5-35b', 'qwen3.5-9b'],
+  )
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const probe = (await (await fetch(`${base}/fabric/test`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'http', name: 'lm', url: up.url, api: 'openai-compat', model: 'qwen3.5-35b', probe: 'generate', slot: 'llm' }),
+    })).json()) as { ok: boolean; generate?: { ok: boolean; class?: string; error?: string; hint?: string } }
+    assert.equal(probe.ok, true) // the PING still says reachable — which is exactly why the ping lied
+    assert.equal(probe.generate?.ok, false) // the real generation tells the truth
+    assert.equal(probe.generate?.class, 'model-load')
+    assert.match(probe.generate?.error ?? '', /failed to load/)
+    assert.match(probe.generate?.hint ?? '', /qwen3.5-9b/) // the loaded-model suggestion
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /fabric/test probe:generate — auth 401 and stt-skip', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const up = await startFakeChat({ status: 401, body: JSON.stringify({ error: 'invalid key' }) })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const post = async (body: unknown) =>
+      (await (await fetch(`${base}/fabric/test`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json()) as {
+        generate?: { ok: boolean; class?: string; skipped?: boolean; note?: string }
+      }
+    const auth = await post({ kind: 'http', name: 'lm', url: up.url, api: 'openai-compat', probe: 'generate', slot: 'llm' })
+    assert.equal(auth.generate?.ok, false)
+    assert.equal(auth.generate?.class, 'auth')
+
+    const stt = await post({ kind: 'http', name: 's', url: up.url, api: 'openai-compat', probe: 'generate', slot: 'stt' })
+    assert.equal(stt.generate?.skipped, true)
+    assert.match(stt.generate?.note ?? '', /needs audio/)
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('GET /queue: empty; then a model-load drain records the classified last failure', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const up = await startFakeChat(
+    { status: 400, body: JSON.stringify({ error: 'Model "big" failed to load' }) },
+    ['big', 'small'],
+  )
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+
+    // empty queue: no failure yet
+    const empty = (await (await fetch(`${base}/queue`)).json()) as { pendingFiles: number; lastFailure?: unknown }
+    assert.equal(empty.pendingFiles, 0)
+    assert.equal(empty.lastFailure, undefined)
+
+    // point llm at the broken server and turn on distill so the drain actually invokes it
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'lm-studio', url: up.url, api: 'openai-compat', model: 'big' }] } }),
+    })
+    for (const key of ['distill.enabled', 'distill.moments']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    await fetch(`${base}/capture/mic`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we will ship Thursday' }),
+    })
+
+    // the drain re-queues (file safe) but now records WHY — classified, with the loaded-model suggestion
+    await eventuallyHttp(async () => {
+      const q = (await (await fetch(`${base}/queue`)).json()) as { lastFailure?: { class: string; endpoint: string; hint: string } }
+      assert.equal(q.lastFailure?.class, 'model-load')
+      assert.equal(q.lastFailure?.endpoint, 'lm-studio')
+      assert.match(q.lastFailure?.hint ?? '', /small/) // the loaded-model suggestion made it into the hint
+    })
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 // --- Onboarding discovery + the Get-Started lens ---
 
 /** A fake OpenAI-compatible server whose /v1/models list we control. */
