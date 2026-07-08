@@ -1,0 +1,136 @@
+{
+  "$id": "OcrResult",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "sessionId",
+    "workspaceId",
+    "sourceChunks",
+    "text",
+    "provenance",
+    "schemaVersion",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sourceChunks": {
+      "description": "screen CaptureChunk ids understood in this pass",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "description": "opaque identifier",
+        "type": "string"
+      }
+    },
+    "text": {
+      "description": "the recognized text — flattened join of blocks (ocr) or the VLM prose",
+      "type": "string"
+    },
+    "blocks": {
+      "description": "per-region boxes+confidence; present for a region-aware (ocr) runtime, absent for a vlm",
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "description": "the recognized text of this region",
+            "type": "string"
+          },
+          "confidence": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          "region": {
+            "additionalProperties": false,
+            "description": "bounding box in the frame pixel coordinate space",
+            "type": "object",
+            "required": [
+              "x",
+              "y",
+              "width",
+              "height"
+            ],
+            "properties": {
+              "x": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "y": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "width": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "height": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "slot",
+        "endpoint"
+      ],
+      "properties": {
+        "slot": {
+          "description": "which capability slot produced this — a subset of SlotName",
+          "anyOf": [
+            {
+              "const": "ocr",
+              "type": "string"
+            },
+            {
+              "const": "vlm",
+              "type": "string"
+            }
+          ]
+        },
+        "endpoint": {
+          "minLength": 1,
+          "description": "fabric endpoint name that produced this",
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      }
+    },
+    "schemaVersion": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

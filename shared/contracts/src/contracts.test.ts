@@ -14,7 +14,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface', workflow: 'WorkflowSpec',
   flag: 'Flag', workspaceHints: 'WorkspaceHints', commitment: 'Commitment', workspace: 'Workspace', moment: 'Moment',
   captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
-  distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
+  distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', ocrResult: 'OcrResult', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', queryResult: 'QueryResult',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
   endpointProbe: 'EndpointProbe', generateProbe: 'GenerateProbe',

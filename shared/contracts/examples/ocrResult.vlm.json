@@ -1,0 +1,10 @@
+{
+  "id": "ocr-002",
+  "sessionId": "ses-acme",
+  "workspaceId": "ws-sales",
+  "sourceChunks": ["chunk-0202"],
+  "text": "A renewal quote screen showing a total of $48,000, with a highlighted retention discount line.",
+  "provenance": { "slot": "vlm", "endpoint": "vlm-local", "model": "qwen2.5-vl" },
+  "schemaVersion": 1,
+  "createdAt": "2026-07-07T14:06:02-04:00"
+}

@@ -4,6 +4,7 @@ export * from './records/moment.js'
 export * from './records/entity.js'
 export * from './records/distillate.js'
 export * from './records/screen.js'
+export * from './records/ocr.js'
 export * from './records/draft.js'
 export * from './records/session.js'
 export * from './records/workspace.js'
@@ -27,6 +28,7 @@ import { Moment, MomentKind } from './records/moment.js'
 import { Entity } from './records/entity.js'
 import { Distillate } from './records/distillate.js'
 import { ScreenFrameMeta } from './records/screen.js'
+import { OcrResult } from './records/ocr.js'
 import { Draft } from './records/draft.js'
 import { Session } from './records/session.js'
 import { Workspace } from './records/workspace.js'
@@ -46,7 +48,7 @@ import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, Queu
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
-  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, Draft, Session, Workspace, Pin, Commitment, Watcher,
+  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, Commitment, Watcher,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,

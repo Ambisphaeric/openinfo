@@ -1,0 +1,14 @@
+{
+  "id": "ocr-001",
+  "sessionId": "ses-acme",
+  "workspaceId": "ws-sales",
+  "sourceChunks": ["chunk-0201"],
+  "text": "Renewal quote\nTotal: $48,000",
+  "blocks": [
+    { "text": "Renewal quote", "confidence": 0.98, "region": { "x": 120, "y": 88, "width": 240, "height": 34 } },
+    { "text": "Total: $48,000", "confidence": 0.94, "region": { "x": 120, "y": 130, "width": 260, "height": 34 } }
+  ],
+  "provenance": { "slot": "ocr", "endpoint": "ocr-box", "model": "paddle-ocr-v4" },
+  "schemaVersion": 1,
+  "createdAt": "2026-07-07T14:05:11-04:00"
+}
