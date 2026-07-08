@@ -13,6 +13,7 @@ import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, type SetupData } from '../surfaces/index.js'
+import { handleScreen } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -227,6 +228,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
   if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, await ctx.queue.status())
+  if (url.pathname === '/screen' || url.pathname.startsWith('/screen/')) return handleScreen(req, res, ctx) // P4B: screen-OCR results + status (router owned by screen/)
   // /setup is the former name of the Settings surface — 301 to /settings, preserving any subpath +
   // query (?edit=, ?surface=, ?discover=). The old URL must keep working (README/skills/first-run).
   if (req.method === 'GET' && (url.pathname === '/setup' || url.pathname.startsWith('/setup/'))) {
