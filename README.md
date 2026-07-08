@@ -41,7 +41,10 @@ With the engine up, everything is the typed HTTP API — the client never touche
 curl localhost:8787/health
 curl localhost:8787/flags                     # every flag, all default:false
 curl localhost:8787/registers                 # the 5 built-in voice registers
+curl localhost:8787/layouts/surfaces                     # every HUD layout (seeded + yours)
 curl localhost:8787/layouts/surfaces/surf-openinfo-hud   # the HUD, as a document
+# edit it with forms (reorder/add/remove blocks, top, collapsed, clone) — no JSON by hand:
+open http://localhost:8787/setup?surface=surf-openinfo-hud    # the HUD-layout editor (also linked from /setup)
 
 # start a session, then ask the HUD's relevant-now block for data
 curl -sX POST localhost:8787/sessions -H 'content-type: application/json' \

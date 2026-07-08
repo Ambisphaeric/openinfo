@@ -38,7 +38,7 @@ openinfo/
 │  ├─ queue/                    P1   spool · drain (P2: optional distill processor · drainNow flushes before the act) │ P3: eta │ gc
 │  ├─ overlay/                  P2   rules/lenses · roles · ontology (voice lives in voice/)
 │  ├─ flags/                    P0   flag registry (flags are documents)
-│  ├─ surfaces/                 P2   HUD surface documents (documents/defaults) · block-query compiler (query.ts: BlockQuery→store calls) · setup/ (GET /setup — the first ENGINE-served surface: forms over profile+secret docs; the Get-Started capability lens over /fabric/discover) │ P4: serve workbench │ P6: custom-block sandbox (rabbithole pattern)
+│  ├─ surfaces/                 P2   HUD surface documents (documents/defaults; list() + GET /layouts/surfaces) · block-query compiler (query.ts: BlockQuery→store calls) · setup/ (GET /setup — ENGINE-served forms over profile+secret docs; the Get-Started capability lens over /fabric/discover; surface-editor.ts + editor-assets.ts — the HUD-LAYOUT editor at /setup?surface=<id>, forms over surface docs, v0.5) │ P4: serve workbench │ P6: WYSIWYG/drag-drop editor · custom-block sandbox (rabbithole pattern)
 │  └─ teach/                    P2   dismiss/reroute signals → extraction prompts (quality flywheel)
 │
 ├─ apps/client/src/             thin Electron client — NEVER opens a database

@@ -9,9 +9,14 @@ Adding a block is a pure document edit — you fetch a surface, splice a block i
 it back. No application code, no new route. Every step below is a real engine call; verify each against
 `shared/contracts/src/api/routes.ts`.
 
-1. Fetch the target surface document: `GET /layouts/surfaces/{id}` (200 → a `Surface`; 404 if no such
-   id — e.g. `surf-openinfo-hud` is the shipped HUD). **Keep this exact document** — it is how you revert
-   (step 6).
+**Prefer the forms editor when a human is driving.** `GET /setup?surface={id}` is an engine-served
+HUD-layout editor (forms over the surface document): reorder/add/remove blocks, toggle `collapsed`, set
+`top`/`show`, rename, clone, or edit raw JSON, then Save. `/setup` also lists every surface under "HUD
+layout". The steps below are the API path (for scripts/agents); the editor uses these exact routes.
+
+1. Enumerate surfaces with `GET /layouts/surfaces` (→ `Surface[]`), or fetch one directly:
+   `GET /layouts/surfaces/{id}` (200 → a `Surface`; 404 if no such id — e.g. `surf-openinfo-hud` is the
+   shipped HUD). **Keep this exact document** — it is how you revert (step 6).
 2. Choose a block type. The built-ins are the enum at `GET /contracts/BlockTypeName` (a JSON Schema whose
    members are the valid `block` values: `now` · `moments` · `relevant-now` · `ledger` · `pinned-doc` ·
    `hint` · `ask` · `custom`). Prefer a built-in over `custom`.
@@ -26,7 +31,10 @@ it back. No application code, no new route. Every step below is a real engine ca
    `version` itself** — your `version` field is required by the schema (integer ≥ 1) but its value is
    ignored on save; the store increments the latest stored version. On success `200` returns the saved
    document with the bumped version. On **`400`** the body is `{ "error": "invalid Surface", "details":
-   [ ... ] }` — read `details` (e.g. `"/stack/0/block: Expected union value"`), fix, retry once.
+   [ ... ] }` — read `details` (e.g. `"/stack/0/block: Expected union value"`), fix, retry once. The PUT
+   also emits a **`surface.updated`** WS event carrying the saved doc — any HUD rendering THIS surface id
+   refetches and re-renders within a second (no restart). Clone a surface by PUTting a copy under a NEW id
+   (there is no clone endpoint — PUT creates if absent).
 6. Revert: **there is no rollback endpoint** (`POST /layouts/surfaces/{id}/rollback` does not exist). The
    engine keeps every prior version internally, but the API way to undo is to PUT back the document you
    kept from step 1 — the engine stamps a new version whose shape matches the pre-edit one. So: hold the
