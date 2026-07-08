@@ -117,3 +117,114 @@ The executor (slice 2), typed queues (slice 3), the dynamic to-do seam (slice 4)
 `StepGate` · graph edges/fan-out on `WorkflowSpec` (the DAG, per workflow/README) · a "add a workflow
 step kind" CONTRIBUTING recipe (belongs with the executor that makes a kind runnable) · the
 `workflow.enabled` flag (slice 2 owns it).
+
+## Slice: Executor v0 — the pipeline runs from the document  *(P4A, Terminal A, branch p4a-workflow)*
+
+The second P4A slice migrates the hardcoded drain/session-end wiring in `api/http.ts` to a
+`WorkflowExecutor` that runs the seeded `workflow-default` document, gated by a new `workflow.enabled`
+flag (default OFF). OFF leaves the legacy direct-wiring byte-for-byte untouched; ON is behavior-identical.
+
+### Module layout (`apps/engine/src/workflow/`)
+- **`executor.ts`** — `WorkflowExecutor`. Pure orchestration over a `WorkflowSpec`; composes INJECTED
+  capability seams (`distill`/`transcribe`/`drainNow`/`acts`) rather than importing fabric, so it is
+  unit-testable with fakes. Two public methods, one per seam: `runDrain(chunks)` and
+  `runSessionEnd(session)`.
+- **`documents.ts`** — `WorkflowDocuments`, the house documents-store (mirrors `ActDocuments`/
+  `SurfaceDocuments`): seeds `workflow-default` when absent, exposes `active()` / `get(id)`.
+- **`defaults.ts`** — `loadDefaultWorkflow()` reads the SAME validated example the contract slice seeded
+  (`shared/contracts/examples/workflow.default.json`), not an inlined copy — one source of truth, mirroring
+  `api/defaults.ts::loadDefaultFlags`.
+- **`index.ts`** — barrel.
+
+### Where the document is read
+FRESH per call — `runDrain`/`runSessionEnd` each call `docs.active()`, which reads the store's latest
+`workflow-default` (falling back to the shipped default). This is the flags/surfaces hot-edit pattern: a
+future document edit takes effect with no engine restart, matching how the drain reads `distill.*` flags
+per-drain. The `workflow.enabled` flag is likewise read per-drain / per-session-end in `api/http.ts`, so
+the whole executor is hot-flippable.
+
+### How the two paths diverge in `api/http.ts`
+- **Drain callback** (`CaptureQueue` processor): the focus→detector routing (`route.detect`) stays
+  OUTSIDE the executor and runs on BOTH paths first (routing CONTEXT, not a pipeline step — PHASE3
+  distill-hygiene). Then `if (isFlagEnabled(store, 'workflow.enabled')) return executor.runDrain(chunks)`;
+  else the legacy `distill.enabled`-gated transcribe?→distill body, unchanged. Both feed the SAME
+  `distiller.distillChunks` and the SAME `CaptureQueue`, whose injected `toQueueFailure` classifier does
+  the retry-at-idle re-queue on any processor throw.
+- **`session.ended` subscription**: inside the existing `void (async () => …).catch(…)`,
+  `if (isFlagEnabled(store, 'workflow.enabled')) return executor.runSessionEnd(session)`; else the legacy
+  `act.enabled` gate → `drainNow` → `runFollowUpDraft`.
+- `runTranscribe` (the stt pre-stage closure) is now shared verbatim by the legacy drain body AND the
+  executor's `transcribe` seam, so the two are literally the same call.
+
+### Coalescing (the slice-1 seam contract, enforced here)
+`runDrain` reads the drain-triggered steps and folds the distill family into ONE `distillChunks` call:
+the `distill` step's when-flag (`distill.enabled`) gates the WHOLE call (no distill step or flag off →
+return, exactly like the legacy `if (!distill.enabled) return`); the `transcribe` step is its pre-stage
+(runs `transcribeChunks` only when its when-flag is on); `moments`/`index` map to
+`{ extractMoments, extractEntities }` (step present AND its when-flag on). `when.flag` gates a single
+flag — it does not express the "rides the distill pass" dependency; the coalescing does.
+
+### Behavior-identical — the proof
+- **Flag OFF = legacy untouched**: the ENTIRE existing engine suite runs with `workflow.enabled` default
+  OFF, so all 43 prior `http.test.ts` cases (drain distill e2e, ≤60s draft e2e, act-OFF-no-draft,
+  transcription re-queue) are the OFF-path regression proof — unchanged and green.
+- **Flag ON = identical observable behavior**: two new `http.test.ts` e2e mirror the legacy drain and
+  draft e2e with `workflow.enabled` ON, through the real spool: (1) drain distills → the `Thursday`
+  commitment moment hydrates over `GET /moments`; (2) session-end drains-first → exactly one
+  `follow-up-draft` draft, `status: prepared`, `templateId: tpl-followup-default`, retrievable via
+  `GET /drafts`.
+- **Unit level** (`executor.test.ts`, 13 tests): distill-family gating, coalescing into exactly one call,
+  transcribe/distill throw propagation (retry-at-idle), unwired `ocr`/`vlm` + stray drain-act
+  skip-with-log, drain-first ordering on session-end, act-off = no-drain-no-act, unregistered-act
+  skip-with-log, and the trigger split (session-end act never fires on the drain, drain distill never
+  fires on session-end).
+
+### Honest handling of unwired kinds
+`ocr`/`vlm` have no executor path (P4B owns invocation): a drain step of that kind is skipped-with-log,
+never crashes. An act step wrongly triggered on the drain, and a session-end act with no registered
+runner, are likewise skipped-with-log. The default document exercises none of these; they are defensive
+against an edited document.
+
+### Rule-7 check (definition of done)
+- **Flag** (rule 3): `workflow.enabled` added to `flag.examples.json` (default OFF, engine scope, T1),
+  seeded via the existing `ensureDefaultFlags` mechanism — the one new gated behavior this slice adds.
+- **Recipes/skills**: grepped `skills/` and `CONTRIBUTING.md` for the drain wiring / flag names — no
+  recipe references the drain callback, the session.ended trigger, or the distill.*/act.enabled flags by
+  name, so there is nothing there to keep true. (No "add a workflow step kind" recipe exists yet; it is
+  still deferred with the configurability work.)
+- **Contracts**: no contract change this slice (slice 1 shipped `WorkflowSpec` + the example). No new
+  route (see Deferred).
+- **CODE_MAP**: `workflow/` tree note updated to "executor v0 built"; `flags/` note + the future-features
+  "Workflow substrate" row updated.
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Engine **296** (281 before slice-2 tests +
+13 executor unit + 2 workflow ON e2e), contracts **52**, client 138/139.
+Flakes seen and confirmed by rerun (both named in the brief / PHASE3-NOTES): the drain-timing e2e in
+`http.test.js` and the client-seam TOCTOU in `apps/client` — each passes on rerun, neither touches
+workflow code.
+
+### Seam notes for the next slices
+- **Slice 3 (typed queues)**: the executor is DOWNSTREAM of the spool — it is the `CaptureQueue`
+  processor's body (drain) and the `session.ended` handler (act). It composes `queue.drainNow` via an
+  injected `drainNow` seam and never imports the queue. Typed queue kinds (audio/screen/llm-work) and
+  per-kind depth are a spool concern; the executor only needs its `distill`/`transcribe`/`drainNow` seams
+  to keep their signatures. DO NOT break: the processor-throw → `toQueueFailure` → re-queue path (the
+  executor's contract is simply "throw to re-queue"), and the drain-first flush before session-end acts.
+- **Slice 4 (task-extract act)**: add a second `kind: act, trigger: session-end` step to
+  `workflow.default.json` (e.g. `task-extract`) and register its runner in the `acts` map passed to
+  `WorkflowExecutor` in `api/http.ts` (`acts: { 'follow-up-draft': …, 'task-extract': … }`). `runSessionEnd`
+  already runs every enabled session-end act in document order after the single drain-first flush — no
+  executor change needed for a second act. A to-do document that a later draft step reads as a template
+  variable is the new surface; the executor's act-runner signature already passes the `step` so params
+  (e.g. the to-do doc id) can be threaded. This second act is ALSO the README's "real trigger" for the
+  DAG (more than one act) — but two INDEPENDENT session-end acts still fit the linear list; the graph is
+  only forced when one act's input is another act's output.
+
+### Deferred (out of this slice, by scope)
+- **GET/PUT `/workflows` resource route** — deferred to keep the slice tight (would need a contracts
+  `Routes` additive row + route tests). The read seam (`documents.active()`) is already the hot-editable
+  one, so the route drops in later with NO executor change; the document is read-only from the seed for
+  now.
+- The condition DSL in `StepGate`, graph edges/fan-out on `WorkflowSpec` (the DAG), `compile.ts`
+  (Mode.acts → document), and typed queues / dynamic to-do (slices 3–4).

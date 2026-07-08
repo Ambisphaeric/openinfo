@@ -639,6 +639,112 @@ test('act.enabled OFF: ending a session prepares no draft', async () => {
   }
 })
 
+// ---- workflow.enabled ON: the executor path is behavior-identical to the legacy wiring above ----
+// The whole existing suite runs with workflow.enabled OFF (default), so those tests ARE the "flag OFF =
+// legacy path untouched" proof. These two flip it ON and assert the SAME observable outcome through the
+// real spool: the drain distills identically, and session-end drains-first then prepares one draft.
+
+test('e2e: workflow.enabled ON → the executor drain distills identically (moments over the API)', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    // the same distill flags as the legacy drain e2e, PLUS workflow.enabled ON → the executor runs
+    for (const key of ['distill.enabled', 'distill.moments', 'distill.index', 'workflow.enabled']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 7, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'Dana agreed, ship Thursday')]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+    // identical outcome to the legacy drain e2e: the extracted commitment hydrates over the API
+    await eventuallyHttp(async () => {
+      const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
+      assert.ok(moments.some((m) => m.kind === 'commitment' && /Thursday/.test(m.text)))
+    })
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('e2e: workflow.enabled ON → session-end drains-first then prepares one follow-up draft', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const drafts: Draft[] = []
+  app.bus.subscribe('draft.created', (d) => { drafts.push(d) })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    for (const key of ['distill.enabled', 'distill.moments', 'act.enabled', 'workflow.enabled']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 7, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'agreed, Thursday it is')]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+    await eventuallyHttp(async () => {
+      const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
+      assert.ok(moments.length >= 1)
+    })
+    // end the call — the executor's session-end seam flushes the drain then composes the follow-up draft
+    await fetch(`${base}/sessions/${encodeURIComponent(started.id)}/end`, { method: 'POST' })
+    await eventuallyHttp(async () => assert.equal(drafts.length, 1))
+    const draft = drafts[0]!
+    assert.equal(draft.actKind, 'follow-up-draft')
+    assert.equal(draft.status, 'prepared')
+    assert.equal(draft.sessionId, started.id)
+    assert.equal(draft.provenance.templateId, 'tpl-followup-default')
+    // retrievable over the API, exactly like the legacy path
+    const listed = (await (await fetch(`${base}/drafts?workspace=default&session=${started.id}`)).json()) as Draft[]
+    assert.deepEqual(listed.map((d) => d.id), [draft.id])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
 test('GET /registers serves the seeded builtin registers', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })

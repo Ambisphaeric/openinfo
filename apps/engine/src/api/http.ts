@@ -12,6 +12,7 @@ import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from 
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
+import { WorkflowDocuments, WorkflowExecutor } from '../workflow/index.js'
 import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, type SetupData } from '../surfaces/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
@@ -76,6 +77,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const surfaces = new SurfaceDocuments(store)
   const discovery = new DiscoveryDocuments(store)
   const starterModels = new StarterModelsDocuments(store)
+  const workflow = new WorkflowDocuments(store)
   // Tier zero (ARCHITECTURE §8, slice c): the engine downloads + spawns managed local runtimes.
   // The model store maps a `local` endpoint's model ref to its on-disk path; the runtime manager
   // spawns llama.cpp/whisper.cpp on demand and is threaded into invoke/health so local endpoints
@@ -98,6 +100,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   surfaces.ensureDefaults()
   discovery.ensureDefaults()
   starterModels.ensureDefaults()
+  workflow.ensureDefaults()
 
   const distiller = new Distiller({
     store,
@@ -128,23 +131,35 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     publish: (event, session) => bus.publish(event, session),
     log,
   })
+  // The pre-distill transcription stage (distill.transcribe): rewrites base64 audio/* chunks (mic →
+  // "me", system-audio → "them") to utf8 text via the stt slot BEFORE the distiller's utf8 filter;
+  // non-audio chunks pass through. A transcription transport failure propagates → the drain re-queues
+  // the file (retry-at-idle), exactly like distill/moments. Shared verbatim by the legacy drain path
+  // and the workflow executor's transcribe seam, so the two are byte-for-byte identical.
+  const runTranscribe = (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> =>
+    transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }), log })
+
+  // The executor runs the seeded workflow-default document behind workflow.enabled (default OFF). It is
+  // assigned just below (after the queue exists, so its drainNow seam can close over it) and referenced
+  // here lazily — the drain callback only fires async, long after assignment. See PHASE4-NOTES.
+  let executor: WorkflowExecutor
   const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
-    // Focus chunks feed the detector, never the distiller (distill hygiene, PHASE3-NOTES). Read the
-    // flag per-drain like the distill flags, so flipping it takes effect without a restart.
+    // Focus chunks feed the detector, never the distiller (distill hygiene, PHASE3-NOTES). This is
+    // routing CONTEXT, not a workflow step, so it stays OUTSIDE the executor and runs on BOTH paths.
+    // Read the flag per-drain like the distill flags, so flipping it takes effect without a restart.
     if (isFlagEnabled(store, 'route.detect')) {
       const signals = extractFocusSignals(chunks, log)
       if (signals.length > 0) await attributor.observe(signals)
     }
+    // workflow.enabled ON → the executor runs the workflow document (behavior-identical to the legacy
+    // path below with the seeded default). Read per-drain so the flag is hot-flippable like the others.
+    if (isFlagEnabled(store, 'workflow.enabled')) return executor.runDrain(chunks)
+    // ---- legacy direct-wiring path (workflow.enabled OFF): untouched, byte-for-byte behavior ----
     if (!isFlagEnabled(store, 'distill.enabled')) return
-    // Transcription is a pre-distill drain stage (distill.transcribe, OFF by default). It rewrites
-    // base64 audio/* chunks (mic → "me", system-audio → "them") to utf8 text via the stt slot BEFORE
-    // the distiller's utf8 filter; non-audio chunks pass through. It is gated INSIDE distill.enabled
-    // on purpose — there is no persistence path for transcribed-but-undistilled text, so running stt
-    // when nothing will distill it is pure waste (see PHASE2-NOTES). A transcription transport failure
-    // propagates → the drain re-queues the file (retry-at-idle), exactly like distill/moments.
-    const ready = isFlagEnabled(store, 'distill.transcribe')
-      ? await transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }), log })
-      : chunks
+    // Transcription is a pre-distill drain stage (distill.transcribe, OFF by default). It is gated
+    // INSIDE distill.enabled on purpose — there is no persistence path for transcribed-but-undistilled
+    // text, so running stt when nothing will distill it is pure waste (see PHASE2-NOTES).
+    const ready = isFlagEnabled(store, 'distill.transcribe') ? await runTranscribe(chunks) : chunks
     await distiller.distillChunks(ready, {
       extractMoments: isFlagEnabled(store, 'distill.moments'),
       extractEntities: isFlagEnabled(store, 'distill.index'),
@@ -170,9 +185,27 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     publish: (draft) => bus.publish('draft.created', draft),
     log,
   })
+  // The executor composes the SAME seams the legacy paths use (distill/transcribe/drainNow/acts), so
+  // workflow.enabled ON with the seeded workflow-default is behavior-identical: same flags honored, same
+  // retry-at-idle propagation (transcribe/distill throws bubble out so the drain re-queues), same
+  // drain-first flush before the act. See PHASE4-NOTES for the byte-for-byte proof.
+  executor = new WorkflowExecutor({
+    store,
+    docs: workflow,
+    distill: (chunks, opts) => distiller.distillChunks(chunks, opts),
+    transcribe: runTranscribe,
+    drainNow: () => queue.drainNow(log),
+    acts: { 'follow-up-draft': async (session) => void (await actor.runFollowUpDraft(session)) },
+    log,
+  })
+
   bus.subscribe('session.ended', (session) => {
-    if (!isFlagEnabled(store, 'act.enabled')) return
     void (async () => {
+      // workflow.enabled ON → the executor's session-end seam (drain-first flush, then the enabled
+      // session-end acts). OFF → the legacy act trigger, byte-for-byte: act.enabled gate, then drainNow
+      // → runFollowUpDraft. The flag is read per-event so it is hot-flippable like the drain path.
+      if (isFlagEnabled(store, 'workflow.enabled')) return executor.runSessionEnd(session)
+      if (!isFlagEnabled(store, 'act.enabled')) return
       await queue.drainNow(log)
       await actor.runFollowUpDraft(session)
     })().catch((error: unknown) =>
