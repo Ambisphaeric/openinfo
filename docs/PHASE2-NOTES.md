@@ -1761,3 +1761,32 @@ honest `{ ok:false, error:"fetch failed" }` (that host isn't reachable from this
 it answers). Page opened in the default browser. Ceiling (as prior slices): a pixel screenshot isn't automated;
 the served markup + every API link the page drives are exercised above.
 
+
+## Phase 2 — code-complete (closing status)
+
+Phase 2 is **code-complete** as of the slices recorded above (distill · moments · index · sessions · HUD ·
+the follow-up-draft Act node · fabric profiles/secrets/discover/local tier-zero · `/setup` · the real client
+shell · mic + system-audio capture · STT in the fabric + transcription riding the drain). What remains for
+the *exit demo* is convergence-time dogfood, not construction.
+
+IMPLEMENTATION §Phase-2 exit: *"live-meeting demo … on local models only, with a register bound and visibly
+shaping the draft (run the same meeting through `boardroom` and `sales-floor`; the two drafts must read
+differently)."* Honest status, split by what proves it:
+
+- **Met by tests (constructional).** The whole pipeline runs end-to-end in CI: session start → capture spool
+  → drain/distill (+ moments + entities) → HUD hydration → session end → a register-bound follow-up draft
+  ≤ 60s, retrievable via `GET /drafts`. The register-shaping half is proven constructionally — the
+  boardroom-vs-sales-floor test seeds identical material and asserts the two draft bodies differ
+  (`assert.notEqual`, with a prompt-echoing fake llm). STT + transcription-on-drain give the audio→text
+  stage; the client shell + mic/system-audio capture give the real input path (each verified on live
+  hardware in its slice, logs cited above). Build + tests green: contracts 40 · engine 173 · client 84.
+- **Pending live (convergence — human dogfood).** The EXPERIENTIAL half of the exit criterion: a human
+  attends a **real meeting** on **local models** and judges (a) the HUD is alive and trustworthy and (b) the
+  two real drafts (boardroom vs sales-floor) read differently *to a person*, not just as non-equal strings.
+  Plus **AEC numbers** — real acoustic-echo-cancellation quality on the me/them split (mic + system-audio)
+  measured on hardware, not in CI (all llm/stt calls in CI are fakes; the #2 risk — local-model quality — is
+  tuned against lived meetings over calendar time). These are convergence-time per CODE_MAP's
+  construction-vs-convergence note; none is a constructional blocker.
+
+Net: **demo-able now, exit-provable after a dogfood cycle** (a real meeting + AEC measurement). No Phase-2
+code is known-missing for the criterion.

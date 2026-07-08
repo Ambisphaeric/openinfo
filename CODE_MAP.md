@@ -19,7 +19,7 @@ openinfo/
 │  └─ schemas/                  P0   generated JSON Schema — language-neutral (Rust-portable)
 │
 ├─ apps/engine/src/             the daemon (localhost default, any host:port by config)
-│  ├─ api/                      P1   http, ws, routes/ per resource
+│  ├─ api/                      P1   http.ts (all route handlers, one dispatcher) · ws · json/validation/defaults
 │  ├─ bus/                      P1   ← loom packages/bus
 │  ├─ store/                    P1   ← loom packages/store + sqlite-vec
 │  │                                 workspace-registry (DB-FILE PER WORKSPACE) · sessions (P2: manual start/stop lifecycle) · distillates/moments/entities/drafts (P2) · graph (P3) · layouts (P2)
