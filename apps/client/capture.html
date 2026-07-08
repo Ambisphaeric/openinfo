@@ -5,12 +5,13 @@
     <title>openinfo — capture (hidden)</title>
     <!--
       The hidden capture window's document. It is NEVER shown and has no UI — it exists only to host a
-      Chromium renderer where getUserMedia can run (the mic). It loads the compiled capture renderer,
-      which listens on the openinfoMic preload bridge (mic-preload.cts) for start/stop and streams
-      finished audio segments up to the main process. See mic-renderer.ts + PHASE2-NOTES.
+      Chromium renderer where getUserMedia can run (mic + system-audio). It loads the compiled capture
+      renderer, which listens on the openinfoCapture preload bridge (capture-preload.cts) for per-source
+      start/stop and streams finished audio segments up to the main process. See capture-renderer.ts +
+      PHASE2-NOTES.
     -->
   </head>
   <body>
-    <script type="module" src="./dist/capture/mic-renderer.js"></script>
+    <script type="module" src="./dist/capture/capture-renderer.js"></script>
   </body>
 </html>

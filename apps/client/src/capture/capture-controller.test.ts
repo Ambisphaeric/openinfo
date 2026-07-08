@@ -5,30 +5,34 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CaptureChunk } from '@openinfo/contracts'
 import { EngineLink } from '../engine-link/index.js'
-import { MicCaptureController, type MicControllerDeps, type MicState } from './mic-controller.js'
-import { MIC_CHANNELS, type RawSegment } from './protocol.js'
+import { CaptureController, type CaptureControllerDeps, type CaptureState } from './capture-controller.js'
+import { CAPTURE_CHANNELS, type RawSegment } from './protocol.js'
 
 const seg = (over: Partial<RawSegment> = {}): RawSegment => ({
+  source: 'mic',
   bytes: new Uint8Array([1, 2, 3]).buffer,
   mimeType: 'audio/webm;codecs=opus',
   capturedAt: '2026-07-07T10:00:00.000Z',
   ...over,
 })
 
-/** A controller wired to spies, with sensible test defaults (enabled, permission granted). */
-const harness = (over: Partial<MicControllerDeps> = {}) => {
+/** A controller wired to spies, with sensible test defaults (mic source, enabled, permission granted). */
+const harness = (over: Partial<CaptureControllerDeps> = {}) => {
   const captured: CaptureChunk[] = []
   const control: string[] = []
-  const states: MicState[] = []
-  const deps: MicControllerDeps = {
+  const states: CaptureState[] = []
+  const silences: boolean[] = []
+  const deps: CaptureControllerDeps = {
+    source: 'mic',
     enabled: true,
     capture: async (chunk) => void captured.push(chunk),
     control: { start: () => control.push('start'), stop: () => control.push('stop') },
     requestPermission: async () => true,
     onStateChange: (s) => states.push(s),
+    onSilence: (silent) => silences.push(silent),
     ...over,
   }
-  return { controller: new MicCaptureController(deps), captured, control, states }
+  return { controller: new CaptureController(deps), captured, control, states, silences }
 }
 
 test('happy path: start → capture segments → end flushes the final in-flight segment → idle', async () => {
@@ -104,7 +108,7 @@ test('denial path: permission refused ⇒ capture disabled, no renderer start, s
 test('renderer-reported permission-denied flips to denied even if the OS pre-check passed', async () => {
   const h = harness()
   await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
-  h.controller.onStatus({ state: 'permission-denied' })
+  h.controller.onStatus({ source: 'mic', state: 'permission-denied' })
   assert.equal(h.controller.currentState, 'denied')
   await h.controller.onSegment(seg())
   assert.equal(h.captured.length, 0) // context cleared by the denial
@@ -150,18 +154,18 @@ test('shutdown mid-capture stops the renderer cleanly', async () => {
 })
 
 test('IPC protocol shape is stable (the renderer/preload/main contract)', () => {
-  assert.deepEqual(MIC_CHANNELS, {
-    start: 'mic:start',
-    stop: 'mic:stop',
-    segment: 'mic:segment',
-    stopped: 'mic:stopped',
-    status: 'mic:status',
+  assert.deepEqual(CAPTURE_CHANNELS, {
+    start: 'capture:start',
+    stop: 'capture:stop',
+    segment: 'capture:segment',
+    stopped: 'capture:stopped',
+    status: 'capture:status',
   })
 })
 
 test('spool integration: with the engine unreachable, capture spools instead of losing chunks', async () => {
   // A real EngineLink pointed at a dead port → capture() POST fails → the chunk is spooled to disk.
-  const spoolDir = await mkdtemp(join(tmpdir(), 'mic-spool-'))
+  const spoolDir = await mkdtemp(join(tmpdir(), 'capture-spool-'))
   const link = new EngineLink({ baseUrl: 'http://127.0.0.1:1', spoolDir })
   const h = harness({ capture: (chunk) => link.capture(chunk) })
 
@@ -171,4 +175,49 @@ test('spool integration: with the engine unreachable, capture spools instead of 
 
   const files = (await readdir(spoolDir)).filter((f) => f.endsWith('.json'))
   assert.equal(files.length, 2) // both segments durably spooled, nothing thrown, nothing lost
+})
+
+// --- system-audio ("them") source — rhymes with mic, plus its two source-scoped behaviours ------------
+
+test('system-audio: no BlackHole-like device ⇒ unavailable (benign), never captures, session unaffected', async () => {
+  const h = harness({ source: 'system-audio' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'starting') // told renderer to start; it will enumerate + match
+  h.controller.onStatus({ source: 'system-audio', state: 'no-device' }) // renderer found no virtual input
+  assert.equal(h.controller.currentState, 'unavailable')
+  await h.controller.onSegment(seg({ source: 'system-audio' })) // context cleared ⇒ ignored, no throw
+  assert.equal(h.captured.length, 0)
+  h.controller.onSessionEnded() // ending from unavailable just resolves to idle
+  assert.equal(h.controller.currentState, 'idle')
+})
+
+test('system-audio: captures chunks tagged system-audio through the same path when a device is present', async () => {
+  const h = harness({ source: 'system-audio' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(seg({ source: 'system-audio', silent: false }))
+  assert.equal(h.controller.currentState, 'capturing')
+  assert.equal(h.captured[0]?.source, 'system-audio')
+  assert.equal(h.captured[0]?.id, 'sys-A-000001') // the sys- prefix — never collides with a mic chunk
+})
+
+test('system-audio silence honesty: first silent signals silent, first real audio signals heard — once each', async () => {
+  const h = harness({ source: 'system-audio' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(seg({ source: 'system-audio', silent: true }))
+  await h.controller.onSegment(seg({ source: 'system-audio', silent: true }))
+  assert.deepEqual(h.silences, [true]) // fired ONCE on the first silent segment, not per segment
+  await h.controller.onSegment(seg({ source: 'system-audio', silent: false }))
+  assert.deepEqual(h.silences, [true, false]) // real audio → heard, fired once
+  await h.controller.onSegment(seg({ source: 'system-audio', silent: true }))
+  assert.deepEqual(h.silences, [true, false]) // once heard in a run, never reverts to "silent"
+  // Chunks flow regardless — we still spool silence (the engine transcribes it to empty, a normal outcome).
+  assert.equal(h.captured.length, 4)
+})
+
+test('mic segments carry no silent flag ⇒ the silence path is a strict no-op (mic behaviour unchanged)', async () => {
+  const h = harness({ source: 'mic' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(seg()) // no `silent` field on mic segments
+  await h.controller.onSegment(seg())
+  assert.deepEqual(h.silences, []) // onSilence never fires for mic
 })

@@ -11,6 +11,7 @@ const CHUNK_KEYS = ['id', 'sessionId', 'workspaceId', 'source', 'sequence', 'cap
 const bytesOf = (...values: number[]): ArrayBuffer => new Uint8Array(values).buffer
 const ctx: CaptureContext = { sessionId: 'sess-1', workspaceId: 'ws-1' }
 const segment = (over: Partial<RawSegment> = {}): RawSegment => ({
+  source: 'mic',
   bytes: bytesOf(1, 2, 3, 4),
   mimeType: 'audio/webm;codecs=opus',
   capturedAt: '2026-07-07T10:00:00.000Z',
@@ -53,4 +54,18 @@ test('sequence numbers are the caller-owned monotonic counter, folded into a sta
   assert.equal(first.id, 'mic-sess-1-000001')
   assert.equal(second.id, 'mic-sess-1-000002')
   assert.notEqual(first.id, second.id)
+})
+
+test('the source rides through from the segment; system-audio carries its own contract source', () => {
+  const chunk = segmentToChunk(segment({ source: 'system-audio' }), ctx, 1)
+  assert.equal(chunk.source, 'system-audio') // the engine attributes this "them"
+  assert.equal(chunk.encoding, 'base64')
+})
+
+test('mic and system-audio ids never collide even at the same sequence (distinct source prefixes)', () => {
+  const mic = segmentToChunk(segment({ source: 'mic' }), ctx, 1)
+  const sys = segmentToChunk(segment({ source: 'system-audio' }), ctx, 1)
+  assert.equal(mic.id, 'mic-sess-1-000001')
+  assert.equal(sys.id, 'sys-sess-1-000001')
+  assert.notEqual(mic.id, sys.id) // the two source runs share a session id but never a chunk id
 })
