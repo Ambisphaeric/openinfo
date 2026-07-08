@@ -4,10 +4,14 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, type MenuItemConstructorOptions } from 'electron'
 import type { Fabric, Flag } from '@openinfo/contracts'
-import { resolveShellConfig, type ShellConfig } from './config.js'
+import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { hudWindowSpec } from './window-options.js'
 import { buildTrayMenu, trayTooltip, type TrayState } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
+import { settingsUrlFor, isLanEngine } from './permission-help.js'
+import { ContextHealthTracker } from './context-health.js'
+import { shouldOpenSetup } from './first-run.js'
+import { readFirstRunState, markFirstRunShown } from './first-run-store.js'
 import { EngineSessionClient, SessionLiveState, needsModelSetup } from './engine-session.js'
 import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './tray-icon.js'
 import { grabOffset, draggedOrigin, resolveStartupPosition, type ScreenPoint } from './window-position.js'
@@ -32,14 +36,28 @@ const CAPTURE_HTML = path.join(__dirname, '..', '..', 'capture.html')
 const PRELOAD_JS = path.join(__dirname, 'preload.cjs') // .cts source → CommonJS preload (see preload.cts)
 const CAPTURE_PRELOAD_JS = path.join(__dirname, '..', 'capture', 'capture-preload.cjs') // .cts → CommonJS (see capture-preload.cts)
 
-const cfg: ShellConfig = resolveShellConfig()
+// env > ~/.openinfo/client.json > defaults — the file lets a double-clicked packaged .app point at an
+// engine without env vars (env still wins, so the verifier can override on the command line). See config.ts.
+const cfg: ShellConfig = resolveShellConfig(process.env, loadClientConfigFile())
 const session = new EngineSessionClient(cfg.engineUrl)
 const liveState = new SessionLiveState(cfg.workspace)
+// True once the engine's LAN class is known — drives the honest "check Local Network permission?" hint
+// when a non-loopback engine is unreachable (a possibility, never a detection). See permission-help.ts.
+const lanEngine = isLanEngine(cfg.engineUrl)
+// Tracks whether context detection is actually yielding window titles — drives the "Grant Accessibility…"
+// fix-it. Fed each focus sample in setupFocus. See context-health.ts.
+const contextHealth = new ContextHealthTracker()
 
 let hudWindow: BrowserWindow | undefined
 let captureWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let connected = false
+// Has the shell attempted the engine yet? Distinguishes first-boot "connecting…" from a genuine
+// "engine unreachable" leading state (set true once the first seed attempt resolves, success or fail).
+let engineTried = false
+// First-run /setup auto-open is evaluated at most once we've reached the engine (guarded so the two
+// seed calls — whenReady + WS open — never double-open, and a persisted firstRunShownAt never re-opens).
+let firstRunChecked = false
 let micState: CaptureState = 'idle'
 let systemState: CaptureState = 'idle'
 // The far side ("them") is present but delivering pure silence (device found, nothing routed) — the tray
@@ -70,6 +88,9 @@ const trayState = (): TrayState => ({
   visible: hudWindow?.isVisible() ?? false,
   sessionLive: liveState.live,
   connected,
+  engineTried,
+  engineUrl: cfg.engineUrl,
+  lanEngine,
   capturing: micState === 'capturing',
   micStarting: micState === 'requesting' || micState === 'starting',
   micBlocked: micState === 'denied',
@@ -77,6 +98,7 @@ const trayState = (): TrayState => ({
   systemSilent,
   needsModelSetup: needsSetup,
   watchingContext: focusActive,
+  accessibilityHint: contextHealth.needsAccessibility,
 })
 
 const refreshTray = (): void => {
@@ -126,6 +148,12 @@ const dispatch = (command: ShellCommand): void => {
       // is a forms-over-documents page, roomier than any tray UI, and works even against a remote
       // engine. No embedded webview (that is a later client-settings concern).
       void electronShell.openExternal(`${cfg.engineUrl}/setup`).catch((err) => console.error('[shell] open setup failed:', err))
+      return
+    case 'open-mic-settings':
+    case 'open-accessibility-settings':
+      // Denial must be actionable: an unsigned dev app can't re-fire a denied TCC prompt, so open the
+      // exact System Settings pane and let the user re-grant. See permission-help.ts.
+      void electronShell.openExternal(settingsUrlFor(command)).catch((err) => console.error(`[shell] open settings (${command}) failed:`, err))
       return
     case 'quit':
       app.quit()
@@ -390,14 +418,32 @@ const setupFocus = (): void => {
   const link = engineLink
   if (!link) return
   const runId = `${process.pid.toString(36)}-${Date.now().toString(36)}`
+  // Wrap the OS read to observe context-detection HEALTH: if we're actively watching but never get a
+  // window title (osascript read failing, or titles empty), the tray offers the "Grant Accessibility…"
+  // fix-it. This never changes what focus emits — it only watches the outcome. See context-health.ts.
+  const sample = async (): Promise<FrontmostWindow | undefined> => {
+    const before = contextHealth.needsAccessibility
+    let window: FrontmostWindow | undefined
+    try {
+      window = await readFrontmostWindow()
+    } catch (err) {
+      contextHealth.observe(undefined) // read threw (Accessibility likely denied) — count it as title-less
+      if (contextHealth.needsAccessibility !== before) refreshTray()
+      throw err // preserve the poller's keep-last-state-on-error semantics
+    }
+    contextHealth.observe(window)
+    if (contextHealth.needsAccessibility !== before) refreshTray()
+    return window
+  }
   focusPoller = new FocusPoller({
-    sample: readFrontmostWindow,
+    sample,
     emit: (chunk) => link.captureEphemeral(chunk),
     workspaceId: cfg.workspace,
     runId,
     enabled: cfg.focusEnabled,
     onActiveChange: (active) => {
       focusActive = active
+      contextHealth.setActive(active) // reset the health window when watching stops/starts
       refreshTray()
     },
     log: (message) => console.log(message),
@@ -439,6 +485,29 @@ const connectEvents = (): void => {
   socket.addEventListener('open', () => void seedSessionState())
 }
 
+/**
+ * First-run assembly: the FIRST time we reach the engine and find its llm slot empty (needsModelSetup),
+ * open /setup in the browser so a brand-new user lands on onboarding without hunting the tray — but at
+ * most ONCE per fresh state (a `firstRunShownAt` timestamp is persisted client-local; the ⚠ tray
+ * prominence stays as the always-available nudge thereafter). Engine unreachable ⇒ nothing to open (the
+ * tray leads with the unreachable state instead). Guarded so it never nags twice. See first-run.ts.
+ */
+const maybeOpenFirstRunSetup = (): void => {
+  if (firstRunChecked || !connected) return
+  const userData = app.getPath('userData')
+  const alreadyShown = readFirstRunState(userData).firstRunShownAt !== undefined
+  if (shouldOpenSetup({ engineReachable: connected, needsModelSetup: needsSetup, alreadyShown })) {
+    firstRunChecked = true
+    const now = new Date().toISOString()
+    markFirstRunShown(userData, now)
+    console.log('[shell] first run — llm slot empty, opening /setup once')
+    void electronShell.openExternal(`${cfg.engineUrl}/setup`).catch((err) => console.error('[shell] open setup (first run) failed:', err))
+  } else if (needsSetup !== undefined) {
+    // Reached the engine and we KNOW the setup state (already shown, or a model exists) — done for this run.
+    firstRunChecked = true
+  }
+}
+
 const seedSessionState = async (): Promise<void> => {
   try {
     liveState.seed(await session.liveSession(cfg.workspace))
@@ -446,6 +515,8 @@ const seedSessionState = async (): Promise<void> => {
   } catch (err) {
     console.error('[shell] could not reach engine for session state:', err)
     connected = false
+  } finally {
+    engineTried = true
   }
   // Seed the "Set up models…" prominence from the live fabric (best-effort — a failure just leaves
   // the nudge quiet rather than crashing the tray).
@@ -461,6 +532,7 @@ const seedSessionState = async (): Promise<void> => {
   } catch (err) {
     console.error('[shell] could not read flags for focus gating:', err)
   }
+  maybeOpenFirstRunSetup()
   refreshTray()
 }
 
