@@ -1598,3 +1598,106 @@ Both `llama-server` and `whisper-server` are installed via brew on this Mac. Dro
   change. Combining multiple downloaded starters into one config-1 (using a second starter overwrites the
   slot map today — one llm is enough to unlock Try-it). Local bench (real tok/s on the target machine —
   stays stubbed). A ranking DOCUMENT for the suggestion (in-code heuristic today).
+
+## Slice: System-audio capture in the client (the "them" half — BlackHole detect-and-guide) (2026-07-08)
+
+The mic slice captured **me**; the STT slice already attributes any `source: system-audio` chunk to
+**them**. This slice makes the client actually capture the far side of a call on macOS. The design note
+(ARCHITECTURE §8, dated 2026-07-08) weighed four routes and chose **(a) BlackHole detect-and-guide** for
+v0 — a virtual audio device read via the identical `getUserMedia` path the mic uses, **zero native code**
+— with **(b) a CoreAudio process-tap native module** as the designed future (it swaps only *how the second
+stream opens*, behind the same source-agnostic path built here). The `aec-loopback` spike had already ruled
+out Electron's Windows-only `audio: 'loopback'`, so a route was genuinely needed. **No engine or contract
+change:** `/capture/:source` already routes `system-audio`, and the STT slice already attributes it "them".
+
+### The two-stream pipeline — one window, one controller class, two instances
+The mic capture layer was **generalized to N sources rather than forked** (the standing "rhyme, don't
+fork" rule). Both streams run in the ONE existing hidden capture window; everything is now keyed by
+`source` (`mic` | `system-audio`):
+- `protocol.ts` — `mic:*` → **`capture:*`** channels, every payload source-tagged, plus a `no-device`
+  status and a `silent` segment flag. `MicBridge`/`MicStatus` → `CaptureBridge`/`CaptureStatus`.
+- `chunk.ts` — `segmentToChunk` folds a **per-source id prefix** (`mic-`/`sys-`) so chunk ids (and thus
+  spool filenames) never collide across sources even at the same sequence number; `source` rides off the
+  segment straight into the CaptureChunk.
+- `capture-controller.ts` (was `mic-controller.ts`), class `CaptureController` (was `MicCaptureController`):
+  ONE source-agnostic state machine, one instance per source. The mic path is **byte-identical** to the
+  mic-only slice; system-audio adds exactly two source-scoped behaviours, both strict no-ops for mic — a
+  `no-device` → **`unavailable`** state (benign absence, not an error) and **silence honesty**.
+- `capture-renderer.ts` (was `mic-renderer.ts`) — a `Capturer` per source. Mic = default input, EC/NS on
+  (unchanged). System-audio = enumerate devices → the pure `device-match.ts` matcher finds the virtual
+  input by name → `getUserMedia({ deviceId: { exact }, echoCancellation/noiseSuppression/autoGainControl:
+  false })` so the far end is faithful → an **AnalyserNode silence probe** (source → analyser → zero-gain
+  → destination) measures each segment's peak and flags `silent`.
+- `capture-preload.cts` (was `mic-preload.cts`) — `window.openinfoCapture`, methods now source-tagged.
+- `shell.ts` — builds **two** controllers wired to the same window over source-tagged IPC; the session
+  lifecycle starts/ends both. A **shared, in-flight-deduped Microphone-TCC request** covers both sources
+  (a BlackHole input is an audio input under the one Mic grant — no separate permission); it re-checks on
+  a later session. Per-source IPC routes by `source`.
+
+### Detection over configuration — the matcher is an in-code constant (justified)
+`device-match.ts::matchSystemAudioDevice` is a pure, ordered, lowercased substring matcher (BlackHole
+first, then near-neighbours), applied to enumerated `audioinput` devices with a real deviceId. The user
+**never types a device name**. It stays an **in-code constant, not a seeded document** — the same call
+`discover.ts::modelSizeRank` made: a tiny, client-local, single-purpose list that never crosses the seam
+and isn't user-editable is an honest in-code heuristic in v0. GRADUATION PATH recorded in the file: if it
+grows to several user-addable drivers it earns a seeded, versioned document like the capability map.
+
+### Honest UX — never claim to record silence
+An unrouted BlackHole (the common not-yet-set-up state) emits pure **digital silence**. So: the tray reads
+**`● rec (mic only)`** when no system device is present/capturing, **`● rec (mic + system)`** only when the
+far end is genuinely flowing, and **`● rec (mic; system silent)`** when the device is present but nothing is
+routed — and the controller logs the guidance **once** ("route your call/app output through it, or wear
+headphones") rather than per segment. `no-device` is silent (mic-only, no fuss). The `/setup` page was NOT
+touched (it is engine-served and this slice is client-only, no engine change); setup guidance lives as a
+short **README** section (the honest Multi-Output-Device recipe + the headphones shortcut, which also
+removes echo entirely). `OPENINFO_SYSTEM_AUDIO` is an opt-out (default ON, but a no-op absent a device),
+same CONFIG-not-flag line as `micEnabled`.
+
+### AEC posture (unchanged, still pending a human measurement)
+`echoCancellation: true` stays on the **mic**; the **system-audio** stream takes no echo/NS/AGC (it is the
+clean far-end capture). The per-config leakage-dB numbers remain the one open spike item; headphones
+sidestep echo entirely (said so in the README copy).
+
+### Testability — same pure/shell split, electron-free CI (+13 client: 84 total)
+All decision-bearing logic is pure and node-tested headless: the device matcher (patterns, preference
+order, ignores non-inputs/idless entries, mic-only fallback); `chunk.ts` (source rides through, `sys-`
+prefix, mic/system ids never collide); `capture-controller.ts` with the system-audio source (`no-device` →
+`unavailable`, tagged capture, **silence signalled once each direction**, mic silence-path no-op) alongside
+all the retained mic lifecycle tests; the `capture:*` protocol shape; the tray's honest source labels; the
+`OPENINFO_SYSTEM_AUDIO` opt-out. Electron/DOM-touching files stay untested-by-CI (`capture-renderer.ts` —
+browser globals incl. the new AnalyserNode probe, typed via the one `globalThis` cast; `capture-preload.cts`;
+the `shell.ts` wiring). `pnpm -r build` + `pnpm -r test` green (contracts 40 · client 84 · engine 168).
+
+### Live verification (darwin 25.3 / macOS 26, Electron 38, Node 25) — what physically ran
+Engine on **:8910** (scratch `OPENINFO_DATA`); processes killed after; **:8787 / :1234 / :11434 never touched**.
+- **Detection is REAL on this machine:** a real Electron renderer enumerated audio inputs — including
+  **`BlackHole 2ch (Virtual)` with a usable deviceId** — and the **compiled** `matchSystemAudioDevice`
+  matched it. So the renderer genuinely finds the installed device.
+- **System-audio chunks physically arrive at the engine:** a driver built the real
+  `CaptureController({ source: 'system-audio' })` exactly as `shell.ts` does (stubbing only the two electron
+  edges — renderer control + permission) and fed synthetic segments through a real `EngineLink` → :8910. The
+  engine's WS broadcast **`capture.received { id: "sys-live-verify-000009", source: "system-audio",
+  contentType: "audio/webm" }`** (routed through `/capture/system-audio`), and the local offline spool
+  stayed empty (every POST reached the engine). The **silence-honesty** signal fired **`[true, false]`** —
+  once when the (silent) segments arrived, once when audio began — exactly as designed.
+- **The real shell boots the two-source pipeline clean:** logs showed `hidden capture window created — mic +
+  system-audio renderer host`, `mic capture enabled · system-audio enabled (both follow the session
+  lifecycle)`, HUD `content-protection: ON`, `⌘\` registered. Starting a session drove BOTH controllers;
+  the shared Mic-TCC request hit the SAME wall the mic slice documented (`mic access status … not-determined`
+  → `askForMediaAccess` can't be clicked in automation → **both** `[mic]` and `[system-audio]` logged `audio
+  access denied — capture disabled, session continues`), proving the shared-permission dedupe and the
+  graceful denial path for both sources.
+- **The remaining human step (honest minimal recipe):** launch (`pnpm --filter @openinfo/client start`),
+  start a session, click **Allow** on the macOS mic prompt (that one grant covers the BlackHole input too).
+  Then getUserMedia opens both streams. For real far-end audio, route your call/meeting-app **output** into
+  BlackHole — via a **Multi-Output Device** (Audio MIDI Setup: speakers + BlackHole 2ch) so you still hear
+  it, **or** wear headphones and point the app's output at BlackHole (also removes echo). Unrouted, the
+  system-audio stream is honestly flagged silent (transcribed-empty is a normal zero outcome, not a bug).
+
+### Deferred (out of this slice, by scope)
+- The native CoreAudio process-tap module (route (b) — design-noted as the future, `client/capture/audio-tap/`);
+  a prebuilt community module (route (c)); Windows/Linux loopback; the AEC leakage-dB measurement (human
+  spike run) and the RTCPeerConnection far-end trick; screen capture / Δ-gate (P3); per-source cadence/on-off
+  in a palette UI (P6); diarization / voice→person (P7 — `me`/`them` stays the free source split). No engine
+  or contract change was needed or made.
+

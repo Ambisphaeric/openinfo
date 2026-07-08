@@ -57,6 +57,9 @@ content-protected window, invisible to screen share, hosting the HUD):
 pnpm --filter @openinfo/client start     # builds, then launches electron .
 # OPENINFO_ENGINE_URL / OPENINFO_PORT point it at the daemon (default http://127.0.0.1:8787)
 # OPENINFO_MIC=0 disables microphone capture (default ON while a session is live)
+# OPENINFO_SYSTEM_AUDIO=0 disables system-audio capture ("them" — the far side of a call, captured off a
+#   BlackHole-like virtual input; default ON, but a no-op unless such a device is present + its output is
+#   routed through it — see apps/client/src/capture/README.md for the Multi-Output-Device / headphones setup)
 ```
 
 The window opens **hidden** (like Glass). Reveal it with **⌘\\** or the menu-bar (tray) icon → **Show
