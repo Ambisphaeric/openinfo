@@ -97,6 +97,77 @@ export const QueueFailure = Type.Object(
 )
 export type QueueFailure = Static<typeof QueueFailure>
 
+/**
+ * The kind of work a spooled chunk represents — the typed-queue classification (P4A slice 3). A chunk
+ * is classified by its `source`/`contentType` (queue/kinds.ts), NOT by importing any capture producer:
+ * `audio` = mic/system-audio (the me/them split); `screen` = screen/camera frames (P4B adds the
+ * producers — a `screen` source or an image/* contentType lands here without the queue knowing about
+ * P4B); `llm-work` = text/utf8 work destined for distill (calendar/repo/typed text). `source: 'focus'`
+ * chunks are DELIBERATELY not a kind here — they are ephemeral routing context (consumed by the
+ * detector, never distilled, never a meaningful backlog), so they are excluded from per-kind depth and
+ * the backlog ETA (see queue/kinds.ts and PHASE4-NOTES).
+ */
+export const QueueKind = Type.Union(
+  ['audio', 'screen', 'llm-work'].map((k) => Type.Literal(k)),
+  { $id: 'QueueKind', description: 'the work kind of a spooled chunk (audio | screen | llm-work); focus chunks are excluded — ephemeral routing context' },
+)
+export type QueueKind = Static<typeof QueueKind>
+
+/** Pending depth for ONE queue kind — how much of that kind is spooled and not yet drained. */
+export const QueueKindDepth = Type.Object(
+  {
+    pendingChunks: Type.Integer({ minimum: 0, description: 'spooled chunks of this kind not yet drained' }),
+    pendingBytes: Type.Integer({ minimum: 0, description: 'their on-disk JSONL bytes' }),
+  },
+  { $id: 'QueueKindDepth', additionalProperties: false },
+)
+export type QueueKindDepth = Static<typeof QueueKindDepth>
+
+/**
+ * The backlog projection (P4A slice 3, the P3 `eta.ts` design — ARCHITECTURE §7 "Backlog analytics
+ * project when the queue clears at current drain rate"). `basis` is HONEST about where the number comes
+ * from: `observed` = projected from recent measured drain durations; `none` = not enough data to
+ * project, so NO `etaMs`/`caughtUpBy` is invented (an unknown is unknown). `etaMs`/`caughtUpBy` are the
+ * projected time-to-clear at the current observed drain rate. `measuredTokPerSec` echoes the active llm
+ * endpoint's benchmarked throughput (fabric §8 `measured`) as the envelope's measured side — surfaced
+ * context, not (in v0) itself the ETA basis (converting tok/s to a chunk ETA needs a tokens-per-chunk
+ * model — deferred). The ETA is OVERALL, not per-kind: the drain processes whole files that mix kinds,
+ * so the observed rate is a mixed-kind rate (per-kind ETA is deferred with per-kind drain accounting).
+ */
+export const BacklogEta = Type.Object(
+  {
+    basis: Type.Union(['observed', 'none'].map((b) => Type.Literal(b)), {
+      description: 'observed = projected from recent drain durations; none = insufficient data, no fabricated ETA',
+    }),
+    etaMs: Type.Optional(Type.Number({ minimum: 0, description: 'projected ms until the backlog clears at the current drain rate (0 = already caught up)' })),
+    caughtUpBy: Type.Optional(IsoTime),
+    drainRateChunksPerSec: Type.Optional(Type.Number({ minimum: 0, description: 'the observed drain rate the projection used' })),
+    measuredTokPerSec: Type.Optional(Type.Number({ minimum: 0, description: "the active llm endpoint's MEASURED tok/s (envelope §8) — context, not the ETA basis in v0" })),
+  },
+  { $id: 'BacklogEta', additionalProperties: false },
+)
+export type BacklogEta = Static<typeof BacklogEta>
+
+/**
+ * The overflow policy in effect for the queue (ARCHITECTURE §7 hardware envelope). `policy` is the
+ * DECLARED intent, read from the active mode's `overflow` field (`queue`→`queue-for-idle`,
+ * `degrade`→`degrade-cadence`, `drop`). `enforced` is HONEST about what the engine actually does in v0:
+ * `queue-for-idle` IS today's behavior (append + drain at idle, never lose capture) so it is enforced;
+ * `degrade-cadence` is a client-side capture concern (not the engine's to control) and `drop` would
+ * deliberately violate the never-lose-capture guarantee — both are recorded-but-inert signals in v0
+ * (enforced=false), pending explicit product sign-off. See PHASE4-NOTES for what is real vs declared.
+ */
+export const OverflowState = Type.Object(
+  {
+    policy: Type.Union(['queue-for-idle', 'degrade-cadence', 'drop'].map((p) => Type.Literal(p)), {
+      description: 'the declared overflow policy (from the active mode) when the mode exceeds measured hardware',
+    }),
+    enforced: Type.Boolean({ description: 'true only for queue-for-idle in v0 — degrade-cadence/drop are declared-but-inert (see PHASE4-NOTES)' }),
+  },
+  { $id: 'OverflowState', additionalProperties: false },
+)
+export type OverflowState = Static<typeof OverflowState>
+
 export const QueueStatus = Type.Object(
   {
     pendingFiles: Type.Integer({ minimum: 0 }),
@@ -107,6 +178,20 @@ export const QueueStatus = Type.Object(
     lastFailure: Type.Optional(QueueFailure),
     /** ISO time of the last file the drain processed successfully — present once one has drained. */
     lastSuccessAt: Type.Optional(IsoTime),
+    /**
+     * Per-kind pending depth (P4A slice 3, additive). Present once the queue tallies kinds; sums may be
+     * LESS than pendingBytes because focus chunks (routing context) are deliberately excluded.
+     */
+    byKind: Type.Optional(
+      Type.Object(
+        { audio: QueueKindDepth, screen: QueueKindDepth, 'llm-work': QueueKindDepth },
+        { additionalProperties: false },
+      ),
+    ),
+    /** the backlog projection at the current drain rate (additive) — `basis: 'none'` when unknowable. */
+    eta: Type.Optional(BacklogEta),
+    /** the overflow policy in effect (additive) — declared intent + whether the engine enforces it in v0. */
+    overflow: Type.Optional(OverflowState),
   },
   { $id: 'QueueStatus', additionalProperties: false },
 )

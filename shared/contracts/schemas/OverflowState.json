@@ -1,0 +1,32 @@
+{
+  "$id": "OverflowState",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "policy",
+    "enforced"
+  ],
+  "properties": {
+    "policy": {
+      "description": "the declared overflow policy (from the active mode) when the mode exceeds measured hardware",
+      "anyOf": [
+        {
+          "const": "queue-for-idle",
+          "type": "string"
+        },
+        {
+          "const": "degrade-cadence",
+          "type": "string"
+        },
+        {
+          "const": "drop",
+          "type": "string"
+        }
+      ]
+    },
+    "enforced": {
+      "description": "true only for queue-for-idle in v0 — degrade-cadence/drop are declared-but-inert (see PHASE4-NOTES)",
+      "type": "boolean"
+    }
+  }
+}
