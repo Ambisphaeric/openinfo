@@ -36,7 +36,7 @@ import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.j
 import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult } from './config/discovery.js'
 import { StarterModel, StarterModels } from './config/local.js'
 import { Flag } from './config/flag.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -45,6 +45,6 @@ export const AllSchemas = {
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, StarterModel, StarterModels, Flag,
-  Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest,
+  Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest,
   CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, LocalModelStatus, LocalDownloadRequest,
 } as const

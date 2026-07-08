@@ -1,0 +1,15 @@
+{
+  "$id": "RerouteRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "toWorkspaceId"
+  ],
+  "properties": {
+    "toWorkspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    }
+  }
+}

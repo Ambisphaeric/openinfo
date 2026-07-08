@@ -3,6 +3,7 @@ export const Events = {
   'session.started': 'Session',
   'session.ended': 'Session',
   'session.switched': 'Session',
+  'session.rerouted': 'Session',
   'moment.created': 'Moment',
   'distillate.updated': 'Distillate',
   'entity.updated': 'Entity',

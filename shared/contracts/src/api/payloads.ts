@@ -119,6 +119,23 @@ export const StartSessionRequest = Type.Object(
 export type StartSessionRequest = Static<typeof StartSessionRequest>
 
 /**
+ * The body of `POST /sessions/:id/reroute` — the one-click retroactive reroute (Phase 3). The caller
+ * supplies ONLY the destination (`toWorkspaceId`); the session is addressed by the route id and its
+ * current workspace is read server-side (a session carries its own workspaceId). This is the
+ * correction loop the router's mistakes require (IMPLEMENTATION §3 risk register): moving a session
+ * — with everything keyed to it (distillates, moments, drafts) — between workspace DBs. The engine
+ * stamps `reroutedFrom` and appends a `manual` attribution-evidence entry; the caller invents nothing.
+ * A dedicated payload (not a partial Session), mirroring StartSessionRequest's precedent.
+ */
+export const RerouteRequest = Type.Object(
+  {
+    toWorkspaceId: Id,
+  },
+  { $id: 'RerouteRequest', additionalProperties: false },
+)
+export type RerouteRequest = Static<typeof RerouteRequest>
+
+/**
  * The body of `POST /fabric/profiles/:id/clone` — the new profile's id (+ optional name). Cloning is
  * copying a document (ARCHITECTURE §2/§8): the engine reads the source profile, restamps id/name/
  * version, and writes a fresh document. Kept as a route (not client GET+PUT) so a clone is atomic.
