@@ -122,7 +122,7 @@ const otherSurfacesHtml = (data: SurfaceEditorData): string => {
       const label = `${escapeHtml(s.name)} <span class="pid">${escapeHtml(s.id)} · v${s.version}</span>`
       return current
         ? `<div class="srow current">${label}${badge}<span class="badge editing">editing</span></div>`
-        : `<div class="srow">${label}${badge}<a href="/setup?surface=${encodeURIComponent(s.id)}">edit</a></div>`
+        : `<div class="srow">${label}${badge}<a href="/settings/hud-layout?surface=${encodeURIComponent(s.id)}">edit</a></div>`
     })
     .join('')
   return `<div class="card">${items}</div>`
@@ -148,7 +148,7 @@ export const renderSurfaceEditorPage = (data: SurfaceEditorData): string => {
     `<style>${SURFACE_EDITOR_CSS}</style></head><body>` +
     '<h1>openinfo · HUD layout</h1>' +
     '<p class="sub">The HUD is <span class="mono">render(surfaceDocument)</span> — edit that document here. ' +
-    '<a href="/setup">← model setup</a></p>' +
+    '<a href="/settings/hud-layout">← HUD layout</a></p>' +
     `<form id="surface-editor" data-id="${escapeHtml(s.id)}">` +
     `<div class="card"><div class="prow"><input id="surf-name" autocomplete="off" value="${escapeHtml(s.name)}" placeholder="surface name" />` +
     `<span class="pid">${escapeHtml(s.id)} · v${s.version} · context ${escapeHtml(s.context)}</span>` +

@@ -93,14 +93,14 @@ test('renderSurfaceEditorPage marks the HUD default + the surface being edited i
   const html = renderSurfaceEditorPage({ surface: richSurface, surfaces: [richSurface, other], defaultSurfaceId: 'surf-openinfo-hud' })
   assert.match(html, /class="srow current"[^]*Rich HUD[^]*editing/)
   assert.match(html, /HUD default/)
-  assert.match(html, /href="\/setup\?surface=surf-openinfo-hud"/)
+  assert.match(html, /href="\/settings\/hud-layout\?surface=surf-openinfo-hud"/)
 })
 
 test('hudLayoutSection lists surfaces, marks the HUD default, and links each to its editor', () => {
   const s2: Surface = { ...richSurface, id: 'surf-openinfo-hud', name: 'openinfo HUD' }
   const html = hudLayoutSection([richSurface, s2], 'surf-openinfo-hud')
   assert.match(html, /Rich HUD/)
-  assert.match(html, /href="\/setup\?surface=surf-rich"/)
+  assert.match(html, /href="\/settings\/hud-layout\?surface=surf-rich"/)
   assert.match(html, /openinfo HUD[^]*HUD default/)
   assert.equal(hudLayoutSection([], 'surf-openinfo-hud'), '')
 })

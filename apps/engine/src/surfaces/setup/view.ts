@@ -1,18 +1,19 @@
-import type { DiscoverResult, Endpoint, Fabric, FabricProfile, LocalModelStatus, Moment, Surface } from '@openinfo/contracts'
-import { SETUP_CSS, SETUP_SCRIPT } from './assets.js'
+import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelStatus, Moment, QueueStatus, Session, Surface } from '@openinfo/contracts'
 
 /**
- * The setup surface — forms over the profile + secret documents (ARCHITECTURE §8), served by the
- * engine as a self-contained HTML page (GET /setup). This module is PURE: given the live data it
- * returns the page string, with no I/O and no DOM — so the first-run logic and the rendered skeleton
- * are asserted headless under node:test, mirroring the client's pure-renderer discipline. The
- * interactive behaviour is the thin browser script in assets.ts; it only composes existing routes
- * (profiles CRUD/clone/activate, secrets write/delete/list-refs, /fabric, /fabric/test) — no new
- * engine capability, per the P6 "forms over documents" rule.
+ * The setup views — forms over the profile + secret documents (ARCHITECTURE §8), served by the engine
+ * as sections of the Settings sidebar (GET /settings). This module is PURE: each exported section
+ * function returns its HTML fragment with no I/O and no DOM, so the states are asserted headless under
+ * node:test (mirroring the client's pure-renderer discipline). The Settings shell (settings/shell.ts)
+ * composes these fragments behind the section registry; the interactive behaviour is the thin browser
+ * script in assets.ts, which only composes existing routes (profiles CRUD/clone/activate, secrets
+ * write/delete/list-refs, /fabric, /fabric/test) — no new engine capability, per the P6 "forms over
+ * documents" rule.
  *
- * A user's rig is never their last (config 1 → clone → a 27B on another host → STT elsewhere): this
- * page names/clones/activates profiles and wires slot→endpoint rows across hosts. It is deliberately
- * barebones — the FIRST setting, not a settings empire.
+ * A user's rig is never their last (config 1 → clone → a 27B on another host → STT elsewhere): these
+ * views name/clone/activate profiles and wire slot→endpoint rows across hosts. Deliberately barebones —
+ * the FIRST setting, not a settings empire — now re-homed into a sidebar so the vision's many
+ * configuration surfaces have somewhere to live .
  */
 
 /**
@@ -23,7 +24,7 @@ import { SETUP_CSS, SETUP_SCRIPT } from './assets.js'
  * now carries an honest, INFORMATIONAL usage note — never a gate: llm/stt say what they power today;
  * the rest say the endpoint is stored and wired in a later phase, configure it freely now.
  */
-const ALL_SLOTS: ReadonlyArray<keyof Fabric['slots']> = ['llm', 'stt', 'tts', 'vlm', 'ocr', 'embed']
+export const ALL_SLOTS: ReadonlyArray<keyof Fabric['slots']> = ['llm', 'stt', 'tts', 'vlm', 'ocr', 'embed']
 
 const SLOT_NOTE: Record<string, string> = {
   llm: 'powers distill, drafts, and the core pass today.',
@@ -60,6 +61,19 @@ export interface SetupData {
   surfaces?: Surface[]
   /** The surface id the HUD renders by default (client config) — marked in the list. */
   defaultSurfaceId?: string
+  /**
+   * All feature flags (GET /flags — every seeded default plus any hand-set doc), driving the Features
+   * section and the sidebar's features-on dot. Absent ⇒ Features renders an honest "no flags" note.
+   */
+  flags?: Flag[]
+  /** Engine uptime in ms (from GET /health) — the Status section's version/uptime line. */
+  uptimeMs?: number
+  /** The live (unended) session for the default workspace, if any — the Status section's live line. */
+  liveSession?: Session
+  /** Capture-queue status (pending/drained) — a cheap existing signal for the Status section. */
+  queue?: QueueStatus
+  /** A short label for the engine host (e.g. ":8920") shown in the sidebar brand. */
+  engineLabel?: string
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */
@@ -105,7 +119,9 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
     `<input class="f-url" autocomplete="off" value="${escapeHtml(ep.url)}" placeholder="http://host:port" />` +
     `<input class="f-model" autocomplete="off" value="${escapeHtml(ep.model ?? '')}" placeholder="model (optional)" />` +
     `<select class="f-keyref" title="key reference">${keyrefOptions(ep.auth?.keyRef, refs)}</select>` +
-    `<div class="rowbtns"><button type="button" data-act="test">Test</button><button type="button" data-act="up" title="up">↑</button>` +
+    `<div class="rowbtns"><button type="button" data-act="test">Test</button>` +
+    `<button type="button" disabled title="Benchmark measures real tok/s on this hardware — coming with the capability-benchmarking system (see Diagnostics → Benchmarks).">Benchmark</button>` +
+    `<button type="button" data-act="up" title="up">↑</button>` +
     `<button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
     `<div class="probe"></div></div>`
   )
@@ -121,7 +137,7 @@ const slotHtml = (key: string, endpoints: Endpoint[], refs: string[]): string =>
   `</div>`
 
 /** The profile list: name/id/description, the active + editing badges, and the per-profile actions. */
-const profilesHtml = (data: SetupData): string => {
+export const profilesHtml = (data: SetupData): string => {
   if (data.profiles.length === 0) return '<div class="sub">No profiles yet — editing the live fabric directly below.</div>'
   return data.profiles
     .map((p) => {
@@ -133,7 +149,7 @@ const profilesHtml = (data: SetupData): string => {
       const actions =
         (isActive ? '' : `<button type="button" data-act="activate" data-id="${escapeHtml(p.id)}">Activate</button>`) +
         `<button type="button" data-act="clone" data-id="${escapeHtml(p.id)}">Clone</button>` +
-        (isEditing ? '' : `<a href="/setup?edit=${encodeURIComponent(p.id)}">edit</a>`) +
+        (isEditing ? '' : `<a href="/settings/endpoints?edit=${encodeURIComponent(p.id)}">edit</a>`) +
         (isActive ? '' : `<button type="button" data-act="delete" data-id="${escapeHtml(p.id)}">Delete</button>`)
       return (
         `<div class="card"><div class="prow">` +
@@ -148,7 +164,7 @@ const profilesHtml = (data: SetupData): string => {
 }
 
 /** The editor: edits `editing.fabric` (a profile) or the legacy live fabric when no profile is open. */
-const editorHtml = (data: SetupData): string => {
+export const editorHtml = (data: SetupData): string => {
   const editing = data.editing
   const fabric = editing ? editing.fabric : data.liveFabric
   const refs = data.secretRefs
@@ -170,7 +186,7 @@ const editorHtml = (data: SetupData): string => {
   )
 }
 
-const secretsHtml = (refs: string[]): string => {
+export const secretsHtml = (refs: string[]): string => {
   const list = refs.length
     ? refs
         .map(
@@ -191,13 +207,15 @@ const secretsHtml = (refs: string[]): string => {
 }
 
 /** The hidden <template> the browser clones for a fresh endpoint row (keyRef options current). */
-const rowTemplateHtml = (refs: string[]): string =>
+export const rowTemplateHtml = (refs: string[]): string =>
   `<template id="row-tpl">` +
   `<div class="row" data-kind="http" data-api="openai-compat">` +
   `<input class="f-name" autocomplete="off" placeholder="name" /><input class="f-url" autocomplete="off" placeholder="http://host:port" />` +
   `<input class="f-model" autocomplete="off" placeholder="model (optional)" />` +
   `<select class="f-keyref" title="key reference">${keyrefOptions(undefined, refs)}</select>` +
-  `<div class="rowbtns"><button type="button" data-act="test">Test</button><button type="button" data-act="up" title="up">↑</button>` +
+  `<div class="rowbtns"><button type="button" data-act="test">Test</button>` +
+  `<button type="button" disabled title="Benchmark measures real tok/s on this hardware — coming with the capability-benchmarking system (see Diagnostics → Benchmarks).">Benchmark</button>` +
+  `<button type="button" data-act="up" title="up">↑</button>` +
   `<button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
   `<div class="probe"></div></div></template>`
 
@@ -294,7 +312,7 @@ const starterRowHtml = (m: LocalModelStatus): string => {
  * into config-1 (via the existing profile routes) and the engine spawns it. Binary missing ⇒ the brew
  * line + a re-check instead of a dead end.
  */
-const starterOfferHtml = (models: LocalModelStatus[]): string => {
+export const starterOfferHtml = (models: LocalModelStatus[]): string => {
   if (models.length === 0) return ''
   return (
     '<div class="starter-offer"><div class="starter-head">Or download a starter model</div>' +
@@ -304,7 +322,7 @@ const starterOfferHtml = (models: LocalModelStatus[]): string => {
   )
 }
 
-const getStartedHtml = (discovery: DiscoverResult, localModels: LocalModelStatus[]): string => {
+export const getStartedHtml = (discovery: DiscoverResult, localModels: LocalModelStatus[]): string => {
   const reachable = discovery.servers.filter((s) => s.reachable)
   const modelCount = reachable.reduce((n, s) => n + s.models.length, 0)
   const canApply = discovery.suggestion.slots.llm.length > 0
@@ -326,7 +344,7 @@ const getStartedHtml = (discovery: DiscoverResult, localModels: LocalModelStatus
     `<script type="application/json" id="suggestion">${jsonForScript(discovery.suggestion)}</script>` +
     `<div class="gs-actions">${action}</div>` +
     starter +
-    '<div class="sub gs-adv">Want full control? <a href="#advanced" data-act="show-advanced">Advanced setup</a> — profiles, cross-host endpoints, keys.</div>' +
+    '<div class="sub gs-adv">Want full control? <a href="/settings/endpoints">Advanced setup</a> — profiles, cross-host endpoints, keys.</div>' +
     '</div>'
   )
 }
@@ -382,7 +400,7 @@ export const momentResultHtml = (moment: Moment, elapsedSec: number): string => 
   )
 }
 
-const tryItHtml = (data: SetupData): string => {
+export const tryItHtml = (data: SetupData): string => {
   if (data.liveFabric.slots.llm.length === 0) return ''
   const hasStt = data.liveFabric.slots.stt.length > 0
   const config = { workspaceId: 'default', modeId: 'mode-meeting', hasStt }
@@ -393,13 +411,13 @@ const tryItHtml = (data: SetupData): string => {
     ? '<button type="button" data-act="tryit-voice">Or speak (~6s)</button>' +
       '<span class="tryit-voicenote">the browser will ask for your microphone</span>'
     : '<span class="tryit-novoice">No transcription server yet — type above; audio arrives once you add ' +
-      'a Hearing (stt) endpoint in Advanced setup.</span>'
+      'a Hearing (stt) endpoint under Endpoints.</span>'
   return (
     '<div class="card tryit"><div class="gs-head">Try it — say something, watch it become a moment</div>' +
     '<div class="sub">This is the product, not a test button: type a sentence and watch openinfo turn it ' +
     'into a typed moment, live.</div>' +
     `<div class="tryit-consent">Trying it turns on distillation (${consentFlags}). Turn it back off any ` +
-    'time under Advanced setup → the flags it lists.</div>' +
+    'time under Features → the flags it lists.</div>' +
     '<form class="tryit-form"><input id="tryit-text" autocomplete="off" ' +
     'placeholder="Type a sentence — watch it become a moment." />' +
     '<button type="button" class="primary" data-act="tryit-type">Watch it become a moment</button></form>' +
@@ -427,50 +445,9 @@ export const hudLayoutSection = (surfaces: Surface[], defaultSurfaceId: string |
         `<div class="prow"><span class="pname">${escapeHtml(s.name)}</span> ` +
         `<span class="pid">${escapeHtml(s.id)} · v${s.version} · ${escapeHtml(s.context)} · ${s.stack.length} block${s.stack.length === 1 ? '' : 's'}</span>` +
         badge +
-        `<span class="spacer"></span><a href="/setup?surface=${encodeURIComponent(s.id)}">edit layout</a></div>`
+        `<span class="spacer"></span><a href="/settings/hud-layout?surface=${encodeURIComponent(s.id)}">edit layout</a></div>`
       )
     })
     .join('')
   return `<div class="card">${rows}</div>`
-}
-
-/** Render the whole self-contained setup page. Pure — the engine route just hands it live data. */
-export const renderSetupPage = (data: SetupData): string => {
-  const notice = firstRunNotice(data.liveFabric)
-  const banner = notice ? `<div class="banner">⚠ ${escapeHtml(notice)}</div>` : ''
-  const lens = data.discovery ? getStartedHtml(data.discovery, data.localModels ?? []) : ''
-  // The Try-it loop leads the page once an llm endpoint exists (config-1 active) — the moment onboarding
-  // becomes "experience it", not "configure it". Empty when no llm (the lens/banner lead instead).
-  const tryit = tryItHtml(data)
-  const hudLayout = data.surfaces && data.surfaces.length
-    ? '<h2>HUD layout</h2>' + hudLayoutSection(data.surfaces, data.defaultSurfaceId)
-    : ''
-  const advanced =
-    '<h2>Profiles</h2>' +
-    profilesHtml(data) +
-    '<h2>Edit endpoints</h2>' +
-    editorHtml(data) +
-    '<h2>Keys</h2>' +
-    secretsHtml(data.secretRefs) +
-    hudLayout
-  // When the lens leads (first run / re-detect) the full editor lives behind an "Advanced setup"
-  // disclosure — one decision at a time. Otherwise the page is exactly as before (sections open).
-  const body = data.discovery
-    ? `<details id="advanced" class="advanced"><summary>Advanced setup</summary>${advanced}</details>`
-    : advanced
-  return (
-    '<!doctype html><html lang="en"><head><meta charset="utf-8" />' +
-    '<meta name="viewport" content="width=device-width, initial-scale=1" />' +
-    '<title>openinfo · model setup</title>' +
-    `<style>${SETUP_CSS}</style></head><body>` +
-    '<h1>openinfo · model setup</h1>' +
-    '<p class="sub">Your first setting, not your last. Point a slot at a model server, save it as a profile, clone/switch as your rig changes.</p>' +
-    banner +
-    lens +
-    tryit +
-    body +
-    rowTemplateHtml(data.secretRefs) +
-    `<script>${SETUP_SCRIPT}</script>` +
-    '</body></html>'
-  )
 }

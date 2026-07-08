@@ -170,13 +170,13 @@ export const SETUP_SCRIPT = `
     jf('POST','/fabric/profiles/'+encodeURIComponent(id)+'/clone',{id:nid,name:name}).then(function(r){
       if(r.status===409){alert('A profile with id "'+nid+'" already exists.');return;}
       if(!r.ok){alert('Clone failed ('+r.status+')');return;}
-      location.href='/setup?edit='+encodeURIComponent(nid);});}
+      location.href='/settings/endpoints?edit='+encodeURIComponent(nid);});}
   function activate(id){jf('POST','/fabric/profiles/'+encodeURIComponent(id)+'/activate').then(function(r){
     if(!r.ok){alert('Activate failed ('+r.status+')');return;}location.reload();});}
   function del(id){if(!confirm('Delete profile "'+id+'"?'))return;
     jf('DELETE','/fabric/profiles/'+encodeURIComponent(id)).then(function(r){
       if(r.status===409){alert((r.json&&r.json.error)?r.json.error:'Cannot delete the active profile — activate another first.');return;}
-      if(!r.ok){alert('Delete failed ('+r.status+')');return;}location.href='/setup';});}
+      if(!r.ok){alert('Delete failed ('+r.status+')');return;}location.href='/settings/profiles';});}
   function addSecret(){var ref=document.getElementById('secret-ref').value.trim();var val=document.getElementById('secret-val').value;
     if(!ref||!val){alert('Enter both a ref and a value.');return;}
     jf('PUT','/fabric/secrets/'+encodeURIComponent(ref),{value:val}).then(function(r){
@@ -191,8 +191,7 @@ export const SETUP_SCRIPT = `
     jf('PUT','/fabric/profiles/config-1',profile).then(function(r){
       if(!r.ok){alert('Setup failed ('+r.status+')');return;}
       jf('POST','/fabric/profiles/config-1/activate').then(function(r2){
-        if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/setup';});});}
-  function showAdvanced(){var d=document.getElementById('advanced'); if(d){d.open=true; d.scrollIntoView();}}
+        if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/settings/try-it';});});}
   // --- Tier zero: download + run a starter model (slice c). Composes existing routes only:
   // POST /fabric/local/download (explicit click), GET /fabric/local/models (poll progress), then
   // "Use this model" writes a local endpoint into config-1 via the existing profile routes.
@@ -222,7 +221,7 @@ export const SETUP_SCRIPT = `
     jf('PUT','/fabric/profiles/config-1',profile).then(function(r){
       if(!r.ok){alert('Setup failed ('+r.status+')');return;}
       jf('POST','/fabric/profiles/config-1/activate').then(function(r2){
-        if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/setup';});});
+        if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/settings/try-it';});});
   }
   // --- Try-it: say something, watch it become a moment (slice b). Composes existing routes only:
   // PUT /flags/:key (consent-flip), POST /sessions, POST /capture/:source, the /events WS, and the
@@ -356,8 +355,7 @@ export const SETUP_SCRIPT = `
     else if(act==='use-setup'){useSetup();}
     else if(act==='download-model'){downloadStarter(b);}
     else if(act==='use-starter'){useStarter(b);}
-    else if(act==='redetect'){location.href='/setup?discover=1';}
-    else if(act==='show-advanced'){showAdvanced();}
+    else if(act==='redetect'){location.href='/settings/get-started?discover=1';}
     else if(act==='tryit-type'){tryitType();}
     else if(act==='tryit-voice'){tryitVoice();}
   });

@@ -1,7 +1,7 @@
 import { SETUP_CSS } from './assets.js'
 
 /**
- * Static assets for the engine-served HUD-layout editor (/setup?surface=<id>). Same discipline as
+ * Static assets for the engine-served HUD-layout editor (/settings/hud-layout?surface=<id>). Same discipline as
  * assets.ts: inert data, all decision-bearing rendering lives in surface-editor.ts (pure, node-tested);
  * the browser script here is thin event-delegation wiring over the EXISTING surface routes (GET/PUT
  * /layouts/surfaces[/:id]) — it composes them, adds no engine capability. The stylesheet reuses the
@@ -103,7 +103,7 @@ export const SURFACE_EDITOR_SCRIPT = `
     if(!surf.stack.length){alert('A surface needs at least one block.');return;}
     jf('PUT','/layouts/surfaces/'+encodeURIComponent(surf.id),surf).then(function(r){
       if(!r.ok){alert('Save failed ('+r.status+detailMsg(r)+')');return;}
-      location.href='/setup?surface='+encodeURIComponent(surf.id);
+      location.href='/settings/hud-layout?surface='+encodeURIComponent(surf.id);
     });
   }
   function saveJson(){
@@ -112,7 +112,7 @@ export const SURFACE_EDITOR_SCRIPT = `
     var base=JSON.parse(document.getElementById('base-surface').textContent);
     jf('PUT','/layouts/surfaces/'+encodeURIComponent(base.id),doc).then(function(r){
       if(!r.ok){alert('Save failed ('+r.status+detailMsg(r)+')');return;}
-      location.href='/setup?surface='+encodeURIComponent(base.id);
+      location.href='/settings/hud-layout?surface='+encodeURIComponent(base.id);
     });
   }
   function cloneSurface(){
@@ -123,7 +123,7 @@ export const SURFACE_EDITOR_SCRIPT = `
       if(g.ok){alert('A surface with id "'+nid+'" already exists.');return;}
       jf('PUT','/layouts/surfaces/'+encodeURIComponent(nid),copy).then(function(r){
         if(!r.ok){alert('Clone failed ('+r.status+detailMsg(r)+')');return;}
-        location.href='/setup?surface='+encodeURIComponent(nid);
+        location.href='/settings/hud-layout?surface='+encodeURIComponent(nid);
       });
     });
   }

@@ -2,15 +2,27 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { DiscoverResult, Fabric, FabricProfile, Moment } from '@openinfo/contracts'
 import {
+  editorHtml,
   escapeHtml,
   firstRunNotice,
+  getStartedHtml,
   jsonForScript,
   momentGlyph,
   momentProvenanceLine,
   momentResultHtml,
-  renderSetupPage,
+  profilesHtml,
+  rowTemplateHtml,
+  secretsHtml,
+  tryItHtml,
   type SetupData,
 } from './view.js'
+
+/**
+ * The setup views are now re-homed behind the Settings section registry (settings/shell.ts). These
+ * tests exercise the PURE section fragments directly — same coverage as when they composed one page,
+ * pointed at the exported fns instead. The shell/registry behaviour (sidebar grouping, active state,
+ * default section, live dots, Status/Features/Privacy) is asserted in settings/shell.test.ts.
+ */
 
 const emptyFabric = (): Fabric => ({ slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } })
 
@@ -55,26 +67,16 @@ test('escapeHtml neutralises markup and quotes', () => {
   assert.equal(escapeHtml(`<a href="x" o='y'>&`), '&lt;a href=&quot;x&quot; o=&#39;y&#39;&gt;&amp;')
 })
 
-test('renderSetupPage emits the expected skeleton', () => {
-  const html = renderSetupPage(data())
-  assert.match(html, /^<!doctype html>/)
-  assert.match(html, /<title>openinfo · model setup<\/title>/)
-  assert.match(html, />Profiles</)
-  assert.match(html, />Edit endpoints</)
-  assert.match(html, />Keys</)
-  assert.match(html, /id="row-tpl"/) // the add-row template
+test('the endpoints editor emits the round-trip skeleton (base-fabric blob + save)', () => {
+  const html = editorHtml(data())
   assert.match(html, /id="base-fabric"/) // the round-trip fabric blob
   assert.match(html, /data-act="save"/) // the save button
-})
-
-test('the first-run banner shows when the live fabric has no llm, and not otherwise', () => {
-  assert.match(renderSetupPage(data({ liveFabric: emptyFabric() })), /class="banner"/)
-  assert.doesNotMatch(renderSetupPage(data({ liveFabric: withLlm() })), /class="banner"/)
+  assert.match(rowTemplateHtml([]), /id="row-tpl"/) // the add-row template
 })
 
 test('the active profile is marked, and a non-active profile offers Activate + Delete', () => {
   const two = [profile(), profile({ id: 'ollama-local', name: 'Ollama' })]
-  const html = renderSetupPage(data({ profiles: two, activeId: 'lm-studio-local' }))
+  const html = profilesHtml(data({ profiles: two, activeId: 'lm-studio-local' }))
   assert.match(html, /badge active/)
   assert.match(html, /data-act="activate" data-id="ollama-local"/)
   assert.match(html, /data-act="delete" data-id="ollama-local"/)
@@ -84,15 +86,21 @@ test('the active profile is marked, and a non-active profile offers Activate + D
 })
 
 test('ALL SIX slots are fully editable containers with an add-endpoint button', () => {
-  const html = renderSetupPage(data())
+  const html = editorHtml(data())
   for (const slot of ['llm', 'stt', 'tts', 'vlm', 'ocr', 'embed']) {
     assert.match(html, new RegExp(`data-slot="${slot}"`)) // every slot is an editable container
     assert.match(html, new RegExp(`data-act="addrow" data-slot="${slot}"`)) // every slot can add endpoints
   }
 })
 
+test('the endpoint row trends toward set → connect → test → benchmark (Test live, Benchmark disabled)', () => {
+  const html = editorHtml(data())
+  assert.match(html, /data-act="test">Test</)
+  assert.match(html, /<button type="button" disabled title="Benchmark[^>]*>Benchmark<\/button>/)
+})
+
 test('each slot carries an honest usage note — informational, never gating', () => {
-  const html = renderSetupPage(data())
+  const html = editorHtml(data())
   // llm/stt say what they power today
   assert.match(html, /powers distill, drafts, and the core pass today/)
   assert.match(html, /powers call transcription today/)
@@ -108,16 +116,13 @@ test('each slot carries an honest usage note — informational, never gating', (
 test('adding an endpoint to tts is possible (the founder repro): tts is an editable slot with add-row', () => {
   // The tts slot renders as a full editable container (data-slot + add-endpoint), exactly like llm —
   // the browser clones #row-tpl into it, so kokoro can be added from the page (no raw API calls).
-  const html = renderSetupPage(data())
+  const html = editorHtml(data())
   assert.match(html, /<div class="slot" data-slot="tts">/)
   assert.match(html, /data-act="addrow" data-slot="tts"/)
-  assert.match(html, /id="row-tpl"/) // the template the add-row clones a fresh editable http row from
+  assert.match(rowTemplateHtml([]), /id="row-tpl"/) // the template the add-row clones a fresh editable http row from
 })
 
 test('a full fabric (endpoints in EVERY slot) renders each slot as editable rows the save path reads', () => {
-  // The save path (assets.ts saveEditor) collects every `.slot[data-slot]` and rebuilds it from its
-  // `.row` children, so a complete DOM here proves the round-trip loses nothing. Pure-piece proof;
-  // the API-level round-trip lives in http.test.ts.
   const full: Fabric = {
     slots: {
       llm: [{ kind: 'http', name: 'llm-a', url: 'http://h1:1234', api: 'openai-compat', model: 'qwen' }],
@@ -128,7 +133,7 @@ test('a full fabric (endpoints in EVERY slot) renders each slot as editable rows
       embed: [{ kind: 'http', name: 'emb-a', url: 'http://h6:1237', api: 'openai-compat', model: 'nomic' }],
     },
   }
-  const html = renderSetupPage(data({ editing: profile({ fabric: full }) }))
+  const html = editorHtml(data({ editing: profile({ fabric: full }) }))
   // each slot's own URL field is present (the row the save path reads back)
   for (const url of ['http://h1:1234', 'http://h2:9000', 'http://h3:8880', 'http://h4:1235', 'http://h5:1236', 'http://h6:1237'])
     assert.match(html, new RegExp(`value="${url.replace(/[.]/g, '\\.')}"`))
@@ -141,12 +146,9 @@ test('a full fabric (endpoints in EVERY slot) renders each slot as editable rows
 })
 
 test('a non-http (local) endpoint renders as a read-only row that round-trips via data-json', () => {
-  // local endpoints (tier-zero starter models) are not editable in the form, but the row carries the
-  // full endpoint as data-json so the save path (rowToEndpoint) re-emits it byte-for-byte — untouched
-  // even when http rows are added/removed around it.
   const local = { kind: 'local' as const, name: 'starter-llm', runtime: 'llama.cpp' as const, model: 'qwen2.5-1.5b' }
   const withLocal: Fabric = { slots: { ...emptyFabric().slots, llm: [local] } }
-  const html = renderSetupPage(data({ editing: profile({ fabric: withLocal }) }))
+  const html = editorHtml(data({ editing: profile({ fabric: withLocal }) }))
   assert.match(html, /class="row readonly" data-kind="local"/)
   // the data-json attribute holds the exact endpoint, html-escaped; unescaping + parse yields it back
   const m = html.match(/data-json='([^']*)'/)
@@ -156,17 +158,17 @@ test('a non-http (local) endpoint renders as a read-only row that round-trips vi
 })
 
 test('keyRef dropdown offers the stored refs; the editable http row carries the endpoint fields', () => {
-  const html = renderSetupPage(data({ secretRefs: ['remote-llm-key'] }))
+  const html = editorHtml(data({ secretRefs: ['remote-llm-key'] }))
   assert.match(html, /<option value="remote-llm-key"/)
   assert.match(html, /class="f-url" autocomplete="off" value="http:\/\/localhost:1234"/)
 })
 
 test('secrets section lists refs (names only) and never a value; empty shows the write-only note', () => {
-  assert.match(renderSetupPage(data({ secretRefs: ['k1'] })), /data-act="delsecret" data-ref="k1"/)
-  assert.match(renderSetupPage(data({ secretRefs: [] })), /write-only/)
+  assert.match(secretsHtml(['k1']), /data-act="delsecret" data-ref="k1"/)
+  assert.match(secretsHtml([]), /write-only/)
 })
 
-// --- The Get-Started capability lens (discover present) ---
+// --- The Get-Started capability lens ---
 
 const httpEp = (model: string) => ({ kind: 'http' as const, name: 'lm-studio', url: 'http://localhost:1234', api: 'openai-compat' as const, model })
 
@@ -177,43 +179,28 @@ const discover = (over: Partial<DiscoverResult> = {}): DiscoverResult => ({
   ...over,
 })
 
-test('no discovery ⇒ page renders exactly as before (no lens, sections open, no Advanced disclosure)', () => {
-  const html = renderSetupPage(data())
-  assert.doesNotMatch(html, /Get started/)
-  assert.doesNotMatch(html, /details id="advanced"/)
-  assert.match(html, />Profiles</) // sections are directly present
-})
-
-test('discovery present ⇒ the Get-Started lens leads and the editor moves behind Advanced setup', () => {
-  const html = renderSetupPage(data({ discovery: discover() }))
-  assert.match(html, /class="card getstarted"/)
+test('lens speaks capabilities, not plumbing (Thinking/Hearing/Reading/Speaking)', () => {
+  const html = getStartedHtml(discover(), [])
   assert.match(html, /Get started/)
-  // capability lens speaks capabilities, not plumbing
   assert.match(html, /Thinking/)
   assert.match(html, /Hearing/)
   assert.match(html, /Reading the screen/)
   assert.match(html, /Speaking/)
-  // the full editor is now behind the Advanced disclosure
-  assert.match(html, /<details id="advanced"/)
-  // the lens leads the body (Get started appears before the Advanced section)
-  assert.ok(html.indexOf('Get started') < html.indexOf('details id="advanced"'))
 })
 
 test('lens FULL: llm found ⇒ Use this setup + the suggestion blob is embedded (script-safe JSON)', () => {
-  const html = renderSetupPage(data({ discovery: discover() }))
+  const html = getStartedHtml(discover(), [])
   assert.match(html, /data-act="use-setup"/)
   assert.match(html, /id="suggestion"/)
   assert.match(html, /Found 1 server with 1 model/)
-  // the embedded blob is real JSON (not html-escaped) so JSON.parse works in the browser
-  const blob = html.slice(html.indexOf('id="suggestion">') + 'id="suggestion">'.length)
-  const json = blob.slice(0, blob.indexOf('</script>'))
+  const json = extractBlob(html, 'suggestion')
   assert.doesNotMatch(json, /&quot;/)
   assert.equal(JSON.parse(json).slots.llm[0].model, 'qwen3-8b')
   assert.equal(json, jsonForScript(discover().suggestion))
 })
 
 test('lens PARTIAL: llm found, stt missing ⇒ Hearing shows the honest missing line', () => {
-  const html = renderSetupPage(data({ discovery: discover() }))
+  const html = getStartedHtml(discover(), [])
   assert.match(html, /qwen3-8b/) // Thinking found
   assert.match(html, /no transcription server found/) // Hearing missing, honest copy
   assert.match(html, /not used yet/) // Reading/Speaking labelled as later
@@ -224,7 +211,7 @@ test('lens NOTHING found ⇒ no Use button, honest "start a server" copy, re-det
     servers: [{ name: 'lm-studio', url: 'http://localhost:1234', reachable: false, models: [], error: 'fetch failed' }],
     suggestion: { slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } },
   })
-  const html = renderSetupPage(data({ discovery: empty }))
+  const html = getStartedHtml(empty, [])
   assert.doesNotMatch(html, /data-act="use-setup"/)
   assert.match(html, /No local model server responded/)
   assert.match(html, /Start LM Studio or Ollama/)
@@ -244,11 +231,8 @@ const starterModel = (over: Partial<import('@openinfo/contracts').StarterModel> 
   filename: 'q.gguf', url: 'https://x/q.gguf', sizeBytes: 1_120_000_000, ...over,
 })
 
-test('starter offer: binary present + absent ⇒ Download button with honest size', () => {
-  const html = renderSetupPage(data({
-    discovery: nothingFound(),
-    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'absent' }],
-  }))
+test('starter offer: binary present ⇒ Download button with honest size', () => {
+  const html = getStartedHtml(nothingFound(), [{ model: starterModel(), runtimeAvailable: true, state: 'absent' }])
   assert.match(html, /Or download a starter model/)
   assert.match(html, /data-act="download-model"/)
   assert.match(html, /Download \(~1\.1 GB\)/)
@@ -256,35 +240,23 @@ test('starter offer: binary present + absent ⇒ Download button with honest siz
 })
 
 test('starter offer: binary MISSING ⇒ the brew line + re-check, no download', () => {
-  const html = renderSetupPage(data({
-    discovery: nothingFound(),
-    localModels: [{ model: starterModel(), runtimeAvailable: false, installHint: 'brew install llama.cpp', state: 'absent' }],
-  }))
+  const html = getStartedHtml(nothingFound(), [{ model: starterModel(), runtimeAvailable: false, installHint: 'brew install llama.cpp', state: 'absent' }])
   assert.match(html, /brew install llama\.cpp/)
   assert.match(html, /data-act="redetect"/)
   assert.doesNotMatch(html, /data-act="download-model"/)
 })
 
 test('starter offer: downloading shows progress; ready shows "Use this model"', () => {
-  const downloading = renderSetupPage(data({
-    discovery: nothingFound(),
-    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'downloading', downloadedBytes: 560_000_000, totalBytes: 1_120_000_000 }],
-  }))
+  const downloading = getStartedHtml(nothingFound(), [{ model: starterModel(), runtimeAvailable: true, state: 'downloading', downloadedBytes: 560_000_000, totalBytes: 1_120_000_000 }])
   assert.match(downloading, /downloading… 50%/)
-  const ready = renderSetupPage(data({
-    discovery: nothingFound(),
-    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'ready' }],
-  }))
+  const ready = getStartedHtml(nothingFound(), [{ model: starterModel(), runtimeAvailable: true, state: 'ready' }])
   assert.match(ready, /data-act="use-starter"/)
   assert.match(ready, /data-runtime="llama\.cpp"/)
   assert.match(ready, /Use this model/)
 })
 
 test('starter offer: only shown in the NOTHING-found state (not when a suggestion applies)', () => {
-  const html = renderSetupPage(data({
-    discovery: discover(), // has a usable llm suggestion
-    localModels: [{ model: starterModel(), runtimeAvailable: true, state: 'absent' }],
-  }))
+  const html = getStartedHtml(discover(), [{ model: starterModel(), runtimeAvailable: true, state: 'absent' }])
   assert.doesNotMatch(html, /Or download a starter model/)
   assert.match(html, /data-act="use-setup"/) // the found suggestion leads instead
 })
@@ -306,35 +278,31 @@ const moment = (over: Partial<Moment> = {}): Moment => ({
 })
 
 test('Try-it HIDDEN when no llm endpoint exists (the lens/banner leads instead)', () => {
-  const html = renderSetupPage(data({ liveFabric: emptyFabric() }))
-  assert.doesNotMatch(html, /class="card tryit"/)
-  assert.doesNotMatch(html, /data-act="tryit-type"/)
+  const html = tryItHtml(data({ liveFabric: emptyFabric() }))
+  assert.equal(html, '')
 })
 
 test('Try-it TYPE-ONLY when llm exists but no stt: type path + honest no-voice line, no voice button', () => {
-  const html = renderSetupPage(data({ liveFabric: withLlm() }))
+  const html = tryItHtml(data({ liveFabric: withLlm() }))
   assert.match(html, /class="card tryit"/)
   assert.match(html, /data-act="tryit-type"/)
   assert.match(html, /tryit-novoice/)
   assert.match(html, /audio arrives once you add/)
   assert.doesNotMatch(html, /data-act="tryit-voice"/)
-  // the consent copy names the flags it flips; distill.transcribe is NOT promised without stt
   const consent = extractConsent(html)
   assert.match(consent, /distill\.enabled/)
   assert.match(consent, /distill\.moments/)
   assert.doesNotMatch(consent, /distill\.transcribe/)
-  // the embedded config carries the seeded meeting mode + default workspace, hasStt false
   const cfg = JSON.parse(extractBlob(html, 'tryit-config'))
   assert.deepEqual(cfg, { workspaceId: 'default', modeId: 'mode-meeting', hasStt: false })
 })
 
 test('Try-it BOTH PATHS when llm + stt exist: voice button + distill.transcribe named in consent', () => {
-  const html = renderSetupPage(data({ liveFabric: withSttLlm() }))
+  const html = tryItHtml(data({ liveFabric: withSttLlm() }))
   assert.match(html, /data-act="tryit-type"/)
   assert.match(html, /data-act="tryit-voice"/)
   assert.match(extractConsent(html), /distill\.transcribe/)
   assert.equal(JSON.parse(extractBlob(html, 'tryit-config')).hasStt, true)
-  // the glyph map is embedded (single source the browser reads to render the arrived moment)
   assert.equal(JSON.parse(extractBlob(html, 'moment-glyphs')).commitment, '●')
 })
 
