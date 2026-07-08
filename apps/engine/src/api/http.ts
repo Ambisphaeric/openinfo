@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeStt, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
+import { rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
@@ -164,6 +165,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
   bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
+  bus.subscribe('session.rerouted', (session) => ws.broadcast('session.rerouted', session))
   bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
 
@@ -225,6 +227,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'POST' && url.pathname === '/sessions') return startSession(req, res, ctx)
   const sessionEnd = url.pathname.match(/^\/sessions\/([^/]+)\/end$/)
   if (req.method === 'POST' && sessionEnd?.[1]) return endSession(res, ctx, decodeURIComponent(sessionEnd[1]))
+  const sessionReroute = url.pathname.match(/^\/sessions\/([^/]+)\/reroute$/)
+  if (req.method === 'POST' && sessionReroute?.[1]) return reroute(req, res, ctx, decodeURIComponent(sessionReroute[1]))
   if (req.method === 'GET' && url.pathname === '/moments') return send(res, 200, readMoments(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
@@ -527,6 +531,26 @@ async function endSession(res: ServerResponse, ctx: HandlerContext, id: string):
   ctx.store.saveSession(ended)
   await ctx.bus.publish('session.ended', ended)
   send(res, 200, ended)
+}
+
+/**
+ * Retroactively reroute a session to another workspace (Phase 3 — the correction loop the router's
+ * mistakes require; shipped BEFORE the detector per IMPLEMENTATION §3's risk register, so corrections
+ * exist before the mistakes do). Body is a RerouteRequest { toWorkspaceId }; the session is addressed
+ * by the route id. Policy lives in route/reroute.ts (route decides, store moves — the DB-handle rule):
+ * 404 unknown session, 400 same/unknown workspace, 409 a still-live session. On success the moved
+ * session (reroutedFrom stamped, a manual attribution appended) is returned and session.rerouted is
+ * emitted + WS-broadcast — a NEW event, distinct from the router's live session.switched (see events.ts).
+ */
+async function reroute(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('RerouteRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid RerouteRequest', details: errors })
+  const result = rerouteSession(ctx.store, id, (body as RerouteRequest).toWorkspaceId)
+  if (result.status !== 200) return send(res, result.status, { error: result.error })
+  await ctx.bus.publish('session.rerouted', result.session)
+  ctx.log(`rerouted session ${id} → workspace ${result.session.workspaceId} (from ${result.session.reroutedFrom})`)
+  send(res, 200, result.session)
 }
 
 /**

@@ -1225,3 +1225,89 @@ test('e2e (tier zero): nothing found → download a starter model → local endp
     await rm(binDir, { recursive: true, force: true })
   }
 })
+
+test('POST /sessions/:id/reroute moves an ended session between workspace DBs, emits session.rerouted', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const rerouted: Session[] = []
+  app.bus.subscribe('session.rerouted', (session) => {
+    rerouted.push(session)
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // ws-a holds an ENDED session with a distillate + moment; ws-b exists as the reroute target
+    app.store.ensureWorkspace({ id: 'ws-b', name: 'B' })
+    app.store.saveSession({
+      id: 'ses-r', workspaceId: 'ws-a', modeId: 'mode-meeting', startedAt: '2026-07-07T14:00:00Z', endedAt: '2026-07-07T15:00:00Z',
+      attribution: { evidence: [{ kind: 'window', detail: 'code — repo/api', weight: 0.6 }], confidence: 0.6 },
+    })
+    app.store.saveDistillate({
+      id: 'dst-r', sessionId: 'ses-r', workspaceId: 'ws-a', windowStart: '2026-07-07T14:00:00Z', windowEnd: '2026-07-07T14:02:00Z',
+      sourceChunks: ['c1'], text: 'sync', voice: { scope: 'mode', dials: { tone: 5, warmth: 5, wit: 5, charm: 5, specificity: 5, brevity: 5 } },
+      provenance: { slot: 'llm', endpoint: 'llm.fast' }, schemaVersion: 1, createdAt: '2026-07-07T14:02:00Z',
+    })
+    app.store.saveMoment({ id: 'mom-r', sessionId: 'ses-r', workspaceId: 'ws-a', at: '2026-07-07T14:01:00Z', kind: 'decision', text: 'ship it', refs: [], source: 'mic', confidence: 0.8 })
+
+    const ok = await fetch(`${base}/sessions/ses-r/reroute`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ toWorkspaceId: 'ws-b' }),
+    })
+    assert.equal(ok.status, 200)
+    const moved = (await ok.json()) as Session
+    assert.equal(moved.workspaceId, 'ws-b')
+    assert.equal(moved.reroutedFrom, 'ws-a')
+    assert.equal(moved.attribution.confidence, 1)
+    assert.deepEqual(moved.attribution.evidence.map((e) => e.kind), ['window', 'manual']) // history appended, not replaced
+
+    // moved on disk: ws-b has it, ws-a does not
+    const inA = (await (await fetch(`${base}/sessions?workspace=ws-a`)).json()) as Session[]
+    const inB = (await (await fetch(`${base}/sessions?workspace=ws-b`)).json()) as Session[]
+    assert.deepEqual(inA.map((s) => s.id), [])
+    assert.deepEqual(inB.map((s) => s.id), ['ses-r'])
+    const momentsB = (await (await fetch(`${base}/moments?workspace=ws-b`)).json()) as Moment[]
+    assert.deepEqual(momentsB.map((m) => m.id), ['mom-r'])
+
+    assert.deepEqual(rerouted.map((s) => s.id), ['ses-r']) // event fired once
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /sessions/:id/reroute — 404 unknown, 400 same/unknown workspace, 409 live', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const post = (id: string, toWorkspaceId: string) =>
+      fetch(`${base}/sessions/${id}/reroute`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ toWorkspaceId }) })
+
+    // unknown session
+    assert.equal((await post('nope', 'ws-b')).status, 404)
+
+    // an ENDED session in ws-a; ws-b exists
+    app.store.ensureWorkspace({ id: 'ws-b', name: 'B' })
+    app.store.saveSession({
+      id: 'ses-e', workspaceId: 'ws-a', modeId: 'mode-meeting', startedAt: '2026-07-07T14:00:00Z', endedAt: '2026-07-07T15:00:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'x', weight: 1 }], confidence: 1 },
+    })
+    assert.equal((await post('ses-e', 'ws-a')).status, 400) // same workspace
+    assert.equal((await post('ses-e', 'ws-nowhere')).status, 400) // unknown destination
+
+    // a LIVE (unended) session cannot be rerouted in v0
+    app.store.saveSession({
+      id: 'ses-live', workspaceId: 'ws-a', modeId: 'mode-meeting', startedAt: '2026-07-07T14:00:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'x', weight: 1 }], confidence: 1 },
+    })
+    assert.equal((await post('ses-live', 'ws-b')).status, 409)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

@@ -9,6 +9,7 @@ export interface EngineEvents {
   'entity.updated': Entity
   'session.started': Session
   'session.ended': Session
+  'session.rerouted': Session
   'draft.created': Draft
   'fabric.changed': Fabric
 }
