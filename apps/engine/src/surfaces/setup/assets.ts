@@ -98,6 +98,8 @@ details.advanced[open]>summary{color:var(--muted)}
 .tryit-voicenote,.tryit-novoice{color:var(--faint);font-size:12px}
 .tryit-status{min-height:0;margin-top:14px;font-size:13px;color:var(--muted)}
 .tryit-status.ok{color:var(--ok)}.tryit-status.bad{color:var(--bad)}
+.tryit-hint{margin-top:6px;color:var(--warn);font-size:12.5px}
+.tryit-hint-link{display:inline-block;margin-top:8px}
 .tryit-result{margin-top:12px}
 .moment-card{display:flex;gap:12px;align-items:flex-start;border:1px solid rgba(77,164,122,.35);
   background:rgba(77,164,122,.06);border-radius:11px;padding:14px 16px}
@@ -129,16 +131,28 @@ export const SETUP_SCRIPT = `
     return ep;
   }
   function testRow(row){
-    var probe=row.querySelector('.probe'); probe.className='probe'; probe.textContent='testing…';
+    var probe=row.querySelector('.probe'); probe.className='probe'; probe.textContent='testing\\u2026';
     var ep=rowToEndpoint(row);
     if(!ep){probe.className='probe bad';probe.textContent='could not read this endpoint';return;}
     if(ep.kind==='http'&&!ep.url){probe.className='probe bad';probe.textContent='enter a URL first';return;}
-    jf('POST','/fabric/test',ep).then(function(r){
-      var p=r.json;
-      if(p&&p.ok){probe.className='probe ok';
-        probe.textContent='reachable'+(p.latencyMs!=null?' · '+p.latencyMs+'ms':'')+(p.tokPerSec!=null?' · '+p.tokPerSec+' tok/s (last measured)':'');}
-      else{probe.className='probe bad';
-        probe.textContent=((p&&p.error)?p.error:'unreachable')+((p&&p.hint)?' — '+p.hint:'');}
+    // llm rows run ping THEN a real 1-token generation (the ping-lies fix) — a server that answers a GET
+    // but can’t load its model is caught. Other slots keep the cheap ping (generation needs their I/O).
+    var slotEl=row.closest('.slot'); var slot=slotEl?slotEl.dataset.slot:'';
+    var body=(slot==='llm')?Object.assign({},ep,{probe:'generate',slot:slot}):ep;
+    jf('POST','/fabric/test',body).then(function(r){
+      var p=r.json||{}; var parts=[];
+      if(p.ok){parts.push('reachable'+(p.latencyMs!=null?' \\u00b7 '+p.latencyMs+'ms':''));}
+      else{parts.push(((p.error)?p.error:'unreachable')+((p.hint)?' \\u2014 '+p.hint:''));}
+      if(p.ok&&p.tokPerSec!=null)parts.push(p.tokPerSec+' tok/s (last measured)');
+      var g=p.generate; var genBad=false;
+      if(g){
+        if(g.skipped){parts.push('generation skipped'+(g.note?' ('+g.note+')':''));}
+        else if(g.ok){parts.push('generation \\u2713'+(g.latencyMs!=null?' '+g.latencyMs+'ms':''));}
+        else{genBad=true; parts.push('generation \\u2717 '+(g.class?g.class+': ':'')+(g.error||g.hint||'failed'));}
+      }
+      var bad=!p.ok||genBad;
+      probe.className='probe '+(bad?'bad':'ok');
+      probe.textContent=parts.join(' \\u00b7 ');
     });
   }
   function saveEditor(){
@@ -278,10 +292,25 @@ export const SETUP_SCRIPT = `
     else{base.contentType='text/plain'; base.encoding='utf8'; base.data=payload.text;}
     return base;
   }
+  // The Try-it card stops GUESSING (the three-truths rule). Instead of pinging and inferring,
+  // it reads GET /queue — the drain records WHY it failed — and tells one of three distinct truths:
+  //   1. a real classified failure on the current llm endpoint → THE REAL ERROR + hint + a link to Endpoints
+  //   2. the chunk is still pending with no failure → "still queued — the model is slow, your text is safe"
+  //   3. a healthy queue with no failure → "no moments found in your input" (the input genuinely had none)
+  function tryitRealFailure(f){
+    var el=document.getElementById('tryit-status'); if(!el)return;
+    el.className='tryit-status bad'; el.textContent='';
+    var line=document.createElement('span');
+    line.textContent='The model couldn\\u2019t answer \\u2014 '+f.class+(f.serverMessage?': '+f.serverMessage:'')+'.';
+    el.appendChild(line);
+    if(f.hint){var h=document.createElement('div'); h.className='tryit-hint'; h.textContent=f.hint; el.appendChild(h);}
+    var a=document.createElement('a'); a.className='tryit-hint-link'; a.href='/settings/endpoints'; a.textContent='Open Settings \\u2192 Endpoints';
+    el.appendChild(a);
+  }
   function diagnose(session,cfg){
     if(tryit.done)return;
-    Promise.all([jf('GET','/flags'),jf('GET','/fabric'),jf('GET','/moments?workspace='+encodeURIComponent(cfg.workspaceId)+'&session='+encodeURIComponent(session.id))]).then(function(rs){
-      var flags=rs[0].json||[]; var fabric=rs[1].json||{slots:{}}; var moments=rs[2].json||[];
+    Promise.all([jf('GET','/flags'),jf('GET','/fabric'),jf('GET','/moments?workspace='+encodeURIComponent(cfg.workspaceId)+'&session='+encodeURIComponent(session.id)),jf('GET','/queue')]).then(function(rs){
+      var flags=rs[0].json||[]; var fabric=rs[1].json||{slots:{}}; var moments=rs[2].json||[]; var queue=rs[3].json||{};
       if(moments&&moments.length){tryit.done=true; tryitStatus('The moment arrived.','ok'); renderMoment(moments[moments.length-1]); return;}
       var byKey={}; flags.forEach(function(f){byKey[f.key]=f;});
       var on=function(k){return byKey[k]&&byKey[k].default===true;};
@@ -289,11 +318,13 @@ export const SETUP_SCRIPT = `
       var llm=(fabric.slots&&fabric.slots.llm)||[];
       if(!llm.length){tryitStatus('No language model is configured \\u2014 add one under Advanced setup and activate it.','bad');return;}
       var ep=llm[0];
-      jf('POST','/fabric/test',ep).then(function(tr){
-        var p=tr.json;
-        if(p&&p.ok){tryitStatus('The sentence spooled and the model at '+(ep.url||ep.name)+' is reachable, but no typed moment came back in time \\u2014 the model may be slow, or found nothing to type. Try a clear commitment or decision, e.g. "we will ship on Thursday".','bad');}
-        else{tryitStatus('The sentence spooled, but the language model at '+(ep.url||ep.name)+' is not responding'+((p&&p.hint)?' \\u2014 '+p.hint:'')+'. Start it, then try again.','bad');}
-      });
+      var f=queue&&queue.lastFailure;
+      // Truth 1 — a real, classified failure on the endpoint we are actually using: show it, don't guess.
+      if(f&&(f.endpoint===ep.name||(ep.url&&f.hint&&f.hint.indexOf(ep.url)>=0))){tryitRealFailure(f);return;}
+      // Truth 2 — the text is still in the queue and nothing has failed: it is safe, the model is just slow.
+      if(queue&&queue.pendingFiles>0){tryitStatus('Still queued \\u2014 the model is slow, but your text is safe and will process. Give it a moment.');return;}
+      // Truth 3 — a healthy queue, no failure: the input genuinely produced no moment.
+      tryitStatus('No moments found in your input \\u2014 try a clear commitment or decision, e.g. "we will ship on Thursday".');
     });
   }
   function runTryit(payload){

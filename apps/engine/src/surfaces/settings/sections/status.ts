@@ -78,10 +78,21 @@ export const renderStatus = (data: SetupData): string => {
   )
 
   const q = data.queue
+  const f = q?.lastFailure
+  // The honest drain readout (INVOKE-RESILIENCE): pending/drained AND the last classified failure with its
+  // troubleshoot hint — so "nothing is arriving" always has a visible, actionable reason (never silent).
+  const failureRows = f
+    ? row('last failure', `<span class="stat-dot off">●</span> <span class="stat-fail-class">${escapeHtml(f.class)}</span> on ${escapeHtml(f.endpoint)}${f.model ? ` <span class="stat-mono">${escapeHtml(f.model)}</span>` : ''}`) +
+      row('what to do', `<span class="stat-hint">${escapeHtml(f.hint)}</span>`)
+    : q?.lastSuccessAt
+      ? row('last drain', `${dot(true)} ok`)
+      : ''
   const queueCard = card(
     'Capture queue',
     q
-      ? row('pending', `${q.pendingFiles} file${q.pendingFiles === 1 ? '' : 's'} · ${q.pendingBytes} bytes`) + row('drained', `${q.drainedFiles} file${q.drainedFiles === 1 ? '' : 's'}`)
+      ? row('pending', `${q.pendingFiles} file${q.pendingFiles === 1 ? '' : 's'} · ${q.pendingBytes} bytes`) +
+          row('drained', `${q.drainedFiles} file${q.drainedFiles === 1 ? '' : 's'}`) +
+          failureRows
       : row('queue', 'no queue activity yet'),
   )
 

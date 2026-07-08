@@ -14,6 +14,7 @@ import {
   rowTemplateHtml,
   secretsHtml,
   tryItHtml,
+  tryItDiagnosis,
   type SetupData,
 } from './view.js'
 
@@ -328,4 +329,53 @@ test('momentResultHtml renders glyph, text, kind, provenance and elapsed seconds
   assert.match(html, /moment-kind">commitment</)
   assert.match(html, /via llm\.fast · qwen3-8b/)
   assert.match(html, /3\.1s<\/span>/) // elapsed, one decimal
+})
+
+// --- The Try-it card's THREE TRUTHS (the founder's mandate: three truths, three messages) ---
+
+test('three truths #1 REAL FAILURE: a model-load on the current endpoint shows the real error + hint + link', () => {
+  const d = tryItDiagnosis({
+    hasMoment: false,
+    distillReady: true,
+    llmEndpointName: 'lm-studio',
+    llmEndpointUrl: 'http://127.0.0.1:1234',
+    lastFailure: { class: 'model-load', endpoint: 'lm-studio', hint: 'model "big" failed to load — pick a smaller/loaded model in Settings → Endpoints', serverMessage: 'Model "big" failed to load' },
+    pendingFiles: 0,
+  })
+  assert.equal(d.kind, 'real-failure')
+  assert.match(d.message, /model-load/)
+  assert.match(d.message, /failed to load/)
+  assert.match(d.hint ?? '', /pick a smaller\/loaded model/)
+  assert.equal(d.link, true)
+})
+
+test('three truths #2 STILL QUEUED: pending with no matching failure is a distinct, reassuring state', () => {
+  const d = tryItDiagnosis({ hasMoment: false, distillReady: true, llmEndpointName: 'lm', llmEndpointUrl: 'http://x', pendingFiles: 1 })
+  assert.equal(d.kind, 'queued')
+  assert.match(d.message, /your text is safe/)
+  assert.notEqual(d.link, true)
+})
+
+test('three truths #3 NO MOMENTS: a healthy queue with nothing pending means the input had none', () => {
+  const d = tryItDiagnosis({ hasMoment: false, distillReady: true, llmEndpointName: 'lm', llmEndpointUrl: 'http://x', pendingFiles: 0 })
+  assert.equal(d.kind, 'none')
+  assert.match(d.message, /No moments found in your input/)
+})
+
+test('a failure on a DIFFERENT endpoint does not masquerade as the current one', () => {
+  const d = tryItDiagnosis({
+    hasMoment: false,
+    distillReady: true,
+    llmEndpointName: 'current',
+    llmEndpointUrl: 'http://current',
+    lastFailure: { class: 'unreachable', endpoint: 'some-other', hint: 'check the URL http://other' },
+    pendingFiles: 1,
+  })
+  assert.equal(d.kind, 'queued') // falls through to the still-queued truth, not the stale failure
+})
+
+test('the arrived moment and the flag/no-llm guards precede the three truths', () => {
+  assert.equal(tryItDiagnosis({ hasMoment: true, distillReady: true, pendingFiles: 0 }).kind, 'arrived')
+  assert.equal(tryItDiagnosis({ hasMoment: false, distillReady: false, pendingFiles: 0 }).kind, 'flags')
+  assert.equal(tryItDiagnosis({ hasMoment: false, distillReady: true, pendingFiles: 0 }).kind, 'no-llm')
 })

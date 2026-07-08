@@ -400,6 +400,69 @@ export const momentResultHtml = (moment: Moment, elapsedSec: number): string => 
   )
 }
 
+/**
+ * The Try-it card's THREE TRUTHS decision (three truths, three messages), pure
+ * and exported so it is asserted headless; the browser `diagnose` in assets.ts mirrors this exact branch
+ * order over live GET /flags + /fabric + /moments + /queue. The card STOPS guessing: instead of pinging
+ * and inferring "the model may be slow", it reads the drain's recorded reason.
+ *
+ * Order (first match wins): the moment arrived · the distill flags didn't stick · no llm configured ·
+ * a REAL classified failure on the current llm endpoint (show it + hint + a link) · the chunk is still
+ * pending with no failure ("still queued — your text is safe") · a healthy queue with nothing ("no
+ * moments found in your input"). The last three are the three truths (real-failure / queued / none).
+ */
+export interface TryItState {
+  hasMoment: boolean
+  /** distill.enabled AND distill.moments are both on */
+  distillReady: boolean
+  /** the current (first) llm endpoint's name, or undefined when none is configured */
+  llmEndpointName?: string
+  llmEndpointUrl?: string
+  /** the queue's last classified drain failure, if any */
+  lastFailure?: { class: string; endpoint: string; hint: string; serverMessage?: string }
+  /** files still pending in the queue */
+  pendingFiles: number
+}
+
+export interface TryItDiagnosis {
+  kind: 'arrived' | 'flags' | 'no-llm' | 'real-failure' | 'queued' | 'none'
+  message: string
+  /** an actionable hint (the classified failure's troubleshoot line), for real-failure */
+  hint?: string
+  /** true ⇒ offer a link to Settings → Endpoints */
+  link?: boolean
+}
+
+/** True when a recorded failure is on the endpoint we are actually using (by name, or url in its hint). */
+const failureMatchesEndpoint = (
+  f: NonNullable<TryItState['lastFailure']>,
+  name: string | undefined,
+  url: string | undefined,
+): boolean => (name !== undefined && f.endpoint === name) || (url !== undefined && url !== '' && f.hint.includes(url))
+
+export const tryItDiagnosis = (s: TryItState): TryItDiagnosis => {
+  if (s.hasMoment) return { kind: 'arrived', message: 'The moment arrived.' }
+  if (!s.distillReady) {
+    return { kind: 'flags', message: 'The distillation flags did not stick — open Advanced setup and check distill.enabled and distill.moments.' }
+  }
+  if (s.llmEndpointName === undefined) {
+    return { kind: 'no-llm', message: 'No language model is configured — add one under Advanced setup and activate it.' }
+  }
+  const f = s.lastFailure
+  if (f && failureMatchesEndpoint(f, s.llmEndpointName, s.llmEndpointUrl)) {
+    return {
+      kind: 'real-failure',
+      message: `The model couldn’t answer — ${f.class}${f.serverMessage ? `: ${f.serverMessage}` : ''}.`,
+      hint: f.hint,
+      link: true,
+    }
+  }
+  if (s.pendingFiles > 0) {
+    return { kind: 'queued', message: 'Still queued — the model is slow, but your text is safe and will process. Give it a moment.' }
+  }
+  return { kind: 'none', message: 'No moments found in your input — try a clear commitment or decision, e.g. "we will ship on Thursday".' }
+}
+
 export const tryItHtml = (data: SetupData): string => {
   if (data.liveFabric.slots.llm.length === 0) return ''
   const hasStt = data.liveFabric.slots.stt.length > 0

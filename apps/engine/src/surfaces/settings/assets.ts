@@ -127,6 +127,8 @@ body.settings{padding:0;background:
 .stat-slot-key{font-family:var(--mono);font-size:11px;color:var(--accent);min-width:46px;text-transform:uppercase}
 .stat-slot-detail{color:var(--muted);min-width:0}
 .stat-note{margin-top:10px;font-size:12px}
+.stat-fail-class{font-family:var(--mono);font-size:11px;color:var(--bad);text-transform:uppercase;letter-spacing:.06em}
+.stat-hint{color:var(--warn)}
 .stat-defer{margin-top:20px;font-size:12px;color:var(--faint);border-top:1px solid var(--line-soft);
   padding-top:14px;max-width:74ch;line-height:1.55}
 /* ---------- Privacy ---------- */
