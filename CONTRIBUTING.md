@@ -15,24 +15,46 @@ tiered by surface, and the lower tiers are mechanical: schema-validated document
 
 1. One concern per file; files under ~200 lines; no barrel re-export magic — explicit import paths.
 2. `tsconfig` strict everywhere; no `any`; no `@ts-ignore` (a recipe that needs one is a broken recipe).
-3. Every user-visible behavior is behind a flag document, default OFF.
+3. Flags gate **engine processing behaviors**, default OFF — an optional code path that runs over your data
+   (`distill.enabled`, `distill.moments`, `distill.index`, `act.enabled`, `capture.sim`, `fabric.http`).
+   What is deliberately NOT flagged: resource/document CRUD and read surfaces — sessions, surfaces/layouts,
+   profiles/secrets, `/query`, the `/setup` page. A lifecycle record, a versioned document, or a read route
+   is not a behavior a flag would gate, and its data is already gated upstream by the processing flag that
+   produced it (a `sessions.enabled` flag "would gate nothing that isn't already gated" — sessions slice,
+   PHASE2-NOTES). Client-local window behavior (always-on-top, content-protection, ⌘\) is *config*, not a
+   flag — it never touches the engine or its store.
 4. Conventional commits (`feat(engine/ledger): …`); one recipe = one commit.
 5. Tests colocated: `foo.ts` → `foo.test.ts`, `node --test`, no test framework beyond node built-ins.
 6. Never import across the seam: apps depend on `@openinfo/contracts` only. `spikes/` is unimportable.
+7. **Definition of done — keep the agent-facing paper true.** A slice that changes a route, a flag, or a
+   recipe-touched surface MUST update `skills/` and the CONTRIBUTING recipes in the SAME commit. The skills
+   and recipes are rails a local model follows blindly; a route/flag change that leaves them stale is a
+   broken rail, not a follow-up. (There is no root `CLAUDE.md`; this rule lives here.)
 
 ## Recipes (Tier B)
 
 Each recipe lists exact files, in order. Follow them literally; deviation means the change is Tier C.
 
 ### Add a built-in block type
-1. `shared/contracts/src/config/surface.ts` — add the type name to `BlockTypeName` (append-only).
-2. `apps/engine/src/api/routes/` — extend the block-data resolver for the new type (one function, one file).
-3. `apps/client/src/surfaces/blocks/<name>.ts` — the renderer; consumes typed data, renders DOM, no fetch calls
-   (the block-renderer supplies data).
-4. Flag document: `surface.block.<name>`, default OFF.
-5. Tests: schema example + resolver test. Run `pnpm test` and the evals smoke.
+1. `shared/contracts/src/config/surface.ts` — append the type name to `BlockTypeName` (append-only union).
+2. Data source: if the block reads data, it needs a `BlockQuery.source`. Reuse an existing source (in the
+   `BlockQuery.source` union, same file) if one fits; only if you need a NEW source do you (a) add it to that
+   union and (b) handle it in `apps/engine/src/surfaces/query.ts` — the `compileQuery` switch, which reads
+   through `store/` per the DB-handle rule (unbuilt sources return `[]`, not an error). A layout-only block
+   (like `now`) needs no query and no engine change.
+3. `apps/client/src/surfaces/blocks/<name>.ts` — the renderer: a pure `(block config + hydrated QueryResult)
+   → VNode` function; it never fetches (the block-renderer supplies the data). THEN register it in
+   `apps/client/src/surfaces/blocks/index.ts` (`defaultBlockRegistry`, keyed by the new `BlockTypeName`).
+4. No flag. A new built-in block type is not gated — `renderSurface` routes any unknown/forward type to the
+   `custom` fallback renderer, so a forward document never breaks. (The DATA a block shows is gated upstream
+   by its source's flags, e.g. `distill.*` — not by the block type.)
+5. Tests: a `Surface` example exercising the block (validated by contracts.test); a renderer/registry case in
+   `apps/client/src/surfaces/block-renderer/renderer.test.ts`; and, if you added a source, a `compileQuery`
+   case in `apps/engine/src/surfaces/query.test.ts`. Run `pnpm -r test` and the evals smoke.
 
-### Add a ledger watcher
+### Add a ledger watcher — FUTURE (P4; `engine/ledger/` is a scaffold today, README only)
+The ledger and its watchers are Phase 4 — the module is not built yet, so this recipe describes the intended
+shape, not files you can edit now. When P4 lands:
 1. Implement `Watcher` from contracts in `apps/engine/src/ledger/watchers/<kind>.ts`.
 2. Register it in the watcher table (one line, `ledger/watchers/index.ts`).
 3. Flag `ledger.watcher.<kind>`, default OFF. Example commitment document exercising it. Test with a fixture.
