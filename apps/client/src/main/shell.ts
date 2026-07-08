@@ -372,7 +372,15 @@ const seedSessionState = async (): Promise<void> => {
   refreshTray()
 }
 
+// No single-instance lock, no guard: a second launch (stray process, double-click, a relaunch that
+// raced a not-yet-dead prior one) would create its own Tray, so the menu bar shows two of us.
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) app.quit()
+
+app.on('second-instance', () => showHud())
+
 app.whenReady().then(() => {
+  if (!gotLock) return
   app.dock?.hide() // menu-bar-only agent (no dock icon), like a Glass-style companion
   // Grant only the media (mic) permission at the Chromium layer for our own windows; deny everything
   // else. The OS-level (TCC) gate is separate — requestMicPermission handles that before capture.
