@@ -29,7 +29,7 @@ Verified from a clean tree (macOS, Node 22+, pnpm 9). Clone to a rendered HUD:
 ```bash
 pnpm install
 pnpm -r build          # contracts → engine + client (workbench is a Phase-4 scaffold)
-pnpm -r test           # contracts schema-validation (33) + engine (97) + client (65)
+pnpm -r test           # contracts schema-validation (34) + engine (107) + client (71)
 
 # start the engine daemon — localhost:8787 by default, data under ~/.openinfo/data
 node apps/engine/dist/main.js            # OPENINFO_PORT / OPENINFO_DATA to override
@@ -88,7 +88,16 @@ for f in distill.enabled distill.moments distill.index act.enabled; do
 ```
 
 Second — **the distill pass needs an OpenAI-compatible LLM endpoint** (Ollama, LM Studio, mlx). The
-`llm` slot ships empty; point it at your local server:
+`llm` slot ships empty. **The easiest way to point it at a model server is the setup page** — a
+forms-over-documents surface the engine serves at **`/setup`** (the menu-bar tray opens it too, and
+flags it "⚠ Set up models…" while the llm slot is empty):
+
+```bash
+open http://localhost:8787/setup          # macOS; or just visit it in any browser
+```
+
+There you name/clone/activate profiles, add slot→endpoint rows across hosts, wire a key by reference,
+and Test each endpoint (reachable · latency). Prefer curl? The page is only composing these routes:
 
 ```bash
 curl -sX PUT localhost:8787/fabric -H 'content-type: application/json' -d '{"slots":{
@@ -121,7 +130,9 @@ curl localhost:8787/fabric/secrets                            # [{"ref":"remote-
 ```
 
 The key is injected as `Authorization: Bearer …` only at invoke time; a missing key just makes that
-endpoint fall through to the next. A forms-over-documents setup page for all this is the next slice.
+endpoint fall through to the next. All of this — profiles, endpoints, keys, per-endpoint testing —
+is what the **`/setup`** page above drives, so you rarely need the raw curls. (Localhost-only, no
+auth yet — a P7 concern.)
 
 ---
 

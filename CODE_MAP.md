@@ -1,6 +1,6 @@
 # openinfo — code map
 
-**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act) · 2026-07-07
+**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup) · 2026-07-07
 **Reads with:** [ARCHITECTURE.md](./ARCHITECTURE.md) (the what) · [IMPLEMENTATION.md](./IMPLEMENTATION.md) (the when)
 This file is the **where** — including where features that don't exist yet will land, so no later phase ever
 has to invent a home (the historical failure mode).
@@ -36,14 +36,14 @@ openinfo/
 │  ├─ queue/                    P1   spool · drain (P2: optional distill processor · drainNow flushes before the act) │ P3: eta │ gc
 │  ├─ overlay/                  P2   rules/lenses · roles · ontology (voice lives in voice/)
 │  ├─ flags/                    P0   flag registry (flags are documents)
-│  ├─ surfaces/                 P2   HUD surface documents (documents/defaults) · block-query compiler (query.ts: BlockQuery→store calls) │ P4: serve workbench │ P6: custom-block sandbox (rabbithole pattern)
+│  ├─ surfaces/                 P2   HUD surface documents (documents/defaults) · block-query compiler (query.ts: BlockQuery→store calls) · setup/ (GET /setup — the first ENGINE-served surface: forms over profile+secret docs) │ P4: serve workbench │ P6: custom-block sandbox (rabbithole pattern)
 │  └─ teach/                    P2   dismiss/reroute signals → extraction prompts (quality flywheel)
 │
 ├─ apps/client/src/             thin Electron client — NEVER opens a database
 │  ├─ main/                     P1   the Electron shell (BUILT): shell.ts (electron entry) · window-options (content-protection, always-on-top, frameless) · tray-menu (show/hide · start/end session · live indicator) · shortcuts (⌘\ hide) · engine-session (session client + WS live-state) · config · tray-icon
 │  ├─ capture/                  P1   mic (BUILT: hidden-window getUserMedia → webm segments → /capture/mic, session-gated) · screen Δ-gate · system audio + aec │ P2: calendar │ P3: focus │ P7: camera
 │  ├─ engine-link/              P1   typed client from contracts · offline spool
-│  └─ surfaces/                 P2   block-renderer (pure VNode, render(surfaceDoc)) · blocks/ (built-ins + glyphs) · hud/ (live controller + transport + dev-entry) │ P2-todo: settings/ │ P6: palette/ · editor/
+│  └─ surfaces/                 P2   block-renderer (pure VNode, render(surfaceDoc)) · blocks/ (built-ins + glyphs) · hud/ (live controller + transport + dev-entry) │ (model setup is ENGINE-served at GET /setup — the tray opens it in the browser, not a client settings pane) │ P6: palette/ · editor/
 │
 ├─ apps/workbench/src/          P4   Vite app served BY THE ENGINE (any browser, any machine)
 │                                    ledger · archive · brief │ P6: explore (canvas) │ P7: analytics
@@ -78,7 +78,7 @@ openinfo/
 | Gmail/calendar write scopes | P7+ | new `engine/connect/` module (design note first, per rule 5) |
 | Cloud endpoints (Gemini Live, Anthropic) | P7 | `engine/fabric/endpoints/cloud.ts` (keychain) |
 | Fabric profiles + secrets (this slice) | P2 | `engine/fabric/{profiles,secrets}.ts` + profile/secret routes; live fabric = active profile |
-| First-run / fabric setup page (forms over profile+secret docs) | next | `client/surfaces/setup/` over the profile + secret routes — no new engine capability |
+| First-run / fabric setup page (forms over profile+secret docs) | P2 (built) | `engine/surfaces/setup/` — GET /setup, ENGINE-served forms over the profile+secret routes (deviates from the earlier `client/surfaces/setup/` guess: served by the engine like the workbench §6, not a client webview; the tray opens it in the browser). No new engine capability. |
 | macOS Keychain secret store | P7 | `engine/fabric/secrets.ts` — `KeychainSecretStore` behind the `SecretStore` interface (drop-in for the v0 file) |
 | Drift steering (comparator + chains) | P5 | `engine/voice/{comparator,chains}.ts`; card/glyph = HUD blocks |
 | TTS whisper (chain terminus) | P5 | `fabric` tts slot + chain step `tts` |

@@ -1114,3 +1114,122 @@ timing flake in the new activation e2e under concurrent `-r test` load was harde
 - The setup page / any client UI (next slice — forms over the routes above, no new engine capability);
   actual macOS Keychain backend (interface only); cloud endpoint kind; onboarding first-run detection;
   OpenRouter-style model catalogs; migration tooling; a bespoke non-bearer auth header.
+
+## Slice: The first-run setup surface + tray entry (+ the rec-indicator honesty fix)
+
+Slice (b) after fabric profiles+secrets (a). The founder's frame: onboarding is minimal — a *first*
+setting, not the user's last. "Config 1" (an 8B in LM Studio) is named, then cloned/switched to a
+27B on another host, parakeet STT on a third, any combination. The page is a thin form over the
+profile documents slice (a) shipped — forms over documents, **no new engine capability**.
+
+### The page is ENGINE-served at GET /setup — a deviation from CODE_MAP's `client/surfaces/setup/`
+CODE_MAP guessed the setup page would live in `client/surfaces/setup/` (a client webview). It landed
+**engine-served** instead — the shape ARCHITECTURE §8 actually names ("forms-over-documents served
+by the engine, exactly like the coming WYSIWYG editors §6") and consistent with the workbench being
+"a web app served by the engine itself … any browser pointed at it". This is the FIRST engine-served
+surface, so `engine/surfaces/` gains a real P2 role beyond the block-query compiler (noted in
+CODE_MAP). Consequences that make it the right call: it needs no Electron, works against a *remote*
+engine from any browser, and the client stays a thin HUD host (no embedded settings UI — explicitly
+out of scope). The tray opens it via `shell.openExternal(engineUrl + '/setup')`.
+
+### What the page does (barebones but complete)
+- **Profiles:** lists all (seeded ones included), marks the active one (`active · live` badge),
+  Activate / Clone (name → slugged id) / Delete. Delete of the active profile is **guarded** — the
+  route already 409s ("activate another first"); the page also hides Delete/Activate on the active
+  row and surfaces the 409 body in an alert if one still occurs.
+- **Editor** (`?edit=<id>` selects the profile; default = active, else first, else the legacy live
+  fabric via PUT /fabric): per-slot endpoint rows for **llm + stt** (the slots that DO something
+  today) — add / remove / **reorder** (order is fabric fallback) http rows with name / baseUrl /
+  model / an optional keyRef dropdown populated from `GET /fabric/secrets`. `tts/vlm/ocr/embed` are
+  shown **present-but-inert** with a one-line note (and their existing endpoints are round-tripped on
+  save, never dropped). Save PUTs the whole profile (or PUT /fabric for the legacy doc).
+- **Secrets:** add a key (ref + value) via `PUT /fabric/secrets/:ref`, delete a ref. The value input
+  is write-only — only refs (names) are ever rendered; a stored value is never re-shown (verified
+  live: the value never appears in GET /fabric or the page).
+- **Test button per endpoint:** `POST /fabric/test` → reachable · latency (· last-measured tok/s if
+  the endpoint doc carries one). Failures are honest: `fetch failed` (unreachable), `HTTP 401` with
+  a "add a key / the stored value may be wrong" hint, and `unresolved secret keyRef "x"` with a
+  "store its value under Keys" hint.
+- **First-run notice:** when the LIVE fabric's llm slot is empty, a banner at the top says plainly
+  "distill won't run until an llm endpoint exists" — the page IS the onboarding.
+
+### Pure/shell split (engine edition) + how it's served
+`surfaces/setup/view.ts` is **pure** (`data → HTML string`, no I/O, no DOM): `firstRunNotice` and the
+whole page skeleton are node-tested headless, mirroring the client's pure renderers. `assets.ts` holds
+the static CSS + the browser script as string constants (the repo hand-rolls its UI — no framework,
+no build step for the page). The script is thin **event-delegation → fetch → `location.reload()`**
+after mutations; pre-save endpoint-row edits (add/remove/reorder) are local DOM until Save PUTs the
+profile, so a reload never eats unsaved edits mid-form. Round-trip integrity: the editor embeds the
+full current fabric as a hidden JSON blob so inert slots + `memoryBudgetMb` survive a save, and each
+row carries its kind (non-http rows carry their full JSON) so reorder + mixed kinds serialize faithfully.
+
+### POST /fabric/test + EndpointProbe — a thin read-only helper, not a semantics change
+The Test button needed a backing path; `checkEndpoint` (fabric/health.ts) existed but was unrouted.
+`POST /fabric/test` exposes it as a **thin, read-only** helper (scope allows "the page + its thin
+helpers"): validates an `Endpoint` (the row's current, possibly-unsaved values — so you can test
+before saving), resolves any keyRef from the secret store → bearer for the probe, and returns the new
+`EndpointProbe` contract `{ ok, latencyMs?, tokPerSec?, error?, hint? }`. It **pings, never invokes a
+model** — tok/s is echoed from the endpoint doc's last measured value (tools/bench), not measured
+here; the page labels it "(last measured)". The hint mapping (401/403 → key; unresolved keyRef →
+store its value) lives server-side so it's tested via the route. No change to invoke/profile/secret
+semantics — slice (a) still owns those.
+
+### First-run tray mechanism — a prominent, honest tray item (no popups)
+The tray gains **"Set up models…"**; when the live fabric's llm slot is empty it becomes
+**"⚠ Set up models…"**. Chosen mechanism (minimal + honest, per scope — no popups/notifications
+beyond the tray): a pure `needsModelSetup(fabric)` = `llm slot empty`, seeded on connect from
+`GET /fabric` and recomputed on every `fabric.changed` WS event (the event carries the new map — no
+refetch). `undefined` (fabric not yet fetched) reads as "not prominent", so the tray never cries wolf
+before it knows. Clicking opens `/setup` in the default browser. Config, not a flag — a client window
+behaviour, the same line every prior client slice drew.
+
+### The rec-indicator honesty fix — a `starting` state between intent and real audio
+`● rec` used to flip the instant permission was granted and the renderer was told to start —
+before any audio flowed (getUserMedia + first-segment latency). The mic-controller now distinguishes
+**`starting`** (renderer told to start, no segment yet) from **`capturing`** (the FIRST real segment
+arrived — audio is genuinely recording). `beginRun` enters `starting`; `onSegment` promotes
+`starting → capturing` on the first segment. `onSessionEnded`/`shutdown` treat `starting` like
+`capturing` (the renderer holds an open stream either way, so it must be stopped). The tray shows
+**`● rec` only for `capturing`**, and a quiet **`○ mic…`** while `starting`/`requesting` — so the dot
+never claims to record before a byte exists. Denial path unchanged. Controller + tray tests cover the
+new transitions (start → first-segment → rec; end-during-starting still stops the renderer).
+
+### No flag — deliberately (consistent with sessions/HUD/shell/profiles)
+Serving a page, probing an endpoint, and the tray's own item are resource routes / client-window
+behaviour, not gated engine processing — the established no-flag line. What the fabric switches on
+(distill/act) is already gated. **Auth on /setup is out of scope:** the engine is localhost-only
+today; a real auth story is a P7 concern (noted in the getSetup doc-comment and the README).
+
+### Tests + status (contracts 34 · client 71 · engine 107 — all green; `pnpm -r build`/`-r test`)
+- contracts +1: `endpointProbe.reachable.json` validates against the new `EndpointProbe`.
+- engine +10: `surfaces/setup/view.test.ts` (firstRunNotice; skeleton; first-run banner on/off; active
+  marked + guarded; llm/stt editable vs inert slots; keyRef dropdown; secrets refs-only) and two
+  `http.test.ts` cases (GET /setup 200 + skeleton + seeded profiles + `?edit`; POST /fabric/test
+  reachable/401-hint/unresolved-keyRef-hint/400).
+- client +7: tray setup-item prominence (⚠ only when llm empty), the `● rec`-vs-`○ mic…` labels, the
+  rec-indicator state-machine transitions, `needsModelSetup`, and `EngineSessionClient.fabric()`.
+- Known flake (seam.test.ts port TOCTOU) did not recur this run.
+
+### Live verification (darwin, engine on :8906, :8787 left alone, processes killed after)
+Full round-trip driven over the API exactly as the page's JS does, plus the page served + opened:
+- `GET /setup` → **200**, `text/html`, well-formed (doctype, balanced tags, matched script/template
+  blocks, 15 KB); skeleton present (title, first-run banner while llm empty, add-row template, seeded
+  profiles each offering Activate). `open http://…/setup` launched the default browser.
+- **Profile → secret → activate → GET /fabric → Test:** PUT a `my-rig` profile whose llm endpoint
+  references keyRef `my-key` and points at a fake reachable server → 200; PUT the secret value → 200,
+  `GET /fabric/secrets` lists `[{"ref":"my-key"}]` (name only); activate → 200; `GET /fabric` now
+  returns that map with `auth.keyRef` and **the secret value does NOT appear anywhere** in it; the
+  first-run banner is **gone** now the llm slot is non-empty; `POST /fabric/test` → `{ ok: true,
+  latencyMs: 9 }`.
+- **Honest failures:** unreachable → `{ ok:false, error:"fetch failed" }`; unresolved keyRef →
+  `{ ok:false, error:'unresolved secret keyRef "ghost"', hint:"no value stored…" }`; **delete the
+  active profile → 409** guarded; clone → 200; `?edit=my-rig-2` opens that profile in the editor.
+- **Could not automate** (documented ceiling, as prior client slices): a real tray *click* and the
+  visual look of the served page in the browser — the tray change is verified via its pure tests and
+  the `open` launch; every API link the page drives is exercised above.
+
+### Deferred (out of this slice, by scope)
+- Auth on /setup (localhost-only posture — P7); the workbench proper (P4); surface/mode/dial editors +
+  palette (P6); an embedded-webview settings UI in the client; cloud endpoint kinds; macOS Keychain;
+  model catalogs/downloading; live tok/s measurement on the Test button (it pings; tok/s is echoed
+  from the last tools/bench measurement); any change to invoke/profile/secret semantics (slice (a)).
