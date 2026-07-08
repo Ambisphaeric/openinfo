@@ -31,6 +31,22 @@ export interface EntityUpsert {
   momentRefs?: string[]
 }
 
+/**
+ * One moved session's contribution to a single source entity — the provenance entries (keyed by a
+ * moved distillate) it added, plus the moved moment refs and the entity's kind/name/aliases/window.
+ * Carried from the source read into moveSession's destination upsert (and its source→dest id remap).
+ */
+interface Contribution {
+  sourceId: string
+  kind: Entity['kind']
+  name: string
+  aliases: string[]
+  provenance: EntityProvenance[]
+  momentRefs: string[]
+  firstSeen: string
+  lastSeen: string
+}
+
 interface WorkspaceRow {
   id: string
   name: string
@@ -272,6 +288,191 @@ export class WorkspaceRegistry {
     const db = this.openWorkspace(workspaceId)
     const rows = db.prepare('select body from entities order by last_seen desc, name_key').all() as { body: string }[]
     return rows.map((row) => JSON.parse(row.body) as Entity)
+  }
+
+  /**
+   * Retroactively move a session — and EVERYTHING keyed to it — from one workspace DB to another
+   * (Phase 3, the correction loop the router's mistakes require; IMPLEMENTATION §3 risk register).
+   * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
+   *
+   * WHAT MOVES: the session record, its distillates, moments, and drafts (everything keyed by
+   * sessionId). ENTITIES are workspace-level aggregates, not session-keyed, so they are re-aggregated
+   * (see below), never blindly copied.
+   *
+   * CRASH-SAFETY (v0, honest): sqlite transactions are per-file, so a move across two files cannot be
+   * one ACID transaction. The guarantee instead: (1) each per-file mutation is atomic (better-sqlite3
+   * `.transaction`); (2) order is destination-writes FIRST, then source-deletes; (3) every step is
+   * IDEMPOTENT — entity contributions union/subtract by distillate id (a set), record copies are
+   * insert-or-replace by id. A crash between the two phases leaves the session in BOTH workspaces — a
+   * duplicate DETECTABLE via `sessionWorkspaces(id).length > 1` — and RESOLVED by re-running the same
+   * move: the destination re-write is a no-op and the source-delete completes, converging to one copy.
+   * A completed move re-run is also a no-op (source empty ⇒ returns the destination session).
+   * `stopAfterCopy` is a test-only seam that stages exactly that mid-move crash.
+   *
+   * ENTITY SEMANTICS (v0 — deterministic, no llm, cannot corrupt the destination or lie in the source):
+   * - Moved moments keep their text; their `refs` are REMAPPED to the destination entity of the same
+   *   (kind, normalized-name), else DROPPED — a ref to an entity that STAYS in the source has no honest
+   *   destination target and we never fabricate one.
+   * - The moved session's entity CONTRIBUTIONS are the source entities carrying provenance whose
+   *   distillateId belongs to a moved distillate. They are UPSERTED into the destination by (kind,
+   *   normalized-name), unioning provenance by distillateId (so mentions never double-count on a re-run)
+   *   and unioning the surviving moment refs.
+   * - In the SOURCE each such entity's moved-distillate provenance is SUBTRACTED (mentions decremented,
+   *   moved moment refs removed); an entity that reaches ZERO mentions is DELETED — a zero-mention ghost
+   *   would silently lie about evidence the source no longer holds.
+   */
+  moveSession(sessionId: string, fromWorkspaceId: string, toWorkspaceId: string, opts: { stopAfterCopy?: boolean } = {}): Session {
+    if (fromWorkspaceId === toWorkspaceId) throw new Error('moveSession: source and destination are the same workspace')
+    const session = this.getSession(fromWorkspaceId, sessionId)
+    if (!session) {
+      const dest = this.getSession(toWorkspaceId, sessionId)
+      if (dest && dest.reroutedFrom === fromWorkspaceId) return dest // already moved — idempotent no-op
+      throw new Error(`moveSession: no session ${sessionId} in workspace ${fromWorkspaceId}`)
+    }
+    this.ensureWorkspace({ id: toWorkspaceId, name: toWorkspaceId })
+
+    const distillates = this.listDistillates(fromWorkspaceId, sessionId)
+    const moments = this.listMoments(fromWorkspaceId, sessionId)
+    const drafts = this.listDrafts(fromWorkspaceId, sessionId)
+    const movedDistillateIds = new Set(distillates.map((d) => d.id))
+    const movedMomentIds = new Set(moments.map((m) => m.id))
+
+    // The moved session's entity contributions in the source: entities whose provenance names a moved distillate.
+    const sourceEntities = this.listEntities(fromWorkspaceId)
+    const contributions: Contribution[] = []
+    for (const entity of sourceEntities) {
+      if (!entity.provenance) continue
+      const provenance = entity.provenance.filter((p) => p.distillateId !== undefined && movedDistillateIds.has(p.distillateId))
+      if (provenance.length === 0) continue
+      contributions.push({
+        sourceId: entity.id,
+        kind: entity.kind,
+        name: entity.name,
+        aliases: entity.aliases,
+        provenance,
+        momentRefs: entity.momentRefs.filter((ref) => movedMomentIds.has(ref)),
+        firstSeen: entity.firstSeen,
+        lastSeen: entity.lastSeen,
+      })
+    }
+
+    const movedSession: Session = { ...session, workspaceId: toWorkspaceId, reroutedFrom: fromWorkspaceId }
+
+    // PHASE 1 — destination writes, idempotent, one atomic per-file transaction.
+    const toDb = this.openWorkspace(toWorkspaceId)
+    const sourceToDestEntity = new Map<string, string>()
+    toDb.transaction(() => {
+      for (const c of contributions) sourceToDestEntity.set(c.sourceId, this.mergeMovedEntity(toDb, toWorkspaceId, c))
+      for (const moment of moments) {
+        const refs = [...new Set(moment.refs.map((r) => sourceToDestEntity.get(r)).filter((id): id is string => id !== undefined))]
+        const moved: Moment = { ...moment, workspaceId: toWorkspaceId, refs }
+        toDb.prepare('insert or replace into moments (id, session_id, at, kind, body) values (?, ?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.at, moved.kind, JSON.stringify(moved))
+      }
+      for (const distillate of distillates) {
+        const moved: Distillate = { ...distillate, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into distillates (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
+      }
+      for (const draft of drafts) {
+        const moved: Draft = { ...draft, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into drafts (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
+      }
+      toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
+    })()
+
+    if (opts.stopAfterCopy) return movedSession // test seam: leave the source intact to stage a mid-move crash
+
+    // PHASE 2 — source subtraction + deletes, idempotent, one atomic per-file transaction.
+    const fromDb = this.openWorkspace(fromWorkspaceId)
+    fromDb.transaction(() => {
+      for (const entity of sourceEntities) this.subtractMovedFromEntity(fromDb, entity, movedDistillateIds, movedMomentIds)
+      fromDb.prepare('delete from moments where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from distillates where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from drafts where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from sessions where id = ?').run(sessionId)
+    })()
+
+    return movedSession
+  }
+
+  /**
+   * Every workspace whose DB currently holds a session with this id. Normally 0 or 1; length > 1 is the
+   * DETECTABLE duplicate a crash mid-`moveSession` (between destination copy and source delete) leaves —
+   * resolved by re-running the move. The detection primitive behind the reroute crash story.
+   */
+  sessionWorkspaces(id: string): string[] {
+    return this.all().filter((ws) => this.getSession(ws.id, id) !== undefined).map((ws) => ws.id)
+  }
+
+  /**
+   * Upsert ONE moved-session entity contribution into a destination workspace by (kind, normalized
+   * name), unioning provenance by distillateId (idempotent — a re-run adds nothing already present) and
+   * unioning moment refs. Returns the destination entity id (for the moment-ref remap). Uses the passed
+   * db handle so it composes inside moveSession's destination transaction; it never opens its own.
+   */
+  private mergeMovedEntity(db: Database.Database, workspaceId: string, c: Contribution): string {
+    const existing = this.findEntity(db, c.kind, [normalizeEntityName(c.name), ...c.aliases.map(normalizeEntityName)])
+    const base: Entity = existing ?? {
+      id: randomUUID(),
+      workspaceId,
+      kind: c.kind,
+      name: c.name.trim(),
+      aliases: [],
+      momentRefs: [],
+      outboundCount: 0,
+      mentions: 0,
+      provenance: [],
+      firstSeen: c.firstSeen,
+      lastSeen: c.lastSeen,
+    }
+    const seenDistillates = new Set((base.provenance ?? []).map((p) => p.distillateId).filter((id): id is string => id !== undefined))
+    const addedProvenance = c.provenance.filter((p) => p.distillateId === undefined || !seenDistillates.has(p.distillateId))
+    const knownKeys = new Set([normalizeEntityName(base.name), ...base.aliases.map(normalizeEntityName)])
+    const aliases = [...base.aliases]
+    for (const candidate of [c.name.trim(), ...c.aliases]) {
+      const key = normalizeEntityName(candidate)
+      if (!knownKeys.has(key)) { aliases.push(candidate); knownKeys.add(key) }
+    }
+    const entity: Entity = {
+      ...base,
+      aliases,
+      momentRefs: [...new Set([...base.momentRefs, ...c.momentRefs])],
+      mentions: (base.mentions ?? 0) + addedProvenance.length,
+      provenance: [...(base.provenance ?? []), ...addedProvenance],
+      firstSeen: c.firstSeen < base.firstSeen ? c.firstSeen : base.firstSeen,
+      lastSeen: c.lastSeen > base.lastSeen ? c.lastSeen : base.lastSeen,
+    }
+    if (!Value.Check(EntitySchema, entity)) throw new Error(`moved entity failed contract validation: ${c.kind} "${c.name}"`)
+    db.prepare('insert or replace into entities (id, kind, name_key, last_seen, body) values (?, ?, ?, ?, ?)').run(
+      entity.id, entity.kind, normalizeEntityName(entity.name), entity.lastSeen, JSON.stringify(entity),
+    )
+    return entity.id
+  }
+
+  /**
+   * Remove one moved session's contribution from a SOURCE entity (in the passed db handle, inside
+   * moveSession's source transaction). Provenance entries from the moved distillates are dropped,
+   * `mentions` decremented by that count, moved moment refs removed. An entity left with ZERO mentions
+   * is DELETED (no zero-mention ghost). Idempotent: an entity with nothing to remove is left untouched.
+   */
+  private subtractMovedFromEntity(db: Database.Database, entity: Entity, movedDistillateIds: Set<string>, movedMomentIds: Set<string>): void {
+    if (!entity.provenance) return
+    const kept = entity.provenance.filter((p) => p.distillateId === undefined || !movedDistillateIds.has(p.distillateId))
+    const removed = entity.provenance.length - kept.length
+    if (removed === 0) return
+    const mentions = Math.max(0, (entity.mentions ?? removed) - removed)
+    if (mentions === 0) {
+      db.prepare('delete from entities where id = ?').run(entity.id)
+      return
+    }
+    const updated: Entity = {
+      ...entity,
+      mentions,
+      provenance: kept,
+      momentRefs: entity.momentRefs.filter((ref) => !movedMomentIds.has(ref)),
+    }
+    db.prepare('insert or replace into entities (id, kind, name_key, last_seen, body) values (?, ?, ?, ?, ?)').run(
+      updated.id, updated.kind, normalizeEntityName(updated.name), updated.lastSeen, JSON.stringify(updated),
+    )
   }
 
   /** Match by kind + any normalized key against a stored record's normalized name OR aliases. */
