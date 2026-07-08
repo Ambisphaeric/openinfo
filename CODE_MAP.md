@@ -33,7 +33,7 @@ openinfo/
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
 │  ├─ index/                    P2   extract (entities) · rank (recency×frequency) · relevant (relevant-now join) │ P3: canon · ingest/ (pdf, gdoc)
 │  ├─ act/                      P2   the Act primitive: draft (follow-up-draft on session end) · defaults/documents (act template) │ P3+: task-extract · nudge · exports
-│  ├─ route/                    P3   detector · attribute · identity · reroute (BUILT: reroute.ts — one-click retroactive session move via store.moveSession; POST /sessions/:id/reroute + session.rerouted; SHIPPED BEFORE the detector per the risk register)
+│  ├─ route/                    P3   detector · attribute · identity · reroute (BUILT: detector.ts — pure sustain-window context-switch detection over FocusSignals+hints; attribute.ts — the Attributor auto-starts/switches sessions behind route.detect, emits session.switched; hints.ts — workspace-hints docs; focus.ts — focus-chunk decode; reroute.ts — one-click retroactive session move + session.rerouted, the correction/teaching signal. identity.ts is P7)
 │  ├─ ledger/                   P4   commitments · watchers/{repo,doc,mail} · prepare (action cards — builds on act/)
 │  ├─ queue/                    P1   spool · drain (P2: optional distill processor · drainNow flushes before the act) │ P3: eta │ gc
 │  ├─ overlay/                  P2   rules/lenses · roles · ontology (voice lives in voice/)
