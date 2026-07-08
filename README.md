@@ -12,13 +12,16 @@ Surfaces are documents. Prompts are documents. Voices/registers are documents. F
 documents. The meeting HUD you can render today is **one configuration out of thousands** you could
 compose — not the product, just the first one we built.
 
-**Status:** pre-release, mid-Phase-2, moving fast. What works today: capture spools into the engine,
+**Status:** pre-release, mid-Phase-3, moving fast. What works today: capture spools into the engine,
 a rolling-merge **distill** pass emits summaries + typed **moments** (● commitment ◆ question-at-you
 ▲ decision ✱ artifact) + an entity **index** with recency×frequency ranking, manual **sessions**
 steer voice, the **HUD** renders entirely from a surface document through the real block renderer,
 and ending a call prepares a register-shaped **follow-up draft** (the first Act node — prepared,
-never sent). Every feature ships behind a flag, **OFF by default**. Router, ledger, pins, and the
-visual editors are designed but not built (see `IMPLEMENTATION.md`).
+never sent). The **router** now watches focus signals (app, window title, repo) and auto-attributes
+sessions to the right workspace, with a one-click retroactive reroute that keeps the evidence trail.
+Every feature ships behind a flag, **OFF by default**. Ledger, pins, and the visual editors are
+designed but not built; the workflow substrate and screen/OCR are the work in flight (see
+`docs/NEXT.md` for the live queue).
 
 ---
 
@@ -29,7 +32,7 @@ Verified from a clean tree (macOS, Node 22+, pnpm 9). Clone to a rendered HUD:
 ```bash
 pnpm install
 pnpm -r build          # contracts → engine + client (workbench is a Phase-4 scaffold)
-pnpm -r test           # contracts schema-validation (40) + engine (173) + client (84)
+pnpm -r test           # contracts schema-validation (51) + engine (281) + client (139)
 
 # start the engine daemon — localhost:8787 by default, data under ~/.openinfo/data
 node apps/engine/dist/main.js            # OPENINFO_PORT / OPENINFO_DATA to override
@@ -210,7 +213,8 @@ The deep docs, each with a job:
 - **`IMPLEMENTATION.md`** — the *when* (phases 0–7, exit criteria, current status).
 - **`CODE_MAP.md`** — the *where* (the tree, dependency rules, where unbuilt features will land).
 - **`CONTRIBUTING.md`** — the *how* (the tier system below).
-- **`docs/PHASE1-NOTES.md` / `docs/PHASE2-NOTES.md`** — every decision and deviation as each slice landed.
+- **`docs/PHASE1-NOTES.md` / `PHASE2` / `PHASE3`** — every decision and deviation as each slice landed.
+- **`docs/NEXT.md`** — the live session queue: what's in flight, what's next, and the founder decisions behind each.
 - **`design/renderings/`** — the versioned HTML mockups; the design source of truth for surfaces.
 
 ---
@@ -247,10 +251,14 @@ setup is sending a file.
 
 ---
 
-## Not here yet (designed, not built — see `IMPLEMENTATION.md`)
+## Not here yet (designed, not built — see `IMPLEMENTATION.md` and `docs/NEXT.md`)
 
-- **Router** (P3) — context-switch detection, workspace attribution, one-click retroactive reroute.
-- **Canon & pins** (P3) — reference-merging, page-anchored PDF ingestion, the "p. 42 + copy bar" answer.
+- **Workflow substrate** (P4, in flight) — user-composed processing chains as documents; today the
+  distill→index→act order is fixed wiring, and this is the piece that makes it yours to arrange.
+- **Screen capture + OCR/VLM** (P4, in flight) — the slots and contracts exist; nothing invokes them yet.
+- **Richer routing signals** (staged) — focus landed; calendar next, then topic-drift, so a
+  marketing→sales switch is caught even when the same call window stays focused.
+- **Earned canon & pins** (P3) — outbound-use weighting, page-anchored PDF ingestion, the "p. 42 + copy bar" answer.
 - **Ledger & watchers** (P4) — commitments that auto-close on evidence (a commit hash, a sent thread).
 - **Workbench** (P4) — the roomy Vite surface behind the HUD's top-K; currently a scaffold.
 - **The editors & gallery** (P6) — surface WYSIWYG, mode canvas, dial editor, custom sandboxed blocks.
