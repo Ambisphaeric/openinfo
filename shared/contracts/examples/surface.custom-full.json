@@ -1,0 +1,12 @@
+{ "id": "surf-custom-full", "name": "custom + full-block surface", "context": "deep-work", "version": 3,
+  "stack": [
+    { "block": "now" },
+    { "block": "relevant-now", "id": "blk-rel", "top": 4, "show": "always",
+      "query": { "source": "relevant-now", "params": { "session": "current" }, "top": 4 },
+      "use": { "llm": "llm.smart", "register": "reg-boardroom" },
+      "actions": [ { "id": "act-copy", "label": "Copy", "verb": "copy", "params": {} },
+                   { "id": "act-open", "label": "Open", "verb": "open", "params": {} } ] },
+    { "block": "moments", "collapsed": true,
+      "query": { "source": "moments", "params": { "session": "current" }, "top": 20 } },
+    { "block": "custom", "id": "blk-custom", "show": "manual",
+      "custom": { "htmlEndpoint": "/custom/scratch.html" } } ] }

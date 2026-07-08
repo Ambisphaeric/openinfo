@@ -33,6 +33,7 @@ export const Routes: readonly RouteDef[] = [
   { method: 'GET', path: '/sessions', response: 'Session[]', phase: 2 },
   { method: 'POST', path: '/sessions', request: 'StartSessionRequest', response: 'Session', phase: 2 },
   { method: 'POST', path: '/sessions/:id/end', response: 'Session', phase: 2 },
+  { method: 'GET', path: '/layouts/surfaces', response: 'Surface[]', phase: 3 },
   { method: 'GET', path: '/layouts/surfaces/:id', response: 'Surface', phase: 2 },
   { method: 'PUT', path: '/layouts/surfaces/:id', request: 'Surface', response: 'Surface', phase: 2 },
   { method: 'GET', path: '/modes', response: 'Mode[]', phase: 2 },

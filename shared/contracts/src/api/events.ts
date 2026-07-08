@@ -9,6 +9,7 @@ export const Events = {
   'entity.updated': 'Entity',
   'draft.created': 'Draft',
   'fabric.changed': 'Fabric',
+  'surface.updated': 'Surface',
   'ledger.updated': 'Commitment',
   'drift.step': 'DriftChainStep',
   'queue.updated': 'QueueStatus',
