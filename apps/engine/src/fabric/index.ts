@@ -9,3 +9,14 @@ export { seededProbeList, seededCapabilityMap } from './discovery-defaults.js'
 export { discoverFabric, classifyModel, synthesizeSuggestion, type DiscoverOptions } from './discover.js'
 export { invokeLlm, type LlmMessage, type LlmResult, type InvokeOptions } from './invoke.js'
 export { invokeStt, type SttAudio, type SttResult, type SttOptions } from './invoke.js'
+export {
+  LocalRuntimeManager,
+  findRuntimeBinary,
+  RUNTIME_SPECS,
+  type LocalEndpoint,
+  type RuntimeSpec,
+  type SpawnState,
+} from './endpoints/local.js'
+export { LocalModelStore, downloadModel, type DownloadProgress } from './local-models.js'
+export { StarterModelsDocuments } from './local-documents.js'
+export { seededStarterModels } from './local-defaults.js'
