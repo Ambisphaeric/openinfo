@@ -1,6 +1,6 @@
 # openinfo — code map
 
-**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup · onboarding discovery + Get-Started lens · the "watch it become a moment" Try-it loop on /setup · engine-managed local runtimes / tier zero) · 2026-07-08
+**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup · onboarding discovery + Get-Started lens · the "watch it become a moment" Try-it loop on /setup · engine-managed local runtimes / tier zero · client system-audio capture (BlackHole detect-and-guide)) · 2026-07-08
 **Reads with:** [ARCHITECTURE.md](./ARCHITECTURE.md) (the what) · [IMPLEMENTATION.md](./IMPLEMENTATION.md) (the when)
 This file is the **where** — including where features that don't exist yet will land, so no later phase ever
 has to invent a home (the historical failure mode).
@@ -43,7 +43,7 @@ openinfo/
 │
 ├─ apps/client/src/             thin Electron client — NEVER opens a database
 │  ├─ main/                     P1   the Electron shell (BUILT): shell.ts (electron entry) · window-options (content-protection, always-on-top, frameless) · tray-menu (show/hide · start/end session · live indicator) · shortcuts (⌘\ hide) · engine-session (session client + WS live-state) · config · tray-icon
-│  ├─ capture/                  P1   mic (BUILT: hidden-window getUserMedia → webm segments → /capture/mic, session-gated) · screen Δ-gate · system audio + aec │ P2: calendar │ P3: focus │ P7: camera
+│  ├─ capture/                  P1   mic (BUILT: hidden-window getUserMedia → webm segments → /capture/mic, session-gated) · system-audio (BUILT: BlackHole detect-and-guide — 2nd getUserMedia on the virtual input in the SAME hidden window → /capture/system-audio="them"; native CoreAudio tap is the designed future, see ARCHITECTURE §8) · screen Δ-gate + aec │ P2: calendar │ P3: focus │ P7: camera
 │  ├─ engine-link/              P1   typed client from contracts · offline spool
 │  └─ surfaces/                 P2   block-renderer (pure VNode, render(surfaceDoc)) · blocks/ (built-ins + glyphs) · hud/ (live controller + transport + dev-entry) │ (model setup is ENGINE-served at GET /setup — the tray opens it in the browser, not a client settings pane) │ P6: palette/ · editor/
 │
@@ -75,6 +75,7 @@ openinfo/
 | Future feature | Phase | Home |
 |---|---|---|
 | Camera input (presence → doc capture) | P7 | `client/capture/camera.ts` + flag `capture.camera` |
+| System-audio native tap (no user routing) | future | `client/capture/audio-tap/` — a CoreAudio process-tap / ScreenCaptureKit-audio native module (macOS 14.2+), written from source under review (route (b), ARCHITECTURE §8). Drops behind the same source-agnostic capture controller/protocol/chunk path built in the BlackHole slice — swaps only *how the 2nd stream opens*. A trustworthy prebuilt module (route (c)) is its shortcut; the inherited SystemAudioDump blob (d) stays rejected (fresh code only) |
 | Diarization / voice→person | P7 | `engine/route/identity.ts` + `fabric` stt option |
 | Google Docs pin ingestion (auth) | P3 | `engine/index/ingest/gdoc.ts` + flag `ingest.gdoc` |
 | Gmail/calendar write scopes | P7+ | new `engine/connect/` module (design note first, per rule 5) |

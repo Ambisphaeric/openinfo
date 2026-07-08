@@ -341,6 +341,59 @@ from a **GUI-domain LaunchAgent** (`launchctl … gui/<uid>`), not a raw ssh-spa
 affected in practice, but the sweep (future) and multi-host profiles are — recorded here so the sweep slice
 starts from the answer, not the lost day.
 
+### System-audio capture on macOS — the me/them split's other half (design note — 2026-07-08)
+
+The mic slice captures **me**; the STT slice already attributes any `source: system-audio` chunk to **them**
+(the me/them split is free, source-based — no diarization). The one missing piece is the client actually
+capturing the far side of a call on macOS. The `aec-loopback` spike settled the headline: **Electron's
+`audio: 'loopback'` string is Windows-only** — on macOS `getDisplayMedia` grants screen *video* but no
+system-audio track (and here it failed earlier still, on denied Screen-Recording TCC). So loopback does **not**
+remove the need for a system-audio route; this is exactly why Glass shipped a compiled helper. Four routes,
+weighed honestly:
+
+- **(a) A virtual audio device — BlackHole.** BlackHole exposes a virtual output *and* a matching virtual
+  input; audio sent to the output is readable from the input via ordinary **`getUserMedia`** — the identical
+  Chromium path the mic already uses, **zero compiled/native code**. It is common among meeting-recorders and
+  is already installed on the founder's machine (the spike enumerated `BlackHole 2ch`). The cost is **routing
+  friction**: the user must send their system/meeting-app output *into* BlackHole, normally via a **Multi-Output
+  Device** (Audio MIDI Setup) so they still hear the call while a copy flows to BlackHole — or simpler, wear
+  headphones and point the meeting app's output at BlackHole. This friction is real but **detectable and
+  guidable**: we enumerate devices, detect BlackHole's presence, and (when present but delivering pure silence)
+  say so honestly rather than pretending to record. Consistent with the standing **detection-over-configuration**
+  directive — the user never types a device name.
+- **(b) A CoreAudio process-tap native module (macOS 14.2+ CATap / ScreenCaptureKit audio).** The modern
+  SystemAudioDump replacement: tap process/system audio with **zero user routing**. The cost is a **compiled
+  native dependency** (node-gyp / prebuilds across arch × Electron ABI) and **Screen-Recording-adjacent TCC**,
+  plus the maintenance surface a native addon carries. This is the *right* long-term answer once a native
+  module is justified, and the likely path if Electron ever exposes macOS loopback natively (track
+  `setDisplayMediaRequestHandler` loopback support).
+- **(c) A prebuilt community module** (the `electron-audio-loopback` lineage and kin). Attractive because it
+  hides (b)'s build, but it must be judged on **maturity, license, and macOS-26 / current-Electron-ABI support**
+  before it is trusted in our supply chain — several such modules are Windows-first, thinly maintained, or lag
+  the Electron ABI. Not adopted blind; a candidate for (b)'s slice if one proves current and cleanly licensed.
+- **(d) The inherited SystemAudioDump-style helper blob** (a prebuilt binary carried over from Glass).
+  **Rejected on principle:** this repo ships *fresh code only* — a spike graduates by rewrite, never by
+  copy-paste (CODE_MAP §4), and an opaque inherited binary is neither reviewable nor rebuildable. If a native
+  tap is wanted, it is written as (b), from source, under our own review — not smuggled in as a blob.
+
+**v0 decision: route (a) — BlackHole detect-and-guide.** It ships the me/them split *today* with **no native
+code and no new engine surface**, on the exact `getUserMedia` path the mic already rides, and its one cost
+(output routing) is met the openinfo way — **detect the device, guide the setup, and never lie about silence**.
+Route **(b)** is the designed future: when the routing friction proves to be the thing holding back real use, a
+CoreAudio process-tap native module lands under `client/capture/audio-tap/` behind the same source-agnostic
+capture controller — the controller, protocol, chunk-shaping, and engine path built in this slice are all
+source-parametric, so (b) swaps only *how the second stream is opened*, changing nothing downstream. Route (c)
+is (b)'s shortcut if a trustworthy prebuilt module exists at that time; (d) stays rejected.
+
+**AEC posture (unchanged from the spike, still pending a human measurement run).** Default
+**`echoCancellation: true`** on the **mic** stream (Chromium/OS AEC referencing the local render signal that
+plays the call) — the zero-dependency option 1. The **system-audio** stream is the clean far-end capture and
+takes **no** echo processing (`echoCancellation/noiseSuppression/autoGainControl: false`) so the far side is
+recorded faithfully. The AEC3 far-end `RTCPeerConnection` trick (option 2) stays the documented fallback for a
+headless/muted-monitor topology (not ours); a from-source WASM AEC (option 3) is the last resort. The per-config
+leakage-dB numbers are **still open** — they need ~2 min on live-audio hardware (`spikes/aec-loopback`), and the
+honest sidestep is stated in user-facing copy: **headphones remove speaker→mic echo entirely.**
+
 ---
 
 ## 9. What transplants, from where
