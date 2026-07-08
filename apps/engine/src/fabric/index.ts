@@ -6,9 +6,21 @@ export { FileSecretStore, type SecretStore, type SecretResolver } from './secret
 export { checkEndpoint, type EndpointHealth } from './health.js'
 export { DiscoveryDocuments } from './discovery-documents.js'
 export { seededProbeList, seededCapabilityMap } from './discovery-defaults.js'
-export { discoverFabric, classifyModel, synthesizeSuggestion, type DiscoverOptions } from './discover.js'
+export { discoverFabric, classifyModel, synthesizeSuggestion, listLoadedModels, loadedModelSuggestion, type DiscoverOptions } from './discover.js'
 export { invokeLlm, type LlmMessage, type LlmResult, type InvokeOptions } from './invoke.js'
 export { invokeStt, type SttAudio, type SttResult, type SttOptions } from './invoke.js'
+export {
+  InvokeError,
+  AggregateInvokeError,
+  describeInvokeFailure,
+  classifyFetchError,
+  classifyHttpResponse,
+  extractServerMessage,
+  type InvokeErrorClass,
+  type ClassifiedFailure,
+  type InvokeCtx,
+} from './invoke-error.js'
+export { toQueueFailure, enrichFailureHint } from './diagnose.js'
 export {
   LocalRuntimeManager,
   findRuntimeBinary,

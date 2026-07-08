@@ -89,6 +89,52 @@ interface ModelsResponse {
   data?: unknown
 }
 
+/**
+ * Read the model ids ONE server currently reports (`GET {url}/v1/models`) — the loaded-model knowledge
+ * discovery already speaks, reused read-only for the "the model you asked for won't load, but the server
+ * has these others" suggestion. Never throws (a probe): an unreachable/odd server yields []. No secrets
+ * (this is for local model servers). Distinct from probeServer: it returns bare ids, not a classified
+ * DiscoverServer, so a diagnostic path can suggest a switch without pulling in the capability map.
+ */
+export const listLoadedModels = async (url: string, timeoutMs = 1_500): Promise<string[]> => {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(`${url.replace(/\/$/, '')}/v1/models`, { method: 'GET', signal: controller.signal })
+    if (!response.ok) return []
+    const json = (await response.json()) as ModelsResponse
+    if (!Array.isArray(json.data)) return []
+    const ids: string[] = []
+    for (const entry of json.data) {
+      const id = (entry as { id?: unknown })?.id
+      if (typeof id === 'string' && id.length > 0) ids.push(id)
+    }
+    return ids
+  } catch {
+    return []
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+/**
+ * The loaded-model suggestion (user agency, NOT automation): given a model-load failure's server url and
+ * the model that failed, if the server reports OTHER models, produce a one-line "switch to one of these"
+ * hint suffix. Returns undefined when the server reports nothing else (no false hope). Never auto-switches
+ * — a future `auto` endpoint option (deferred) could, but v0 only tells the user what is available.
+ */
+export const loadedModelSuggestion = async (
+  url: string,
+  failedModel: string | undefined,
+  timeoutMs = 1_500,
+): Promise<string | undefined> => {
+  const ids = await listLoadedModels(url, timeoutMs)
+  const others = ids.filter((id) => id !== failedModel)
+  if (others.length === 0) return undefined
+  const eg = others.slice(0, 2).join(', ')
+  return `server reports ${others.length} other model${others.length === 1 ? '' : 's'} (e.g. ${eg}) — switch in Settings → Endpoints`
+}
+
 /** Probe ONE server: GET {url}/v1/models, classify every model. Never throws — failures become error. */
 const probeServer = async (
   probe: ProbeList['probes'][number],
