@@ -1,0 +1,44 @@
+{
+  "$id": "VlmInvokeParams",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "image",
+    "contentType",
+    "prompt"
+  ],
+  "properties": {
+    "image": {
+      "minLength": 1,
+      "description": "the frame as a base64-encoded image (same bytes a source:\"screen\" CaptureChunk carries)",
+      "type": "string"
+    },
+    "contentType": {
+      "description": "mime of a base64 screen frame carried on a CaptureChunk",
+      "anyOf": [
+        {
+          "const": "image/png",
+          "type": "string"
+        },
+        {
+          "const": "image/jpeg",
+          "type": "string"
+        },
+        {
+          "const": "image/webp",
+          "type": "string"
+        }
+      ]
+    },
+    "prompt": {
+      "minLength": 1,
+      "description": "the instruction steering what the VLM reports about the frame",
+      "type": "string"
+    },
+    "timeoutMs": {
+      "minimum": 1,
+      "description": "bound the invoke; falls back to the endpoint default when absent",
+      "type": "integer"
+    }
+  }
+}

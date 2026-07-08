@@ -20,6 +20,7 @@ export * from './config/local.js'
 export * from './config/flag.js'
 export * from './config/hints.js'
 export * from './config/workflow.js'
+export * from './config/invoke.js'
 export * from './api/routes.js'
 export * from './api/events.js'
 export * from './api/payloads.js'
@@ -44,6 +45,7 @@ import { StarterModel, StarterModels } from './config/local.js'
 import { Flag } from './config/flag.js'
 import { AttributionPattern, WorkspaceHints } from './config/hints.js'
 import { WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate } from './config/workflow.js'
+import { OcrInvokeParams, VlmInvokeParams } from './config/invoke.js'
 import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, QueueStatus, QueueFailure, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
@@ -53,7 +55,7 @@ export const AllSchemas = {
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
-  WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate,
+  WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, QueueStatus, QueueFailure, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest,
   CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
 } as const
