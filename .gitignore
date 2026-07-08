@@ -7,3 +7,11 @@ release/
 *.db-wal
 *.db-shm
 spool/
+
+# real personal machine config (IPs, deploy creds) — see .private/README.md
+.private/*
+!.private/*.example
+!.private/README.md
+
+# engine-side secret store (chmod-600 JSON, keyRef values — never for git)
+secrets/
