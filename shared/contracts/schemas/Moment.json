@@ -102,6 +102,10 @@
         {
           "const": "camera",
           "type": "string"
+        },
+        {
+          "const": "system-audio",
+          "type": "string"
         }
       ]
     },

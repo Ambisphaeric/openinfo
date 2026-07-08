@@ -34,7 +34,7 @@ export const Moment = Type.Object(
     text: Type.String({ minLength: 1 }),
     speaker: Type.Optional(Type.String({ description: 'person entity id or raw label' })),
     refs: Type.Array(Id, { description: 'entity ids referenced by this moment', default: [] }),
-    source: Type.Union(['mic', 'screen', 'calendar', 'repo', 'camera'].map((s) => Type.Literal(s))),
+    source: Type.Union(['mic', 'screen', 'calendar', 'repo', 'camera', 'system-audio'].map((s) => Type.Literal(s))),
     confidence: Confidence,
     answered: Type.Optional(Type.Boolean({ description: 'questions only: heard an answer yet?' })),
     provenance: Type.Optional(MomentProvenance),

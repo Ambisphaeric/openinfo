@@ -1,5 +1,6 @@
 {
   "$id": "CaptureSource",
+  "description": "mic = the user; system-audio = the far side of a call (loopback) — the free me/them split",
   "anyOf": [
     {
       "const": "mic",
@@ -19,6 +20,10 @@
     },
     {
       "const": "camera",
+      "type": "string"
+    },
+    {
+      "const": "system-audio",
       "type": "string"
     }
   ]

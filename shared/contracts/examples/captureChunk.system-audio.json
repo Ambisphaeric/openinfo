@@ -1,0 +1,11 @@
+{
+  "id": "chunk-0002",
+  "sessionId": "session-demo",
+  "workspaceId": "sales",
+  "source": "system-audio",
+  "sequence": 2,
+  "capturedAt": "2026-07-07T14:00:03Z",
+  "contentType": "audio/wav",
+  "encoding": "base64",
+  "data": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA="
+}

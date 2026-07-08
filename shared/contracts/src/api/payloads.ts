@@ -18,8 +18,8 @@ export const JsonSchema = Type.Record(Type.String(), Type.Unknown(), { $id: 'Jso
 export type JsonSchema = Static<typeof JsonSchema>
 
 export const CaptureSource = Type.Union(
-  ['mic', 'screen', 'calendar', 'repo', 'camera'].map((s) => Type.Literal(s)),
-  { $id: 'CaptureSource' },
+  ['mic', 'screen', 'calendar', 'repo', 'camera', 'system-audio'].map((s) => Type.Literal(s)),
+  { $id: 'CaptureSource', description: 'mic = the user; system-audio = the far side of a call (loopback) — the free me/them split' },
 )
 export type CaptureSource = Static<typeof CaptureSource>
 
