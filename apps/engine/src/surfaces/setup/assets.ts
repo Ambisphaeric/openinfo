@@ -58,6 +58,24 @@ a:hover{text-decoration:underline}
 .probe{flex-basis:100%;font-family:var(--mono);font-size:11.5px;color:var(--muted);padding-left:2px;min-height:0}
 .probe.ok{color:var(--ok)}.probe.bad{color:var(--bad)}
 .secrets .row input{width:auto}#secret-ref{width:180px}#secret-val{flex:1;min-width:180px}
+.getstarted{padding:18px 18px 16px}
+.gs-head{font-size:16px;font-weight:650;letter-spacing:-.01em;margin-bottom:2px}
+.caps{margin:14px 0 4px;display:flex;flex-direction:column;gap:10px}
+.cap{display:flex;gap:11px;align-items:flex-start}
+.cap-mark{font-family:var(--mono);font-size:14px;line-height:1.3;flex:none;width:16px;text-align:center}
+.cap-mark.ok{color:var(--ok)}.cap-mark.no{color:var(--faint)}
+.cap-body{flex:1;min-width:0}
+.cap-title{font-size:13.5px;font-weight:600}
+.cap-what{color:var(--muted);font-weight:400;font-size:12.5px}
+.cap-later{color:var(--faint);font-family:var(--mono);font-size:10px;letter-spacing:.06em}
+.cap-found{color:var(--ok);font-family:var(--mono);font-size:12px}
+.cap-missing{color:var(--muted);font-size:12.5px}
+.gs-actions{display:flex;gap:9px;align-items:center;margin-top:14px}
+.gs-adv{margin-top:12px;font-size:12.5px}
+details.advanced{margin-top:24px;border-top:1px solid var(--line);padding-top:8px}
+details.advanced>summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint);padding:8px 0;list-style-position:inside}
+details.advanced[open]>summary{color:var(--muted)}
 `
 
 /** Browser wiring: composes existing routes, reloads after mutations, tests endpoints inline. */
@@ -133,6 +151,15 @@ export const SETUP_SCRIPT = `
   function delSecret(ref){if(!confirm('Forget secret "'+ref+'"?'))return;
     jf('DELETE','/fabric/secrets/'+encodeURIComponent(ref)).then(function(r){
       if(!r.ok){alert('Delete failed ('+r.status+')');return;}location.reload();});}
+  function useSetup(){
+    var el=document.getElementById('suggestion'); if(!el){alert('Nothing to apply.');return;}
+    var fabric; try{fabric=JSON.parse(el.textContent);}catch(e){alert('Could not read the detected setup.');return;}
+    var profile={id:'config-1',name:'Config 1',version:1,fabric:fabric,description:'Detected local setup.'};
+    jf('PUT','/fabric/profiles/config-1',profile).then(function(r){
+      if(!r.ok){alert('Setup failed ('+r.status+')');return;}
+      jf('POST','/fabric/profiles/config-1/activate').then(function(r2){
+        if(!r2.ok){alert('Activate failed ('+r2.status+')');return;}location.href='/setup';});});}
+  function showAdvanced(){var d=document.getElementById('advanced'); if(d){d.open=true; d.scrollIntoView();}}
   document.addEventListener('submit',function(e){e.preventDefault();});
   document.addEventListener('click',function(e){
     var b=e.target.closest('[data-act]'); if(!b)return;
@@ -149,6 +176,9 @@ export const SETUP_SCRIPT = `
     else if(act==='delete'){del(b.dataset.id);}
     else if(act==='addsecret'){addSecret();}
     else if(act==='delsecret'){delSecret(b.dataset.ref);}
+    else if(act==='use-setup'){useSetup();}
+    else if(act==='redetect'){location.href='/setup?discover=1';}
+    else if(act==='show-advanced'){showAdvanced();}
   });
 })();
 `

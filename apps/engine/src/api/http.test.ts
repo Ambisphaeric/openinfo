@@ -679,6 +679,8 @@ test('GET /setup serves the self-contained page (skeleton, seeded profiles, firs
     const address = app.server.address()
     assert.ok(address && typeof address === 'object')
     const base = `http://127.0.0.1:${address.port}`
+    // keep this unit test offline + deterministic: an empty probe list ⇒ discovery does no real network I/O
+    app.store.layouts.put('discovery-probes', 'probes-default', { id: 'probes-default', version: 1, probes: [] })
 
     const res = await fetch(`${base}/setup`)
     assert.equal(res.status, 200)
@@ -741,6 +743,124 @@ test('POST /fabric/test probes an endpoint: reachable+latency, 401 hint, unresol
   } finally {
     await app.close()
     await new Promise<void>((resolve) => upstream.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// --- Onboarding discovery + the Get-Started lens ---
+
+/** A fake OpenAI-compatible server whose /v1/models list we control. */
+const startFakeModels = async (ids: string[]) => {
+  const server = createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ object: 'list', data: ids.map((id) => ({ id, object: 'model' })) }))
+      return
+    }
+    res.writeHead(200); res.end('ok') // the base-url GET (health/test) answers too
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}` }
+}
+
+/** Point the engine's seeded probe list at fake servers so discovery is deterministic. */
+const setProbes = (app: Awaited<ReturnType<typeof createEngineApp>>, probes: { name: string; url: string }[]) =>
+  app.store.layouts.put('discovery-probes', 'probes-default', { id: 'probes-default', version: 1, probes })
+
+test('GET /fabric/discover probes servers, classifies models, and synthesizes a suggestion', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const lm = await startFakeModels(['qwen3.6-35b-a3b', 'glm-ocr', 'nomic-embed-text'])
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    setProbes(app, [{ name: 'lm-studio', url: lm.url }, { name: 'dead', url: 'http://127.0.0.1:1' }])
+
+    const result = (await (await fetch(`${base}/fabric/discover`)).json()) as import('@openinfo/contracts').DiscoverResult
+    const lmServer = result.servers.find((s) => s.name === 'lm-studio')!
+    assert.equal(lmServer.reachable, true)
+    assert.equal(lmServer.models.length, 3)
+    assert.equal(result.servers.find((s) => s.name === 'dead')!.reachable, false)
+    assert.equal(result.suggestion.slots.llm[0]!.kind === 'http' && result.suggestion.slots.llm[0]!.model, 'qwen3.6-35b-a3b')
+    assert.equal(result.suggestion.slots.ocr[0]!.kind === 'http' && result.suggestion.slots.ocr[0]!.model, 'glm-ocr')
+    assert.equal(result.suggestion.slots.embed.length, 1)
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => lm.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('GET /setup on a fresh install shows the Get-Started lens with detected capabilities', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const lm = await startFakeModels(['qwen3-8b', 'glm-ocr'])
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    setProbes(app, [{ name: 'lm-studio', url: lm.url }])
+
+    const html = await (await fetch(`${base}/setup`)).text()
+    assert.match(html, /Get started/)
+    assert.match(html, /data-act="use-setup"/)
+    assert.match(html, /Thinking/)
+    assert.match(html, /qwen3-8b/) // the detected llm model surfaces in the lens
+    assert.match(html, /<details id="advanced"/) // the editor moved behind Advanced
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => lm.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('use-this-setup e2e: discover → config-1 written+activated → GET /fabric reflects it → not first-run', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const lm = await startFakeModels(['qwen3-8b', 'whisper-large-v3'])
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    setProbes(app, [{ name: 'lm-studio', url: lm.url }])
+
+    // fresh install: /fabric is empty (first run)
+    const before = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    assert.equal(before.slots.llm.length, 0)
+
+    // 1) discover (what the lens embeds)
+    const result = (await (await fetch(`${base}/fabric/discover`)).json()) as import('@openinfo/contracts').DiscoverResult
+    assert.ok(result.suggestion.slots.llm.length > 0)
+
+    // 2) the exact routes the "Use this setup" button drives: PUT config-1 then activate
+    const put = await fetch(`${base}/fabric/profiles/config-1`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'config-1', name: 'Config 1', version: 1, fabric: result.suggestion, description: 'Detected local setup.' }),
+    })
+    assert.equal(put.status, 200)
+    const act = await fetch(`${base}/fabric/profiles/config-1/activate`, { method: 'POST' })
+    assert.equal(act.status, 200)
+
+    // 3) GET /fabric now reflects the detected setup (config-1 is the live fabric)
+    const after = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    assert.equal(after.slots.llm[0]!.kind === 'http' && after.slots.llm[0]!.model, 'qwen3-8b')
+    assert.equal(after.slots.stt[0]!.kind === 'http' && after.slots.stt[0]!.model, 'whisper-large-v3')
+
+    // 4) the page is no longer first-run: no banner, and the lens does not lead (llm is configured)
+    const html = await (await fetch(`${base}/setup`)).text()
+    assert.doesNotMatch(html, /class="banner"/)
+    assert.doesNotMatch(html, /Get started/)
+    // config-1 is the active profile
+    assert.match(html, /badge active/)
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => lm.server.close(() => resolve()))
     await rm(dir, { recursive: true, force: true })
   }
 })

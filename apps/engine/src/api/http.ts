@@ -6,7 +6,7 @@ import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type 
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
-import { FabricDocuments, FileSecretStore, checkEndpoint, invokeStt, type SecretStore } from '../fabric/index.js'
+import { DiscoveryDocuments, FabricDocuments, FileSecretStore, checkEndpoint, discoverFabric, invokeStt, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
@@ -34,6 +34,7 @@ export interface EngineOptions {
 interface HandlerContext {
   bus: EventBus<EngineEvents>
   fabric: FabricDocuments
+  discovery: DiscoveryDocuments
   secrets: SecretStore
   voice: VoiceDocuments
   surfaces: SurfaceDocuments
@@ -57,12 +58,14 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const distillDocs = new DistillDocuments(store)
   const actDocs = new ActDocuments(store)
   const surfaces = new SurfaceDocuments(store)
+  const discovery = new DiscoveryDocuments(store)
   ensureDefaultFlags(store)
   fabric.ensureDefaults()
   voice.ensureDefaults()
   distillDocs.ensureDefaults()
   actDocs.ensureDefaults()
   surfaces.ensureDefaults()
+  discovery.ensureDefaults()
 
   const distiller = new Distiller({
     store,
@@ -135,7 +138,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, secrets, voice, surfaces, queue, store, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, queue, store, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -168,6 +171,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/setup') return getSetup(res, ctx, url)
   if (req.method === 'GET' && url.pathname === '/fabric') return send(res, 200, ctx.fabric.load())
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
+  if (req.method === 'GET' && url.pathname === '/fabric/discover') return discover(res, ctx)
   if (req.method === 'POST' && url.pathname === '/fabric/test') return testEndpoint(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/fabric/profiles') return send(res, 200, ctx.fabric.profiles.list())
   const profileClone = url.pathname.match(/^\/fabric\/profiles\/([^/]+)\/clone$/)
@@ -225,22 +229,42 @@ async function saveFabric(req: IncomingMessage, res: ServerResponse, ctx: Handle
  * capability. `?edit=<id>` selects which profile the editor opens; default is the active profile, else
  * the first profile, else the legacy live fabric. localhost-only posture (no auth) is a P7 concern.
  */
-function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): void {
+async function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): Promise<void> {
   const profiles = ctx.fabric.profiles.list()
   const activeId = ctx.fabric.profiles.activeId()
   const editParam = url.searchParams.get('edit')
   const editing = editParam
     ? profiles.find((p) => p.id === editParam)
     : (activeId ? profiles.find((p) => p.id === activeId) : profiles[0])
+  const liveFabric = ctx.fabric.load()
+  // The Get-Started capability lens (ARCHITECTURE §8) leads when the live llm slot is empty (the
+  // first-run condition — the page IS the onboarding), or when the user asks to re-detect (?discover=1).
+  // Detection over configuration: we run discovery and show a RESULT, not a form. Localhost, no secrets.
+  const wantLens = liveFabric.slots.llm.length === 0 || url.searchParams.get('discover') === '1'
+  const discovery = wantLens
+    ? await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap())
+    : undefined
   const html = renderSetupPage({
     profiles,
     activeId,
-    liveFabric: ctx.fabric.load(),
+    liveFabric,
     editing,
     secretRefs: ctx.secrets.listRefs(),
+    ...(discovery !== undefined ? { discovery } : {}),
   })
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
   res.end(html)
+}
+
+/**
+ * Onboarding discovery: probe well-known local model servers, classify what is loaded, and synthesize
+ * a config-1 suggestion (ARCHITECTURE §8). Read-only, never throws, no secrets (localhost). This is the
+ * one new engine capability the Get-Started lens needs; the "Use this setup" button then writes the
+ * suggestion through the EXISTING profile routes (no new write semantics).
+ */
+async function discover(res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const result = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap())
+  send(res, 200, result)
 }
 
 /**

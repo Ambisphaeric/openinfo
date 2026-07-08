@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Fabric, FabricProfile } from '@openinfo/contracts'
-import { escapeHtml, firstRunNotice, renderSetupPage, type SetupData } from './view.js'
+import type { DiscoverResult, Fabric, FabricProfile } from '@openinfo/contracts'
+import { escapeHtml, firstRunNotice, jsonForScript, renderSetupPage, type SetupData } from './view.js'
 
 const emptyFabric = (): Fabric => ({ slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } })
 
@@ -77,4 +77,69 @@ test('keyRef dropdown offers the stored refs; the editable http row carries the 
 test('secrets section lists refs (names only) and never a value; empty shows the write-only note', () => {
   assert.match(renderSetupPage(data({ secretRefs: ['k1'] })), /data-act="delsecret" data-ref="k1"/)
   assert.match(renderSetupPage(data({ secretRefs: [] })), /write-only/)
+})
+
+// --- The Get-Started capability lens (discover present) ---
+
+const httpEp = (model: string) => ({ kind: 'http' as const, name: 'lm-studio', url: 'http://localhost:1234', api: 'openai-compat' as const, model })
+
+const discover = (over: Partial<DiscoverResult> = {}): DiscoverResult => ({
+  probedAt: '2026-07-07T15:00:00Z',
+  servers: [{ name: 'lm-studio', url: 'http://localhost:1234', reachable: true, models: [{ id: 'qwen3-8b', slots: ['llm'] }] }],
+  suggestion: { slots: { stt: [], tts: [], llm: [httpEp('qwen3-8b')], vlm: [], ocr: [], embed: [] } },
+  ...over,
+})
+
+test('no discovery ⇒ page renders exactly as before (no lens, sections open, no Advanced disclosure)', () => {
+  const html = renderSetupPage(data())
+  assert.doesNotMatch(html, /Get started/)
+  assert.doesNotMatch(html, /details id="advanced"/)
+  assert.match(html, />Profiles</) // sections are directly present
+})
+
+test('discovery present ⇒ the Get-Started lens leads and the editor moves behind Advanced setup', () => {
+  const html = renderSetupPage(data({ discovery: discover() }))
+  assert.match(html, /class="card getstarted"/)
+  assert.match(html, /Get started/)
+  // capability lens speaks capabilities, not plumbing
+  assert.match(html, /Thinking/)
+  assert.match(html, /Hearing/)
+  assert.match(html, /Reading the screen/)
+  assert.match(html, /Speaking/)
+  // the full editor is now behind the Advanced disclosure
+  assert.match(html, /<details id="advanced"/)
+  // the lens leads the body (Get started appears before the Advanced section)
+  assert.ok(html.indexOf('Get started') < html.indexOf('details id="advanced"'))
+})
+
+test('lens FULL: llm found ⇒ Use this setup + the suggestion blob is embedded (script-safe JSON)', () => {
+  const html = renderSetupPage(data({ discovery: discover() }))
+  assert.match(html, /data-act="use-setup"/)
+  assert.match(html, /id="suggestion"/)
+  assert.match(html, /Found 1 server with 1 model/)
+  // the embedded blob is real JSON (not html-escaped) so JSON.parse works in the browser
+  const blob = html.slice(html.indexOf('id="suggestion">') + 'id="suggestion">'.length)
+  const json = blob.slice(0, blob.indexOf('</script>'))
+  assert.doesNotMatch(json, /&quot;/)
+  assert.equal(JSON.parse(json).slots.llm[0].model, 'qwen3-8b')
+  assert.equal(json, jsonForScript(discover().suggestion))
+})
+
+test('lens PARTIAL: llm found, stt missing ⇒ Hearing shows the honest missing line', () => {
+  const html = renderSetupPage(data({ discovery: discover() }))
+  assert.match(html, /qwen3-8b/) // Thinking found
+  assert.match(html, /no transcription server found/) // Hearing missing, honest copy
+  assert.match(html, /not used yet/) // Reading/Speaking labelled as later
+})
+
+test('lens NOTHING found ⇒ no Use button, honest "start a server" copy, re-detect offered', () => {
+  const empty = discover({
+    servers: [{ name: 'lm-studio', url: 'http://localhost:1234', reachable: false, models: [], error: 'fetch failed' }],
+    suggestion: { slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } },
+  })
+  const html = renderSetupPage(data({ discovery: empty }))
+  assert.doesNotMatch(html, /data-act="use-setup"/)
+  assert.match(html, /No local model server responded/)
+  assert.match(html, /Start LM Studio or Ollama/)
+  assert.match(html, /data-act="redetect"/)
 })

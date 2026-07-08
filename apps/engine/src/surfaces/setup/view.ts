@@ -1,4 +1,4 @@
-import type { Endpoint, Fabric, FabricProfile } from '@openinfo/contracts'
+import type { DiscoverResult, Endpoint, Fabric, FabricProfile } from '@openinfo/contracts'
 import { SETUP_CSS, SETUP_SCRIPT } from './assets.js'
 
 /**
@@ -37,11 +37,24 @@ export interface SetupData {
   editing: FabricProfile | undefined
   /** Stored secret refs (names only — values are never sent to a UI). */
   secretRefs: string[]
+  /**
+   * Discovery result — present ⇒ show the Get-Started capability lens FIRST (first run, or a re-detect).
+   * Absent ⇒ render the page exactly as before (llm already configured, not re-detecting).
+   */
+  discovery?: DiscoverResult
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */
 export const escapeHtml = (raw: string): string =>
   raw.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c)
+
+/**
+ * Serialize an object for embedding in a `<script type="application/json">` blob. A script element is a
+ * RAW-text element (HTML entities are NOT decoded inside it), so the JSON must be embedded verbatim — NOT
+ * html-escaped — and only `<` neutralized so a value can never terminate the script (`</script>`) or open
+ * a tag. This is the JSON-in-script convention (cf. JSON-LD), distinct from escapeHtml for markup/attrs.
+ */
+export const jsonForScript = (value: unknown): string => JSON.stringify(value).replace(/</g, '\\u003c')
 
 /**
  * The plain-language first-run notice: when the LIVE fabric's llm slot is empty, nothing can
@@ -177,10 +190,97 @@ const rowTemplateHtml = (refs: string[]): string =>
   `<button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
   `<div class="probe"></div></div></template>`
 
+/**
+ * The Get-Started capability lens (ARCHITECTURE §8) — shown FIRST when discovery ran (first run, or a
+ * re-detect). It speaks capabilities, not plumbing: Hearing (stt) · Thinking (llm) · Reading the screen
+ * (ocr/vlm, later) · Speaking (tts, later). Each row shows what was found (model · server) or an honest
+ * missing line. One primary button "Use this setup" writes+activates a config-1 profile from the
+ * suggestion (through the existing profile routes — the browser reads the embedded suggestion blob).
+ * When nothing usable was found (no llm), there is nothing to apply — the copy says so and points to
+ * Advanced. Pure and exported so the states (nothing / partial / full) are asserted headless.
+ */
+interface CapabilityRow {
+  /** the slot(s) that satisfy this capability; found = any has a suggested endpoint */
+  slots: ReadonlyArray<keyof Fabric['slots']>
+  title: string
+  what: string
+  /** honest copy when the capability was not detected */
+  missing: string
+  /** capabilities not yet wired to processing (shown, but labelled) */
+  later?: boolean
+}
+
+const CAPABILITY_ROWS: readonly CapabilityRow[] = [
+  { slots: ['llm'], title: 'Thinking', what: 'chat, distill, drafts — the core pass' , missing: 'no language model found — distill can’t run until one exists' },
+  { slots: ['stt'], title: 'Hearing', what: 'transcribe what is said in a call', missing: 'no transcription server found — openinfo can still distill typed/text capture; audio needs one' },
+  { slots: ['ocr', 'vlm'], title: 'Reading the screen', what: 'read text/UI off the screen', missing: 'no screen-reading model found', later: true },
+  { slots: ['tts'], title: 'Speaking', what: 'read results back aloud', missing: 'no speech model found', later: true },
+]
+
+/** One suggested endpoint's "model on server" label, or '' if the slot has no suggestion. */
+const foundLabel = (fabric: Fabric, slots: ReadonlyArray<keyof Fabric['slots']>): string => {
+  for (const slot of slots) {
+    const ep = fabric.slots[slot][0]
+    if (ep) return `${ep.kind === 'http' && ep.model ? ep.model : ep.name} · ${ep.kind === 'http' ? ep.url : ep.kind}`
+  }
+  return ''
+}
+
+const capabilityRowHtml = (fabric: Fabric, row: CapabilityRow): string => {
+  const found = foundLabel(fabric, row.slots)
+  const mark = found ? '<span class="cap-mark ok">✓</span>' : '<span class="cap-mark no">○</span>'
+  const later = row.later ? ' <span class="cap-later">(not used yet)</span>' : ''
+  const detail = found
+    ? `<span class="cap-found">${escapeHtml(found)}</span>`
+    : `<span class="cap-missing">${escapeHtml(row.missing)}</span>`
+  return (
+    `<div class="cap${found ? ' has' : ''}">${mark}` +
+    `<div class="cap-body"><div class="cap-title">${escapeHtml(row.title)}${later}` +
+    ` <span class="cap-what">— ${escapeHtml(row.what)}</span></div>${detail}</div></div>`
+  )
+}
+
+const getStartedHtml = (discovery: DiscoverResult): string => {
+  const reachable = discovery.servers.filter((s) => s.reachable)
+  const modelCount = reachable.reduce((n, s) => n + s.models.length, 0)
+  const canApply = discovery.suggestion.slots.llm.length > 0
+  const summary = reachable.length
+    ? `Found ${reachable.length} server${reachable.length === 1 ? '' : 's'} with ${modelCount} model${modelCount === 1 ? '' : 's'} on this machine.`
+    : 'No local model server responded.'
+  const rows = CAPABILITY_ROWS.map((row) => capabilityRowHtml(discovery.suggestion, row)).join('')
+  const action = canApply
+    ? '<button type="button" class="primary" data-act="use-setup">Use this setup</button>' +
+      '<button type="button" data-act="redetect">Re-run detection</button>'
+    : '<div class="sub">Start LM Studio or Ollama (or add a remote host in Advanced setup), then re-run detection.</div>' +
+      '<button type="button" data-act="redetect">Re-run detection</button>'
+  return (
+    '<div class="card getstarted"><div class="gs-head">Get started</div>' +
+    `<div class="sub">${escapeHtml(summary)} openinfo detects what it can do — no ports or model trivia to configure.</div>` +
+    `<div class="caps">${rows}</div>` +
+    `<script type="application/json" id="suggestion">${jsonForScript(discovery.suggestion)}</script>` +
+    `<div class="gs-actions">${action}</div>` +
+    '<div class="sub gs-adv">Want full control? <a href="#advanced" data-act="show-advanced">Advanced setup</a> — profiles, cross-host endpoints, keys.</div>' +
+    '</div>'
+  )
+}
+
 /** Render the whole self-contained setup page. Pure — the engine route just hands it live data. */
 export const renderSetupPage = (data: SetupData): string => {
   const notice = firstRunNotice(data.liveFabric)
   const banner = notice ? `<div class="banner">⚠ ${escapeHtml(notice)}</div>` : ''
+  const lens = data.discovery ? getStartedHtml(data.discovery) : ''
+  const advanced =
+    '<h2>Profiles</h2>' +
+    profilesHtml(data) +
+    '<h2>Edit endpoints</h2>' +
+    editorHtml(data) +
+    '<h2>Keys</h2>' +
+    secretsHtml(data.secretRefs)
+  // When the lens leads (first run / re-detect) the full editor lives behind an "Advanced setup"
+  // disclosure — one decision at a time. Otherwise the page is exactly as before (sections open).
+  const body = data.discovery
+    ? `<details id="advanced" class="advanced"><summary>Advanced setup</summary>${advanced}</details>`
+    : advanced
   return (
     '<!doctype html><html lang="en"><head><meta charset="utf-8" />' +
     '<meta name="viewport" content="width=device-width, initial-scale=1" />' +
@@ -189,12 +289,8 @@ export const renderSetupPage = (data: SetupData): string => {
     '<h1>openinfo · model setup</h1>' +
     '<p class="sub">Your first setting, not your last. Point a slot at a model server, save it as a profile, clone/switch as your rig changes.</p>' +
     banner +
-    '<h2>Profiles</h2>' +
-    profilesHtml(data) +
-    '<h2>Edit endpoints</h2>' +
-    editorHtml(data) +
-    '<h2>Keys</h2>' +
-    secretsHtml(data.secretRefs) +
+    lens +
+    body +
     rowTemplateHtml(data.secretRefs) +
     `<script>${SETUP_SCRIPT}</script>` +
     '</body></html>'
