@@ -26,6 +26,22 @@ test('SurfaceDocuments seeds the openinfo HUD and serves it by id', async () => 
   }
 })
 
+test('SurfaceDocuments.list enumerates the seeded HUD plus user surfaces', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-list-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const docs = new SurfaceDocuments(store)
+    docs.ensureDefaults()
+    assert.deepEqual(docs.list().map((s) => s.id), ['surf-openinfo-hud'])
+
+    docs.save({ ...defaultHudSurface, id: 'surf-mine', name: 'My HUD', version: 1 })
+    assert.deepEqual(docs.list().map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-hud'])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('SurfaceDocuments.save bumps the version and never clobbers a user edit on re-seed', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-save-'))
   const store = new WorkspaceRegistry(dir)

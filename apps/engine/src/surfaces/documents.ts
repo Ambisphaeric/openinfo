@@ -19,6 +19,17 @@ export class SurfaceDocuments {
     }
   }
 
+  /**
+   * Every surface document (latest version of each), for the editor's enumeration. The shipped HUD is
+   * always seeded (ensureDefaults), so it appears alongside any user-created/cloned surfaces; the
+   * defensive unshift keeps it listed even against a store that was somehow never seeded.
+   */
+  list(): Surface[] {
+    const stored = this.store.layouts.latestOfKind<Surface>(SURFACE_KIND).map((doc) => doc.body)
+    if (!stored.some((s) => s.id === defaultHudSurface.id)) stored.unshift(defaultHudSurface)
+    return stored
+  }
+
   /** The stored surface for an id, falling back to the shipped default for its own id, else undefined. */
   get(id: string): Surface | undefined {
     const stored = this.store.layouts.getLatest<Surface>(SURFACE_KIND, id)?.body

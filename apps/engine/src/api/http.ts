@@ -50,6 +50,7 @@ interface HandlerContext {
   secrets: SecretStore
   voice: VoiceDocuments
   surfaces: SurfaceDocuments
+  distill: DistillDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
@@ -188,9 +189,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('session.rerouted', (session) => ws.broadcast('session.rerouted', session))
   bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
+  bus.subscribe('surface.updated', (surface) => ws.broadcast('surface.updated', surface))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, queue, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, queue, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -243,6 +245,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'DELETE' && secret?.[1]) return deleteSecret(res, ctx, decodeURIComponent(secret[1]))
   if (req.method === 'GET' && url.pathname === '/workspaces') return send(res, 200, ctx.store.all())
   if (req.method === 'GET' && url.pathname === '/registers') return send(res, 200, ctx.voice.registers())
+  if (req.method === 'GET' && url.pathname === '/modes') return send(res, 200, ctx.distill.modes())
   if (req.method === 'GET' && url.pathname === '/sessions') return send(res, 200, readSessions(ctx.store, url))
   if (req.method === 'POST' && url.pathname === '/sessions') return startSession(req, res, ctx)
   const sessionEnd = url.pathname.match(/^\/sessions\/([^/]+)\/end$/)
@@ -253,6 +256,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/drafts') return send(res, 200, readDrafts(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/layouts/surfaces') return send(res, 200, ctx.surfaces.list())
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
   if (req.method === 'PUT' && surface?.[1]) return putSurface(req, res, ctx, decodeURIComponent(surface[1]))
@@ -635,7 +639,9 @@ function getSurface(res: ServerResponse, ctx: HandlerContext, id: string): void 
  * Persist an edited surface document (everything user-configurable is a versioned, cloneable
  * document). The body must validate as a Surface and its id must match the route; the store stamps
  * the next version. No flag — serving/saving a layout document is a resource route, not a gated
- * behavior (consistent with /workspaces, /sessions; see PHASE2-NOTES).
+ * behavior (consistent with /workspaces, /sessions; see PHASE2-NOTES). Publishes surface.updated with
+ * the saved (version-bumped) document → WS, same pattern as fabric.changed — so a HUD rendering THIS
+ * surface hot-reloads its layout within a second, no restart (PHASE3-NOTES).
  */
 async function putSurface(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
   const body = await readJson(req)
@@ -643,7 +649,9 @@ async function putSurface(req: IncomingMessage, res: ServerResponse, ctx: Handle
   if (errors.length > 0) return send(res, 400, { error: 'invalid Surface', details: errors })
   const incoming = body as Surface
   if (incoming.id !== id) return send(res, 400, { error: 'surface id does not match route' })
-  send(res, 200, ctx.surfaces.save(incoming))
+  const saved = ctx.surfaces.save(incoming)
+  await ctx.bus.publish('surface.updated', saved)
+  send(res, 200, saved)
 }
 
 /**

@@ -43,4 +43,15 @@ export class DistillDocuments {
   mode(id: string = defaultMeetingMode.id): Mode {
     return this.store.layouts.getLatest<Mode>(MODE_KIND, id)?.body ?? defaultMeetingMode
   }
+
+  /**
+   * Every mode document (latest version of each). Backs GET /modes, mirroring how VoiceDocuments.registers()
+   * backs GET /registers — a cheap read over the seeded config docs. The default meeting mode is always
+   * seeded (ensureDefaults); the defensive unshift keeps it listed against an unseeded store.
+   */
+  modes(): Mode[] {
+    const stored = this.store.layouts.latestOfKind<Mode>(MODE_KIND).map((doc) => doc.body)
+    if (!stored.some((m) => m.id === defaultMeetingMode.id)) stored.unshift(defaultMeetingMode)
+    return stored
+  }
 }

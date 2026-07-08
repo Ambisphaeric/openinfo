@@ -240,6 +240,59 @@ test('surface routes: seeded HUD is served, edits round-trip with a bumped versi
   }
 })
 
+test('GET /layouts/surfaces lists surfaces (seeded + user), and PUT emits surface.updated', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const updates: Surface[] = []
+  app.bus.subscribe('surface.updated', (s) => { updates.push(s) })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // the list starts with just the seeded openinfo HUD
+    const initial = (await (await fetch(`${base}/layouts/surfaces`)).json()) as Surface[]
+    assert.deepEqual(initial.map((s) => s.id), ['surf-openinfo-hud'])
+
+    // clone a user surface via PUT (there is no clone endpoint — the editor PUTs a copy under a new id)
+    const hud = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
+    const clone: Surface = { ...hud, id: 'surf-mine', name: 'My HUD', version: 1 }
+    const putRes = await fetch(`${base}/layouts/surfaces/surf-mine`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(clone),
+    })
+    assert.equal(putRes.status, 200)
+
+    // surface.updated fired with the SAVED (version-bumped) document
+    assert.equal(updates.length, 1)
+    assert.equal(updates[0]?.id, 'surf-mine')
+    assert.equal(updates[0]?.version, 1)
+
+    // the list now enumerates both, sorted by key
+    const after = (await (await fetch(`${base}/layouts/surfaces`)).json()) as Surface[]
+    assert.deepEqual(after.map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-hud'])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('GET /modes serves the seeded mode documents (the fixed contract drift)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const modes = (await (await fetch(`${base}/modes`)).json()) as { id: string; name: string }[]
+    assert.ok(modes.some((m) => m.id === 'mode-meeting' && m.name === 'meeting'))
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('POST /query compiles block queries to store calls (moments, relevant-now, empty ledger)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })
