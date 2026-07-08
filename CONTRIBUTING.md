@@ -38,9 +38,24 @@ Each recipe lists exact files, in order. Follow them literally; deviation means 
 3. Flag `ledger.watcher.<kind>`, default OFF. Example commitment document exercising it. Test with a fixture.
 
 ### Add a fabric runtime (e.g. a new local engine)
-1. `shared/contracts/src/config/fabric.ts` — append runtime name to `LocalRuntime`.
-2. `apps/engine/src/fabric/endpoints/local.ts` — add the spawn/health/bench adapter case (one function).
-3. Bench it: `tools/bench` must produce measured numbers before the runtime may appear in docs/examples.
+1. `shared/contracts/src/config/fabric.ts` — append runtime name to `LocalRuntime` (additive only).
+2. `apps/engine/src/fabric/endpoints/local.ts` — add a `RuntimeSpec` to `RUNTIME_SPECS` (binary names,
+   install hint, argv builder, health path, and the HTTP surface: `chat` for OpenAI-compat chat, or a
+   `transcribePath` for a whisper-style transcription endpoint). The `LocalRuntimeManager` does the
+   discovery/spawn/readiness/kill/bounded-restart generically; the spec is all a new runtime needs.
+3. If the runtime speaks a NON-OpenAI-compat surface for its slot, wire it in `fabric/invoke.ts` (the
+   `local` branch resolves the spawned url + spec, then speaks the right path — e.g. whisper.cpp's
+   `/inference` vs the http kind's `/v1/audio/transcriptions`).
+4. To make it downloadable at tier zero: add entries to the seeded `fabric/local-defaults.ts` catalog
+   (slot, runtime, direct URL, filename, honest size) — `LocalModelStore` handles download/resume/state.
+5. Bench: `tools/bench` produces measured tok/s for **http** endpoints. For `local`, bench stays stubbed
+   in v0 — real numbers need a hardware run (`benchHttpEndpoint` returns local endpoints unchanged); a
+   local endpoint therefore carries no `measured` block until benched on the target machine. Don't seed
+   fabricated tok/s.
+
+**Reality note (drift rule):** `endpoints/http.ts`/`endpoints/cloud.ts` never materialized — the `http`
+kind is handled inline in `invoke.ts`/`health.ts`, and `cloud` is P7. Only `local` needs its own module
+(`endpoints/local.ts`) because it owns real process lifecycle. The recipe above matches that reality.
 
 ## The quality gate
 

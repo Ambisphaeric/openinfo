@@ -1,6 +1,6 @@
 # openinfo — code map
 
-**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup · onboarding discovery + Get-Started lens · the "watch it become a moment" Try-it loop on /setup) · 2026-07-08
+**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup · onboarding discovery + Get-Started lens · the "watch it become a moment" Try-it loop on /setup · engine-managed local runtimes / tier zero) · 2026-07-08
 **Reads with:** [ARCHITECTURE.md](./ARCHITECTURE.md) (the what) · [IMPLEMENTATION.md](./IMPLEMENTATION.md) (the when)
 This file is the **where** — including where features that don't exist yet will land, so no later phase ever
 has to invent a home (the historical failure mode).
@@ -23,10 +23,11 @@ openinfo/
 │  ├─ bus/                      P1   ← loom packages/bus
 │  ├─ store/                    P1   ← loom packages/store + sqlite-vec
 │  │                                 workspace-registry (DB-FILE PER WORKSPACE) · sessions (P2: manual start/stop lifecycle) · distillates/moments/entities/drafts (P2) · graph (P3) · layouts (P2)
-│  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
-│  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm chat-completions · stt /v1/audio/transcriptions multipart — both openai-compat, first-healthy-wins; keyRef→Authorization: Bearer at invoke time)
+│  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints/local.ts (P2 tier zero: LocalRuntimeManager) · http/cloud inline in invoke/health
+│  │                                 bench (measured tok/s; local stays stubbed — real numbers need hardware) · health (first-healthy-wins; reports local spawn state) · invoke (P2: llm chat-completions · stt /v1/audio/transcriptions multipart — both openai-compat, first-healthy-wins; keyRef→Authorization: Bearer at invoke time; local branch spawns the runtime + speaks its surface — whisper.cpp /inference)
 │  │                                 profiles (named/versioned/cloneable slot-maps; active = live fabric; GET/PUT /fabric = active view) · secrets (SecretStore interface; v0 chmod-600 JSON in secrets/, keychain P7 — write-only API, refs never values)
-│  │                                 discover (P2: probe-list + capability-map docs → GET /fabric/discover: parallel probe /v1/models, classify by name, synthesize a config-1 suggestion; local sweep + local runtimes later)
+│  │                                 discover (P2: probe-list + capability-map docs → GET /fabric/discover: parallel probe /v1/models, classify by name, synthesize a config-1 suggestion — smaller-model-first ranking; LAN sweep later)
+│  │                                 local runtimes (P2 tier zero: endpoints/local.ts spawn/health/kill/bounded-restart of llama.cpp/whisper.cpp · local-models.ts download+resume+size-check · local-{documents,defaults}.ts starter catalog · GET /fabric/local/models · POST /fabric/local/download)
 │  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG) — NOT built: P2 primitives wired direct at their seams; DAG deferred until multi/chained acts (see workflow/README)
 │  ├─ distill/                  P2   merge · distiller · transcribe (audio→text pre-distill drain stage via stt slot; mic="me"/system-audio="them" speaker split) · moments (typed extraction) · parse (defensive JSON, shared) · defaults/documents (template+mode docs) │ ocr (P3)
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
@@ -82,7 +83,7 @@ openinfo/
 | First-run / fabric setup page (forms over profile+secret docs) | P2 (built) | `engine/surfaces/setup/` — GET /setup, ENGINE-served forms over the profile+secret routes (deviates from the earlier `client/surfaces/setup/` guess: served by the engine like the workbench §6, not a client webview; the tray opens it in the browser). No new engine capability. |
 | Onboarding discovery + Get-Started lens (this slice) | P2 (built) | `engine/fabric/discover.ts` + probe-list/capability-map seed docs; `GET /fabric/discover` (DiscoverResult); the capability lens + one-button "Use this setup" in `engine/surfaces/setup/` (composes the existing profile routes — no new write semantics) |
 | Say-something verification loop (slice b) | P2 (built) | `engine/surfaces/setup/` — the Try-it card on `/setup` ("type/speak → watch it become a moment", live off the `moment.created` WS event). REVISED home: engine-served browser page, NOT the client (the browser owns the `getUserMedia` mic prompt; works for the remote-engine workflow too). Composes existing routes only (flags/sessions/capture/WS) — no new engine capability |
-| Engine-managed local runtimes / tier zero (slice c) | P2/P3 | `engine/fabric/endpoints/local.ts` — the `local` endpoint kind's runtime lifecycle (download + spawn); invoke/health already skip `local` gracefully. Design-noted, not built |
+| Engine-managed local runtimes / tier zero (slice c) | P2 (built) | `engine/fabric/endpoints/local.ts` (`LocalRuntimeManager`: discover binary + spawn/ready/health/kill/bounded-restart for llama.cpp/whisper.cpp) + `local-models.ts` (download/resume/size-check) + `local-{documents,defaults}.ts` (starter catalog). invoke/health ride `local` on the existing seams (llm reuses the http chat path; stt speaks whisper.cpp's `/inference`). Routes `GET /fabric/local/models` + `POST /fabric/local/download`; the nothing-found lens offers "Download a starter model" → writes a `local` endpoint into config-1 via the existing profile routes. mlx/ollama/paddle/coreml are future specs (CONTRIBUTING recipe) |
 | LAN sweep discovery (with permission) | future | `engine/fabric/discover.ts` — a consent-gated subnet sweep (cross-host rigs). Blocked on macOS Local-Network TCC (GUI-domain LaunchAgent; see ARCHITECTURE §8 platform note) |
 | macOS Keychain secret store | P7 | `engine/fabric/secrets.ts` — `KeychainSecretStore` behind the `SecretStore` interface (drop-in for the v0 file) |
 | Drift steering (comparator + chains) | P5 | `engine/voice/{comparator,chains}.ts`; card/glyph = HUD blocks |

@@ -1449,3 +1449,152 @@ Engine 134 pass, contracts 37 pass, client 71 pass (seam.test.ts TOCTOU flaked o
 Engine-managed local runtimes / tier zero (c); the "no server at all → offer to download" branch; a
 `POST /queue/drain` nudge (not needed — scheduleDrain is already prompt); model quality ranking in the
 suggestion (cold-35B-first is the honest first-match today); any client/HUD change; auth on `/setup`.
+
+## Slice: Engine-managed local runtimes — the tier-zero story (slice c) (2026-07-08)
+
+The true first run has NO model server: discovery reports emptiness and the user hits a dead end. This
+slice makes the stubbed `local` endpoint kind real, tightly — the engine discovers a runtime binary,
+downloads a small model, spawns/monitors it, and rides it on the SAME invoke/health seams as http — so
+"No local model server responded → Download a starter model" replaces the dead end. Design-noted in
+ARCHITECTURE §8 (the onboarding note named this slice c); homed at `fabric/endpoints/local.ts` per CODE_MAP.
+
+### v0 lifecycle decisions (kept tight)
+- **One runtime family per slot where it pays:** **llama.cpp `llama-server`** (OpenAI-compat chat) for
+  llm, **whisper.cpp `whisper-server`** for stt (finally an audio tier-zero path). mlx/ollama/paddle/coreml
+  are documented FUTURE specs (add one via the CONTRIBUTING recipe) — they report `unsupported` gracefully.
+- **The engine does NOT compile or bundle binaries.** `findRuntimeBinary` discovers one on PATH + common
+  Homebrew locations (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`); if absent the offer shows the
+  exact `brew install llama.cpp` / `brew install whisper-cpp` line + a re-check — an honest affordance.
+- **Spawn trigger: LAZY** — on the first invoke/health against a local endpoint (`ensureRunning` is
+  idempotent; concurrent calls share one spawn). Profile activation does NOT eagerly spawn (a user may
+  activate to edit; eager spawn wastes memory and could fail loudly). The "Use this model" download flow
+  reaches a spawn on the first Try-it invoke. Chosen over eager-on-activate for that reason.
+- **Ports:** an OS-assigned free port (`net` bind :0, read, close) — spawned servers bind `127.0.0.1`.
+  Small documented TOCTOU between allocation and the child binding it; acceptable at v0.
+- **Readiness:** poll the runtime's `/health` until 200 (llama-server returns 503 while a model loads),
+  bounded by `readyTimeoutMs` (120s default — model loads are slow). A child that exits before ready fails
+  the wait; a hang is killed and counted.
+- **Restart-on-crash is BOUNDED:** an unexpected exit increments a per-runtime crash counter; after
+  `maxRestarts` (3) fast crashes the runtime reports `crashed` and stops respawning until the engine
+  restarts. A run that stayed ready longer than `crashResetMs` (30s) resets the counter (a real crash, not
+  a spawn loop). Deliberate kills (shutdown / readiness-timeout cleanup) are not counted.
+- **Kill on engine shutdown:** `close()` calls `runtime.shutdown()` (SIGTERM every child). **Never crashes
+  the engine** — every failure path throws for the invoke/health caller to catch and fall through in fabric
+  order, exactly as an unreachable http endpoint does.
+
+### The starter-models document (seeded, versioned — the established pattern)
+`StarterModels` (`config/local.ts`), seeded by `local-defaults.ts`, editable as a document. v0 catalog
+(honest current defaults, 2026-07):
+- **llm (llama.cpp gguf, bartowski — Apache-2.0, ungated, no HF login):** `Qwen2.5-1.5B-Instruct-Q4_K_M`
+  (~1.1 GB, the first-run default — warms fast), `Qwen2.5-3B-Instruct-Q4_K_M` (~1.9 GB).
+- **stt (whisper.cpp ggml, ggerganov/whisper.cpp):** `ggml-base.en.bin` (~148 MB), `ggml-small.en.bin`
+  (~488 MB).
+- URLs are Hugging Face `resolve/main` direct links; sizes are stated approximately in the UI. The real
+  integrity check at download time is the server Content-Length (exact) + a 100 KB truncation floor that
+  discards HTML error pages, + optional sha256 (none hardcoded — I can't verify unpublished hashes).
+
+### Model acquisition — resume, progress, size check; never auto-downloads
+`downloadModel` (`local-models.ts`) streams into `<dataRoot>/models/<filename>` via a `.part` file:
+resumes from the part with a `Range` request (restarts cleanly if the server ignores it — 200 vs 206),
+reports progress, and promotes `.part → final` only after the size/sha check passes (else discards).
+`LocalModelStore` joins the catalog with local state (runtime-binary availability + install hint, absent/
+downloading/ready/error + progress) and resolves a `local` endpoint's `model` ref (a StarterModel id OR a
+bare filename) to its on-disk path for the manager. **Never auto-downloads** — `POST /fabric/local/download`
+is the explicit-click path; **progress is POLLED** via `GET /fabric/local/models` (the smallest honest
+mechanism — no new WS event type crossing the seam).
+
+### How local rides the existing invoke/health seams (no caller change in spirit)
+A spawned runtime IS an http server — the engine just owns its lifecycle. `resolveLocal` (`invoke.ts`)
+ensures the runtime running and returns a localhost url; then:
+- **llm:** reuses `callHttp` via a synthetic `{kind:'http', url, api:'openai-compat'}` — `/v1/chat/completions`.
+- **stt:** whisper-server serves **`/inference`** (verified: NOT `/v1/audio/transcriptions`), so the local
+  branch posts multipart to `/inference` with `response_format=json` via a shared `postTranscription`
+  helper (spawned with `--convert`, so it accepts webm/opus too). This is the one honest protocol
+  divergence from the http kind — the engine knows its runtime's surface because it owns it.
+- No manager (unit tests, or a fresh caller) ⇒ local endpoints skip gracefully and fall through, exactly as
+  before. The manager is threaded through `InvokeOptions`/`SttOptions` and into the Distiller/Actor/
+  transcribe-stage/`POST /fabric/test` from `createEngineApp`.
+- **health** reports the spawn state honestly WITHOUT spawning (binary-missing/model-missing/starting/ready/
+  crashed/unsupported). **bench stays STUBBED for local** — real tok/s needs a hardware run; `benchHttpEndpoint`
+  returns local endpoints unchanged, so a local endpoint carries no fabricated `measured` block (documented
+  in the CONTRIBUTING recipe).
+
+### Get-Started nothing-found flow states
+`GET /setup` passes `localModels` alongside `discovery` when the lens shows. In the NOTHING-FOUND state the
+lens leads with **"Or download a starter model"**, one row per catalog model:
+- **binary present, absent** ⇒ `Download (~1.1 GB)`; click → `POST /fabric/local/download` → the row polls
+  `GET /fabric/local/models` (`downloading… N%`) → on ready re-renders.
+- **ready** ⇒ `Use this model` → the browser writes a `config-1` profile whose slot holds a `local` endpoint
+  `{kind:'local', runtime, model:<id>}` via `PUT /fabric/profiles/config-1` + activate (the EXISTING profile
+  routes — no new write semantics), then `/setup` → llm non-empty → the Try-it card leads.
+- **binary missing** ⇒ the `brew install …` line + a **re-check** button, NOT a download — an honest
+  affordance, never a dead end.
+- **downloading / error** ⇒ live progress / the error + Retry.
+When a real server IS found the offer is hidden (the found suggestion leads). One decision at a time.
+
+### Suggestion-ranking fix — the cold-35B gotcha
+Slice (b) recorded a cold 35B blowing the 30s first-run invoke timeout on the first Try-it.
+`synthesizeSuggestion` now prefers the **smallest** model per slot by `modelSizeRank` (the first `NNb`/`NNm`
+token in the id — `35b`→35000, `1.5b`→1500, `350m`→350; unknown ranks last), tie-broken by probe-list then
+model order. For llm the pure-chat-over-VL preference still applies first, then size ranking within the
+chosen pool. Deterministic + inspectable (product principle 1). **Graduation path:** a real rank (measured
+tok/s, quant, MoE active-param awareness, an explicit `preferOrder`) belongs in a ranking DOCUMENT like the
+capability map — this in-code heuristic is the honest v0, and the user always sees every model in Advanced.
+(The starter catalog also lists the 1.5B first for the same reason.)
+
+### Contracts
+- `StarterModel` / `StarterModels` (`config/local.ts`) — the catalog document. `LocalModelStatus` /
+  `LocalDownloadRequest` (payloads) — the routes' shapes. `LocalRuntime` enum UNCHANGED (llama.cpp +
+  whisper.cpp were already members since Phase 0). Routes `GET /fabric/local/models` (→ `LocalModelStatus[]`)
+  + `POST /fabric/local/download` added (phase 2). +3 examples; gen regenerated (48 schemas).
+
+### No flag — deliberately (consistent with the whole fabric line)
+Downloading + spawning a managed runtime are resource routes / lifecycle owned by the engine, not gated
+processing behaviour — the established no-flag line. What a local endpoint switches on (distill/act) is
+already gated; a download never happens without an explicit click. A `fabric.local` flag would gate nothing
+not already gated.
+
+### Tests (+34 engine: 168 total; +3 contracts: 40; client 71 unchanged — no client code this slice)
+- `endpoints/local.test.ts` (+8): binary discovery (found/missing); spawn→ready→localhost url answering
+  /health + chat; idempotent + concurrent-share-one-spawn; kill on shutdown; binary-missing/model-missing/
+  unsupported states (no throw from `status`); ensureRunning throws (never crashes) on missing binary;
+  bounded crash-restart (crash-on-start → `crashed` after maxRestarts); readiness timeout. Against a FAKE
+  binary (real spawn/kill/crash machinery, a stub node server).
+- `local-models.test.ts` (+11): full download; resume from a `.part`; ignored-Range restart; truncation
+  floor + sha256 discard; sha256 pass; store absent→download→ready + resolvePath (id + filename); failure
+  surfaces as an error state (not a throw); unknown id ⇒ undefined. Against a local http server.
+- `local-documents.test.ts` (+2): seed when absent; never clobber a user edit; store keeps versions.
+- `local-invoke.test.ts` (+6): invokeLlm routes a local endpoint through its spawned runtime; invokeStt
+  routes local whisper to `/inference`; no-manager skips gracefully; unsupported runtime falls through;
+  checkEndpoint reports model-missing→ready + no-manager honesty.
+- `discover.test.ts` (+3): `modelSizeRank` parsing; 35b loses to 4b; smallest-across-servers + order tie-break.
+- `surfaces/setup/view.test.ts` (+4): starter offer states (download w/ honest size · brew-hint-no-download
+  when binary missing · progress + "Use this model" · shown only in the nothing-found state).
+- `api/http.test.ts` (+2): `GET /fabric/local/models` + `POST /fabric/local/download` 404; the tier-zero
+  **e2e** — nothing found → fake download → config-1 `local` endpoint active → Try-it type path →
+  `moment.created` via the SPAWNED runtime (a `localRuntime` testability seam on `EngineOptions` injects a
+  fake binary so CI needs no real llama.cpp). `pnpm -r build` + `-r test` green.
+
+### Live verification (darwin, Apple M1 Max — REAL binaries + REAL round-trips)
+Both `llama-server` and `whisper-server` are installed via brew on this Mac. Drove the ACTUAL built
+`fabric` modules (not the fake path) end to end:
+- **Real download:** `downloadModel` fetched `Qwen2.5-0.5B-Instruct-Q4_K_M.gguf` (397,808,192 bytes) from
+  Hugging Face in 23.1s (following the CDN 302), size check passed, promoted `.part → final`.
+- **Real llama-server spawn+invoke:** `LocalRuntimeManager` discovered `/opt/homebrew/bin/llama-server`,
+  spawned it on an ephemeral port (`:59393`), waited ready, and `invokeLlm` returned a real completion
+  ("Onboarding works! …") via endpoint `starter-llm`.
+- **Real whisper-server spawn+invoke:** spawned `/opt/homebrew/bin/whisper-server` (`:59406`) against an
+  on-disk `ggml-large-v3-turbo-q8_0.bin`, and `invokeStt` on a `say`-generated 16 kHz wav returned
+  **"We should ship the onboarding slice on Thursday."** via `starter-stt` — proving the `/inference`
+  protocol path against a real whisper.cpp.
+- `shutdown()` killed both children cleanly; scratch dir deleted; no stray processes; **:8787 never touched**
+  and LM Studio :1234 / Ollama :11434 never contacted (ephemeral ports only). So the whole tier-zero
+  pipeline — discover binary → download → spawn → ready → invoke (llm AND stt) → kill — is verified REAL on
+  this machine, not simulated. The CI-safe automated e2e uses the fake binary for the same shape.
+
+### Deferred (out of this slice, by scope)
+- Bundling/compiling binaries; mlx/ollama-managed runtimes (future specs per the recipe); TTS/vlm/ocr local
+  runtimes; LAN sweep; `lmstudio://` deep links; auto-updates of models; GPU/quant tuning UI; any client
+  change. Combining multiple downloaded starters into one config-1 (using a second starter overwrites the
+  slot map today — one llm is enough to unlock Try-it). Local bench (real tok/s on the target machine —
+  stays stubbed). A ranking DOCUMENT for the suggestion (in-code heuristic today).

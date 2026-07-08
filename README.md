@@ -94,7 +94,10 @@ Speaking): it probes the well-known local servers (LM Studio :1234, Ollama :1143
 whisper ports), reads what each has actually loaded (`GET /v1/models`), classifies every model by name,
 and shows the result — "Found LM Studio with 36 models". Click **Use this setup** and it writes and
 activates a `config-1` profile for you. No ports or model trivia. (The menu-bar tray opens `/setup` too,
-and flags it "⚠ Set up models…" while the llm slot is empty.)
+and flags it "⚠ Set up models…" while the llm slot is empty.) **No server at all?** The nothing-found
+state offers **"Download a starter model"** — the engine fetches a small vetted model (llama.cpp for
+chat, whisper.cpp for audio) into its data dir and runs it for you, so tier zero still reaches a working
+setup. If the runtime binary is missing it shows the exact `brew install` line instead of a dead end.
 
 Third — **try it, right there.** Once a model is configured, `/setup` leads with a **Try it** card: type a
 sentence (or speak, if you have a transcription server) and watch openinfo turn it into a typed moment,
