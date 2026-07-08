@@ -3,18 +3,27 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { FocusSignal, Session, WorkspaceHints } from '@openinfo/contracts'
+import type { CalendarSignal, FocusSignal, Session, WorkspaceHints } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { Attributor, type AttributionEvent } from './attribute.js'
 import { HintsDocuments } from './hints.js'
-import type { TimedFocusSignal } from './detector.js'
+import type { TimedCalendarSignal, TimedFocusSignal } from './detector.js'
 
 const at = (sec: number): string => new Date(Date.UTC(2026, 6, 7, 14, 0, 0) + sec * 1000).toISOString()
 const sales: FocusSignal = { app: 'Chrome', windowTitle: 'Acme — Salesforce', repoPath: '/Users/dev/acme-crm' }
 const idle: FocusSignal = { app: 'Finder', windowTitle: 'Downloads' }
+const salesMeeting: CalendarSignal = { eventTitle: 'Acme sync', attendees: ['dana@acme.com'] }
 
-const salesHints: WorkspaceHints = { workspaceId: 'sales', patterns: [{ field: 'repoPath', contains: 'acme-crm', weight: 0.7 }] }
+const salesHints: WorkspaceHints = {
+  workspaceId: 'sales',
+  patterns: [
+    { field: 'repoPath', contains: 'acme-crm', weight: 0.7 },
+    { field: 'eventTitle', contains: 'acme', weight: 0.8 },
+  ],
+}
 const streamOf = (signal: FocusSignal, count: number, step = 10): TimedFocusSignal[] =>
+  Array.from({ length: count }, (_, i) => ({ at: at(i * step), signal }))
+const calStreamOf = (signal: CalendarSignal, count: number, step = 10): TimedCalendarSignal[] =>
   Array.from({ length: count }, (_, i) => ({ at: at(i * step), signal }))
 
 interface Harness {
@@ -80,6 +89,22 @@ test('live session in W1 + sustained match for W2 → auto-END W1, START W2, emi
     assert.deepEqual(h.events.map((e) => e.event), ['session.ended', 'session.started', 'session.switched'])
     // session.switched carries the STARTED session (the router's action), not the ended one
     assert.equal(h.events[2]!.session.id, w2Live.id)
+  } finally {
+    await h.cleanup()
+  }
+})
+
+test('a sustained meeting (calendar signals) auto-starts a session with CALENDAR evidence on it', async () => {
+  const h = await harness()
+  try {
+    const result = await h.attributor.observe(calStreamOf(salesMeeting, 11))
+    assert.equal(result.decision, 'switch')
+    const live = h.store.liveSession('sales')
+    assert.ok(live)
+    // the calendar evidence trail is recorded on the session (kind 'calendar'), confidence < 1
+    assert.ok(live.attribution.evidence.some((e) => e.kind === 'calendar' && e.detail === 'eventTitle contains "acme"'))
+    assert.ok(live.attribution.confidence < 1)
+    assert.deepEqual(h.events.map((e) => e.event), ['session.started'])
   } finally {
     await h.cleanup()
   }

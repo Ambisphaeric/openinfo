@@ -719,3 +719,87 @@ that exact recognition core (the shared `persist()`), driven from the drain inst
 - A GET/PUT `/workflows` edit route (the executor already reads the doc hot; only the route is missing).
 - `/screen/status` counters reflect only whichever path is the active owner; a per-path breakdown is unbuilt.
 - The whole-file re-queue-granularity fix (above) and the P4B tails (Δ-gating, managed-local paddle/vlm).
+
+## Slice: Calendar evidence — the second staged routing signal  *(P4C, branch p4c-calendar)*
+
+Focus signals (window/repo) already drive context-switch detection; this slice adds **Calendar.app event
+title + attendees as a `calendar` evidence kind** feeding the SAME detector, so a meeting can route the day
+into a workspace the way a repo/window already can. Topic-drift is explicitly OUT of scope. Committed per
+module: contracts → route → tests+docs.
+
+### Contracts added (all additive)
+- `CalendarSignal` (`api/payloads.ts`): `eventTitle` (required) + optional `attendees` (display names
+  and/or emails), `calendarName`, `startsAt`, `endsAt`. Routing CONTEXT, never session content — the drain
+  excludes it from transcripts/moments/entities exactly like a FocusSignal.
+- `AttributionPattern.field` (`config/hints.ts`) gains `eventTitle` and `attendee` (append to the union).
+  Field→kind extends `eventTitle`/`attendee` → `'calendar'` (`AttributionEvidence.kind` already admitted
+  `'calendar'` from P3 — no session-contract change). Focus and calendar fields are DISJOINT, so a pattern
+  only matches the signal type that carries its field. `attendee` matches when ANY attendee satisfies the
+  matcher (the attendee list is the haystack, tested per entry).
+- Example `calendarSignal.example.json` + the `route.detect` flag description now names calendar too.
+
+### DECISION — calendar is collected ENGINE-side, fed DIRECTLY to the detector (not the chunk seam)
+Focus is CLIENT-collected (electron main osascript) and carried as a `source:'focus'` CaptureChunk over
+HTTP; the engine drain decodes it (`route/focus.ts`). Calendar can't mirror that seam here: this slice owns
+`apps/engine/`, not `apps/client/` (a parallel effort owns the client), and calendar routing needs no
+renderer/getUserMedia. So the collector lives ENGINE-side (`route/calendar-collector.ts`), samples
+Calendar.app via `osascript` directly, and feeds `Attributor.observe` — the DIRECT path, no CaptureChunk.
+The `calendar` `CaptureSource` stays reserved for a later chunk-transported path (documented on the
+contract). This is the same "rhymes-but-differs" call the focus poller itself made vs CaptureController.
+
+### DECISION — ONE detector buffer, ONE Attributor (the reason for the http.ts exposure)
+Calendar signals must contest in the SAME sustain window as focus, not a parallel loop (two independent
+loops racing to switch sessions would be a bug). So:
+- `detector.ts`: the stream is now `TimedSignal` = `TimedFocusSignal | TimedCalendarSignal`; `detectSwitch`
+  scores both in one window. `patternMatches` generalized to read the candidate string(s) for a field (the
+  attendee list for `attendee`, else the scalar). Detector stays PURE.
+- `attribute.ts`: the Attributor's rolling buffer + `observe` accept `TimedSignal`. The focus drain still
+  passes focus signals (a subtype); the collector passes calendar signals — one shared buffer, one contest.
+- `api/http.ts`: `attributor` is now exposed on `EngineApp` (additive) so the collector, mounted
+  POST-`createEngineApp`, reaches the ONE detector buffer — exactly how `wireScreenOcr` reaches the screen
+  processor. `main.ts` mounts it in ONE line (`startCalendarCollector(app, …)`), kept out of
+  `createEngineApp` so the http tests never spawn an OS timer.
+
+### DECISION — gate on the existing `route.detect` flag (no new knob)
+Calendar is a SIGNAL of the same detection feature focus is, so it rides the existing master opt-in rather
+than inventing a flag (the detector's `DetectorConfig` stays the only dials — the "later slices add signal
+SOURCES, not knobs" note from PHASE3). The flag is read PER-TICK, so no `osascript`/Calendar access ever
+runs while `route.detect` is OFF (the privacy gate). Calendar.app TCC is a separate OS-level consent; a
+denied read simply yields no signals. Graceful degrade throughout: a failed/denied/empty/malformed read
+yields no signals and never throws — a bad calendar poll can't wedge the loop or crash the engine.
+
+### Module layout (`apps/engine/src/route/`)
+- `calendar.ts` — PURE decode: raw collector sample (JSON events) → `TimedCalendarSignal[]`, normalizing +
+  contract-checking each entry, skipping the bad ones. The client's `focus.ts` (OS reading → typed signal)
+  analogue, fully unit-testable without macOS.
+- `calendar-collector.ts` — the thin macOS EDGE: `CalendarPoller` (poll timer, per-tick flag gate,
+  reentrancy guard, injected `sample`), the default `sampleCalendarViaOsascript` (JXA against Calendar.app
+  for current/imminent events, hard timeout), and `startCalendarCollector(app, …)` (the mount, mirroring
+  `wireScreenOcr`). Poll cadence 30s — several polls land inside the 90s sustain window so an ongoing
+  meeting sustains presence.
+
+### Rule-7 check (definition of done)
+No route/flag surface changed (calendar reuses `route.detect` and adds no HTTP route), so no `skills/` or
+CONTRIBUTING recipe goes stale. Contract additions are additive; existing hints/examples still validate.
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Engine **390** (from 374: +6 `calendar.test`
+decode cases, +5 `calendar.test` poller-lifecycle cases, +4 `detector.test` calendar cases [title match,
+attendee-only match, disjoint-field no-match, mixed focus+calendar one-window], +1 `attribute.test`
+calendar-driven auto-start recording `calendar` evidence on the session). Contracts **61** (+1 CalendarSignal
+example). Client **154**, unchanged. The pre-existing `route.detect` focus-timing e2e flake in
+`api/http.test.ts` recurs under the full parallel run (passes 47/47 in isolation, and the full engine suite
+passed 374→390 clean on re-run) — same flake class PHASE4 already records, untouched here. LIVE Calendar.app
+osascript sampling is NOT exercised in CI (the OS edge is injected/stubbed in tests, per the pure/edge split).
+
+### Deferred (queued)
+- **Attendee email vs display-name matching subtleties**: v0 puts BOTH the display name and the email into
+  the flat `attendees` haystack and matches a hint substring against any entry. A hint author must know
+  whether to match a name or a domain; there's no structured name/email/domain distinction or organizer-vs-
+  attendee weighting yet. A richer attendee model (and matching on the user's own identity to exclude self)
+  is a later refinement.
+- **LIVE osascript verification**: the JXA sampler is best-effort and unproven against a real Calendar.app
+  with granted TCC on this rig; a manual end-to-end (grant Calendars access, join a titled meeting, watch a
+  switch) should confirm the sampler shape before relying on it.
+- **Chunk-transported calendar** (the reserved `source:'calendar'` path) and a client-side collector, if/when
+  calendar collection should move to the client alongside focus.
