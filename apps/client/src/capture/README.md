@@ -47,8 +47,34 @@ system silent)`**) rather than pretending to record. Once audio flows it reads *
 Install BlackHole with `brew install blackhole-2ch`. Disable the second stream entirely with
 `OPENINFO_SYSTEM_AUDIO=0` (mic stays on); it is otherwise a no-op when no device is present.
 
+**Focus capture — SHIPPED (foreground-window context, P3).** A main-process poller samples the
+frontmost app + window title on a modest cadence (~3s) and emits a `FocusSignal` ONLY on change. It is
+CONTEXT, not media: no hidden renderer, no getUserMedia, no session — it watches to feed the engine's
+context-switch detector, including when NO session is live (focus is what STARTS sessions). It rides the
+ordinary capture seam as an utf8/JSON CaptureChunk (`source: 'focus'`, `contentType: application/json`,
+`data` = JSON.stringify(FocusSignal)); the detector decodes it and EXCLUDES it from transcripts/moments.
+
+- `focus.ts` (pure) — `FrontmostWindow` → redacted `FocusSignal`; ordered dev-app repo rules (VS
+  Code/Cursor root name, Terminal/iTerm path token); conservative best-effort secret redaction; the
+  dedupe key; focus CaptureChunk shaping (sentinel sessionId — focus flows OUTSIDE sessions).
+- `focus-poller.ts` (pure) — a dedicated low-rate poller (NOT CaptureController: no renderer,
+  session-independent, gated differently). Privacy gate: polls ONLY when the engine's `route.detect`
+  flag is ON **and** the client-local `OPENINFO_FOCUS` opt-out is not set — off ⇒ no polling at all (the
+  timer is cleared), never poll-and-drop. On-change dedupe + a burst-emit throttle.
+- The OS read (osascript / System Events for the frontmost app + title) lives in `shell.ts` — the thin
+  electron/OS edge, not CI-tested (like the capture renderer). Emitted via `EngineLink.captureEphemeral`
+  (never spooled — a stale "which window 10 min ago" is noise, not data loss).
+
+**Focus privacy + TCC (macOS).** Reading another app's process/window via System Events needs
+**Accessibility** (System Settings → Privacy & Security → Accessibility → enable the running app). Until
+granted the reader returns nothing and no focus flows. The app NAME is the reliable floor; window TITLES
+depend on the app exposing an AX front-window title (and on some apps a Screen Recording grant), so title
+capture is best-effort. Titles are scrubbed (`redactTitle`) before emission and can be disabled entirely
+with `OPENINFO_FOCUS=0`. FUTURE: a reviewed native reader replaces osascript behind the same `sample()`
+seam; a `git -C` / native resolution replaces the title-derived `repoPath` heuristic with a true root.
+
 Still to come (glass transplant / later phases):
 - `audio-tap/` — a native CoreAudio process-tap (no user routing; the designed future, ARCHITECTURE §8)
   · `aec/` (P1–2, pending the AEC spike) · `screen.ts` (Δ-diff gate, P1/P3) · `calendar.ts` (P2,
-  read-only) · `focus.ts` (P3) · `camera.ts` (P7, flagged).
+  read-only) · `camera.ts` (P7, flagged).
 Inputs are user-configurable sources: each exposes on/off + cadence to the palette (P6).
