@@ -56,11 +56,16 @@ content-protected window, invisible to screen share, hosting the HUD):
 ```bash
 pnpm --filter @openinfo/client start     # builds, then launches electron .
 # OPENINFO_ENGINE_URL / OPENINFO_PORT point it at the daemon (default http://127.0.0.1:8787)
+# OPENINFO_MIC=0 disables microphone capture (default ON while a session is live)
 ```
 
 The window opens **hidden** (like Glass). Reveal it with **⌘\\** or the menu-bar (tray) icon → **Show
 HUD**. The tray also toggles the session — **Start Session / End Session** — and shows whether one is
-live; **Quit** exits. (Dev run only — no packaging/signing yet; real mic/screen capture is the next slice.)
+live (**● rec** while the mic is capturing); **Quit** exits. While a session is live the client captures
+the **microphone** and streams timed audio chunks to the engine (macOS will ask for mic permission the
+first time — click Allow; denial disables audio only, the session/text path is unaffected). No session
+live ⇒ nothing is captured. (Dev run only — no packaging/signing yet; system-audio/loopback + screen
+capture are still pending.)
 
 **Or render it in a plain browser** (same HUD, same transport — handy without Electron):
 

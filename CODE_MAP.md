@@ -40,7 +40,7 @@ openinfo/
 │
 ├─ apps/client/src/             thin Electron client — NEVER opens a database
 │  ├─ main/                     P1   the Electron shell (BUILT): shell.ts (electron entry) · window-options (content-protection, always-on-top, frameless) · tray-menu (show/hide · start/end session · live indicator) · shortcuts (⌘\ hide) · engine-session (session client + WS live-state) · config · tray-icon
-│  ├─ capture/                  P1   mic · screen Δ-gate · system audio + aec │ P2: calendar │ P3: focus │ P7: camera
+│  ├─ capture/                  P1   mic (BUILT: hidden-window getUserMedia → webm segments → /capture/mic, session-gated) · screen Δ-gate · system audio + aec │ P2: calendar │ P3: focus │ P7: camera
 │  ├─ engine-link/              P1   typed client from contracts · offline spool
 │  └─ surfaces/                 P2   block-renderer (pure VNode, render(surfaceDoc)) · blocks/ (built-ins + glyphs) · hud/ (live controller + transport + dev-entry) │ P2-todo: settings/ │ P6: palette/ · editor/
 │

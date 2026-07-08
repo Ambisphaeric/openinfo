@@ -840,3 +840,119 @@ pick — the default stays :8787). Verified against a real display:
   ⌘+arrow would hijack system-wide text-editing keys (line start/end, etc.) for a marginal gain over
   dragging. Not worth the surface; the grab strip covers repositioning.
 - Resizing, snap-to-edges, multi-display placement UI, opacity — all out of scope as stated.
+
+## Slice: Real microphone capture in the client (MIC ONLY — the client half of real-capture)
+
+The engine half (STT + transcribe-on-drain) shipped in the STT slice above; the shell + hidden-window
+groundwork was laid by the client-shell and drag slices. This slice makes the client actually LISTEN:
+while a session is live it captures the microphone and streams timed audio chunks to `/capture/mic`,
+so — with `distill.enabled` + `distill.transcribe` on and an `stt` endpoint in the fabric — a spoken
+meeting becomes distillates/moments/entities. MIC ONLY: system-audio/loopback/AEC is a separate
+pending slice (concurrent spike), screen/Δ-gate is P3. No engine or contracts change.
+
+### The pipeline — a hidden BrowserWindow captures, the main process wraps + spools
+getUserMedia needs a renderer, so the mic lives in a dedicated **hidden** `BrowserWindow` (`show:
+false`, never revealed, no content-protection — nothing on screen to hide; `backgroundThrottling:
+false` so recording stays steady while the app is a background menu-bar agent; `contextIsolation` on,
+`nodeIntegration` off). Its renderer (`capture/mic-renderer.ts`, loaded by `capture.html`) runs
+getUserMedia + MediaRecorder and hands each finished segment to the main process over a minimal
+`.cts` contextBridge preload (`capture/mic-preload.cts` → `.cjs`, exactly the drag preload's pattern:
+`window.openinfoMic` with coordinate-free start/stop down + segment/status/stopped up). The **main
+process** (`shell.ts`) wraps each segment as a `CaptureChunk` (base64, monotonic sequence, the live
+session's ids) and sends it via the **existing `EngineLink`** path (a main-process EngineLink with a
+`capture-spool` dir under `userData` + its flush loop), so the Phase-1 offline spool keeps working
+unchanged (mid-capture engine disconnect ⇒ chunks spool, flush when it returns).
+
+### Segmenting — stop/restart, NOT `timeslice`; 8-second segments
+`MediaRecorder`'s `timeslice` emits fragments of ONE webm stream — only the first fragment carries the
+container header, so later fragments are **not independently decodable** and an STT server can't
+transcribe them alone. So the renderer **stops and immediately restarts** the recorder each segment,
+yielding a COMPLETE, self-contained webm file (header + data) per segment — exactly what
+`/v1/audio/transcriptions` needs. The sub-frame gap at each boundary is negligible for speech (the
+engine re-merges chunks into 30s–2m distill windows anyway). **8s** was chosen from the 5–10s band: long
+enough to amortize per-request + stop/restart overhead and keep boundaries rare, short enough that audio
+reaches the engine promptly and the flushed final segment on session-end is small.
+
+### Container/encoding — webm/opus (`audio/webm`), verified against the engine sniff
+Chosen **webm/opus** (MediaRecorder-native — zero extra code) over raw PCM→WAV (an AudioWorklet, more
+code). Verified the engine's STT multipart filename mapping handles it: `fabric/invoke.ts::audioFilename`
+splits on `;` and maps `audio/webm`(`;codecs=opus`) → **`audio.webm`** (confirmed live — the fake STT
+saw `filename="audio.webm"`). `chunk.ts::normalizeContentType` strips the `;codecs=…` param so both forms
+collapse to the bare `audio/webm` the sniff expects. **Tradeoff / what servers accept:** webm/opus is
+accepted by ffmpeg-backed OpenAI-compatible servers (faster-whisper-server, speaches, the OpenAI API);
+a stock **whisper.cpp** `server` wants WAV (16 kHz PCM) and would reject webm. If a WAV-only backend is
+the target, WAV-via-AudioWorklet is the documented fallback (the seam is unchanged — only the renderer's
+encoder swaps and `contentType` becomes `audio/wav`). Emitted `contentType` is always bare `audio/*`, as
+the engine's audio sniff requires.
+
+### Lifecycle — the tray Start/End IS the mic switch (zero new UI)
+Capture is driven entirely by the existing `SessionLiveState`: `shell.ts` mirrors its `onChange(live)`
+into the controller — a live session ⇒ `onSessionStarted({ sessionId, workspaceId })`, ended ⇒
+`onSessionEnded()`. The pure `MicCaptureController` (`capture/mic-controller.ts`) is the state machine:
+`idle → requesting → capturing → (end) flush → idle`. Edge cases handled + tested:
+- **Session ends mid-segment:** end tells the renderer to stop; MediaRecorder's `onstop` flushes the
+  final (partial) segment, which the controller still wraps under the ENDING session's ids (it holds the
+  context until the renderer confirms `stopped`), then clears.
+- **Auto-end → immediate restart** (start-while-live emits ended(A) then started(B)): a start arriving
+  while A is still flushing is **queued** (`pendingStart`) and applied only after A confirms stopped, so
+  A's final segment never gets B's ids. Sequence resets per run.
+- **Mid-capture engine disconnect:** EngineLink spools (nothing lost); the flush loop drains on return.
+- **App quit during capture:** `before-quit` → `controller.shutdown()` stops the renderer cleanly.
+
+### Permission — `askForMediaAccess('microphone')`, denial degrades gracefully
+On the first capture the controller calls `requestPermission` → `systemPreferences.askForMediaAccess`
+('microphone') on macOS (non-macOS resolves true; a Chromium permission handler grants only `media` to
+our windows). **Denial disables audio only** — the controller enters `denied`, never starts the
+renderer, ignores stray segments, and **the session/text path is completely unaffected** (no crash).
+A privacy-honest recording indicator lives in the tray with zero new UI: the status header + tooltip
+show **`● rec`** while capturing and **`mic blocked`** on denial (`tray-menu.ts`, pure + tested).
+
+### Config — `OPENINFO_MIC` (client-local, opt-OUT, default ON), NOT a flag
+`ShellConfig.micEnabled` from `OPENINFO_MIC` (only `0`/`false`/`off`/`no` disables). Default **ON when a
+session runs** — the **session is the consent gesture**, so a running session listens unless explicitly
+muted. This is CONFIG not a flag, the same line the shell/sessions/HUD slices drew: it is how the client
+uses its own hardware, it never reaches the engine or its store, and whether captured audio MEANS
+anything is ALREADY gated engine-side by `distill.transcribe`. A client `capture.mic` flag would be an
+engine-side DB record gating nothing the engine can see — the wrong home. No engine flags added (correct
+per scope — engine gating already exists).
+
+### Testability — the same pure/shell split, electron-free CI (+14 client tests: 65 total)
+All decision-bearing logic is pure and node-tested headless: `chunk.ts` (shape/base64 round-trip/
+contentType normalization/sequence), `mic-controller.ts` (full lifecycle incl. in-flight flush, denial,
+disabled config, auto-end serialization, shutdown; renderer-reported denial), the IPC protocol shape,
+and **spool integration** through a real `EngineLink` to a dead port (chunks durably spool, nothing
+thrown). The electron/DOM-touching files stay untested-by-CI, as before: `mic-renderer.ts` (browser
+globals — typed via one structural `globalThis` cast, the mount.ts trick, so the package stays
+`types:["node"]`), `mic-preload.cts`, and the `shell.ts` wiring. `pnpm -r build` + `pnpm -r test` green
+(contracts 28 · client 65 · engine 79; the seam.test.ts port TOCTOU flake did not recur this run).
+
+### Live verification (darwin 25.3, Electron 38, Node 25) — what physically ran
+- **Audio → distillate END-TO-END through the real client code path**, without the OS mic: a driver
+  built the real `MicCaptureController` exactly as `shell.ts` does (stubbing only the two electron edges
+  — renderer control + permission) and fed real `say`-generated audio bytes as segments against an
+  engine on :8903 (scratch `OPENINFO_DATA`) with a fake STT+llm fabric (:8904) and `distill.enabled`/
+  `distill.transcribe`/`distill.moments` on. The engine logged `transcribe: mic chunk
+  mic-<sessionId>-000001 → 51 chars via fake-stt` (our chunk-id format), the fake STT saw
+  **`filename="audio.webm"`** (the container decision proven through the multipart sniff), the fake llm
+  **saw the transcribed text** in its prompt, and a distillate landed: `distilled window … (4 chunks) via
+  fake-llm`. The queue drained clean. This proves everything `shell.ts` wires — chunk assembly →
+  EngineLink POST → engine arrival → transcribe → distill — EXCEPT getUserMedia itself.
+- **The real Electron shell boots the pipeline clean:** logs showed `hidden capture window created — mic
+  renderer host`, `mic capture enabled (follows the session lifecycle)`, HUD `content-protection: ON`,
+  and `⌘\` registered. Starting a session over the API drove the lifecycle: `mic access status before
+  request: not-determined` → on `askForMediaAccess` → **`microphone access denied — capture disabled,
+  session continues (text path unaffected)`** — the denial path, live, no crash.
+- **The TCC wall (honest, as the task predicted):** this headless-automation context cannot present or
+  click the macOS microphone permission dialog, so `askForMediaAccess` resolved **denied** and no real
+  mic audio was captured through getUserMedia. **The exact remaining human step:** a person launches the
+  app (`pnpm --filter @openinfo/client start`), starts a session from the tray, and clicks **Allow** on
+  the macOS mic prompt (or enables the app under System Settings → Privacy & Security → Microphone). Then
+  the hidden window's getUserMedia captures real audio, which flows through the very path proven above
+  with synthetic audio. Everything up to that single click is verified.
+
+### Deferred (out of this slice, by scope)
+- System-audio / loopback / AEC (concurrent spike + separate slice); screen capture / Δ-gate (P3 — frames
+  would spool for nothing until OCR); WAV/AudioWorklet encoder (documented fallback, not built — webm
+  suffices for ffmpeg-backed servers); per-source on/off + cadence in a settings/palette UI (P6);
+  diarization / voice→person (P7 — `me`/`them` is the free source-based split, not identity); packaging/
+  signing. Audio-quality tuning (sample rate, VAD-gated segmentation to skip silence) is convergence-time.
