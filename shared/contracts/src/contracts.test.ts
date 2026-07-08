@@ -17,6 +17,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   distillate: 'Distillate', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
   session: 'Session', startSessionRequest: 'StartSessionRequest', queryResult: 'QueryResult',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
+  endpointProbe: 'EndpointProbe',
 }
 
 for (const file of readdirSync(examplesDir).filter((f) => f.endsWith('.json'))) {

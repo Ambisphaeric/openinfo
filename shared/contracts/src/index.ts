@@ -32,7 +32,7 @@ import { Mode } from './config/mode.js'
 import { PromptTemplate } from './config/promptTemplate.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
 import { Flag } from './config/flag.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, CloneProfileRequest, SecretRef, SecretValue } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -41,5 +41,5 @@ export const AllSchemas = {
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile, Flag,
   Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest,
-  CloneProfileRequest, SecretRef, SecretValue,
+  CloneProfileRequest, SecretRef, SecretValue, EndpointProbe,
 } as const

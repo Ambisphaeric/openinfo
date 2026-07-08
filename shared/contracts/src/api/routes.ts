@@ -24,6 +24,7 @@ export const Routes: readonly RouteDef[] = [
   { method: 'GET', path: '/fabric/secrets', response: 'SecretRef[]', phase: 2 },
   { method: 'PUT', path: '/fabric/secrets/:ref', request: 'SecretValue', response: 'SecretRef', phase: 2 },
   { method: 'DELETE', path: '/fabric/secrets/:ref', response: 'SecretRef', phase: 2 },
+  { method: 'POST', path: '/fabric/test', request: 'Endpoint', response: 'EndpointProbe', phase: 2 },
   { method: 'POST', path: '/capture/:source', request: 'CaptureChunk', response: 'Ack', phase: 1 },
   { method: 'GET', path: '/workspaces', response: 'Workspace[]', phase: 1 },
   { method: 'GET', path: '/sessions', response: 'Session[]', phase: 2 },

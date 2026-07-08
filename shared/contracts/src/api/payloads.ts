@@ -155,3 +155,24 @@ export const SecretValue = Type.Object(
   { $id: 'SecretValue', additionalProperties: false },
 )
 export type SecretValue = Static<typeof SecretValue>
+
+/**
+ * The result of a connectivity probe against ONE endpoint (POST /fabric/test) — the setup page's
+ * "Test" button backing. It is the existing health check (fabric/health.ts) exposed as a thin,
+ * read-only helper: reachable? + latency, with a human `hint` on a failure the user can act on (a
+ * 401/403 → set a key and reference it via keyRef; an unresolved keyRef → store its value below).
+ * If the endpoint carries a previously MEASURED throughput (tools/bench, on the endpoint doc), it is
+ * echoed as `tokPerSec` — this probe pings, it does not itself benchmark generation. Request-shaped
+ * body is an Endpoint (the row's current — possibly unsaved — values), so a user can test before saving.
+ */
+export const EndpointProbe = Type.Object(
+  {
+    ok: Type.Boolean(),
+    latencyMs: Type.Optional(Type.Number({ minimum: 0 })),
+    tokPerSec: Type.Optional(Type.Number({ minimum: 0, description: 'last MEASURED tok/s from the endpoint doc — not measured by this probe' })),
+    error: Type.Optional(Type.String()),
+    hint: Type.Optional(Type.String({ description: 'an actionable next step when the probe fails (e.g. a keyRef hint on 401)' })),
+  },
+  { $id: 'EndpointProbe', additionalProperties: false },
+)
+export type EndpointProbe = Static<typeof EndpointProbe>

@@ -1,0 +1,29 @@
+{
+  "$id": "EndpointProbe",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "ok"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean"
+    },
+    "latencyMs": {
+      "minimum": 0,
+      "type": "number"
+    },
+    "tokPerSec": {
+      "minimum": 0,
+      "description": "last MEASURED tok/s from the endpoint doc — not measured by this probe",
+      "type": "number"
+    },
+    "error": {
+      "type": "string"
+    },
+    "hint": {
+      "description": "an actionable next step when the probe fails (e.g. a keyRef hint on 401)",
+      "type": "string"
+    }
+  }
+}
