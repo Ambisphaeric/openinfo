@@ -19,13 +19,21 @@ export interface CaptureContext {
 /** MediaRecorder's native container. The engine sniffs `audio/webm` → `audio.webm` for the STT multipart. */
 export const DEFAULT_AUDIO_CONTENT_TYPE = 'audio/webm'
 
+/** The image encoding a screen frame is captured as (chunk.ts encodes JPEG — see the main-process grab). */
+export const DEFAULT_SCREEN_CONTENT_TYPE = 'image/jpeg'
+
+/** The contentType of the companion ScreenFrameMeta chunk — decoded JSON, exactly like a FocusSignal chunk. */
+export const SCREEN_META_CONTENT_TYPE = 'application/json'
+
 /**
  * The chunk-id prefix per source — folded into the id so ids (and thus the offline-spool filenames)
- * are stable, human-readable, and **collision-free across sources**: mic run and system-audio run each
- * carry their own monotonic sequence, but `mic-…` and `sys-…` ids never collide even at the same
- * sequence number. Kept short (`sys`) to stay readable in logs/spool names.
+ * are stable, human-readable, and **collision-free across sources**: each source's run carries its own
+ * monotonic sequence, but `mic-…`, `sys-…`, and `scr-…` ids never collide even at the same sequence
+ * number. Kept short to stay readable in logs/spool names. A screen frame AND its companion metadata
+ * chunk BOTH use the `scr` prefix (they are two `source:'screen'` chunks) — they stay unique because the
+ * controller advances the sequence for each, so the image is `scr-…-000001` and its meta `scr-…-000002`.
  */
-const ID_PREFIX: Record<CaptureSourceKind, string> = { mic: 'mic', 'system-audio': 'sys' }
+const ID_PREFIX: Record<CaptureSourceKind, string> = { mic: 'mic', 'system-audio': 'sys', screen: 'scr' }
 
 /**
  * Normalize a MediaRecorder MIME to the bare `audio/<subtype>` the engine's STT filename sniff expects
@@ -35,6 +43,16 @@ const ID_PREFIX: Record<CaptureSourceKind, string> = { mic: 'mic', 'system-audio
 export const normalizeContentType = (mimeType: string): string => {
   const base = mimeType.split(';')[0]?.trim().toLowerCase() ?? ''
   return base.startsWith('audio/') && base.length > 'audio/'.length ? base : DEFAULT_AUDIO_CONTENT_TYPE
+}
+
+/**
+ * Normalize a screen frame's MIME to a bare `image/<subtype>` (a ScreenContentType — records/screen.ts).
+ * Mirrors normalizeContentType but for images: strips any `;`-params and lowercases, and a missing or
+ * non-image MIME falls back to `image/jpeg` (what the main-process grab actually encodes).
+ */
+export const normalizeScreenContentType = (mimeType: string): string => {
+  const base = mimeType.split(';')[0]?.trim().toLowerCase() ?? ''
+  return base.startsWith('image/') && base.length > 'image/'.length ? base : DEFAULT_SCREEN_CONTENT_TYPE
 }
 
 /** base64 of the raw container bytes — CaptureChunk carries audio as `encoding: 'base64'`. */
@@ -56,7 +74,33 @@ export const segmentToChunk = (segment: RawSegment, context: CaptureContext, seq
   source: segment.source,
   sequence,
   capturedAt: segment.capturedAt,
-  contentType: normalizeContentType(segment.mimeType),
+  // Screen frames are images (image/<subtype>); audio uses the STT-sniff audio normalizer. Both are
+  // base64 container/pixel bytes on the same CaptureChunk transport (records/screen.ts reuse discipline).
+  contentType: segment.source === 'screen' ? normalizeScreenContentType(segment.mimeType) : normalizeContentType(segment.mimeType),
   encoding: 'base64',
   data: toBase64(segment.bytes),
 })
+
+/**
+ * Build the companion ScreenFrameMeta CaptureChunk for a screen frame — its typed descriptor (which
+ * display, pixel dimensions, backing scale) travelling exactly the way a FocusSignal does: its OWN
+ * `source:'screen'` chunk with `encoding:'utf8'`, `contentType:'application/json'`, and `data` =
+ * JSON.stringify(ScreenFrameMeta) (records/screen.ts). The caller emits it adjacent to the image chunk it
+ * describes, at the NEXT sequence number, so the two correlate by capture order. `capturedAt` matches the
+ * image chunk's (it is the frame's grab time) — the meta does NOT restate it as a payload field
+ * (FocusSignal's no-duplication discipline; it already lives on the CaptureChunk).
+ */
+export const frameMetaToChunk = (segment: RawSegment, context: CaptureContext, sequence: number): CaptureChunk => {
+  if (!segment.screenMeta) throw new Error('frameMetaToChunk called on a segment without screenMeta')
+  return {
+    id: `${ID_PREFIX[segment.source]}-${context.sessionId}-${pad(sequence)}`,
+    sessionId: context.sessionId,
+    workspaceId: context.workspaceId,
+    source: segment.source,
+    sequence,
+    capturedAt: segment.capturedAt,
+    contentType: SCREEN_META_CONTENT_TYPE,
+    encoding: 'utf8',
+    data: JSON.stringify(segment.screenMeta),
+  }
+}

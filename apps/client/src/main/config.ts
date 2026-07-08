@@ -55,6 +55,25 @@ export interface ShellConfig {
    * `"focus": false` (a privacy kill-switch that stops the polling entirely — not poll-and-drop). See PHASE3-NOTES.
    */
   focusEnabled: boolean
+  /**
+   * Whether the client captures the SCREEN (periodic still frames of the primary display for OCR/VLM)
+   * while a session is live. Client-local — same CONFIG-not-flag reasoning as the toggles above (it is
+   * how the client reads its own display; whether frames MEAN anything is gated engine-side by the
+   * screen processor's flag). But its DEFAULT is the OPPOSITE of the audio/focus toggles: **default OFF,
+   * strictly opt-IN**. The asymmetry is deliberate — screen capture is privacy-heavy (it can see anything
+   * on screen, not just a call), it triggers the macOS Screen-Recording TCC prompt, and it is brand-new,
+   * so it matches the `capture.camera` posture: nothing is captured unless the user explicitly turns it
+   * on. Enable with OPENINFO_SCREEN=1/true/on/yes or `"screen": true`. (The HUD window sets
+   * setContentProtection(true) / NSWindowSharingNone, so it excludes ITSELF from these captures.)
+   */
+  screenEnabled: boolean
+  /**
+   * How often (ms) to grab a screen still frame while capturing — cadence-based, NOT continuous video.
+   * Default 5000 (~5s): frequent enough to follow what's on screen, rare enough that each full-display
+   * capture + JPEG encode is cheap. Only meaningful when `screenEnabled`. Override with
+   * OPENINFO_SCREEN_INTERVAL_MS or `"screenIntervalMs"`; a non-positive/garbage value falls back to the default.
+   */
+  screenIntervalMs: number
 }
 
 /**
@@ -70,6 +89,8 @@ export interface ClientConfigFile {
   mic?: boolean
   systemAudio?: boolean
   focus?: boolean
+  screen?: boolean
+  screenIntervalMs?: number
 }
 
 const DEFAULTS = {
@@ -78,10 +99,14 @@ const DEFAULTS = {
   workspace: 'default',
   modeId: 'mode-meeting',
   surfaceId: 'surf-openinfo-hud',
+  screenIntervalMs: 5000,
 } as const
 
 /** OPENINFO_MIC / OPENINFO_SYSTEM_AUDIO / OPENINFO_FOCUS are opt-OUT: only an explicit falsy token disables. */
 const isFalsyToken = (raw: string): boolean => ['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase())
+
+/** OPENINFO_SCREEN is opt-IN (privacy-heavy, default OFF): only an explicit truthy token enables. */
+const isTruthyToken = (raw: string): boolean => ['1', 'true', 'on', 'yes'].includes(raw.trim().toLowerCase())
 
 /**
  * Resolve a default-ON boolean across the three sources: an explicit env token wins (opt-out), else the
@@ -94,11 +119,31 @@ const resolveEnabled = (envRaw: string | undefined, fileVal: boolean | undefined
   return true
 }
 
+/**
+ * The opt-IN mirror of resolveEnabled for screen capture: an explicit env token wins (only a truthy one
+ * enables), else the file value if present, else the built-in default (OFF). Same env > file > default
+ * precedence — just flipped so nothing captures the screen unless explicitly asked. See screenEnabled.
+ */
+const resolveOptIn = (envRaw: string | undefined, fileVal: boolean | undefined): boolean => {
+  if (envRaw !== undefined) return isTruthyToken(envRaw)
+  if (fileVal !== undefined) return fileVal
+  return false
+}
+
+/** Resolve a positive-integer ms interval: env token (if a valid positive number) > file value > default. */
+const resolveIntervalMs = (envRaw: string | undefined, fileVal: number | undefined, def: number): number => {
+  const fromEnv = envRaw !== undefined ? Number(envRaw) : undefined
+  if (fromEnv !== undefined && Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv
+  if (fileVal !== undefined && Number.isFinite(fileVal) && fileVal > 0) return fileVal
+  return def
+}
+
 /** Trim a trailing slash so `${engineUrl}${path}` never doubles up. */
 const normalizeUrl = (url: string): string => url.replace(/\/+$/, '')
 
 const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
 const asBool = (v: unknown): boolean | undefined => (typeof v === 'boolean' ? v : undefined)
+const asNumber = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 
 /**
  * Validate a parsed JSON blob into a ClientConfigFile — pure, so the packaged-app config story is
@@ -123,6 +168,10 @@ export const parseClientConfigFile = (raw: unknown): ClientConfigFile | undefine
   if (systemAudio !== undefined) out.systemAudio = systemAudio
   const focus = asBool(r['focus'])
   if (focus !== undefined) out.focus = focus
+  const screen = asBool(r['screen'])
+  if (screen !== undefined) out.screen = screen
+  const screenIntervalMs = asNumber(r['screenIntervalMs'])
+  if (screenIntervalMs !== undefined) out.screenIntervalMs = screenIntervalMs
   return out
 }
 
@@ -148,7 +197,8 @@ export const loadClientConfigFile = (filePath: string = clientConfigPath()): Cli
  * - engineUrl: `OPENINFO_ENGINE_URL` wins; else `OPENINFO_ENGINE_HOST`/`OPENINFO_PORT` compose one (if
  *   either is set); else the file's `engineUrl`; else `http://127.0.0.1:8787`.
  * - workspace/modeId/surfaceId: the env var, else the file value, else the default.
- * - the capture toggles: an explicit env token (opt-out), else the file boolean, else ON.
+ * - the audio/focus toggles: an explicit env token (opt-out), else the file boolean, else ON.
+ * - screen: an explicit env token (opt-IN), else the file boolean, else OFF; screenIntervalMs: env/file/5000.
  */
 export const resolveShellConfig = (
   env: Record<string, string | undefined> = process.env,
@@ -171,5 +221,7 @@ export const resolveShellConfig = (
     micEnabled: resolveEnabled(env['OPENINFO_MIC'], file?.mic),
     systemAudioEnabled: resolveEnabled(env['OPENINFO_SYSTEM_AUDIO'], file?.systemAudio),
     focusEnabled: resolveEnabled(env['OPENINFO_FOCUS'], file?.focus),
+    screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen),
+    screenIntervalMs: resolveIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),
   }
 }

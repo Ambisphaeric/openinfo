@@ -1,7 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk } from '@openinfo/contracts'
-import { DEFAULT_AUDIO_CONTENT_TYPE, normalizeContentType, segmentToChunk, type CaptureContext } from './chunk.js'
+import {
+  DEFAULT_AUDIO_CONTENT_TYPE,
+  DEFAULT_SCREEN_CONTENT_TYPE,
+  SCREEN_META_CONTENT_TYPE,
+  normalizeContentType,
+  normalizeScreenContentType,
+  segmentToChunk,
+  frameMetaToChunk,
+  type CaptureContext,
+} from './chunk.js'
 import type { RawSegment } from './protocol.js'
 
 // The full CaptureChunk field set (payloads.ts) — asserted structurally without pulling typebox into
@@ -68,4 +77,64 @@ test('mic and system-audio ids never collide even at the same sequence (distinct
   assert.equal(mic.id, 'mic-sess-1-000001')
   assert.equal(sys.id, 'sys-sess-1-000001')
   assert.notEqual(mic.id, sys.id) // the two source runs share a session id but never a chunk id
+})
+
+// --- screen source: a still-frame IMAGE chunk + its companion ScreenFrameMeta chunk -------------------
+
+const screenSeg = (over: Partial<RawSegment> = {}): RawSegment => ({
+  source: 'screen',
+  bytes: bytesOf(0xff, 0xd8, 0xff, 0xe0), // JPEG SOI-ish marker bytes
+  mimeType: 'image/jpeg',
+  capturedAt: '2026-07-07T10:00:00.000Z',
+  screenMeta: { displayId: 'display-1', width: 2560, height: 1440, scale: 2 },
+  ...over,
+})
+
+test('a screen frame becomes a contract-shaped image CaptureChunk (scr prefix, image/jpeg, base64)', () => {
+  const chunk: CaptureChunk = segmentToChunk(screenSeg(), ctx, 1)
+  assert.deepEqual(Object.keys(chunk).sort(), [...CHUNK_KEYS].sort())
+  assert.equal(chunk.source, 'screen')
+  assert.equal(chunk.id, 'scr-sess-1-000001') // the scr- prefix, never collides with mic-/sys-
+  assert.equal(chunk.contentType, 'image/jpeg')
+  assert.equal(chunk.encoding, 'base64')
+  assert.deepEqual([...Buffer.from(chunk.data, 'base64')], [0xff, 0xd8, 0xff, 0xe0]) // pixels round-trip
+})
+
+test('normalizeScreenContentType strips params and falls back to image/jpeg for junk/non-image', () => {
+  assert.equal(normalizeScreenContentType('image/png'), 'image/png')
+  assert.equal(normalizeScreenContentType('IMAGE/WEBP; quality=0.7'), 'image/webp')
+  assert.equal(normalizeScreenContentType('image/jpeg'), DEFAULT_SCREEN_CONTENT_TYPE)
+  assert.equal(normalizeScreenContentType(''), DEFAULT_SCREEN_CONTENT_TYPE)
+  assert.equal(normalizeScreenContentType('audio/webm'), DEFAULT_SCREEN_CONTENT_TYPE) // wrong family → default
+  assert.equal(normalizeScreenContentType('image/'), DEFAULT_SCREEN_CONTENT_TYPE) // bare family → default
+  // The image and audio normalizers are independent — a screen frame never falls back to an audio type.
+  assert.equal(segmentToChunk(screenSeg({ mimeType: 'image/png' }), ctx, 1).contentType, 'image/png')
+})
+
+test('frameMetaToChunk emits the companion ScreenFrameMeta as a utf8/json source:screen chunk', () => {
+  const meta: CaptureChunk = frameMetaToChunk(screenSeg(), ctx, 2)
+  assert.deepEqual(Object.keys(meta).sort(), [...CHUNK_KEYS].sort())
+  assert.equal(meta.source, 'screen')
+  assert.equal(meta.encoding, 'utf8')
+  assert.equal(meta.contentType, SCREEN_META_CONTENT_TYPE)
+  assert.equal(meta.contentType, 'application/json')
+  assert.equal(meta.id, 'scr-sess-1-000002') // NEXT sequence after the image → adjacent, unique id
+  assert.equal(meta.capturedAt, '2026-07-07T10:00:00.000Z') // matches the image frame's grab time
+  // data is the decoded ScreenFrameMeta JSON — the FocusSignal-style companion (records/screen.ts).
+  assert.deepEqual(JSON.parse(meta.data), { displayId: 'display-1', width: 2560, height: 1440, scale: 2 })
+})
+
+test('image + companion meta correlate by adjacent sequence and both carry the scr- prefix', () => {
+  const image = segmentToChunk(screenSeg(), ctx, 1)
+  const meta = frameMetaToChunk(screenSeg(), ctx, 2)
+  assert.equal(image.sequence + 1, meta.sequence) // adjacency: meta is the frame's next chunk
+  assert.ok(image.id.startsWith('scr-') && meta.id.startsWith('scr-'))
+  assert.notEqual(image.id, meta.id)
+  // Slice-4 view: an image/* chunk followed by an application/json chunk at the next sequence = one frame.
+  assert.equal(image.contentType, 'image/jpeg')
+  assert.equal(meta.contentType, 'application/json')
+})
+
+test('frameMetaToChunk without screenMeta is a programmer error (never reached on the audio path)', () => {
+  assert.throws(() => frameMetaToChunk(segment(), ctx, 2), /screenMeta/) // audio segment carries none
 })

@@ -54,6 +54,28 @@ test('focus watching is opt-OUT: default ON, disabled only by an explicit falsy 
   assert.equal(resolveShellConfig({ OPENINFO_FOCUS: '1' }).focusEnabled, true) // any other value leaves it on
 })
 
+test('screen capture is opt-IN: default OFF, enabled only by an explicit truthy OPENINFO_SCREEN token', () => {
+  assert.equal(resolveShellConfig({}).screenEnabled, false) // privacy-heavy → OFF unless explicitly asked
+  for (const on of ['1', 'true', 'on', 'yes', 'YES']) {
+    assert.equal(resolveShellConfig({ OPENINFO_SCREEN: on }).screenEnabled, true)
+  }
+  for (const off of ['0', 'false', 'off', 'no', '', 'garbage']) {
+    assert.equal(resolveShellConfig({ OPENINFO_SCREEN: off }).screenEnabled, false) // anything non-truthy stays OFF
+  }
+  // The asymmetry: audio/focus default ON, screen defaults OFF — in the very same empty env.
+  const empty = resolveShellConfig({})
+  assert.equal(empty.micEnabled, true)
+  assert.equal(empty.screenEnabled, false)
+})
+
+test('screen cadence defaults to 5000ms and is overridable; junk/non-positive falls back to the default', () => {
+  assert.equal(resolveShellConfig({}).screenIntervalMs, 5000)
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '2000' }).screenIntervalMs, 2000)
+  for (const bad of ['0', '-5', 'nope', '']) {
+    assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: bad }).screenIntervalMs, 5000)
+  }
+})
+
 // --- packaged-app config file (~/.openinfo/client.json) ---
 
 test('a client.json file supplies defaults when the env is empty (the packaged-app config story)', () => {
@@ -94,6 +116,14 @@ test('file capture toggles are honoured; an explicit env token still overrides t
   assert.equal(resolveShellConfig({}, {}).micEnabled, true) // absent in file ⇒ default ON
 })
 
+test('file can opt IN to screen and set the cadence; env still wins (opt-in precedence env > file > OFF)', () => {
+  assert.equal(resolveShellConfig({}, { screen: true }).screenEnabled, true) // file can enable the opt-in
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN: '0' }, { screen: true }).screenEnabled, false) // env disables
+  assert.equal(resolveShellConfig({}, {}).screenEnabled, false) // absent everywhere ⇒ default OFF
+  assert.equal(resolveShellConfig({}, { screenIntervalMs: 3000 }).screenIntervalMs, 3000) // file cadence honoured
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '1500' }, { screenIntervalMs: 3000 }).screenIntervalMs, 1500) // env wins
+})
+
 test('parseClientConfigFile keeps valid fields and drops junk/wrong types (never crashes the shell)', () => {
   assert.deepEqual(parseClientConfigFile({ engineUrl: 'http://x', mic: false, bogus: 1 }), { engineUrl: 'http://x', mic: false })
   assert.deepEqual(parseClientConfigFile({ engineUrl: 42, workspace: 'ok', mic: 'yes' }), { workspace: 'ok' }) // wrong types dropped
@@ -101,6 +131,11 @@ test('parseClientConfigFile keeps valid fields and drops junk/wrong types (never
   assert.equal(parseClientConfigFile([1, 2]), undefined) // arrays are not config objects
   assert.equal(parseClientConfigFile('nope'), undefined)
   assert.deepEqual(parseClientConfigFile({}), {}) // empty object is a valid (empty) override
+})
+
+test('parseClientConfigFile parses screen (bool) + screenIntervalMs (number) and drops wrong types', () => {
+  assert.deepEqual(parseClientConfigFile({ screen: true, screenIntervalMs: 3000 }), { screen: true, screenIntervalMs: 3000 })
+  assert.deepEqual(parseClientConfigFile({ screen: 'yes', screenIntervalMs: '3000' }), {}) // wrong types dropped
 })
 
 test('loadClientConfigFile round-trips a real file and swallows a missing/malformed one', () => {
