@@ -1,0 +1,21 @@
+{
+  "$id": "QueueKindDepth",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "pendingChunks",
+    "pendingBytes"
+  ],
+  "properties": {
+    "pendingChunks": {
+      "minimum": 0,
+      "description": "spooled chunks of this kind not yet drained",
+      "type": "integer"
+    },
+    "pendingBytes": {
+      "minimum": 0,
+      "description": "their on-disk JSONL bytes",
+      "type": "integer"
+    }
+  }
+}

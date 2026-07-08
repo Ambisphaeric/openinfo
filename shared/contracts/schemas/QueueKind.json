@@ -1,0 +1,18 @@
+{
+  "$id": "QueueKind",
+  "description": "the work kind of a spooled chunk (audio | screen | llm-work); focus chunks are excluded — ephemeral routing context",
+  "anyOf": [
+    {
+      "const": "audio",
+      "type": "string"
+    },
+    {
+      "const": "screen",
+      "type": "string"
+    },
+    {
+      "const": "llm-work",
+      "type": "string"
+    }
+  ]
+}

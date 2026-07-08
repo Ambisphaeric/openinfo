@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import type { Distillate, Draft, Dials, Mode, Moment, PromptTemplate, Session, VoiceBinding } from '@openinfo/contracts'
+import type { Distillate, Draft, Dials, Mode, Moment, PromptTemplate, Session, TodoItem, VoiceBinding } from '@openinfo/contracts'
 import { DRAFT_SCHEMA_VERSION } from '@openinfo/contracts'
 import { FabricDocuments, invokeLlm, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice, type VoiceScope } from '../voice/index.js'
 import type { LlmInvoke } from '../distill/index.js'
 import { ActDocuments } from './documents.js'
+import { TodoDocuments, renderTodo } from './todo.js'
 
 /** Glyphs mirror the HUD moment stream (● commitment ◆ question ▲ decision ✱ artifact). */
 const MOMENT_GLYPH: Record<string, string> = {
@@ -28,6 +29,8 @@ export interface ComposeInput {
   /** the session's accumulated summaries — the draft is composed from these, not raw transcript */
   distillates: readonly Distillate[]
   moments: readonly Moment[]
+  /** the session's accumulated to-do items — the UN-CONSTRAIN side: rendered into `{{todo}}` (empty omitted) */
+  todo?: readonly TodoItem[]
   /** resolved voice vector: dials interpolate into the prompt; scope/registerId stamp the Draft */
   dials: Dials
   scope: VoiceScope
@@ -75,6 +78,9 @@ export const composeFollowUpDraft = async (input: ComposeInput, deps: ComposeDep
     ...compileVoiceVars(input.dials),
     summaries: input.distillates.map((d) => `- ${d.text}`).join('\n'),
     moments: renderMoments(input.moments),
+    // {{todo}} — prompt engine v0's one dynamic-document variable: the accumulated to-do array rendered
+    // as prose (empty → '' so the template section is honestly omitted). See PHASE4-NOTES.
+    todo: renderTodo(input.todo ?? []),
   })
 
   let attempts = 0
@@ -124,6 +130,8 @@ export interface ActorDeps {
   voice: VoiceDocuments
   fabric: FabricDocuments
   docs: ActDocuments
+  /** the session to-do documents — the draft reads the accumulated items to interpolate `{{todo}}`. */
+  todos: TodoDocuments
   /** resolve the session's mode document (DistillDocuments owns modes); injectable for tests. */
   mode: (id: string) => Mode
   /** publish draft.created so it reaches WS clients; optional (tests may omit). */
@@ -150,6 +158,7 @@ export class Actor {
   private readonly voice: VoiceDocuments
   private readonly fabric: FabricDocuments
   private readonly docs: ActDocuments
+  private readonly todos: TodoDocuments
   private readonly mode: (id: string) => Mode
   private readonly publish: ((d: Draft) => void | Promise<void>) | undefined
   private readonly invoke: LlmInvoke
@@ -162,6 +171,7 @@ export class Actor {
     this.voice = deps.voice
     this.fabric = deps.fabric
     this.docs = deps.docs
+    this.todos = deps.todos
     this.mode = deps.mode
     this.publish = deps.publish
     this.now = deps.now ?? (() => new Date())
@@ -205,6 +215,9 @@ export class Actor {
 
     const distillates = this.store.listDistillates(session.workspaceId, session.id)
     const moments = this.store.listMoments(session.workspaceId, session.id)
+    // The accumulated to-do items (the constrain side's output) feed `{{todo}}` — read FRESH so a
+    // user's PUT-edited list is what THIS draft interpolates (the editable-document loop).
+    const todo = this.todos.get(session.id)?.items ?? []
     const { template, version } = this.docs.followUpTemplate()
 
     const { draft } = await composeFollowUpDraft(
@@ -213,6 +226,7 @@ export class Actor {
         workspaceId: session.workspaceId,
         distillates,
         moments,
+        todo,
         dials: resolved.dials,
         scope: resolved.scope,
         ...(resolved.registerId !== undefined ? { registerId: resolved.registerId } : {}),

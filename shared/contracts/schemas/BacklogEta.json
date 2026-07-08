@@ -1,0 +1,43 @@
+{
+  "$id": "BacklogEta",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "basis"
+  ],
+  "properties": {
+    "basis": {
+      "description": "observed = projected from recent drain durations; none = insufficient data, no fabricated ETA",
+      "anyOf": [
+        {
+          "const": "observed",
+          "type": "string"
+        },
+        {
+          "const": "none",
+          "type": "string"
+        }
+      ]
+    },
+    "etaMs": {
+      "minimum": 0,
+      "description": "projected ms until the backlog clears at the current drain rate (0 = already caught up)",
+      "type": "number"
+    },
+    "caughtUpBy": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "drainRateChunksPerSec": {
+      "minimum": 0,
+      "description": "the observed drain rate the projection used",
+      "type": "number"
+    },
+    "measuredTokPerSec": {
+      "minimum": 0,
+      "description": "the active llm endpoint's MEASURED tok/s (envelope §8) — context, not the ETA basis in v0",
+      "type": "number"
+    }
+  }
+}

@@ -97,6 +97,155 @@
       "format": "date-time",
       "description": "ISO-8601 timestamp",
       "type": "string"
+    },
+    "byKind": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "audio",
+        "screen",
+        "llm-work"
+      ],
+      "properties": {
+        "audio": {
+          "$id": "QueueKindDepth",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "pendingChunks",
+            "pendingBytes"
+          ],
+          "properties": {
+            "pendingChunks": {
+              "minimum": 0,
+              "description": "spooled chunks of this kind not yet drained",
+              "type": "integer"
+            },
+            "pendingBytes": {
+              "minimum": 0,
+              "description": "their on-disk JSONL bytes",
+              "type": "integer"
+            }
+          }
+        },
+        "screen": {
+          "$id": "QueueKindDepth",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "pendingChunks",
+            "pendingBytes"
+          ],
+          "properties": {
+            "pendingChunks": {
+              "minimum": 0,
+              "description": "spooled chunks of this kind not yet drained",
+              "type": "integer"
+            },
+            "pendingBytes": {
+              "minimum": 0,
+              "description": "their on-disk JSONL bytes",
+              "type": "integer"
+            }
+          }
+        },
+        "llm-work": {
+          "$id": "QueueKindDepth",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "pendingChunks",
+            "pendingBytes"
+          ],
+          "properties": {
+            "pendingChunks": {
+              "minimum": 0,
+              "description": "spooled chunks of this kind not yet drained",
+              "type": "integer"
+            },
+            "pendingBytes": {
+              "minimum": 0,
+              "description": "their on-disk JSONL bytes",
+              "type": "integer"
+            }
+          }
+        }
+      }
+    },
+    "eta": {
+      "$id": "BacklogEta",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "basis"
+      ],
+      "properties": {
+        "basis": {
+          "description": "observed = projected from recent drain durations; none = insufficient data, no fabricated ETA",
+          "anyOf": [
+            {
+              "const": "observed",
+              "type": "string"
+            },
+            {
+              "const": "none",
+              "type": "string"
+            }
+          ]
+        },
+        "etaMs": {
+          "minimum": 0,
+          "description": "projected ms until the backlog clears at the current drain rate (0 = already caught up)",
+          "type": "number"
+        },
+        "caughtUpBy": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "drainRateChunksPerSec": {
+          "minimum": 0,
+          "description": "the observed drain rate the projection used",
+          "type": "number"
+        },
+        "measuredTokPerSec": {
+          "minimum": 0,
+          "description": "the active llm endpoint's MEASURED tok/s (envelope §8) — context, not the ETA basis in v0",
+          "type": "number"
+        }
+      }
+    },
+    "overflow": {
+      "$id": "OverflowState",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "policy",
+        "enforced"
+      ],
+      "properties": {
+        "policy": {
+          "description": "the declared overflow policy (from the active mode) when the mode exceeds measured hardware",
+          "anyOf": [
+            {
+              "const": "queue-for-idle",
+              "type": "string"
+            },
+            {
+              "const": "degrade-cadence",
+              "type": "string"
+            },
+            {
+              "const": "drop",
+              "type": "string"
+            }
+          ]
+        },
+        "enforced": {
+          "description": "true only for queue-for-idle in v0 — degrade-cadence/drop are declared-but-inert (see PHASE4-NOTES)",
+          "type": "boolean"
+        }
+      }
     }
   }
 }

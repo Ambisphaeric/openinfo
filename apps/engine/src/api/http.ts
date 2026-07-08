@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
-import { Actor, ActDocuments } from '../act/index.js'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList } from '@openinfo/contracts'
+import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, type SecretStore } from '../fabric/index.js'
@@ -12,6 +12,7 @@ import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from 
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
+import { WorkflowDocuments, WorkflowExecutor } from '../workflow/index.js'
 import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, type SetupData } from '../surfaces/index.js'
 import { handleScreen } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
@@ -52,6 +53,7 @@ interface HandlerContext {
   voice: VoiceDocuments
   surfaces: SurfaceDocuments
   distill: DistillDocuments
+  todos: TodoDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
@@ -73,10 +75,12 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const voice = new VoiceDocuments(store)
   const distillDocs = new DistillDocuments(store)
   const actDocs = new ActDocuments(store)
+  const todoDocs = new TodoDocuments(store)
   const hintsDocs = new HintsDocuments(store)
   const surfaces = new SurfaceDocuments(store)
   const discovery = new DiscoveryDocuments(store)
   const starterModels = new StarterModelsDocuments(store)
+  const workflow = new WorkflowDocuments(store)
   // Tier zero (ARCHITECTURE §8, slice c): the engine downloads + spawns managed local runtimes.
   // The model store maps a `local` endpoint's model ref to its on-disk path; the runtime manager
   // spawns llama.cpp/whisper.cpp on demand and is threaded into invoke/health so local endpoints
@@ -99,6 +103,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   surfaces.ensureDefaults()
   discovery.ensureDefaults()
   starterModels.ensureDefaults()
+  workflow.ensureDefaults()
 
   const distiller = new Distiller({
     store,
@@ -129,23 +134,35 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     publish: (event, session) => bus.publish(event, session),
     log,
   })
+  // The pre-distill transcription stage (distill.transcribe): rewrites base64 audio/* chunks (mic →
+  // "me", system-audio → "them") to utf8 text via the stt slot BEFORE the distiller's utf8 filter;
+  // non-audio chunks pass through. A transcription transport failure propagates → the drain re-queues
+  // the file (retry-at-idle), exactly like distill/moments. Shared verbatim by the legacy drain path
+  // and the workflow executor's transcribe seam, so the two are byte-for-byte identical.
+  const runTranscribe = (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> =>
+    transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }), log })
+
+  // The executor runs the seeded workflow-default document behind workflow.enabled (default OFF). It is
+  // assigned just below (after the queue exists, so its drainNow seam can close over it) and referenced
+  // here lazily — the drain callback only fires async, long after assignment. See PHASE4-NOTES.
+  let executor: WorkflowExecutor
   const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
-    // Focus chunks feed the detector, never the distiller (distill hygiene, PHASE3-NOTES). Read the
-    // flag per-drain like the distill flags, so flipping it takes effect without a restart.
+    // Focus chunks feed the detector, never the distiller (distill hygiene, PHASE3-NOTES). This is
+    // routing CONTEXT, not a workflow step, so it stays OUTSIDE the executor and runs on BOTH paths.
+    // Read the flag per-drain like the distill flags, so flipping it takes effect without a restart.
     if (isFlagEnabled(store, 'route.detect')) {
       const signals = extractFocusSignals(chunks, log)
       if (signals.length > 0) await attributor.observe(signals)
     }
+    // workflow.enabled ON → the executor runs the workflow document (behavior-identical to the legacy
+    // path below with the seeded default). Read per-drain so the flag is hot-flippable like the others.
+    if (isFlagEnabled(store, 'workflow.enabled')) return executor.runDrain(chunks)
+    // ---- legacy direct-wiring path (workflow.enabled OFF): untouched, byte-for-byte behavior ----
     if (!isFlagEnabled(store, 'distill.enabled')) return
-    // Transcription is a pre-distill drain stage (distill.transcribe, OFF by default). It rewrites
-    // base64 audio/* chunks (mic → "me", system-audio → "them") to utf8 text via the stt slot BEFORE
-    // the distiller's utf8 filter; non-audio chunks pass through. It is gated INSIDE distill.enabled
-    // on purpose — there is no persistence path for transcribed-but-undistilled text, so running stt
-    // when nothing will distill it is pure waste (see PHASE2-NOTES). A transcription transport failure
-    // propagates → the drain re-queues the file (retry-at-idle), exactly like distill/moments.
-    const ready = isFlagEnabled(store, 'distill.transcribe')
-      ? await transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }), log })
-      : chunks
+    // Transcription is a pre-distill drain stage (distill.transcribe, OFF by default). It is gated
+    // INSIDE distill.enabled on purpose — there is no persistence path for transcribed-but-undistilled
+    // text, so running stt when nothing will distill it is pure waste (see PHASE2-NOTES).
+    const ready = isFlagEnabled(store, 'distill.transcribe') ? await runTranscribe(chunks) : chunks
     await distiller.distillChunks(ready, {
       extractMoments: isFlagEnabled(store, 'distill.moments'),
       extractEntities: isFlagEnabled(store, 'distill.index'),
@@ -153,7 +170,20 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     // When a drain re-queues (a transcribe/distill invoke failed), classify WHY and record it on the queue
     // so GET /queue, Status, and the Try-it card surface the real reason instead of re-queuing silently
     // forever (the founder's wall). A model-load failure's hint is enriched with the loaded-model suggestion.
-  }, toQueueFailure)
+  }, toQueueFailure,
+    // Typed-queue envelope seams (P4A slice 3), READ-ONLY, injected so the queue keeps zero fabric/store
+    // imports (the describeFailure precedent). measuredTokPerSec: the primary (fabric-order first) llm
+    // endpoint's benchmarked tok/s — the envelope's measured side, surfaced as ETA context (never
+    // converted to an ETA in v0). overflow: the active mode's declared overflow policy mapped to the
+    // status tri-state; only queue-for-idle is enforced in v0 (degrade-cadence is client-side capture,
+    // drop would violate never-lose-capture — both declared-but-inert, see PHASE4-NOTES).
+    () => fabric.load().slots.llm[0]?.measured?.tokPerSec,
+    () => {
+      const raw = distillDocs.mode().overflow
+      const policy = raw === 'degrade' ? 'degrade-cadence' : raw === 'drop' ? 'drop' : 'queue-for-idle'
+      return { policy, enforced: policy === 'queue-for-idle' }
+    },
+  )
 
   // Act v0 (the first Act node): the follow-up draft. It rides session END, not the chunk drain —
   // see PHASE2-NOTES for the direct-trigger (vs DAG) and ≤60s decisions. On session.ended, when
@@ -165,15 +195,50 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     voice,
     fabric,
     docs: actDocs,
+    todos: todoDocs,
     resolveKey,
     runtimeManager: runtime,
     mode: (id) => distillDocs.mode(id),
     publish: (draft) => bus.publish('draft.created', draft),
     log,
   })
+  // task-extract (P4A slice 4): the CONSTRAIN side of the dynamic-to-do loop. Rides the DRAIN pass so a
+  // session's to-do accumulates mid-meeting; gated by act.tasks (default OFF), so the default pipeline is
+  // unchanged. A sibling of the Actor over the same store/voice/fabric + the shared prompt-template store.
+  const taskExtractor = new TaskExtractor({
+    store,
+    voice,
+    fabric,
+    templates: actDocs,
+    todos: todoDocs,
+    resolveKey,
+    runtimeManager: runtime,
+    mode: (id) => distillDocs.mode(id),
+    log,
+  })
+  // The executor composes the SAME seams the legacy paths use (distill/transcribe/drainNow/acts), so
+  // workflow.enabled ON with the seeded workflow-default is behavior-identical: same flags honored, same
+  // retry-at-idle propagation (transcribe/distill throws bubble out so the drain re-queues), same
+  // drain-first flush before the act. drainActs adds the task-extract drain act (best-effort, gated
+  // act.tasks). See PHASE4-NOTES for the byte-for-byte proof + the drain-vs-session-end decision.
+  executor = new WorkflowExecutor({
+    store,
+    docs: workflow,
+    distill: (chunks, opts) => distiller.distillChunks(chunks, opts),
+    transcribe: runTranscribe,
+    drainNow: () => queue.drainNow(log),
+    acts: { 'follow-up-draft': async (session) => void (await actor.runFollowUpDraft(session)) },
+    drainActs: { 'task-extract': (chunks, step) => taskExtractor.runOnDrain(chunks, step) },
+    log,
+  })
+
   bus.subscribe('session.ended', (session) => {
-    if (!isFlagEnabled(store, 'act.enabled')) return
     void (async () => {
+      // workflow.enabled ON → the executor's session-end seam (drain-first flush, then the enabled
+      // session-end acts). OFF → the legacy act trigger, byte-for-byte: act.enabled gate, then drainNow
+      // → runFollowUpDraft. The flag is read per-event so it is hot-flippable like the drain path.
+      if (isFlagEnabled(store, 'workflow.enabled')) return executor.runSessionEnd(session)
+      if (!isFlagEnabled(store, 'act.enabled')) return
       await queue.drainNow(log)
       await actor.runFollowUpDraft(session)
     })().catch((error: unknown) =>
@@ -196,7 +261,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('surface.updated', (surface) => ws.broadcast('surface.updated', surface))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, queue, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, todos: todoDocs, queue, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -273,6 +338,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/drafts') return send(res, 200, readDrafts(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/todos') return send(res, 200, ctx.todos.list())
+  const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
+  if (req.method === 'GET' && todo?.[1]) return getTodo(res, ctx, decodeURIComponent(todo[1]))
+  if (req.method === 'PUT' && todo?.[1]) return putTodo(req, res, ctx, decodeURIComponent(todo[1]))
   if (req.method === 'GET' && url.pathname === '/layouts/surfaces') return send(res, 200, ctx.surfaces.list())
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
@@ -756,6 +825,33 @@ function readDrafts(store: WorkspaceRegistry, url: URL): Draft[] {
   if (!store.all().some((ws) => ws.id === workspaceId)) return []
   const sessionId = url.searchParams.get('session')
   return sessionId ? store.listDrafts(workspaceId, sessionId) : store.listDrafts(workspaceId)
+}
+
+/**
+ * Serve a session's to-do document by session id — the read seam the HUD renders (a resource route,
+ * no flag, mirroring GET /drafts and GET /layouts/surfaces/:id; the DATA is gated upstream by act.tasks
+ * which produces it). Unknown session ⇒ 404 (no list exists until extraction or a user edit creates it).
+ */
+function getTodo(res: ServerResponse, ctx: HandlerContext, sessionId: string): void {
+  const list = ctx.todos.get(sessionId)
+  if (!list) return send(res, 404, { error: `no to-do list for session: ${sessionId}` })
+  send(res, 200, list)
+}
+
+/**
+ * Persist an edited to-do document (everything user-configurable is a versioned, cloneable document —
+ * this is the editable half of the constrain/unconstrain loop). The body must validate as a TodoList
+ * and its sessionId must match the route; the store stamps the next version and preserves history, so
+ * the NEXT follow-up draft reads the user's edited items via {{todo}}. No flag — a document write is a
+ * resource route, not a gated behavior (rule 3, consistent with PUT /layouts/surfaces/:id).
+ */
+async function putTodo(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, sessionId: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('TodoList', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid TodoList', details: errors })
+  const incoming = body as TodoList
+  if (incoming.sessionId !== sessionId) return send(res, 400, { error: 'to-do list sessionId does not match route' })
+  send(res, 200, ctx.todos.save(incoming))
 }
 
 /**

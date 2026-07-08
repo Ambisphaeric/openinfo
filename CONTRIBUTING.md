@@ -16,7 +16,7 @@ tiered by surface, and the lower tiers are mechanical: schema-validated document
 1. One concern per file; files under ~200 lines; no barrel re-export magic — explicit import paths.
 2. `tsconfig` strict everywhere; no `any`; no `@ts-ignore` (a recipe that needs one is a broken recipe).
 3. Flags gate **engine processing behaviors**, default OFF — an optional code path that runs over your data
-   (`distill.enabled`, `distill.moments`, `distill.index`, `act.enabled`, `capture.sim`, `fabric.http`).
+   (`distill.enabled`, `distill.moments`, `distill.index`, `act.enabled`, `workflow.enabled`, `capture.sim`, `fabric.http`).
    What is deliberately NOT flagged: resource/document CRUD and read surfaces — sessions, surfaces/layouts,
    profiles/secrets, `/query`, the `/setup` page. A lifecycle record, a versioned document, or a read route
    is not a behavior a flag would gate, and its data is already gated upstream by the processing flag that

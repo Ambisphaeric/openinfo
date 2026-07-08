@@ -1,0 +1,23 @@
+{
+  "pendingFiles": 3,
+  "pendingBytes": 12288,
+  "drainedFiles": 41,
+  "updatedAt": "2026-07-08T18:34:00Z",
+  "lastSuccessAt": "2026-07-08T18:33:20Z",
+  "byKind": {
+    "audio": { "pendingChunks": 8, "pendingBytes": 9216 },
+    "screen": { "pendingChunks": 2, "pendingBytes": 2048 },
+    "llm-work": { "pendingChunks": 4, "pendingBytes": 1024 }
+  },
+  "eta": {
+    "basis": "observed",
+    "etaMs": 360000,
+    "caughtUpBy": "2026-07-08T18:40:00Z",
+    "drainRateChunksPerSec": 0.0389,
+    "measuredTokPerSec": 41
+  },
+  "overflow": {
+    "policy": "queue-for-idle",
+    "enforced": true
+  }
+}

@@ -1,8 +1,9 @@
 { "id": "workflow-default", "name": "default pipeline", "version": 1,
-  "description": "Behavior-identical mirror of today's hardcoded pipeline (apps/engine/src/api/http.ts): on the queue drain, transcribe? -> distill -> the moments/index extras; the follow-up-draft act rides session.ended, not the drain. Each step's when.flag is the flag that gates that behavior today; P4A slice 2 seeds THIS document as the default and coalesces the drain distill-family steps into one distiller call.",
+  "description": "Mirror of today's pipeline (apps/engine/src/api/http.ts): on the queue drain, transcribe? -> distill -> the moments/index extras -> task-extract (P4A slice 4, gated act.tasks, default OFF); the follow-up-draft act rides session.ended, not the drain. Each step's when.flag gates that behavior; the executor coalesces the drain distill-family steps into one distiller call and runs drain acts (task-extract) best-effort after it.",
   "steps": [
     { "id": "transcribe", "kind": "transcribe", "slot": "stt", "trigger": "drain", "when": { "flag": "distill.transcribe" }, "params": {} },
     { "id": "distill", "kind": "distill", "slot": "llm", "templateId": "tpl-distill-default", "trigger": "drain", "when": { "flag": "distill.enabled" }, "params": {} },
     { "id": "moments", "kind": "moments", "trigger": "drain", "when": { "flag": "distill.moments" }, "params": {} },
     { "id": "index", "kind": "index", "trigger": "drain", "when": { "flag": "distill.index" }, "params": {} },
+    { "id": "task-extract", "kind": "act", "slot": "llm", "templateId": "tpl-taskextract-default", "trigger": "drain", "when": { "flag": "act.tasks" }, "params": {} },
     { "id": "follow-up-draft", "kind": "act", "slot": "llm", "templateId": "tpl-followup-default", "trigger": "session-end", "when": { "flag": "act.enabled" }, "params": { "latencySecPostSession": 60 } } ] }

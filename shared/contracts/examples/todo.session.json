@@ -1,0 +1,10 @@
+{ "id": "ses-demo-0001", "name": "to-do — meeting with Dana", "version": 2,
+  "description": "A session's accumulated follow-ups. task-extract CONSTRAINS the meeting's distillates/moments into these items across drains; a draft UN-CONSTRAINS them via {{todo}}. Editable: a user PUTs an edited items array (e.g. the hand-added item below) and the next draft reflects it.",
+  "sessionId": "ses-demo-0001", "workspaceId": "default",
+  "items": [
+    { "id": "todo-1", "text": "Send Dana the updated deck before Thursday", "createdAt": "2026-07-07T14:05:00Z",
+      "provenance": { "sessionId": "ses-demo-0001", "distillateId": "dist-1", "momentId": "mom-1" } },
+    { "id": "todo-2", "text": "Confirm the ship date with the team", "done": false, "createdAt": "2026-07-07T14:11:00Z",
+      "provenance": { "sessionId": "ses-demo-0001", "distillateId": "dist-2" } },
+    { "id": "todo-3", "text": "USER-ADDED: book the follow-up room", "done": true, "createdAt": "2026-07-07T14:20:00Z",
+      "provenance": { "sessionId": "ses-demo-0001" } } ] }
