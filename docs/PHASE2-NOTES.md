@@ -1233,3 +1233,133 @@ Full round-trip driven over the API exactly as the page's JS does, plus the page
   palette (P6); an embedded-webview settings UI in the client; cloud endpoint kinds; macOS Keychain;
   model catalogs/downloading; live tok/s measurement on the Test button (it pings; tok/s is echoed
   from the last tools/bench measurement); any change to invoke/profile/secret semantics (slice (a)).
+
+## Slice: Onboarding from first principles — discovery + the Get-Started lens
+
+The founder configuring his OWN product hit the wall: template fixes, port lookups, model-capability
+trivia, two TCC permissions. Onboarding must be simple for a new user in a standard flow. Design note
+landed FIRST (ARCHITECTURE §8, per CODE_MAP rule 5) covering all six principles + scoping + the macOS
+Local-Network TCC platform note. This slice = **discovery + the Get-Started lens**; the say-something
+verification loop (b, client) and engine-managed local runtimes / tier zero (c) are design-noted, not
+built. The substrate is unchanged — profiles/keyRefs/slots stay exactly as the profiles slice (a) defined
+them; this is a **lens** over the same documents, plus one new read-only engine capability (discovery).
+
+### Two seeded, versioned DOCUMENTS carry the conventions (not code)
+- **Probe list** (`ProbeList`, kind `discovery-probes`): the well-known local servers — `lm-studio`
+  :1234, `ollama` :11434, `kokoro` :8880, `whisper-cpp` :8080, `speaches` :8000. Ports are conventions,
+  not truth; `GET /v1/models` decides what is loaded, which is ALSO the false-positive guard (a random
+  dev server on :8000 that is not OpenAI-shaped simply fails to return a model list → reported
+  not-reachable). Whisper ports picked defensibly: whisper.cpp `server` (:8080) and faster-whisper-server
+  / speaches (:8000) are the two common OpenAI-compatible transcription servers.
+- **Capability map** (`CapabilityMap`, kind `capability-map`): ordered name-pattern → slot rules, all
+  lowercased substring matches — `embed`→embed, `ocr`→ocr, `-vl`/`vlm`/`vision`→[vlm,llm],
+  `whisper`/`parakeet`→stt, `kokoro`/`tts`→tts, default→[llm]. **A model may map to multiple slots**: a
+  model's slots are the UNION of every matching rule's slots, so a vision-language model is BOTH `vlm`
+  and `llm` (documented decision). The `default` (llm) applies only when NO rule matched — so non-llm
+  slot membership is always explicit, which the suggestion heuristic relies on. `glm-ocr` → `ocr` only
+  (per the directive; it is an OCR model, not a general chat model).
+- Both are DOCUMENTS (everything user-configurable is a document): seeded when absent by
+  `DiscoveryDocuments` (mirrors FabricProfiles/DistillDocuments), versioned in `_meta.db`, never
+  clobbered. Editable via the store (a user on a nonstandard port edits the probe list); **no dedicated
+  CRUD route this slice** — the same precedent as the seeded distill templates (seeded, no route). They
+  are typed contracts anyway (`ProbeList`/`CapabilityMap` with $id + examples) because the DiscoverResult
+  they feed crosses the seam and "nothing crosses the seam untyped".
+
+### `fabric/discover.ts` — probe in parallel, classify, synthesize (pure core + a thin network shell)
+`classifyModel` and `synthesizeSuggestion` are PURE (unit-tested without a network); `discoverFabric`
+probes `{url}/v1/models` for every probe in PARALLEL (`Promise.all`), ~1s timeout each so total wall
+time ≈ one probe, and **never throws** — a failure becomes `{reachable:false, error}` (connection
+refused, `timed out`, `HTTP 4xx`, `invalid JSON`, or `unexpected /v1/models shape (no data array)` — the
+real Ollama-with-no-models shape). `reachable` means "returned a usable model list", not merely "TCP
+open" (a port that answers but is not OpenAI-shaped is not usable for onboarding). Result: per-server
+`{name,url,reachable,models:[{id,slots}],error?}` + a synthesized `suggestion` Fabric + `probedAt`.
+
+**The suggestion heuristic (documented, product principle 1):** reachable servers only, in probe-list
+order then model order; for each slot pick the first model classified into it. For `llm`, prefer a PURE
+chat model (classified `llm` and nothing else) over a multi-slot model, so a VL model does not become the
+default chat model when a plain one exists. Non-llm slots take the first explicit match (default only ever
+produces llm). No quality rank yet (param count / measured tok/s) — "best available" is deterministic
+first-match; a real rank is future, and the user always sees every found model in Advanced.
+
+### The Get-Started lens on /setup — capabilities, not plumbing; one decision at a time
+`GET /setup` runs discovery when the live llm slot is empty (the existing `firstRunNotice` first-run
+condition — the page IS the onboarding) OR when `?discover=1` (a re-detect affordance). The pure
+`view.ts` gains a `discovery?: DiscoverResult` and, when present, renders the lens FIRST: a **Get started**
+card with four capability rows — **Thinking** (llm) · **Hearing** (stt) · **Reading the screen** (ocr/vlm,
+labelled "not used yet") · **Speaking** (tts, "not used yet") — each showing what was found (`model · url`)
+or an honest missing line ("no transcription server found — openinfo can still distill typed/text capture;
+audio needs one"). One primary **"Use this setup"** button; the full editor moves behind an **Advanced
+setup** `<details>` disclosure (no JS needed to reveal). When the llm slot is configured the page renders
+exactly as before (banner gone, no lens). Nothing-found state: no Use button, honest "start LM Studio or
+Ollama, or add a remote host in Advanced" copy + a Re-run detection button.
+
+- **"Use this setup" uses the EXISTING profile routes — no new write semantics.** The lens embeds the
+  synthesized suggestion as a `<script type="application/json" id="suggestion">` blob; the thin browser
+  handler reads it and does `PUT /fabric/profiles/config-1` then `POST …/activate`, then reloads. The
+  server never gets a new write path; the button is pure composition (the P6 "forms over documents" rule).
+- **`jsonForScript` (not `escapeHtml`) for the blob.** A `<script>` is a RAW-text element — HTML entities
+  are NOT decoded inside it — so JSON must be embedded verbatim (html-escaping it would store `&quot;` and
+  break `JSON.parse`). `jsonForScript` embeds real JSON and neutralizes only `<` (→ `<`) so a value
+  can never terminate the script. (The pre-existing `base-fabric` editor blob html-escapes; that path is
+  the profiles-slice editor, untouched here — the new lens blob is embedded correctly.)
+- `type="button"` + a single delegated `click` handler that `preventDefault`s (the c2893ad/02ad059
+  discipline) — maintained; the new actions (`use-setup`/`redetect`/`show-advanced`) join the same switch.
+
+### `GET /fabric/discover` — the one new (read-only, secret-free) engine capability
+Returns `DiscoverResult`. Read-only, never throws, localhost only (no secrets). It is what the lens shows
+and what a script/CLI can consume directly. No flag — a read-only detection route is a resource route, not
+a gated processing behavior (the established sessions/HUD/profiles no-flag line). What discovery's output
+switches on (distill) is already gated.
+
+### Tests (+19 engine: 126 total; +3 contracts: 37; client 71 unchanged — client untouched)
+- `fabric/discover.test.ts`: classify (default→llm; each non-llm pattern; VL→[llm,vlm] union); suggestion
+  synthesis (best-per-slot; unreachable contribute nothing; llm prefers a pure chat model over a VL;
+  VL-only fills both llm+vlm); `discoverFabric` vs fake in-process servers (multi-model classification;
+  unreachable never throws; malformed `data:null` + non-JSON → reachable:false honest error).
+- `fabric/discovery-documents.test.ts`: seed when absent; never clobber a user edit; store keeps versions.
+- `surfaces/setup/view.test.ts`: no-discovery renders as before; lens leads + editor behind Advanced;
+  full/partial/nothing states; the embedded blob is real JSON (not `&quot;`-escaped) and `JSON.parse`s.
+- `api/http.test.ts`: `GET /fabric/discover` (classify + suggestion vs fakes); `GET /setup` first-run lens;
+  the use-this-setup e2e (discover → `PUT config-1` + activate → `GET /fabric` reflects it → no longer
+  first-run, config-1 active). The existing `GET /setup` test now sets an empty probe list so it stays
+  offline + deterministic (it no longer probes real localhost ports).
+
+### Live verification (darwin, engine on :8907, :8787 left alone, process killed after)
+This machine really runs LM Studio :1234 (36 models incl. glm-ocr variants + qwen3.6-35b-a3b) and Ollama
+:11434. Driven for real against a scratch data dir:
+- `GET /fabric/discover` → **lm-studio REACHABLE, 36 models**; classification correct: 4× `glm-ocr*` → ocr,
+  `lfm2.5-embedding-350m` + `text-embedding-nomic-embed-text-v1.5` → embed, the other 30 (qwen/gemma/
+  ornith/lfm chat models) → llm. **Ollama honestly reported not-reachable** — it answered `{"data":null}`
+  (no model loaded) → `unexpected /v1/models shape (no data array)`. kokoro/whisper-cpp/speaches → `fetch
+  failed` (not running). Synthesized **config-1**: llm `ornith-1.0-35b-mtplx` (first pure-llm in order),
+  ocr `glm-ocr@q8_0`, embed `lfm2.5-embedding-350m`, stt/tts/vlm empty (nothing found — honest).
+- `GET /setup` first-run: banner + Get-started lens + `use-setup` button + Advanced `<details>`; the ocr
+  row showed the detected `glm-ocr@q8_0 · http://localhost:1234`, the stt row the honest missing copy; the
+  `#suggestion` blob was real JSON (`{"slots"…`, no `&quot;`).
+- Use-this-setup (the exact routes the button drives): `PUT /fabric/profiles/config-1` → 200, activate →
+  200; `GET /fabric` then returned the detected map (llm/ocr/embed populated). `GET /setup` after: **no
+  banner, no lens, config-1 `active` badge**. `GET /setup?discover=1` re-ran the lens while configured
+  (re-detect), no banner. Engine killed; port clear; :8787 never touched.
+
+### What slices (b) and (c) will need (from the design note, for the next author)
+- **(b) say-something verification loop** — CLIENT-side: capture a short mic clip on demand (getUserMedia,
+  with the mic-permission prompt raised in-flow — right when the user chooses to speak), POST it to
+  `/capture/mic`, and show the resulting moment(s) live off the `moment.created` WS event. The engine
+  already exposes everything needed (capture → transcribe → distill → moments → `GET /moments` + the event);
+  this is purely a client HUD/onboarding surface. Home: `apps/client/src/surfaces/`.
+- **(c) engine-managed local runtimes / tier zero** — the `local` endpoint kind's runtime lifecycle
+  (download + spawn an `mlx`/`ollama`/`whisper.cpp` runtime, fill a slot with a `local` endpoint).
+  `fabric/invoke.ts` and `health.ts` ALREADY skip `local` gracefully (fall through), so it is additive:
+  implement the lifecycle behind the same `Endpoint` contract, no caller change. Home:
+  `engine/fabric/endpoints/local.ts`. Then discovery gains a "no server at all" branch that offers to
+  download one rather than only reporting emptiness.
+- **Future:** with-permission LAN sweep discovery (cross-host rigs — extend `fabric/discover.ts`; blocked
+  on the macOS Local-Network TCC finding: run the engine from a GUI-domain LaunchAgent, not ssh-orphaned)
+  and `lmstudio://` "installed but not running" launch deep links.
+
+### Deferred (out of this slice, by scope)
+- The say-something loop / any client change (b); engine-managed local runtimes (c); LAN sweep;
+  `lmstudio://` deep links; cloud endpoints; model quality ranking in the suggestion (deterministic
+  first-match today); dedicated CRUD routes for the probe-list / capability-map documents (editable via the
+  store; seeded-template precedent); any change to profile/secret/invoke semantics (slice a) or the
+  existing Advanced editor.

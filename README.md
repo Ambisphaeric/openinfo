@@ -29,7 +29,7 @@ Verified from a clean tree (macOS, Node 22+, pnpm 9). Clone to a rendered HUD:
 ```bash
 pnpm install
 pnpm -r build          # contracts → engine + client (workbench is a Phase-4 scaffold)
-pnpm -r test           # contracts schema-validation (34) + engine (107) + client (71)
+pnpm -r test           # contracts schema-validation (37) + engine (126) + client (71)
 
 # start the engine daemon — localhost:8787 by default, data under ~/.openinfo/data
 node apps/engine/dist/main.js            # OPENINFO_PORT / OPENINFO_DATA to override
@@ -88,16 +88,22 @@ for f in distill.enabled distill.moments distill.index act.enabled; do
 ```
 
 Second — **the distill pass needs an OpenAI-compatible LLM endpoint** (Ollama, LM Studio, mlx). The
-`llm` slot ships empty. **The easiest way to point it at a model server is the setup page** — a
-forms-over-documents surface the engine serves at **`/setup`** (the menu-bar tray opens it too, and
-flags it "⚠ Set up models…" while the llm slot is empty):
+`llm` slot ships empty. **Open `/setup` — it detects your local model servers and offers one button.**
+On first run the page leads with a Get-Started capability checklist (Hearing · Thinking · Reading ·
+Speaking): it probes the well-known local servers (LM Studio :1234, Ollama :11434, kokoro :8880, common
+whisper ports), reads what each has actually loaded (`GET /v1/models`), classifies every model by name,
+and shows the result — "Found LM Studio with 36 models". Click **Use this setup** and it writes and
+activates a `config-1` profile for you. No ports or model trivia. (The menu-bar tray opens `/setup` too,
+and flags it "⚠ Set up models…" while the llm slot is empty.)
 
 ```bash
 open http://localhost:8787/setup          # macOS; or just visit it in any browser
+curl localhost:8787/fabric/discover       # the same detection, as JSON (servers + a config-1 suggestion)
 ```
 
-There you name/clone/activate profiles, add slot→endpoint rows across hosts, wire a key by reference,
-and Test each endpoint (reachable · latency). Prefer curl? The page is only composing these routes:
+**Advanced setup** on the same page (and the raw routes below) is still there when you want full control —
+name/clone/activate profiles, add slot→endpoint rows across hosts, wire a key by reference, and Test each
+endpoint (reachable · latency). The page is only composing these routes:
 
 ```bash
 curl -sX PUT localhost:8787/fabric -H 'content-type: application/json' -d '{"slots":{
