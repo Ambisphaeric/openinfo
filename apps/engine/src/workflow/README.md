@@ -1,9 +1,29 @@
-# engine/workflow — Phase 2 (loom transplant) — NOT YET BUILT
+# engine/workflow — the pipeline as a document (P4A)
 
-Intended: loom `packages/recipe` (a DAG executor) + `compile.ts` (mode document → executable DAG),
-where the five processing primitives (source/distill/route/overlay/act) are the only node types.
+Intended (loom origin): `packages/recipe` (a DAG executor) + `compile.ts` (mode document → executable
+DAG), where the processing primitives (source/distill/route/overlay/act) are the only node types.
 
-## Status after Phase 2: still a design placeholder — nothing was built here, deliberately.
+## Status: executor v0 BUILT (P4A slice 2) over a LINEAR document — the DAG is still deferred.
+
+`executor.ts` (`WorkflowExecutor`) runs a `WorkflowSpec` document against the two seams the hardcoded
+pipeline used — the queue **drain** (`runDrain`: transcribe? → distill → moments/index) and
+**session-end** (`runSessionEnd`: the follow-up-draft act). `documents.ts` (`WorkflowDocuments`) seeds
+the shipped `workflow-default` (loaded from `shared/contracts/examples/workflow.default.json`) and is
+read FRESH per call (the flags/surfaces hot-edit pattern). The executor is gated by `workflow.enabled`
+(default OFF): OFF leaves the legacy direct-wiring in `api/http.ts` untouched; ON runs the document and
+is **behavior-identical** — same flags honored (`distill.enabled/transcribe/moments/index`,
+`act.enabled`), same retry-at-idle propagation, same drain-first flush on session end.
+
+Two deliberate holds remain from the pre-P4 design below:
+
+- **Still a LINEAR list, not a DAG.** `WorkflowSpec.steps` has no declared edges/fan-out; the executor
+  coalesces the distill-family steps (distill + moments + index → one `distiller.distillChunks` call)
+  and dispatches acts by step id. The DAG trigger below (more than one chained act) still forces the
+  graph shape later, additively (edges as an optional field).
+- **`compile.ts` (mode → DAG) not built.** The executor reads a hand-authored `WorkflowSpec` document
+  directly; nothing compiles `Mode.acts` into it yet.
+
+## History — why the Act node did NOT force the DAG transplant at Phase 2 (the slice-6 decision)
 
 No Phase-2 slice ran through a DAG. Every processing behavior is wired **directly** into the seam
 that naturally triggers it, and each is gated by its own flag:
@@ -17,7 +37,7 @@ that naturally triggers it, and each is gated by its own flag:
 | Overlay  | `voice/` resolution, interpolated into every distill/act prompt | inline |
 | Act      | `act/` (follow-up draft) on **`session.ended`** | `act.enabled` |
 
-### Why the Act node did NOT force the DAG transplant (the slice-6 decision)
+### The reasoning (weighed and declined at Phase 2)
 
 The "first Act node" language invited transplanting the recipe executor now. It was weighed and
 declined — a DAG executor for a **single, unchained, one-node graph** is ceremony, not foundation:
