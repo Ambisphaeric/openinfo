@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { CaptureChunk, Distillate, Entity, EntityProvenance, Moment, Mode, PromptTemplate, VoiceBinding } from '@openinfo/contracts'
 import { DISTILLATE_SCHEMA_VERSION } from '@openinfo/contracts'
-import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult } from '../fabric/index.js'
+import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult, type SecretResolver } from '../fabric/index.js'
 import { entityMentioned, extractEntities } from '../index/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
@@ -33,6 +33,8 @@ export interface DistillerDeps {
   publishEntity?: (entity: Entity) => void | Promise<void>
   /** injectable for tests; defaults to invoking the fabric llm slot */
   invoke?: LlmInvoke
+  /** resolve an endpoint's auth.keyRef at invoke time (bearer token injection); optional. */
+  resolveKey?: SecretResolver
   now?: () => Date
   newId?: () => string
   log?: (message: string) => void
@@ -81,7 +83,9 @@ export class Distiller {
     this.now = deps.now ?? (() => new Date())
     this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
-    this.invoke = deps.invoke ?? ((messages, opts) => invokeLlm(this.fabric.load(), messages, opts))
+    const resolveKey = deps.resolveKey
+    this.invoke =
+      deps.invoke ?? ((messages, opts) => invokeLlm(this.fabric.load(), messages, resolveKey ? { ...opts, resolveKey } : opts))
   }
 
   async distillChunks(chunks: readonly CaptureChunk[], opts: DistillOptions = {}): Promise<Distillate[]> {

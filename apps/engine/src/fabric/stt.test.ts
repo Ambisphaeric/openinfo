@@ -12,9 +12,12 @@ interface FakeStt {
   bodies: string[]
 }
 
+const sttAuthHeaders: string[] = []
+
 const startFakeStt = async (reply: string, status = 200): Promise<FakeStt> => {
   const bodies: string[] = []
   const server = createServer((req, res) => {
+    sttAuthHeaders.push(String(req.headers['authorization'] ?? ''))
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => chunks.push(c))
     req.on('end', () => {
@@ -83,6 +86,42 @@ test('invokeStt falls through to the next endpoint when the first fails', async 
     const result = await invokeStt(fabric, audio, { timeoutMs: 500 })
     assert.equal(result.text, 'second answered')
     assert.equal(result.endpoint, 'live')
+  } finally {
+    await stop(good)
+  }
+})
+
+test('invokeStt injects a resolved keyRef as Authorization: Bearer', async () => {
+  const fake = await startFakeStt('authed transcript')
+  sttAuthHeaders.length = 0
+  try {
+    const fabric: Fabric = {
+      slots: { ...defaultFabric().slots, stt: [{ kind: 'http', name: 'remote-stt', url: fake.url, api: 'openai-compat', auth: { keyRef: 'remote-stt-key' } }] },
+    }
+    const result = await invokeStt(fabric, audio, { resolveKey: (ref) => (ref === 'remote-stt-key' ? 'sk-stt-9' : undefined) })
+    assert.equal(result.text, 'authed transcript')
+    assert.equal(sttAuthHeaders[0], 'Bearer sk-stt-9')
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('invokeStt with an unresolvable keyRef falls through gracefully (never contacts the authed endpoint)', async () => {
+  const good = await startFakeStt('fallback transcript')
+  sttAuthHeaders.length = 0
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        stt: [
+          { kind: 'http', name: 'authed', url: 'http://127.0.0.1:1', api: 'openai-compat', auth: { keyRef: 'absent' } },
+          { kind: 'http', name: 'open', url: good.url, api: 'openai-compat', model: 'whisper' },
+        ],
+      },
+    }
+    const result = await invokeStt(fabric, audio, { resolveKey: () => undefined })
+    assert.equal(result.text, 'fallback transcript')
+    assert.equal(sttAuthHeaders.length, 1)
   } finally {
     await stop(good)
   }

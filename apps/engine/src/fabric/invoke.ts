@@ -1,8 +1,26 @@
 import type { Endpoint, Fabric } from '@openinfo/contracts'
+import type { SecretResolver } from './secrets.js'
 
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+}
+
+type HttpEndpoint = Extract<Endpoint, { kind: 'http' }>
+
+/**
+ * Build the Authorization header for an http endpoint that declares `auth.keyRef` — injected ONLY
+ * here, at invoke time, from the secret store (never in documents/logs). Choice of header: a bearer
+ * token (`Authorization: Bearer <resolved>`), the OpenAI-compatible convention these endpoints
+ * already speak. Throws (before any fetch) when the ref cannot be resolved so the caller falls
+ * through to the next endpoint in fabric order — the error names the REF, never the value.
+ */
+const authHeaders = (endpoint: HttpEndpoint, resolveKey: SecretResolver | undefined): Record<string, string> => {
+  const keyRef = endpoint.auth?.keyRef
+  if (keyRef === undefined) return {}
+  const value = resolveKey?.(keyRef)
+  if (value === undefined || value === '') throw new Error(`missing secret for keyRef "${keyRef}"`)
+  return { authorization: `Bearer ${value}` }
 }
 
 export interface LlmResult {
@@ -16,6 +34,8 @@ export interface InvokeOptions {
   timeoutMs?: number
   maxTokens?: number
   temperature?: number
+  /** resolve an endpoint's auth.keyRef to its secret value (injected as a bearer token). */
+  resolveKey?: SecretResolver
 }
 
 interface ChatCompletion {
@@ -27,7 +47,8 @@ interface ChatCompletion {
  * (mlx / LM Studio style local servers). Throws on transport or protocol failure so the caller
  * can fall through to the next endpoint in fabric order.
  */
-const callHttp = async (endpoint: Extract<Endpoint, { kind: 'http' }>, messages: LlmMessage[], opts: InvokeOptions): Promise<string> => {
+const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: InvokeOptions): Promise<string> => {
+  const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 30_000)
   try {
@@ -37,7 +58,7 @@ const callHttp = async (endpoint: Extract<Endpoint, { kind: 'http' }>, messages:
     if (opts.temperature !== undefined) body['temperature'] = opts.temperature
     const response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...auth },
       body: JSON.stringify(body),
       signal: controller.signal,
     })
@@ -108,6 +129,8 @@ export interface SttOptions {
   timeoutMs?: number
   /** optional ISO-639-1 hint passed through to the transcriber */
   language?: string
+  /** resolve an endpoint's auth.keyRef to its secret value (injected as a bearer token). */
+  resolveKey?: SecretResolver
 }
 
 /** audio/<subtype> → a filename the transcriber can sniff a container from; defaults to audio.bin. */
@@ -123,7 +146,8 @@ const audioFilename = (contentType: string): string => {
  * style local servers). Throws on transport or protocol failure so the caller falls through to the
  * next endpoint in fabric order, exactly like callHttp for llm.
  */
-const callSttHttp = async (endpoint: Extract<Endpoint, { kind: 'http' }>, audio: SttAudio, opts: SttOptions): Promise<string> => {
+const callSttHttp = async (endpoint: HttpEndpoint, audio: SttAudio, opts: SttOptions): Promise<string> => {
+  const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000)
   try {
@@ -134,6 +158,7 @@ const callSttHttp = async (endpoint: Extract<Endpoint, { kind: 'http' }>, audio:
     form.set('file', new Blob([bytes], { type: audio.contentType }), audioFilename(audio.contentType))
     const response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/audio/transcriptions`, {
       method: 'POST',
+      headers: auth,
       body: form,
       signal: controller.signal,
     })

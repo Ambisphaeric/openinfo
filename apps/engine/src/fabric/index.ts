@@ -1,5 +1,8 @@
 export { benchFabric, benchHttpEndpoint } from './bench.js'
 export { FabricDocuments, defaultFabric } from './document.js'
+export { FabricProfiles } from './profiles.js'
+export { seededProfiles } from './defaults.js'
+export { FileSecretStore, type SecretStore, type SecretResolver } from './secrets.js'
 export { checkEndpoint, type EndpointHealth } from './health.js'
 export { invokeLlm, type LlmMessage, type LlmResult, type InvokeOptions } from './invoke.js'
 export { invokeStt, type SttAudio, type SttResult, type SttOptions } from './invoke.js'

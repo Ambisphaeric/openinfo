@@ -11,9 +11,12 @@ interface FakeServer {
   requests: unknown[]
 }
 
+const authHeaders: string[] = []
+
 const startFakeLlm = async (reply: string, status = 200): Promise<FakeServer> => {
   const requests: unknown[] = []
   const server = createServer((req, res) => {
+    authHeaders.push(String(req.headers['authorization'] ?? ''))
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => chunks.push(c))
     req.on('end', () => {
@@ -63,6 +66,60 @@ test('invokeLlm falls through to the next endpoint when the first fails', async 
   } finally {
     await stop(good)
   }
+})
+
+test('invokeLlm injects a resolved keyRef as Authorization: Bearer, never the ref/value in logs', async () => {
+  const fake = await startFakeLlm('ok')
+  authHeaders.length = 0
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [{ kind: 'http', name: 'authed', url: fake.url, api: 'openai-compat', auth: { keyRef: 'remote-llm-key' } }],
+      },
+    }
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { resolveKey: (ref) => (ref === 'remote-llm-key' ? 'sk-live-42' : undefined) })
+    assert.equal(result.text, 'ok')
+    assert.equal(authHeaders[0], 'Bearer sk-live-42')
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('an unresolvable keyRef falls through to the next endpoint gracefully (no crash, ref not value in error)', async () => {
+  const good = await startFakeLlm('fallback answered')
+  authHeaders.length = 0
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [
+          { kind: 'http', name: 'authed', url: 'http://127.0.0.1:1', api: 'openai-compat', auth: { keyRef: 'absent-key' } },
+          { kind: 'http', name: 'open', url: good.url, api: 'openai-compat' },
+        ],
+      },
+    }
+    // no resolver → the authed endpoint cannot resolve its keyRef, so it is skipped before any fetch
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { resolveKey: () => undefined })
+    assert.equal(result.text, 'fallback answered')
+    assert.equal(result.endpoint, 'open')
+    assert.equal(authHeaders.length, 1) // only the open endpoint was ever contacted
+  } finally {
+    await stop(good)
+  }
+})
+
+test('every endpoint unresolvable ⇒ throws with the REF name (never the secret value)', async () => {
+  const fabric: Fabric = {
+    slots: {
+      ...defaultFabric().slots,
+      llm: [{ kind: 'http', name: 'authed', url: 'http://127.0.0.1:1', api: 'openai-compat', auth: { keyRef: 'absent-key' } }],
+    },
+  }
+  await assert.rejects(
+    () => invokeLlm(fabric, [{ role: 'user', content: 'x' }], { resolveKey: () => undefined }),
+    (err: Error) => err.message.includes('absent-key'),
+  )
 })
 
 test('invokeLlm throws when the slot is empty and skips local/cloud stubs', async () => {

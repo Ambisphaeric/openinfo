@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Distillate, Draft, Dials, Mode, Moment, PromptTemplate, Session, VoiceBinding } from '@openinfo/contracts'
 import { DRAFT_SCHEMA_VERSION } from '@openinfo/contracts'
-import { FabricDocuments, invokeLlm } from '../fabric/index.js'
+import { FabricDocuments, invokeLlm, type SecretResolver } from '../fabric/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice, type VoiceScope } from '../voice/index.js'
 import type { LlmInvoke } from '../distill/index.js'
@@ -129,6 +129,8 @@ export interface ActorDeps {
   /** publish draft.created so it reaches WS clients; optional (tests may omit). */
   publish?: (draft: Draft) => void | Promise<void>
   invoke?: LlmInvoke
+  /** resolve an endpoint's auth.keyRef at invoke time (bearer token injection); optional. */
+  resolveKey?: SecretResolver
   now?: () => Date
   newId?: () => string
   log?: (message: string) => void
@@ -163,7 +165,9 @@ export class Actor {
     this.now = deps.now ?? (() => new Date())
     this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
-    this.invoke = deps.invoke ?? ((messages, opts) => invokeLlm(this.fabric.load(), messages, opts))
+    const resolveKey = deps.resolveKey
+    this.invoke =
+      deps.invoke ?? ((messages, opts) => invokeLlm(this.fabric.load(), messages, resolveKey ? { ...opts, resolveKey } : opts))
   }
 
   async runFollowUpDraft(session: Session): Promise<Draft | undefined> {
