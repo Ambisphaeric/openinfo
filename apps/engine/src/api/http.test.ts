@@ -302,7 +302,7 @@ test('GET /setup?surface serves the HUD-layout editor; unknown surface 404s', as
     assert.ok(address && typeof address === 'object')
     const base = `http://127.0.0.1:${address.port}`
 
-    const res = await fetch(`${base}/setup?surface=surf-openinfo-hud`)
+    const res = await fetch(`${base}/settings/hud-layout?surface=surf-openinfo-hud`)
     assert.equal(res.status, 200)
     assert.match(res.headers.get('content-type') ?? '', /text\/html/)
     const html = await res.text()
@@ -312,11 +312,16 @@ test('GET /setup?surface serves the HUD-layout editor; unknown surface 404s', as
     assert.match(html, /data-act="surface-clone"/)
     assert.match(html, /id="add-block-type"/)
 
-    // the main /setup page surfaces a discoverable "HUD layout" section
-    assert.match(await (await fetch(`${base}/setup`)).text(), /HUD layout/)
+    // the Settings sidebar surfaces a discoverable "HUD layout" section
+    assert.match(await (await fetch(`${base}/settings/hud-layout`)).text(), /HUD layout/)
+
+    // the legacy /setup?surface= URL still works — it 301s to /settings (fetch follows it)
+    const legacy = await fetch(`${base}/setup?surface=surf-openinfo-hud`)
+    assert.equal(legacy.status, 200)
+    assert.match(await legacy.text(), /id="base-surface"/)
 
     // unknown surface ⇒ 404 (HTML, with a way back)
-    const nf = await fetch(`${base}/setup?surface=surf-nope`)
+    const nf = await fetch(`${base}/settings/hud-layout?surface=surf-nope`)
     assert.equal(nf.status, 404)
     assert.match(await nf.text(), /No such surface/)
   } finally {
@@ -849,7 +854,7 @@ test('e2e: activating a profile swaps what the distiller invokes, and its keyRef
   }
 })
 
-test('GET /setup serves the self-contained page (skeleton, seeded profiles, first-run banner, ?edit)', async () => {
+test('GET /settings serves the sidebar shell; sections carry profiles/editor; /setup 301s to it', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })
   await new Promise<void>((resolve) => app.server.listen(0, resolve))
@@ -860,19 +865,72 @@ test('GET /setup serves the self-contained page (skeleton, seeded profiles, firs
     // keep this unit test offline + deterministic: an empty probe list ⇒ discovery does no real network I/O
     app.store.layouts.put('discovery-probes', 'probes-default', { id: 'probes-default', version: 1, probes: [] })
 
-    const res = await fetch(`${base}/setup`)
+    const res = await fetch(`${base}/settings`)
     assert.equal(res.status, 200)
     assert.match(res.headers.get('content-type') ?? '', /text\/html/)
     const html = await res.text()
-    assert.match(html, /openinfo · model setup/)
-    assert.match(html, /id="row-tpl"/) // the add-endpoint template is present
-    // fresh install: the live fabric's llm slot is empty ⇒ the first-run banner shows
-    assert.match(html, /class="banner"/)
-    // seeded profiles are listed and are inert (none active ⇒ each offers Activate)
-    assert.match(html, /data-act="activate" data-id="lm-studio-local"/)
-    // ?edit selects which profile the editor opens
+    assert.match(html, /openinfo · settings/) // the shell title
+    assert.match(html, /class="sidebar"/) // the persistent sidebar
+    assert.match(html, /id="row-tpl"/) // the endpoints editor's add-row template
+    // fresh install (llm empty) ⇒ default section is Get started
+    assert.match(html, /class="nav-item active" href="\/settings\/get-started"/)
+
+    // the legacy /setup URL 301s to /settings, without following
+    const redir = await fetch(`${base}/setup`, { redirect: 'manual' })
+    assert.equal(redir.status, 301)
+    assert.equal(redir.headers.get('location'), '/settings')
+
+    // the Profiles section lists the seeded profiles and offers Activate (none active)
+    const profiles = await (await fetch(`${base}/settings/profiles`)).text()
+    assert.match(profiles, /data-act="activate" data-id="lm-studio-local"/)
+    // on a non-get-started section, the fresh-install banner rides along
+    assert.match(profiles, /class="banner"/)
+    // ?edit selects which profile the Endpoints editor opens (301 from /setup?edit= carries the query)
     const edited = await (await fetch(`${base}/setup?edit=ollama-local`)).text()
     assert.match(edited, /data-target-id="ollama-local"/)
+    assert.match(edited, /class="nav-item active" href="\/settings\/endpoints"/)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('Features: GET /flags enumerates all six real gating flags; a toggle round-trips via PUT /flags/:key', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // SEEDING: all six real gating flags are seeded documents (from contracts flag.examples.json via
+    // ensureDefaultFlags) — GET /flags enumerates them, so the Features section has something to render.
+    const flags = (await (await fetch(`${base}/flags`)).json()) as { key: string; default: boolean }[]
+    const keys = new Set(flags.map((f) => f.key))
+    for (const k of ['distill.enabled', 'distill.transcribe', 'distill.moments', 'distill.index', 'act.enabled', 'route.detect']) {
+      assert.ok(keys.has(k), `flag ${k} must be seeded`)
+    }
+
+    // the Features section renders each as a toggle, off by default
+    let feat = await (await fetch(`${base}/settings/features`)).text()
+    assert.match(feat, /data-flag-key="distill\.enabled"/)
+    assert.doesNotMatch(feat, /data-flag-key="distill\.enabled" checked/)
+    assert.match(feat, /class="dep unmet"/) // dependents show their unmet dependency while distill is off
+
+    // flip distill.enabled via the exact route the toggle drives
+    const put = await fetch(`${base}/flags/distill.enabled`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'distill.enabled', default: true, scope: 'engine', description: 'the distiller', minTier: 'T1' }),
+    })
+    assert.equal(put.status, 200)
+
+    // GET /flags reflects it, and the section now shows it checked + dependents satisfied
+    const after = (await (await fetch(`${base}/flags`)).json()) as { key: string; default: boolean }[]
+    assert.equal(after.find((f) => f.key === 'distill.enabled')?.default, true)
+    feat = await (await fetch(`${base}/settings/features`)).text()
+    assert.match(feat, /data-flag-key="distill\.enabled" checked/)
+    assert.match(feat, /class="dep ok"/)
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })
@@ -989,7 +1047,8 @@ test('GET /setup on a fresh install shows the Get-Started lens with detected cap
     assert.match(html, /data-act="use-setup"/)
     assert.match(html, /Thinking/)
     assert.match(html, /qwen3-8b/) // the detected llm model surfaces in the lens
-    assert.match(html, /<details id="advanced"/) // the editor moved behind Advanced
+    assert.match(html, /class="nav-item active" href="\/settings\/get-started"/) // Get started leads on first run
+    assert.match(html, /href="\/settings\/endpoints">Advanced setup/) // full editor lives in the Endpoints section
   } finally {
     await app.close()
     await new Promise<void>((resolve) => lm.server.close(() => resolve()))
@@ -1030,12 +1089,13 @@ test('use-this-setup e2e: discover → config-1 written+activated → GET /fabri
     assert.equal(after.slots.llm[0]!.kind === 'http' && after.slots.llm[0]!.model, 'qwen3-8b')
     assert.equal(after.slots.stt[0]!.kind === 'http' && after.slots.stt[0]!.model, 'whisper-large-v3')
 
-    // 4) the page is no longer first-run: no banner, and the lens does not lead (llm is configured)
+    // 4) the page is no longer first-run: no banner, Status leads (not the lens), llm is configured
     const html = await (await fetch(`${base}/setup`)).text()
     assert.doesNotMatch(html, /class="banner"/)
-    assert.doesNotMatch(html, /Get started/)
-    // config-1 is the active profile
-    assert.match(html, /badge active/)
+    assert.doesNotMatch(html, /data-act="use-setup"/) // the Get-started lens no longer leads
+    assert.match(html, /class="nav-item active" href="\/settings\/status"/)
+    // config-1 is the active profile — the Profiles section marks it
+    assert.match(await (await fetch(`${base}/settings/profiles`)).text(), /badge active/)
   } finally {
     await app.close()
     await new Promise<void>((resolve) => lm.server.close(() => resolve()))

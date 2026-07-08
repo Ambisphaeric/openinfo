@@ -12,7 +12,7 @@ import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from 
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
-import { SurfaceDocuments, compileQuery, renderSetupPage, renderSurfaceEditorPage, defaultHudSurface } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, type SetupData } from '../surfaces/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -223,7 +223,17 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/contracts') return send(res, 200, Object.keys(AllSchemas))
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
-  if (req.method === 'GET' && url.pathname === '/setup') return getSetup(res, ctx, url)
+  // /setup is the former name of the Settings surface — 301 to /settings, preserving any subpath +
+  // query (?edit=, ?surface=, ?discover=). The old URL must keep working (README/skills/first-run).
+  if (req.method === 'GET' && (url.pathname === '/setup' || url.pathname.startsWith('/setup/'))) {
+    const location = '/settings' + url.pathname.slice('/setup'.length) + url.search
+    res.writeHead(301, { location })
+    res.end()
+    return
+  }
+  if (req.method === 'GET' && (url.pathname === '/settings' || url.pathname.startsWith('/settings/'))) {
+    return getSettings(res, ctx, url, req.headers.host)
+  }
   if (req.method === 'GET' && url.pathname === '/fabric') return send(res, 200, ctx.fabric.load())
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/fabric/discover') return discover(res, ctx)
@@ -284,31 +294,33 @@ async function saveFabric(req: IncomingMessage, res: ServerResponse, ctx: Handle
 }
 
 /**
- * Serve the setup surface (ARCHITECTURE §8): forms over the profile + secret documents, rendered as
- * a self-contained HTML page. The FIRST engine-served surface (CODE_MAP homes it under
- * engine/surfaces/setup/). It composes only the existing profile/secret/fabric routes — no new engine
- * capability. `?edit=<id>` selects which profile the editor opens; default is the active profile, else
- * the first profile, else the legacy live fabric. localhost-only posture (no auth) is a P7 concern.
+ * Serve the Settings surface (ARCHITECTURE §8):
+ * a persistent sidebar + content pane, server-rendered per request. Sections are pure view modules
+ * registered in ONE table (surfaces/settings/registry.ts); this handler assembles the live data the
+ * sections read, resolves the active section, and hands it to the shell. It composes only the existing
+ * profile/secret/fabric/flags/surface routes — no new engine capability. localhost-only (no auth) is P7.
+ *
+ * Routing: GET /settings → the default section (Get started when the llm slot is empty, else Status);
+ * GET /settings/<id> → that section. `?surface=<id>` opens the HUD-layout editor; `?edit=<id>` opens the
+ * Endpoints editor on that profile; `?discover=1` forces a fresh detection on the Get-started section.
+ * Discovery (network probes) runs ONLY when the Get-started section is active — every other section is
+ * assembled from cheap in-process reads.
  */
-async function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): Promise<void> {
+async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, host: string | undefined): Promise<void> {
   // ?surface=<id> opens the HUD-layout editor for that surface (mirrors ?edit=<id> for a fabric profile).
   const surfaceParam = url.searchParams.get('surface')
   if (surfaceParam !== null) return getSurfaceEditor(res, ctx, surfaceParam)
   const profiles = ctx.fabric.profiles.list()
   const activeId = ctx.fabric.profiles.activeId()
   const editParam = url.searchParams.get('edit')
+  const wantDiscover = url.searchParams.get('discover') === '1'
   const editing = editParam
     ? profiles.find((p) => p.id === editParam)
     : (activeId ? profiles.find((p) => p.id === activeId) : profiles[0])
   const liveFabric = ctx.fabric.load()
-  // The Get-Started capability lens (ARCHITECTURE §8) leads when the live llm slot is empty (the
-  // first-run condition — the page IS the onboarding), or when the user asks to re-detect (?discover=1).
-  // Detection over configuration: we run discovery and show a RESULT, not a form. Localhost, no secrets.
-  const wantLens = liveFabric.slots.llm.length === 0 || url.searchParams.get('discover') === '1'
-  const discovery = wantLens
-    ? await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap())
-    : undefined
-  const html = renderSetupPage({
+  const liveSession = ctx.store.liveSession('default')
+
+  const data: SetupData = {
     profiles,
     activeId,
     liveFabric,
@@ -316,10 +328,29 @@ async function getSetup(res: ServerResponse, ctx: HandlerContext, url: URL): Pro
     secretRefs: ctx.secrets.listRefs(),
     surfaces: ctx.surfaces.list(),
     defaultSurfaceId: defaultHudSurface.id,
-    ...(discovery !== undefined ? { discovery, localModels: ctx.models.statuses() } : {}),
-  })
+    flags: readFlags(ctx.store),
+    uptimeMs: process.uptime() * 1000,
+    queue: await ctx.queue.status(),
+    localModels: ctx.models.statuses(),
+    ...(host !== undefined ? { engineLabel: host } : {}),
+    ...(liveSession !== undefined ? { liveSession } : {}),
+  }
+
+  // Resolve the active section: the path id, else ?edit ⇒ Endpoints, ?discover ⇒ Get started, else default.
+  const pathId = url.pathname.startsWith('/settings/')
+    ? decodeURIComponent(url.pathname.slice('/settings/'.length)).replace(/\/+$/, '')
+    : ''
+  const requested = pathId || (editParam ? 'endpoints' : wantDiscover ? 'get-started' : defaultSectionId(data))
+  const active = sectionById(requested) ?? sectionById(defaultSectionId(data))!
+
+  // The Get-Started capability lens runs discovery (localhost probes, no secrets) — but ONLY when that
+  // section is what we're rendering, so navigating any other section stays cheap.
+  if (active.id === 'get-started') {
+    data.discovery = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap())
+  }
+
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-  res.end(html)
+  res.end(renderSettingsPage(data, active.id))
 }
 
 /**
