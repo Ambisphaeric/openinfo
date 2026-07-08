@@ -38,7 +38,7 @@ import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult } from './conf
 import { StarterModel, StarterModels } from './config/local.js'
 import { Flag } from './config/flag.js'
 import { AttributionPattern, WorkspaceHints } from './config/hints.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, QueueStatus, QueueFailure, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -47,6 +47,6 @@ export const AllSchemas = {
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
-  Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest,
-  CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, LocalModelStatus, LocalDownloadRequest,
+  Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, QueueStatus, QueueFailure, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest,
+  CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
 } as const

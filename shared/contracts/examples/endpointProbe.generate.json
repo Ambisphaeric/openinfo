@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "latencyMs": 12,
+  "generate": {
+    "ok": false,
+    "class": "model-load",
+    "error": "Model \"qwen3.5-35b\" failed to load. Error: llama.cpp error: failed to allocate buffer",
+    "hint": "model \"qwen3.5-35b\" failed to load on http://127.0.0.1:1234 — pick a smaller/loaded model in Settings → Endpoints. server reports 1 other model (e.g. qwen3.5-9b) — switch in Settings → Endpoints"
+  }
+}

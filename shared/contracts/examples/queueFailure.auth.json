@@ -1,0 +1,9 @@
+{
+  "class": "auth",
+  "endpoint": "remote-27b",
+  "model": "qwen3.5-27b",
+  "keyRef": "remote-llm-key",
+  "serverMessage": "invalid api key",
+  "hint": "check key \"remote-llm-key\" in Settings → Keys",
+  "at": "2026-07-07T14:05:00Z"
+}

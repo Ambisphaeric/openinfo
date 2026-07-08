@@ -1,0 +1,15 @@
+{
+  "pendingFiles": 1,
+  "pendingBytes": 4096,
+  "drainedFiles": 12,
+  "updatedAt": "2026-07-07T14:05:00Z",
+  "lastSuccessAt": "2026-07-07T13:59:40Z",
+  "lastFailure": {
+    "class": "model-load",
+    "endpoint": "lm-studio",
+    "model": "qwen3.5-35b",
+    "serverMessage": "Model \"qwen3.5-35b\" failed to load. Error: llama.cpp error: failed to allocate buffer",
+    "hint": "model \"qwen3.5-35b\" failed to load on http://127.0.0.1:1234 — pick a smaller/loaded model in Settings → Endpoints. server reports 1 other model (e.g. qwen3.5-9b) — switch in Settings → Endpoints",
+    "at": "2026-07-07T14:05:00Z"
+  }
+}

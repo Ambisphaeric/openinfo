@@ -13,11 +13,11 @@ const examplesDir = join(here, '..', 'examples')
 const fileSchema: Record<string, keyof typeof AllSchemas> = {
   register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface',
   flag: 'Flag', workspaceHints: 'WorkspaceHints', commitment: 'Commitment', workspace: 'Workspace', moment: 'Moment',
-  captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus',
+  captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', queryResult: 'QueryResult',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
-  endpointProbe: 'EndpointProbe',
+  endpointProbe: 'EndpointProbe', generateProbe: 'GenerateProbe',
   probeList: 'ProbeList', capabilityMap: 'CapabilityMap', discoverResult: 'DiscoverResult',
   starterModels: 'StarterModels', starterModel: 'StarterModel',
   localModelStatus: 'LocalModelStatus', localDownloadRequest: 'LocalDownloadRequest',

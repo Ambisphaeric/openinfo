@@ -71,12 +71,42 @@ export const Ack = Type.Object(
 )
 export type Ack = Static<typeof Ack>
 
+/**
+ * A classified drain failure (INVOKE-RESILIENCE) — the LAST time the drain processor could not process a
+ * spooled file because an invoke failed. It names WHICH endpoint, WHAT went wrong (the class the engine
+ * detected: an unreachable server vs a timeout vs a rejected key vs a model that won't load vs a garbled
+ * reply), the server's own message when it gave one, and a one-line troubleshoot `hint`. This is the
+ * honest signal behind the founder's mandate — the drain no longer re-queues silently forever; GET /queue,
+ * the Status section, and the Try-it card read this to say exactly why nothing arrived. Carries a keyRef,
+ * NEVER a key value (the never-echo discipline).
+ */
+export const QueueFailure = Type.Object(
+  {
+    class: Type.Union(
+      ['unreachable', 'timeout', 'auth', 'model-load', 'bad-response', 'reasoning-exhausted'].map((c) => Type.Literal(c)),
+      { description: 'the detected failure class — the difference the founder asked the system to tell apart' },
+    ),
+    endpoint: Type.String({ description: 'the endpoint name the invoke failed on (never a secret value)' }),
+    model: Type.Optional(Type.String({ description: 'the model that was asked for, when the endpoint names one' })),
+    keyRef: Type.Optional(Type.String({ description: 'the auth keyRef involved on an auth failure — the REFERENCE, never the value' })),
+    serverMessage: Type.Optional(Type.String({ description: "the server's own error text (e.g. LM Studio's \"Model … failed to load\"), captured verbatim" })),
+    hint: Type.String({ description: 'the one-line "what to do about it" step' }),
+    at: IsoTime,
+  },
+  { $id: 'QueueFailure', additionalProperties: false },
+)
+export type QueueFailure = Static<typeof QueueFailure>
+
 export const QueueStatus = Type.Object(
   {
     pendingFiles: Type.Integer({ minimum: 0 }),
     pendingBytes: Type.Integer({ minimum: 0 }),
     drainedFiles: Type.Integer({ minimum: 0 }),
     updatedAt: IsoTime,
+    /** the last classified drain failure — present once a drain has failed (the honest "why nothing arrived"). */
+    lastFailure: Type.Optional(QueueFailure),
+    /** ISO time of the last file the drain processed successfully — present once one has drained. */
+    lastSuccessAt: Type.Optional(IsoTime),
   },
   { $id: 'QueueStatus', additionalProperties: false },
 )
@@ -203,6 +233,31 @@ export type SecretValue = Static<typeof SecretValue>
  * echoed as `tokPerSec` — this probe pings, it does not itself benchmark generation. Request-shaped
  * body is an Endpoint (the row's current — possibly unsaved — values), so a user can test before saving.
  */
+/**
+ * The result of a REAL-generation probe (INVOKE-RESILIENCE) — `POST /fabric/test` with `probe: 'generate'`
+ * runs a minimal 1-token completion through the actual invoke path, so a server that pings 200 but can't
+ * load its model (the founder's LM Studio 400) is caught HONESTLY. `ok` = a completion came back; on
+ * failure `class`/`error`/`hint` carry the classified reason (the same taxonomy the drain records). For an
+ * stt endpoint it is `skipped` with a `note` (a generation probe needs audio — out of scope). Value-free re keys.
+ */
+export const GenerateProbe = Type.Object(
+  {
+    ok: Type.Boolean(),
+    latencyMs: Type.Optional(Type.Number({ minimum: 0 })),
+    class: Type.Optional(
+      Type.Union(['unreachable', 'timeout', 'auth', 'model-load', 'bad-response', 'reasoning-exhausted'].map((c) => Type.Literal(c)), {
+        description: 'the classified failure reason when generation failed',
+      }),
+    ),
+    error: Type.Optional(Type.String({ description: "the server's own message when generation failed, captured verbatim" })),
+    hint: Type.Optional(Type.String({ description: 'the one-line troubleshoot step (incl. the loaded-model suggestion on a model-load failure)' })),
+    skipped: Type.Optional(Type.Boolean({ description: 'true when generation was not run (e.g. an stt endpoint)' })),
+    note: Type.Optional(Type.String({ description: 'why it was skipped' })),
+  },
+  { $id: 'GenerateProbe', additionalProperties: false },
+)
+export type GenerateProbe = Static<typeof GenerateProbe>
+
 export const EndpointProbe = Type.Object(
   {
     ok: Type.Boolean(),
@@ -210,6 +265,8 @@ export const EndpointProbe = Type.Object(
     tokPerSec: Type.Optional(Type.Number({ minimum: 0, description: 'last MEASURED tok/s from the endpoint doc — not measured by this probe' })),
     error: Type.Optional(Type.String()),
     hint: Type.Optional(Type.String({ description: 'an actionable next step when the probe fails (e.g. a keyRef hint on 401)' })),
+    /** the REAL-generation result, present only when the request asked for `probe: 'generate'`. */
+    generate: Type.Optional(GenerateProbe),
   },
   { $id: 'EndpointProbe', additionalProperties: false },
 )

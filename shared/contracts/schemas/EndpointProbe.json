@@ -24,6 +24,68 @@
     "hint": {
       "description": "an actionable next step when the probe fails (e.g. a keyRef hint on 401)",
       "type": "string"
+    },
+    "generate": {
+      "$id": "GenerateProbe",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "latencyMs": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "class": {
+          "description": "the classified failure reason when generation failed",
+          "anyOf": [
+            {
+              "const": "unreachable",
+              "type": "string"
+            },
+            {
+              "const": "timeout",
+              "type": "string"
+            },
+            {
+              "const": "auth",
+              "type": "string"
+            },
+            {
+              "const": "model-load",
+              "type": "string"
+            },
+            {
+              "const": "bad-response",
+              "type": "string"
+            },
+            {
+              "const": "reasoning-exhausted",
+              "type": "string"
+            }
+          ]
+        },
+        "error": {
+          "description": "the server's own message when generation failed, captured verbatim",
+          "type": "string"
+        },
+        "hint": {
+          "description": "the one-line troubleshoot step (incl. the loaded-model suggestion on a model-load failure)",
+          "type": "string"
+        },
+        "skipped": {
+          "description": "true when generation was not run (e.g. an stt endpoint)",
+          "type": "boolean"
+        },
+        "note": {
+          "description": "why it was skipped",
+          "type": "string"
+        }
+      }
     }
   }
 }
