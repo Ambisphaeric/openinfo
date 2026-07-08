@@ -15,6 +15,16 @@ export interface ShellConfig {
   modeId: string
   /** Surface document the HUD window renders. */
   surfaceId: string
+  /**
+   * Whether the client captures the microphone while a session is live. Client-local, default ON —
+   * the session itself is the consent gesture, so a running session captures unless explicitly
+   * disabled (OPENINFO_MIC=0/false/off/no). This is CONFIG, not a flag document, for the same reason
+   * every other shell behaviour is (see the header above): it is how the client uses its own
+   * hardware, it never touches the engine or its store, and whether captured audio MEANS anything is
+   * ALREADY gated engine-side by `distill.transcribe` — a client `capture.mic` flag would gate
+   * nothing the engine can see. See PHASE2-NOTES (config-not-flags line).
+   */
+  micEnabled: boolean
 }
 
 const DEFAULTS = {
@@ -24,6 +34,10 @@ const DEFAULTS = {
   modeId: 'mode-meeting',
   surfaceId: 'surf-openinfo-hud',
 } as const
+
+/** OPENINFO_MIC is opt-OUT: unset ⇒ on; only an explicit falsy token disables mic capture. */
+const isMicEnabled = (raw: string | undefined): boolean =>
+  raw === undefined || !['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase())
 
 /** Trim a trailing slash so `${engineUrl}${path}` never doubles up. */
 const normalizeUrl = (url: string): string => url.replace(/\/+$/, '')
@@ -43,5 +57,6 @@ export const resolveShellConfig = (env: Record<string, string | undefined> = pro
     workspace: env['OPENINFO_WORKSPACE'] ?? DEFAULTS.workspace,
     modeId: env['OPENINFO_MODE'] ?? DEFAULTS.modeId,
     surfaceId: env['OPENINFO_SURFACE'] ?? DEFAULTS.surfaceId,
+    micEnabled: isMicEnabled(env['OPENINFO_MIC']),
   }
 }

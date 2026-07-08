@@ -16,6 +16,10 @@ export interface TrayState {
   sessionLive: boolean
   /** True once the initial session state has been fetched — before that Start/End is disabled. */
   connected: boolean
+  /** Is the mic actively recording? Shows the honest ● rec indicator while a session captures. */
+  capturing?: boolean
+  /** Was mic access refused? Shows a clear indication; the session/text path still works. */
+  micBlocked?: boolean
 }
 
 export interface TrayMenuItem {
@@ -28,15 +32,26 @@ export interface TrayMenuItem {
   enabled?: boolean
 }
 
-/** The disabled status line at the top of the menu — the at-a-glance live indicator. */
+/**
+ * The disabled status line at the top of the menu — the at-a-glance live indicator. When a session
+ * is live it also reflects the mic: `● rec` while capturing (privacy-honest — you can always see the
+ * mic is on) or `mic blocked` if access was refused (the session still runs, only audio is off).
+ */
 export const trayStatusLabel = (state: TrayState): string => {
   if (!state.connected) return '○ connecting…'
-  return state.sessionLive ? '● session live' : '○ no session'
+  if (!state.sessionLive) return '○ no session'
+  if (state.micBlocked) return '● session live · mic blocked'
+  if (state.capturing) return '● session live · ● rec'
+  return '● session live'
 }
 
 /** The menu-bar tooltip — same signal, visible on hover without opening the menu. */
-export const trayTooltip = (state: TrayState): string =>
-  state.sessionLive ? 'openinfo — session live' : 'openinfo — idle'
+export const trayTooltip = (state: TrayState): string => {
+  if (!state.sessionLive) return 'openinfo — idle'
+  if (state.micBlocked) return 'openinfo — session live (mic blocked)'
+  if (state.capturing) return 'openinfo — session live ● rec'
+  return 'openinfo — session live'
+}
 
 /**
  * Build the tray context menu as a declarative spec. One "toggle" item each for the window
