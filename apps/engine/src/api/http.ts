@@ -2,15 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type Draft, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Entity, type Fabric, type FabricProfile, type Flag, type Moment, type RelevantEntity, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
-import { FabricDocuments, invokeStt } from '../fabric/index.js'
+import { FabricDocuments, FileSecretStore, invokeStt, type SecretStore } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
-import { WorkspaceRegistry } from '../store/index.js'
+import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { SurfaceDocuments, compileQuery } from '../surfaces/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
@@ -34,6 +34,7 @@ export interface EngineOptions {
 interface HandlerContext {
   bus: EventBus<EngineEvents>
   fabric: FabricDocuments
+  secrets: SecretStore
   voice: VoiceDocuments
   surfaces: SurfaceDocuments
   queue: CaptureQueue
@@ -48,11 +49,16 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const bus = new EventBus<EngineEvents>()
   const ws = new EventSocketHub()
   const fabric = new FabricDocuments(store)
+  // Engine-side secret store: v0 chmod-600 file in its own secrets/ dir (see resolveSecretsPath),
+  // never in a DB or workspace export. Values are injected ONLY at invoke time; the API is write-only.
+  const secrets: SecretStore = new FileSecretStore(resolveSecretsPath(store.dataDir))
+  const resolveKey = (ref: string): string | undefined => secrets.resolve(ref)
   const voice = new VoiceDocuments(store)
   const distillDocs = new DistillDocuments(store)
   const actDocs = new ActDocuments(store)
   const surfaces = new SurfaceDocuments(store)
   ensureDefaultFlags(store)
+  fabric.ensureDefaults()
   voice.ensureDefaults()
   distillDocs.ensureDefaults()
   actDocs.ensureDefaults()
@@ -63,6 +69,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     voice,
     fabric,
     docs: distillDocs,
+    resolveKey,
     publish: (distillate) => bus.publish('distillate.updated', distillate),
     publishMoment: (moment) => bus.publish('moment.created', moment),
     publishEntity: (entity) => bus.publish('entity.updated', entity),
@@ -83,7 +90,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     // when nothing will distill it is pure waste (see PHASE2-NOTES). A transcription transport failure
     // propagates → the drain re-queues the file (retry-at-idle), exactly like distill/moments.
     const ready = isFlagEnabled(store, 'distill.transcribe')
-      ? await transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, opts), log })
+      ? await transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey }), log })
       : chunks
     await distiller.distillChunks(ready, {
       extractMoments: isFlagEnabled(store, 'distill.moments'),
@@ -101,6 +108,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     voice,
     fabric,
     docs: actDocs,
+    resolveKey,
     mode: (id) => distillDocs.mode(id),
     publish: (draft) => bus.publish('draft.created', draft),
     log,
@@ -124,9 +132,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
   bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
+  bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, voice, surfaces, queue, store, log }
+    const ctx: HandlerContext = { bus, fabric, secrets, voice, surfaces, queue, store, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -158,6 +167,19 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
   if (req.method === 'GET' && url.pathname === '/fabric') return send(res, 200, ctx.fabric.load())
   if (req.method === 'PUT' && url.pathname === '/fabric') return saveFabric(req, res, ctx)
+  if (req.method === 'GET' && url.pathname === '/fabric/profiles') return send(res, 200, ctx.fabric.profiles.list())
+  const profileClone = url.pathname.match(/^\/fabric\/profiles\/([^/]+)\/clone$/)
+  if (req.method === 'POST' && profileClone?.[1]) return cloneProfile(req, res, ctx, decodeURIComponent(profileClone[1]))
+  const profileActivate = url.pathname.match(/^\/fabric\/profiles\/([^/]+)\/activate$/)
+  if (req.method === 'POST' && profileActivate?.[1]) return activateProfile(res, ctx, decodeURIComponent(profileActivate[1]))
+  const profile = url.pathname.match(/^\/fabric\/profiles\/([^/]+)$/)
+  if (req.method === 'GET' && profile?.[1]) return getProfile(res, ctx, decodeURIComponent(profile[1]))
+  if (req.method === 'PUT' && profile?.[1]) return putProfile(req, res, ctx, decodeURIComponent(profile[1]))
+  if (req.method === 'DELETE' && profile?.[1]) return deleteProfile(res, ctx, decodeURIComponent(profile[1]))
+  if (req.method === 'GET' && url.pathname === '/fabric/secrets') return send(res, 200, ctx.secrets.listRefs().map((ref) => ({ ref })))
+  const secret = url.pathname.match(/^\/fabric\/secrets\/([^/]+)$/)
+  if (req.method === 'PUT' && secret?.[1]) return putSecret(req, res, ctx, decodeURIComponent(secret[1]))
+  if (req.method === 'DELETE' && secret?.[1]) return deleteSecret(res, ctx, decodeURIComponent(secret[1]))
   if (req.method === 'GET' && url.pathname === '/workspaces') return send(res, 200, ctx.store.all())
   if (req.method === 'GET' && url.pathname === '/registers') return send(res, 200, ctx.voice.registers())
   if (req.method === 'GET' && url.pathname === '/sessions') return send(res, 200, readSessions(ctx.store, url))
@@ -179,11 +201,98 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   return send(res, 404, { error: `no such route: ${req.method ?? 'GET'} ${url.pathname}` })
 }
 
+/**
+ * Edit the LIVE fabric (the active-profile view — see ARCHITECTURE §8). With a profile active this
+ * edits that profile in place (version-bumped); with none active it writes the legacy single doc.
+ * Either way the live fabric changed, so fabric.changed fires. Never carries key material: an
+ * endpoint's auth is a keyRef, not a value.
+ */
 async function saveFabric(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
   const body = await readJson(req)
   const errors = validationErrors('Fabric', body)
   if (errors.length > 0) return send(res, 400, { error: 'invalid Fabric', details: errors })
-  send(res, 200, ctx.fabric.save(body as Fabric))
+  const saved = ctx.fabric.save(body as Fabric)
+  await ctx.bus.publish('fabric.changed', ctx.fabric.load())
+  send(res, 200, saved)
+}
+
+/** Serve one fabric profile document by id. Unknown id ⇒ 404. */
+function getProfile(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const found = ctx.fabric.profiles.get(id)
+  if (!found) return send(res, 404, { error: `no such profile: ${id}` })
+  send(res, 200, found)
+}
+
+/**
+ * Create or update a fabric profile (everything user-configurable is a versioned, cloneable
+ * document). The body must validate as a FabricProfile and its id must match the route; the store
+ * stamps the next version. If this profile is the active one, the live fabric changed → fabric.changed.
+ */
+async function putProfile(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('FabricProfile', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid FabricProfile', details: errors })
+  const incoming = body as FabricProfile
+  if (incoming.id !== id) return send(res, 400, { error: 'profile id does not match route' })
+  const saved = ctx.fabric.profiles.save(incoming)
+  if (ctx.fabric.profiles.activeId() === id) await ctx.bus.publish('fabric.changed', ctx.fabric.load())
+  send(res, 200, saved)
+}
+
+/**
+ * Delete a fabric profile. Refuses (409) to delete the ACTIVE profile — activate another first, so
+ * the live fabric is never silently emptied. Unknown id ⇒ 404. Returns the deleted profile.
+ */
+function deleteProfile(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const found = ctx.fabric.profiles.get(id)
+  if (!found) return send(res, 404, { error: `no such profile: ${id}` })
+  if (ctx.fabric.profiles.activeId() === id) {
+    return send(res, 409, { error: 'cannot delete the active profile; activate another first' })
+  }
+  ctx.fabric.profiles.delete(id)
+  send(res, 200, found)
+}
+
+/** Clone a profile under a new id (copying a document). Source unknown ⇒ 404. Returns the clone. */
+async function cloneProfile(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, sourceId: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('CloneProfileRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid CloneProfileRequest', details: errors })
+  const request = body as CloneProfileRequest
+  if (ctx.fabric.profiles.get(request.id)) return send(res, 409, { error: `profile already exists: ${request.id}` })
+  const clone = ctx.fabric.profiles.clone(sourceId, request.id, request.name)
+  if (!clone) return send(res, 404, { error: `no such profile: ${sourceId}` })
+  send(res, 200, clone)
+}
+
+/**
+ * Activate a profile — its map becomes the live fabric (what invoke/health/bench run against).
+ * Unknown id ⇒ 404. Emits fabric.changed with the now-live fabric. Returns the activated profile.
+ */
+async function activateProfile(res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const activated = ctx.fabric.profiles.activate(id)
+  if (!activated) return send(res, 404, { error: `no such profile: ${id}` })
+  await ctx.bus.publish('fabric.changed', ctx.fabric.load())
+  send(res, 200, activated)
+}
+
+/**
+ * Store a secret VALUE under a ref (write-only inbound path). The value is validated as a
+ * SecretValue and handed to the secret store; the response is a bare SecretRef — the value is NEVER
+ * echoed back. This is the never-echo-to-UI discipline: no response/event/document carries the key.
+ */
+async function putSecret(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, ref: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('SecretValue', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid SecretValue', details: errors })
+  ctx.secrets.set(ref, (body as SecretValue).value)
+  send(res, 200, { ref })
+}
+
+/** Forget a secret. Unknown ref ⇒ 404. Returns the ref (never a value). */
+function deleteSecret(res: ServerResponse, ctx: HandlerContext, ref: string): void {
+  if (!ctx.secrets.delete(ref)) return send(res, 404, { error: `no such secret: ${ref}` })
+  send(res, 200, { ref })
 }
 
 async function saveFlag(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, key: string): Promise<void> {

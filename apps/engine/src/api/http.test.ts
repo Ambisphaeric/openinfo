@@ -515,3 +515,158 @@ test('GET /registers serves the seeded builtin registers', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('fabric profiles: seeded list, GET, PUT create, clone, activate, delete-active refused', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // the three example profiles are seeded and listable
+    const seeded = (await (await fetch(`${base}/fabric/profiles`)).json()) as { id: string }[]
+    assert.deepEqual(seeded.map((p) => p.id).sort(), ['lm-studio-local', 'ollama-local', 'remote-http-template'])
+    // seeded but INERT — GET /fabric is still the empty/legacy map
+    assert.deepEqual(((await (await fetch(`${base}/fabric`)).json()) as Fabric).slots.llm, [])
+
+    // GET one; unknown id → 404
+    assert.equal((await fetch(`${base}/fabric/profiles/lm-studio-local`)).status, 200)
+    assert.equal((await fetch(`${base}/fabric/profiles/nope`)).status, 404)
+
+    // PUT create a profile; id mismatch → 400
+    const profile = { id: 'my-rig', name: 'My rig', version: 1, fabric: { slots: { stt: [], tts: [], vlm: [], ocr: [], embed: [], llm: [{ kind: 'http', name: 'x', url: 'http://host:8000', api: 'openai-compat' }] } } }
+    const created = await fetch(`${base}/fabric/profiles/my-rig`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+    assert.equal(created.status, 200)
+    assert.equal((await created.json() as { version: number }).version, 1)
+    assert.equal((await fetch(`${base}/fabric/profiles/mismatch`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })).status, 400)
+
+    // clone; duplicate id → 409, unknown source → 404
+    const cloned = await fetch(`${base}/fabric/profiles/my-rig/clone`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'my-rig-2', name: 'Copy' }) })
+    assert.equal(cloned.status, 200)
+    assert.equal((await cloned.json() as { id: string }).id, 'my-rig-2')
+    assert.equal((await fetch(`${base}/fabric/profiles/my-rig/clone`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'my-rig' }) })).status, 409)
+    assert.equal((await fetch(`${base}/fabric/profiles/ghost/clone`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'z' }) })).status, 404)
+
+    // activate → GET /fabric now reflects the active profile's map
+    const activated = await fetch(`${base}/fabric/profiles/my-rig/activate`, { method: 'POST' })
+    assert.equal(activated.status, 200)
+    assert.equal(((await (await fetch(`${base}/fabric`)).json()) as Fabric).slots.llm.length, 1)
+    assert.equal((await fetch(`${base}/fabric/profiles/ghost/activate`, { method: 'POST' })).status, 404)
+
+    // deleting the ACTIVE profile is refused (409); a non-active one deletes (200); unknown → 404
+    assert.equal((await fetch(`${base}/fabric/profiles/my-rig`, { method: 'DELETE' })).status, 409)
+    assert.equal((await fetch(`${base}/fabric/profiles/my-rig-2`, { method: 'DELETE' })).status, 200)
+    assert.equal((await fetch(`${base}/fabric/profiles/my-rig-2`, { method: 'DELETE' })).status, 404)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('secrets never echo: write/list/delete carry only refs; no value reaches GET /fabric or the fabric.changed event', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const fabricEvents: unknown[] = []
+  app.bus.subscribe('fabric.changed', (f) => { fabricEvents.push(f) })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  const SECRET = 'sk-super-secret-value-xyz'
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // empty to start
+    assert.deepEqual(await (await fetch(`${base}/fabric/secrets`)).json(), [])
+
+    // PUT a secret value → response is a bare ref, NEVER the value
+    const put = await fetch(`${base}/fabric/secrets/remote-llm-key`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: SECRET }) })
+    assert.equal(put.status, 200)
+    const putBody = await put.text()
+    assert.deepEqual(JSON.parse(putBody), { ref: 'remote-llm-key' })
+    assert.equal(putBody.includes(SECRET), false, 'PUT response leaked the value')
+
+    // GET list returns refs only, never values
+    const list = await (await fetch(`${base}/fabric/secrets`)).text()
+    assert.deepEqual(JSON.parse(list), [{ ref: 'remote-llm-key' }])
+    assert.equal(list.includes(SECRET), false, 'GET /fabric/secrets leaked the value')
+
+    // put a profile whose endpoint references the key by ref, activate it → GET /fabric + the event
+    const profile = { id: 'authed', name: 'Authed', version: 1, fabric: { slots: { stt: [], tts: [], vlm: [], ocr: [], embed: [], llm: [{ kind: 'http', name: 'r', url: 'http://host:8000', api: 'openai-compat', auth: { keyRef: 'remote-llm-key' } }] } } }
+    await fetch(`${base}/fabric/profiles/authed`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+    await fetch(`${base}/fabric/profiles/authed/activate`, { method: 'POST' })
+
+    const fabricText = await (await fetch(`${base}/fabric`)).text()
+    assert.equal(fabricText.includes(SECRET), false, 'GET /fabric leaked the value')
+    assert.equal(fabricText.includes('remote-llm-key'), true, 'the keyRef (not the value) should be present')
+
+    // the fabric.changed event payload carries the keyRef, never the value
+    assert.ok(fabricEvents.length >= 1)
+    const eventText = JSON.stringify(fabricEvents)
+    assert.equal(eventText.includes(SECRET), false, 'fabric.changed leaked the value')
+    assert.equal(eventText.includes('remote-llm-key'), true)
+
+    // DELETE returns the ref, never the value; unknown → 404
+    const del = await fetch(`${base}/fabric/secrets/remote-llm-key`, { method: 'DELETE' })
+    assert.equal(del.status, 200)
+    assert.equal((await del.text()).includes(SECRET), false)
+    assert.equal((await fetch(`${base}/fabric/secrets/remote-llm-key`, { method: 'DELETE' })).status, 404)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('e2e: activating a profile swaps what the distiller invokes, and its keyRef reaches the server Authorization header', async () => {
+  const authHeaders: string[] = []
+  const server = createServer((req, res) => {
+    authHeaders.push(String(req.headers['authorization'] ?? ''))
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'summary via active profile' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const llmAddr = server.address()
+  assert.ok(llmAddr && typeof llmAddr === 'object')
+  const llmUrl = `http://127.0.0.1:${llmAddr.port}`
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  const SECRET = 'sk-profile-key-777'
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // store the secret the profile's endpoint references, create + activate the profile
+    await fetch(`${base}/fabric/secrets/prof-key`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value: SECRET }) })
+    const profile = { id: 'live-remote', name: 'Live remote', version: 1, fabric: { slots: { stt: [], tts: [], vlm: [], ocr: [], embed: [], llm: [{ kind: 'http', name: 'remote', url: llmUrl, api: 'openai-compat', model: 'm', auth: { keyRef: 'prof-key' } }] } } }
+    await fetch(`${base}/fabric/profiles/live-remote`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+    await fetch(`${base}/fabric/profiles/live-remote/activate`, { method: 'POST' })
+
+    await fetch(`${base}/flags/distill.enabled`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: 'distill.enabled', default: true, scope: 'engine', description: 'on' }) })
+
+    const started = (await (await fetch(`${base}/sessions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }) })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({ id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence, capturedAt: new Date(Date.UTC(2026, 6, 7, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data })
+    for (const c of [chunk(1, 0, 'ship it'), chunk(2, 40, 'agreed, ship it')]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+
+    // the drain distills via the ACTIVE profile's endpoint, carrying its resolved keyRef
+    await eventuallyHttp(async () => {
+      const distillates = (await (await fetch(`${base}/query`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ source: 'moments', params: { workspace: 'default' } }) })).json()) as QueryResult
+      void distillates
+      assert.ok(authHeaders.length >= 1)
+    }, 8000)
+    assert.equal(authHeaders[0], `Bearer ${SECRET}`)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
