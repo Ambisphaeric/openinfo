@@ -1,0 +1,53 @@
+{
+  "$id": "TodoItem",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "text",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "text": {
+      "minLength": 1,
+      "description": "the follow-up, as a short imperative line",
+      "type": "string"
+    },
+    "done": {
+      "description": "user checked it off; extraction never sets this",
+      "type": "boolean"
+    },
+    "provenance": {
+      "$id": "TodoProvenance",
+      "additionalProperties": false,
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "distillateId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "momentId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        }
+      }
+    },
+    "createdAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

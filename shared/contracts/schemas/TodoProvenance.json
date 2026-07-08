@@ -1,0 +1,22 @@
+{
+  "$id": "TodoProvenance",
+  "additionalProperties": false,
+  "type": "object",
+  "properties": {
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "distillateId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "momentId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    }
+  }
+}
