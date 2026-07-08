@@ -1,6 +1,6 @@
 # openinfo — code map
 
-**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup) · 2026-07-07
+**Status:** Phases 0–2 built (contracts · seam · distill/moments/index · sessions · HUD · act · fabric profiles/secrets · GET /setup · onboarding discovery + Get-Started lens) · 2026-07-07
 **Reads with:** [ARCHITECTURE.md](./ARCHITECTURE.md) (the what) · [IMPLEMENTATION.md](./IMPLEMENTATION.md) (the when)
 This file is the **where** — including where features that don't exist yet will land, so no later phase ever
 has to invent a home (the historical failure mode).
@@ -26,6 +26,7 @@ openinfo/
 │  ├─ fabric/                   P1   slots stt/tts/llm/vlm/ocr/embed · endpoints local|http (P1) cloud (P7)
 │  │                                 bench (measured tok/s) · health (first-healthy-wins) · invoke (P2: llm chat-completions · stt /v1/audio/transcriptions multipart — both openai-compat, first-healthy-wins; keyRef→Authorization: Bearer at invoke time)
 │  │                                 profiles (named/versioned/cloneable slot-maps; active = live fabric; GET/PUT /fabric = active view) · secrets (SecretStore interface; v0 chmod-600 JSON in secrets/, keychain P7 — write-only API, refs never values)
+│  │                                 discover (P2: probe-list + capability-map docs → GET /fabric/discover: parallel probe /v1/models, classify by name, synthesize a config-1 suggestion; local sweep + local runtimes later)
 │  ├─ workflow/                 P2   ← loom packages/recipe · compile.ts (mode doc → DAG) — NOT built: P2 primitives wired direct at their seams; DAG deferred until multi/chained acts (see workflow/README)
 │  ├─ distill/                  P2   merge · distiller · transcribe (audio→text pre-distill drain stage via stt slot; mic="me"/system-audio="them" speaker split) · moments (typed extraction) · parse (defensive JSON, shared) · defaults/documents (template+mode docs) │ ocr (P3)
 │  ├─ voice/                    P2   resolve · interpolate · documents/defaults (registers+bindings) │ P5: comparator · chains
@@ -36,7 +37,7 @@ openinfo/
 │  ├─ queue/                    P1   spool · drain (P2: optional distill processor · drainNow flushes before the act) │ P3: eta │ gc
 │  ├─ overlay/                  P2   rules/lenses · roles · ontology (voice lives in voice/)
 │  ├─ flags/                    P0   flag registry (flags are documents)
-│  ├─ surfaces/                 P2   HUD surface documents (documents/defaults) · block-query compiler (query.ts: BlockQuery→store calls) · setup/ (GET /setup — the first ENGINE-served surface: forms over profile+secret docs) │ P4: serve workbench │ P6: custom-block sandbox (rabbithole pattern)
+│  ├─ surfaces/                 P2   HUD surface documents (documents/defaults) · block-query compiler (query.ts: BlockQuery→store calls) · setup/ (GET /setup — the first ENGINE-served surface: forms over profile+secret docs; the Get-Started capability lens over /fabric/discover) │ P4: serve workbench │ P6: custom-block sandbox (rabbithole pattern)
 │  └─ teach/                    P2   dismiss/reroute signals → extraction prompts (quality flywheel)
 │
 ├─ apps/client/src/             thin Electron client — NEVER opens a database
@@ -79,6 +80,10 @@ openinfo/
 | Cloud endpoints (Gemini Live, Anthropic) | P7 | `engine/fabric/endpoints/cloud.ts` (keychain) |
 | Fabric profiles + secrets (this slice) | P2 | `engine/fabric/{profiles,secrets}.ts` + profile/secret routes; live fabric = active profile |
 | First-run / fabric setup page (forms over profile+secret docs) | P2 (built) | `engine/surfaces/setup/` — GET /setup, ENGINE-served forms over the profile+secret routes (deviates from the earlier `client/surfaces/setup/` guess: served by the engine like the workbench §6, not a client webview; the tray opens it in the browser). No new engine capability. |
+| Onboarding discovery + Get-Started lens (this slice) | P2 (built) | `engine/fabric/discover.ts` + probe-list/capability-map seed docs; `GET /fabric/discover` (DiscoverResult); the capability lens + one-button "Use this setup" in `engine/surfaces/setup/` (composes the existing profile routes — no new write semantics) |
+| Say-something verification loop (slice b) | P2 | `client/surfaces/` — client-side "speak → watch it become a moment"; mic-permission prompt in-flow. Design-noted (ARCHITECTURE §8), not built |
+| Engine-managed local runtimes / tier zero (slice c) | P2/P3 | `engine/fabric/endpoints/local.ts` — the `local` endpoint kind's runtime lifecycle (download + spawn); invoke/health already skip `local` gracefully. Design-noted, not built |
+| LAN sweep discovery (with permission) | future | `engine/fabric/discover.ts` — a consent-gated subnet sweep (cross-host rigs). Blocked on macOS Local-Network TCC (GUI-domain LaunchAgent; see ARCHITECTURE §8 platform note) |
 | macOS Keychain secret store | P7 | `engine/fabric/secrets.ts` — `KeychainSecretStore` behind the `SecretStore` interface (drop-in for the v0 file) |
 | Drift steering (comparator + chains) | P5 | `engine/voice/{comparator,chains}.ts`; card/glyph = HUD blocks |
 | TTS whisper (chain terminus) | P5 | `fabric` tts slot + chain step `tts` |

@@ -275,6 +275,72 @@ combination is a document** (§2's rule, applied to the fabric) — named, versi
   processing behaviors — the established no-flag line. What a profile *switches on* (distill/act) is already
   gated; a `fabric.profiles` flag would gate nothing not already gated.
 
+### Onboarding from first principles — discover, the capability lens, tier zero (design note — 2026-07-07)
+
+The fabric setup surface above is *forms over documents* — powerful, but it asks a new user to know ports,
+model-capability trivia, and OpenAI-compatibility conventions. The founder configuring his OWN product hit
+exactly that: template fixes, port lookups, which model is an OCR model, two TCC permissions. Onboarding must
+be **simple for a new user in a standard flow**, designed from first principles. The substrate does not
+change — profiles/keyRefs/slots stay exactly as the note above defines them. This is a **lens** over the same
+documents, plus one new read-only engine capability (discovery). Six principles govern it:
+
+1. **Detection over configuration.** LM Studio :1234, Ollama :11434, kokoro :8880 (and common whisper-server
+   ports) are *conventions*; `GET /v1/models` enumerates what is actually loaded; model *names* classify
+   capabilities (contains `ocr` → ocr; `embed` → embed; `-vl`/`vision` → vlm; `whisper`/`parakeet` → stt;
+   `kokoro`/`tts` → tts; else → llm). So the first screen is a **result** — "Found LM Studio with 37 models.
+   Use it?" — not a form. Two seeded, versioned **documents** carry the conventions (everything configurable
+   is a document): a **probe list** (well-known local servers) and a **capability map** (name-pattern → slot
+   rules). `GET /fabric/discover` probes the list in parallel (~1 s each, never throws), classifies every
+   model, and synthesizes a **suggestion**: a one-endpoint-per-slot config-1 fabric.
+2. **Capabilities, not plumbing.** The onboarding lens speaks in what the app can *do*: **Hearing** (stt) ·
+   **Thinking** (llm) · **Reading the screen** (ocr/vlm) · **Speaking** (tts) — each row showing what was
+   found, what is missing, and one honest line ("no transcription server found — openinfo still distills
+   typed/text capture; audio needs one"). Slots/profiles are still the substrate; the lens is a projection.
+3. **Tier zero (design-noted, NOT built here).** No server at all is the true first run. The designed home is
+   the **existing stubbed `local` endpoint kind** (§8): the engine downloads and spawns a managed runtime
+   (`mlx`/`ollama`/`whisper.cpp`/…) and fills a slot with a `local` endpoint. `fabric/invoke.ts` and
+   `health.ts` already *skip* `local` gracefully (they fall through), so tier zero is additive: implement the
+   runtime lifecycle behind the same `Endpoint` contract, no caller change. **Slice (c).**
+4. **One decision at a time.** "Use what we found?" writes and activates a `config-1` profile **silently**,
+   through the EXISTING profile routes (`PUT /fabric/profiles/config-1` + `POST …/activate`) — no new write
+   semantics. Power features (naming/cloning/cross-host rows, keyRefs, inert slots) live behind an **Advanced
+   setup** disclosure that is the existing editor, unchanged.
+5. **Verify by doing (design-noted, NOT built here).** After "Use this setup", a "say something → watch it
+   become a moment" live loop closes the trust gap. It is **client-side** (it needs the mic and getUserMedia,
+   and the mic-permission prompt belongs in-flow, right when the user chooses to speak), so it lands in the
+   client, not this engine slice. The engine already exposes everything it needs (capture → distill → moments
+   → `GET /moments` / the moment WS event). **Slice (b).**
+6. **Gotchas as affordances.** Onboarding must metabolize the real traps: mic TCC asked *in context* (slice b);
+   "server installed but not running" deep links (`lmstudio://`, future); and the macOS **Local Network TCC**
+   finding below.
+
+**Scope of THIS slice:** discovery (the two documents + `fabric/discover.ts` + `GET /fabric/discover`) and the
+**Get Started lens** on `/setup` (the capability checklist + the one-button "Use this setup" → config-1).
+Deferred, each with its home named: (b) the say-something verification loop (client); (c) engine-managed
+`local` runtimes / tier zero (`fabric` `local` kind); future — with-permission **LAN sweep** discovery (the
+founder's own rig is cross-host: STT on one box, LLM on another, some over tailscale — a subnet sweep with
+explicit consent extends `fabric/discover.ts`) and `lmstudio://` launch deep links.
+
+**The suggestion heuristic (documented so it is inspectable, product principle 1).** Reachable servers only, in
+probe-list order, then model order within each: for each slot pick the first model classified into it. For the
+**llm** slot, prefer a *pure* chat model (classified `llm` and nothing else) over a multi-slot model (a
+vision-language model is both `vlm` and `llm`, but should not become the default chat model when a plain chat
+model exists). For **non-llm** slots, only explicitly-classified models qualify (the default rule only ever
+produces `llm`, so non-llm membership is explicit by construction — this is what "prefer explicit-capability
+over default" means). No quality ranking yet (param count, measured tok/s) — "best available" is deterministic
+first-match; a real rank is future, and the user always sees every found model and can pick via Advanced.
+
+**Platform note — macOS Local Network TCC (cost the founder a day).** On macOS, contacting a host on the local
+network (a bare LAN IP or `*.local`, and in some OS versions even loopback probes from certain contexts) can
+trip the **Local Network** privacy gate. A process running in a **GUI login session** can raise the system
+prompt and, once approved, reach LAN hosts; a process **orphaned from ssh** (a daemon started over a headless
+ssh session, detached from any Aqua/GUI session) is **silently denied** — no prompt, no error, connections
+just fail. This matters for cross-host rigs and for engines on **headless test boxes**: such an engine must run
+from a **GUI-domain LaunchAgent** (`launchctl … gui/<uid>`), not a raw ssh-spawned process, or its LAN probes
+(the future sweep) and cross-host http endpoints will fail invisibly. Localhost discovery in THIS slice is not
+affected in practice, but the sweep (future) and multi-host profiles are — recorded here so the sweep slice
+starts from the answer, not the lost day.
+
 ---
 
 ## 9. What transplants, from where
