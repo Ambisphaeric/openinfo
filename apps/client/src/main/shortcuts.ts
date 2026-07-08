@@ -14,6 +14,8 @@ export type ShellCommand =
   | 'start-session'
   | 'end-session'
   | 'open-setup'
+  | 'open-mic-settings'
+  | 'open-accessibility-settings'
   | 'quit'
 
 export const SHORTCUTS: ReadonlyArray<{ accelerator: string; command: ShellCommand }> = [

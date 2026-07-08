@@ -76,6 +76,36 @@ test('the "Set up models…" item is prominent (⚠) only when the llm slot is e
   assert.equal(item(buildTrayMenu(state({ needsModelSetup: false })), 'open-setup')?.label, 'Set up models…')
 })
 
+test('engine-unreachable is distinguished from first-boot connecting, and shows the URL it tried', () => {
+  // Not yet tried ⇒ transient connecting state (no false alarm).
+  assert.equal(trayStatusLabel(state({ connected: false })), '○ connecting…')
+  assert.match(trayTooltip(state({ connected: false })), /connecting/)
+  // Tried and failed ⇒ lead with the honest unreachable state + the URL.
+  const tried = state({ connected: false, engineTried: true, engineUrl: 'http://127.0.0.1:8917' })
+  assert.equal(trayStatusLabel(tried), '⚠ engine unreachable — http://127.0.0.1:8917')
+  assert.match(trayTooltip(tried), /engine unreachable \(http:\/\/127\.0\.0\.1:8917\)/)
+})
+
+test('a LAN engine that is unreachable gets an honest Local Network hint (loopback does not)', () => {
+  const lan = state({ connected: false, engineTried: true, engineUrl: 'http://studio.local:8917', lanEngine: true })
+  assert.match(trayTooltip(lan), /check Local Network permission\?/)
+  const local = state({ connected: false, engineTried: true, engineUrl: 'http://127.0.0.1:8917', lanEngine: false })
+  assert.doesNotMatch(trayTooltip(local), /Local Network/)
+})
+
+test('the mic-blocked fix-it appears only when blocked and opens the mic Settings pane', () => {
+  assert.equal(item(buildTrayMenu(state({ micBlocked: true })), 'fix-mic')?.command, 'open-mic-settings')
+  assert.match(item(buildTrayMenu(state({ micBlocked: true })), 'fix-mic')?.label ?? '', /Microphone blocked/)
+  assert.equal(item(buildTrayMenu(state({ micBlocked: false })), 'fix-mic'), undefined) // hidden when not blocked
+  assert.equal(item(buildTrayMenu(state()), 'fix-mic'), undefined)
+})
+
+test('the Accessibility fix-it appears only when context detection is on-but-title-less', () => {
+  assert.equal(item(buildTrayMenu(state({ accessibilityHint: true })), 'fix-accessibility')?.command, 'open-accessibility-settings')
+  assert.match(item(buildTrayMenu(state({ accessibilityHint: true })), 'fix-accessibility')?.label ?? '', /Accessibility/)
+  assert.equal(item(buildTrayMenu(state()), 'fix-accessibility'), undefined) // hidden by default
+})
+
 test('quit is always present and enabled', () => {
   const q = item(buildTrayMenu(state()), 'quit')
   assert.equal(q?.command, 'quit')
