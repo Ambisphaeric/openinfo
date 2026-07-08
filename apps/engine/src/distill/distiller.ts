@@ -8,6 +8,7 @@ import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } f
 import { bucketIntoWindows } from './merge.js'
 import { DistillDocuments } from './documents.js'
 import { extractMoments, type ExtractInput } from './moments.js'
+import { speakerLabel } from './transcribe.js'
 
 export type LlmInvoke = (messages: LlmMessage[], opts: InvokeOptions) => Promise<LlmResult>
 
@@ -115,7 +116,17 @@ export class Distiller {
       for (const window of windows) {
         const workspaceId = window.chunks[0]!.workspaceId
         const resolved = resolveVoice(registers, bindings, { sessionId, workspaceId, modeId: mode.id })
-        const transcript = window.chunks.map((chunk) => chunk.data).join('\n')
+        // Speaker attribution for free (see transcribe.ts::speakerLabel): mic → "me", system-audio →
+        // "them". Prefixing the transcript line is the least-invasive carry — it flows unchanged into
+        // {{transcript}} for the summary AND the moment/entity extraction prompts, so the model can
+        // attribute speakers (echoed into Moment.speaker) without a diarizer. Sources with no speaker
+        // (screen/calendar/repo/camera) are left bare.
+        const transcript = window.chunks
+          .map((chunk) => {
+            const label = speakerLabel(chunk.source)
+            return label ? `${label}: ${chunk.data}` : chunk.data
+          })
+          .join('\n')
         const prompt = interpolateTemplate(template.body, {
           ...compileVoiceVars(resolved.dials),
           transcript,

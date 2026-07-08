@@ -10,3 +10,4 @@ export {
   type ExtractResult,
 } from './moments.js'
 export { parseJsonCandidates } from './parse.js'
+export { transcribeChunks, isAudioChunk, speakerLabel, type SttInvoke, type TranscribeDeps } from './transcribe.js'

@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type Draft, type Entity, type Fabric, type Flag, type Moment, type RelevantEntity, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
 import { Actor, ActDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller } from '../distill/index.js'
-import { FabricDocuments } from '../fabric/index.js'
+import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
+import { FabricDocuments, invokeStt } from '../fabric/index.js'
 import { relevantNow } from '../index/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
@@ -76,7 +76,16 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // distill.index alone entities still index, but there are no same-pass moments to link.
   const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
     if (!isFlagEnabled(store, 'distill.enabled')) return
-    await distiller.distillChunks(chunks, {
+    // Transcription is a pre-distill drain stage (distill.transcribe, OFF by default). It rewrites
+    // base64 audio/* chunks (mic → "me", system-audio → "them") to utf8 text via the stt slot BEFORE
+    // the distiller's utf8 filter; non-audio chunks pass through. It is gated INSIDE distill.enabled
+    // on purpose — there is no persistence path for transcribed-but-undistilled text, so running stt
+    // when nothing will distill it is pure waste (see PHASE2-NOTES). A transcription transport failure
+    // propagates → the drain re-queues the file (retry-at-idle), exactly like distill/moments.
+    const ready = isFlagEnabled(store, 'distill.transcribe')
+      ? await transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, opts), log })
+      : chunks
+    await distiller.distillChunks(ready, {
       extractMoments: isFlagEnabled(store, 'distill.moments'),
       extractEntities: isFlagEnabled(store, 'distill.index'),
     })
