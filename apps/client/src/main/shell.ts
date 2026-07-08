@@ -144,10 +144,11 @@ const dispatch = (command: ShellCommand): void => {
       return
     }
     case 'open-setup':
-      // The setup surface is served by the ENGINE (GET /setup) — open it in the default browser. It
-      // is a forms-over-documents page, roomier than any tray UI, and works even against a remote
-      // engine. No embedded webview (that is a later client-settings concern).
-      void electronShell.openExternal(`${cfg.engineUrl}/setup`).catch((err) => console.error('[shell] open setup failed:', err))
+      // The settings surface is served by the ENGINE (GET /settings — formerly /setup, which 301s
+      // here) — open it in the default browser. It is a sidebar of forms-over-documents sections,
+      // roomier than any tray UI, and works even against a remote engine. No embedded webview (that is
+      // a later client-settings concern).
+      void electronShell.openExternal(`${cfg.engineUrl}/settings`).catch((err) => console.error('[shell] open settings failed:', err))
       return
     case 'open-mic-settings':
     case 'open-accessibility-settings':
@@ -505,8 +506,9 @@ const maybeOpenFirstRunSetup = (): void => {
     firstRunChecked = true
     const now = new Date().toISOString()
     markFirstRunShown(userData, now)
-    console.log('[shell] first run — llm slot empty, opening /setup once')
-    void electronShell.openExternal(`${cfg.engineUrl}/setup`).catch((err) => console.error('[shell] open setup (first run) failed:', err))
+    console.log('[shell] first run — llm slot empty, opening /settings once (Get started leads)')
+    // /settings auto-selects the Get-started section when the llm slot is empty (the first-run condition).
+    void electronShell.openExternal(`${cfg.engineUrl}/settings`).catch((err) => console.error('[shell] open settings (first run) failed:', err))
   } else if (needsSetup !== undefined) {
     // Reached the engine and we KNOW the setup state (already shown, or a model exists) — done for this run.
     firstRunChecked = true
