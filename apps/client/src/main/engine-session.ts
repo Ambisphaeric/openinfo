@@ -1,4 +1,4 @@
-import type { Session, StartSessionRequest } from '@openinfo/contracts'
+import type { Fabric, Session, StartSessionRequest } from '@openinfo/contracts'
 
 /**
  * The tray's session control, over the engine HTTP API — the client NEVER opens a DB (dependency
@@ -38,6 +38,11 @@ export class EngineSessionClient {
     return this.request('POST', `/sessions/${encodeURIComponent(id)}/end`) as Promise<Session>
   }
 
+  /** The live fabric (active-profile view) — the tray reads it to decide the "Set up models…" nudge. */
+  fabric(): Promise<Fabric> {
+    return this.request('GET', '/fabric') as Promise<Fabric>
+  }
+
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
     const init: { method: string; headers?: Record<string, string>; body?: string } = { method }
     if (body !== undefined) {
@@ -49,6 +54,13 @@ export class EngineSessionClient {
     return response.json()
   }
 }
+
+/**
+ * Does the live fabric need a model set up? True when the llm slot has no endpoint — nothing can
+ * distill until one exists, so the tray surfaces "Set up models…" prominently. Pure so the tray's
+ * first-run nudge is asserted headless; the shell recomputes it on connect and on `fabric.changed`.
+ */
+export const needsModelSetup = (fabric: Fabric): boolean => fabric.slots.llm.length === 0
 
 /**
  * Tracks whether a session is live from the engine's WS event stream — a PUSH source (session.started

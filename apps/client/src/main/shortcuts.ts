@@ -7,7 +7,14 @@
  * accelerator uses electron's cross-platform `CommandOrControl` token (⌘ on macOS, Ctrl elsewhere).
  */
 /** The shell's command vocabulary — emitted by the tray menu and by global shortcuts. */
-export type ShellCommand = 'show-hud' | 'hide-hud' | 'toggle-visibility' | 'start-session' | 'end-session' | 'quit'
+export type ShellCommand =
+  | 'show-hud'
+  | 'hide-hud'
+  | 'toggle-visibility'
+  | 'start-session'
+  | 'end-session'
+  | 'open-setup'
+  | 'quit'
 
 export const SHORTCUTS: ReadonlyArray<{ accelerator: string; command: ShellCommand }> = [
   { accelerator: 'CommandOrControl+\\', command: 'toggle-visibility' },

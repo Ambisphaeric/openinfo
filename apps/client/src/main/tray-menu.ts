@@ -16,10 +16,18 @@ export interface TrayState {
   sessionLive: boolean
   /** True once the initial session state has been fetched — before that Start/End is disabled. */
   connected: boolean
-  /** Is the mic actively recording? Shows the honest ● rec indicator while a session captures. */
+  /** Has audio genuinely begun flowing? Shows the honest ● rec indicator (NOT on start intent). */
   capturing?: boolean
+  /** Mic told to start but the first segment hasn't arrived yet — the honest "warming up" state. */
+  micStarting?: boolean
   /** Was mic access refused? Shows a clear indication; the session/text path still works. */
   micBlocked?: boolean
+  /**
+   * Does the live fabric's llm slot have no endpoint? Then nothing can distill — the tray surfaces
+   * "Set up models…" prominently (⚠) as the first-run onboarding nudge (see PHASE2-NOTES). Undefined
+   * until the fabric has been fetched, so the item stays quiet rather than crying wolf before we know.
+   */
+  needsModelSetup?: boolean | undefined
 }
 
 export interface TrayMenuItem {
@@ -42,6 +50,7 @@ export const trayStatusLabel = (state: TrayState): string => {
   if (!state.sessionLive) return '○ no session'
   if (state.micBlocked) return '● session live · mic blocked'
   if (state.capturing) return '● session live · ● rec'
+  if (state.micStarting) return '● session live · ○ mic…'
   return '● session live'
 }
 
@@ -50,8 +59,18 @@ export const trayTooltip = (state: TrayState): string => {
   if (!state.sessionLive) return 'openinfo — idle'
   if (state.micBlocked) return 'openinfo — session live (mic blocked)'
   if (state.capturing) return 'openinfo — session live ● rec'
+  if (state.micStarting) return 'openinfo — session live (mic starting…)'
   return 'openinfo — session live'
 }
+
+/**
+ * The "Set up models…" tray item label. On first run (or any time the live fabric has no llm
+ * endpoint) it is prefixed with ⚠ and reworded to a call to action — the tray IS the onboarding
+ * nudge (no popups/notifications, per scope). Once an llm endpoint exists it is a plain, always-there
+ * entry to the setup page. `undefined` (fabric not yet fetched) reads as "not prominent".
+ */
+export const setupItemLabel = (needsModelSetup: boolean | undefined): string =>
+  needsModelSetup === true ? '⚠ Set up models…' : 'Set up models…'
 
 /**
  * Build the tray context menu as a declarative spec. One "toggle" item each for the window
@@ -76,5 +95,13 @@ export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => [
     enabled: state.connected,
   },
   { id: 'sep-2', type: 'separator' },
+  {
+    id: 'open-setup',
+    type: 'normal',
+    label: setupItemLabel(state.needsModelSetup),
+    command: 'open-setup',
+    enabled: true,
+  },
+  { id: 'sep-3', type: 'separator' },
   { id: 'quit', type: 'normal', label: 'Quit openinfo', command: 'quit', enabled: true },
 ]

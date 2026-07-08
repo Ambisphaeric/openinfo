@@ -1,11 +1,12 @@
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, systemPreferences, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, type MenuItemConstructorOptions } from 'electron'
+import type { Fabric } from '@openinfo/contracts'
 import { resolveShellConfig, type ShellConfig } from './config.js'
 import { hudWindowSpec } from './window-options.js'
 import { buildTrayMenu, trayTooltip, type TrayState } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
-import { EngineSessionClient, SessionLiveState } from './engine-session.js'
+import { EngineSessionClient, SessionLiveState, needsModelSetup } from './engine-session.js'
 import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './tray-icon.js'
 import { grabOffset, draggedOrigin, resolveStartupPosition, type ScreenPoint } from './window-position.js'
 import { readSavedPosition, savePosition } from './window-store.js'
@@ -36,6 +37,9 @@ let captureWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let connected = false
 let micState: MicState = 'idle'
+// Whether the live fabric's llm slot is empty — drives the tray's prominent "⚠ Set up models…"
+// first-run nudge. Undefined until the fabric is fetched, so the tray stays quiet before we know.
+let needsSetup: boolean | undefined
 // The mic-capture pipeline is built in whenReady (EngineLink needs app.getPath, the controller needs
 // the capture window). EngineLink is the capture path (POST /capture/mic + the offline spool); the
 // tray keeps its own tiny EngineSessionClient — EngineLink is introduced here only because capture spools.
@@ -53,7 +57,9 @@ const trayState = (): TrayState => ({
   sessionLive: liveState.live,
   connected,
   capturing: micState === 'capturing',
+  micStarting: micState === 'requesting' || micState === 'starting',
   micBlocked: micState === 'denied',
+  needsModelSetup: needsSetup,
 })
 
 const refreshTray = (): void => {
@@ -98,6 +104,12 @@ const dispatch = (command: ShellCommand): void => {
       if (id) void session.endSession(id).catch((err) => console.error('[shell] end session failed:', err))
       return
     }
+    case 'open-setup':
+      // The setup surface is served by the ENGINE (GET /setup) — open it in the default browser. It
+      // is a forms-over-documents page, roomier than any tray UI, and works even against a remote
+      // engine. No embedded webview (that is a later client-settings concern).
+      void electronShell.openExternal(`${cfg.engineUrl}/setup`).catch((err) => console.error('[shell] open setup failed:', err))
+      return
     case 'quit':
       app.quit()
   }
@@ -266,7 +278,12 @@ const connectEvents = (): void => {
   socket.addEventListener('message', (event) => {
     try {
       const parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
-      if (typeof parsed.name === 'string' && liveState.applyEvent({ name: parsed.name, payload: parsed.payload })) {
+      if (typeof parsed.name !== 'string') return
+      if (liveState.applyEvent({ name: parsed.name, payload: parsed.payload })) refreshTray()
+      // The live fabric changed (activate / PUT /fabric / active-profile edit) — recompute whether
+      // the "Set up models…" nudge should be prominent, without a refetch (the event carries the map).
+      if (parsed.name === 'fabric.changed' && parsed.payload) {
+        needsSetup = needsModelSetup(parsed.payload as Fabric)
         refreshTray()
       }
     } catch {
@@ -284,6 +301,13 @@ const seedSessionState = async (): Promise<void> => {
   } catch (err) {
     console.error('[shell] could not reach engine for session state:', err)
     connected = false
+  }
+  // Seed the "Set up models…" prominence from the live fabric (best-effort — a failure just leaves
+  // the nudge quiet rather than crashing the tray).
+  try {
+    needsSetup = needsModelSetup(await session.fabric())
+  } catch (err) {
+    console.error('[shell] could not read fabric for setup nudge:', err)
   }
   refreshTray()
 }

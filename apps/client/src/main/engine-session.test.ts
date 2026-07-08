@@ -1,7 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Session } from '@openinfo/contracts'
-import { EngineSessionClient, SessionLiveState, type FetchLike } from './engine-session.js'
+import type { Fabric, Session } from '@openinfo/contracts'
+import { EngineSessionClient, SessionLiveState, needsModelSetup, type FetchLike } from './engine-session.js'
+
+const emptySlots = (): Fabric['slots'] => ({ stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] })
 
 const session = (over: Partial<Session> = {}): Session => ({
   id: 's1',
@@ -76,6 +78,21 @@ test('SessionLiveState tracks live from WS events, scoped to its workspace', () 
   state.applyEvent({ name: 'session.ended', payload: session({ id: 's1', endedAt: '2026-07-07T01:00:00.000Z' }) })
   assert.equal(state.live, false)
   assert.deepEqual(changes, [true, false])
+})
+
+test('fabric() GETs the live fabric', async () => {
+  const fab: Fabric = { slots: emptySlots() }
+  const { fetch, calls } = stubFetch(fab)
+  const client = new EngineSessionClient('http://engine:8787', fetch)
+  assert.deepEqual(await client.fabric(), fab)
+  assert.equal(calls[0]!.url, 'http://engine:8787/fabric')
+  assert.equal(calls[0]!.method, 'GET')
+})
+
+test('needsModelSetup is true exactly when the llm slot is empty', () => {
+  assert.equal(needsModelSetup({ slots: emptySlots() }), true)
+  const withLlm: Fabric = { slots: { ...emptySlots(), llm: [{ kind: 'http', name: 'l', url: 'http://x', api: 'openai-compat' }] } }
+  assert.equal(needsModelSetup(withLlm), false)
 })
 
 test('seed sets live only for an unended session', () => {
