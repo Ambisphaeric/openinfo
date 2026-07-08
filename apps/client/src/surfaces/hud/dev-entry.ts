@@ -3,6 +3,7 @@ import { mountSurface, renderInto, type MountTarget } from '../block-renderer/in
 import { Hud } from './hud.js'
 import type { HudTransport } from './transport.js'
 import { hudStyles } from './styles.js'
+import { installWindowDrag, type DragBridge } from './window-drag.js'
 
 /**
  * A plain-browser dev entry that renders the live HUD against a running engine — the mountable view
@@ -75,6 +76,8 @@ interface DevGlobal {
   }
   location?: { search: string }
   navigator?: { clipboard?: { writeText(text: string): Promise<void> } }
+  /** Present only inside the Electron shell (preload.ts) — absent in a plain browser. */
+  openinfoDrag?: DragBridge
 }
 
 const clipboardCopy =
@@ -98,6 +101,9 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const panel = doc.createElement('div')
   stage.appendChild(panel)
   doc.body.appendChild(stage)
+
+  // In the Electron shell only: let the header strip drag the frameless window (preload.ts bridge).
+  if (g.openinfoDrag) installWindowDrag(doc as unknown as Parameters<typeof installWindowDrag>[0], g.openinfoDrag)
 
   const copy = clipboardCopy(g.navigator)
   let mounted = false

@@ -36,7 +36,10 @@ body{margin:0;background:var(--page-bg);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.07), 0 34px 70px -24px rgba(0,0,0,.8)}
 .hud.compact{width:560px}
 
-.hudtop{display:flex;align-items:baseline;gap:10px;padding:14px 18px 4px}
+.hudtop{display:flex;align-items:baseline;gap:10px;padding:14px 18px 4px;
+  cursor:grab;-webkit-user-select:none;user-select:none}
+.hudtop:active{cursor:grabbing}
+.hudtop .mini,.hudtop [data-verb]{cursor:default}
 .hudtop .ctx{font-size:15px;font-weight:650;color:var(--s-ink);letter-spacing:-.01em}
 .hudtop .ctx .ws{color:var(--s-muted);font-weight:450}
 .hudtop .el{font-family:var(--s-mono);font-size:10.5px;color:var(--s-faint)}
