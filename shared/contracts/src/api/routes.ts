@@ -26,6 +26,7 @@ export const Routes: readonly RouteDef[] = [
   { method: 'DELETE', path: '/fabric/secrets/:ref', response: 'SecretRef', phase: 2 },
   { method: 'POST', path: '/fabric/test', request: 'Endpoint', response: 'EndpointProbe', phase: 2 },
   { method: 'GET', path: '/fabric/discover', response: 'DiscoverResult', phase: 2 },
+  { method: 'POST', path: '/fabric/scan', request: 'ScanRequest', response: 'ScanResult', phase: 3 },
   { method: 'GET', path: '/fabric/local/models', response: 'LocalModelStatus[]', phase: 2 },
   { method: 'POST', path: '/fabric/local/download', request: 'LocalDownloadRequest', response: 'LocalModelStatus', phase: 2 },
   { method: 'POST', path: '/capture/:source', request: 'CaptureChunk', response: 'Ack', phase: 1 },

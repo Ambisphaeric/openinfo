@@ -1,0 +1,137 @@
+{
+  "$id": "ScanResult",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "hosts",
+    "scannedAt"
+  ],
+  "properties": {
+    "hosts": {
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "url",
+          "reachable",
+          "authRequired",
+          "models"
+        ],
+        "properties": {
+          "url": {
+            "description": "the base URL probed",
+            "type": "string"
+          },
+          "reachable": {
+            "description": "the server answered /v1/models (even if it demanded a key)",
+            "type": "boolean"
+          },
+          "authRequired": {
+            "description": "the server answered 401/403 — it wants a key (wire a keyRef and rescan)",
+            "type": "boolean"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "id",
+                "slots"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "slots": {
+                  "type": "array",
+                  "items": {
+                    "$id": "CapabilitySlot",
+                    "anyOf": [
+                      {
+                        "const": "stt",
+                        "type": "string"
+                      },
+                      {
+                        "const": "tts",
+                        "type": "string"
+                      },
+                      {
+                        "const": "llm",
+                        "type": "string"
+                      },
+                      {
+                        "const": "vlm",
+                        "type": "string"
+                      },
+                      {
+                        "const": "ocr",
+                        "type": "string"
+                      },
+                      {
+                        "const": "embed",
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "error": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "class",
+              "hint"
+            ],
+            "properties": {
+              "class": {
+                "description": "the classified failure — the same classes the drain and generate probe report",
+                "anyOf": [
+                  {
+                    "const": "unreachable",
+                    "type": "string"
+                  },
+                  {
+                    "const": "timeout",
+                    "type": "string"
+                  },
+                  {
+                    "const": "auth",
+                    "type": "string"
+                  },
+                  {
+                    "const": "model-load",
+                    "type": "string"
+                  },
+                  {
+                    "const": "bad-response",
+                    "type": "string"
+                  },
+                  {
+                    "const": "reasoning-exhausted",
+                    "type": "string"
+                  }
+                ]
+              },
+              "message": {
+                "description": "the server's own error text or the OS code (ECONNREFUSED), captured verbatim",
+                "type": "string"
+              },
+              "hint": {
+                "description": "the one-line \"what to do about it\" step",
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "scannedAt": {
+      "format": "date-time",
+      "type": "string"
+    }
+  }
+}

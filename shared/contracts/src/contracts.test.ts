@@ -19,6 +19,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
   endpointProbe: 'EndpointProbe', generateProbe: 'GenerateProbe',
   probeList: 'ProbeList', capabilityMap: 'CapabilityMap', discoverResult: 'DiscoverResult',
+  scanRequest: 'ScanRequest', scanResult: 'ScanResult',
   starterModels: 'StarterModels', starterModel: 'StarterModel',
   localModelStatus: 'LocalModelStatus', localDownloadRequest: 'LocalDownloadRequest',
 }

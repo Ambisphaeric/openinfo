@@ -34,7 +34,7 @@ import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surf
 import { Mode } from './config/mode.js'
 import { PromptTemplate } from './config/promptTemplate.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
-import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult } from './config/discovery.js'
+import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult } from './config/discovery.js'
 import { StarterModel, StarterModels } from './config/local.js'
 import { Flag } from './config/flag.js'
 import { AttributionPattern, WorkspaceHints } from './config/hints.js'
@@ -46,7 +46,7 @@ export const AllSchemas = {
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
-  CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
+  CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
   Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, QueueStatus, QueueFailure, RelevantEntity, QueryResult, StartSessionRequest, RerouteRequest,
   CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
 } as const

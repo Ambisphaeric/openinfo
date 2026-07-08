@@ -114,3 +114,71 @@ export const DiscoverResult = Type.Object(
   { $id: 'DiscoverResult', additionalProperties: false },
 )
 export type DiscoverResult = Static<typeof DiscoverResult>
+
+/**
+ * The body of `POST /fabric/scan` — the founder's host-scan ("pick host, scan common ports, see if
+ * missing api key, see if model list returns, list models on the call"). EXACTLY ONE of `url`/`host`:
+ * an exact `url` probes that base URL; a bare `host` tries the probe-list DOCUMENT's ports against it
+ * (the "common ports" are the same conventions discovery already carries — never a hardcoded list).
+ * `keyRef` names a stored secret to send as a bearer — the REFERENCE, never a value (a 401 on the
+ * first scan → the user wires a key, rescans, and the models appear). No caching: every call probes
+ * fresh (this is hit infrequently, on user action).
+ */
+export const ScanRequest = Type.Object(
+  {
+    url: Type.Optional(Type.String({ pattern: '^https?://', description: 'probe exactly this base URL (GET {url}/v1/models)' })),
+    host: Type.Optional(Type.String({ minLength: 1, description: "a bare hostname/IP — try the probe-list document's ports against it" })),
+    keyRef: Type.Optional(Type.String({ minLength: 1, description: 'a secret REFERENCE to send as a bearer — never a value' })),
+  },
+  { $id: 'ScanRequest', additionalProperties: false, description: 'exactly one of url | host' },
+)
+export type ScanRequest = Static<typeof ScanRequest>
+
+/**
+ * A scan failure, classified with the SAME taxonomy the invoke/drain path uses (QueueFailure /
+ * GenerateProbe classes) — an unreachable port, a timeout, a rejected key, an un-OpenAI-shaped reply —
+ * plus the server's own message (or OS code) and the one-line troubleshoot hint. Value-free: an auth
+ * failure's hint names a keyRef, never key material.
+ */
+const ScanError = Type.Object(
+  {
+    class: Type.Union(
+      ['unreachable', 'timeout', 'auth', 'model-load', 'bad-response', 'reasoning-exhausted'].map((c) => Type.Literal(c)),
+      { description: 'the classified failure — the same classes the drain and generate probe report' },
+    ),
+    message: Type.Optional(Type.String({ description: "the server's own error text or the OS code (ECONNREFUSED), captured verbatim" })),
+    hint: Type.String({ description: 'the one-line "what to do about it" step' }),
+  },
+  { additionalProperties: false },
+)
+
+/**
+ * ONE base URL the scan probed: whether it returned a usable `/v1/models` list (`reachable`), whether
+ * it demanded a key (`authRequired` — a 401/403 answer IS a responding server, so reachable stays
+ * true), the classified models it reported (the capability map, same as discovery), and the classified
+ * `error` when it did not answer usably. `models[].slots` is what makes the editor's dropdown a
+ * CAPABILITIES list, not just names.
+ */
+const ScannedHost = Type.Object(
+  {
+    url: Type.String({ description: 'the base URL probed' }),
+    reachable: Type.Boolean({ description: 'the server answered /v1/models (even if it demanded a key)' }),
+    authRequired: Type.Boolean({ description: 'the server answered 401/403 — it wants a key (wire a keyRef and rescan)' }),
+    models: Type.Array(DiscoveredModel),
+    error: Type.Optional(ScanError),
+  },
+  { additionalProperties: false },
+)
+
+/**
+ * The result of `POST /fabric/scan`: one entry per base URL probed — a single entry for an exact-url
+ * scan, one per probe-list port for a bare-host scan. Never cached; `scannedAt` stamps the call.
+ */
+export const ScanResult = Type.Object(
+  {
+    hosts: Type.Array(ScannedHost),
+    scannedAt: Type.String({ format: 'date-time' }),
+  },
+  { $id: 'ScanResult', additionalProperties: false },
+)
+export type ScanResult = Static<typeof ScanResult>

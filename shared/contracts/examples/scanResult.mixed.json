@@ -1,0 +1,38 @@
+{
+  "hosts": [
+    {
+      "url": "http://192.168.1.40:1234",
+      "reachable": true,
+      "authRequired": false,
+      "models": [
+        { "id": "ornith-1.0-9b", "slots": ["llm"] },
+        { "id": "glm-ocr@q8_0", "slots": ["ocr"] },
+        { "id": "qwen2.5-vl-7b-instruct", "slots": ["llm", "vlm"] },
+        { "id": "text-embedding-nomic-embed-text-v1.5", "slots": ["embed"] }
+      ]
+    },
+    {
+      "url": "http://192.168.1.40:11434",
+      "reachable": true,
+      "authRequired": true,
+      "models": [],
+      "error": {
+        "class": "auth",
+        "message": "missing bearer token",
+        "hint": "authorization required — add a key in Settings → Keys and reference it via keyRef"
+      }
+    },
+    {
+      "url": "http://192.168.1.40:8880",
+      "reachable": false,
+      "authRequired": false,
+      "models": [],
+      "error": {
+        "class": "unreachable",
+        "message": "ECONNREFUSED",
+        "hint": "is the server running? check the URL http://192.168.1.40:8880"
+      }
+    }
+  ],
+  "scannedAt": "2026-07-08T10:12:00.000Z"
+}

@@ -1,0 +1,23 @@
+{
+  "$id": "ScanRequest",
+  "additionalProperties": false,
+  "description": "exactly one of url | host",
+  "type": "object",
+  "properties": {
+    "url": {
+      "pattern": "^https?://",
+      "description": "probe exactly this base URL (GET {url}/v1/models)",
+      "type": "string"
+    },
+    "host": {
+      "minLength": 1,
+      "description": "a bare hostname/IP — try the probe-list document's ports against it",
+      "type": "string"
+    },
+    "keyRef": {
+      "minLength": 1,
+      "description": "a secret REFERENCE to send as a bearer — never a value",
+      "type": "string"
+    }
+  }
+}
