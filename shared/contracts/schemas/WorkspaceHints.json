@@ -1,0 +1,62 @@
+{
+  "$id": "WorkspaceHints",
+  "additionalProperties": false,
+  "description": "signal-pattern → workspace attribution hints (P3 context-switch detection)",
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "patterns"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "patterns": {
+      "type": "array",
+      "items": {
+        "$id": "AttributionPattern",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "field",
+          "weight"
+        ],
+        "properties": {
+          "field": {
+            "anyOf": [
+              {
+                "const": "repoPath",
+                "type": "string"
+              },
+              {
+                "const": "windowTitle",
+                "type": "string"
+              },
+              {
+                "const": "app",
+                "type": "string"
+              }
+            ]
+          },
+          "contains": {
+            "minLength": 1,
+            "description": "case-insensitive substring match against the field",
+            "type": "string"
+          },
+          "prefix": {
+            "minLength": 1,
+            "description": "case-insensitive prefix match against the field",
+            "type": "string"
+          },
+          "weight": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          }
+        }
+      }
+    }
+  }
+}

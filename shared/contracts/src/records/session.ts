@@ -9,6 +9,7 @@ export const AttributionEvidence = Type.Object(
   },
   { additionalProperties: false },
 )
+export type AttributionEvidence = Static<typeof AttributionEvidence>
 
 export const Session = Type.Object(
   {

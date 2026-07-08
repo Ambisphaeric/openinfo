@@ -1,0 +1,42 @@
+{
+  "$id": "AttributionPattern",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "field",
+    "weight"
+  ],
+  "properties": {
+    "field": {
+      "anyOf": [
+        {
+          "const": "repoPath",
+          "type": "string"
+        },
+        {
+          "const": "windowTitle",
+          "type": "string"
+        },
+        {
+          "const": "app",
+          "type": "string"
+        }
+      ]
+    },
+    "contains": {
+      "minLength": 1,
+      "description": "case-insensitive substring match against the field",
+      "type": "string"
+    },
+    "prefix": {
+      "minLength": 1,
+      "description": "case-insensitive prefix match against the field",
+      "type": "string"
+    },
+    "weight": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "number"
+    }
+  }
+}

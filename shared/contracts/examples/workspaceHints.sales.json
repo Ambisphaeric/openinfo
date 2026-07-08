@@ -1,0 +1,8 @@
+{
+  "workspaceId": "sales",
+  "patterns": [
+    { "field": "repoPath", "contains": "acme-crm", "weight": 0.7 },
+    { "field": "windowTitle", "contains": "Salesforce", "weight": 0.5 },
+    { "field": "app", "prefix": "zoom", "weight": 0.4 }
+  ]
+}
