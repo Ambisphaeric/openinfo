@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
-import { Actor, ActDocuments, TodoDocuments } from '../act/index.js'
+import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, type SecretStore } from '../fabric/index.js'
@@ -200,10 +200,25 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     publish: (draft) => bus.publish('draft.created', draft),
     log,
   })
+  // task-extract (P4A slice 4): the CONSTRAIN side of the dynamic-to-do loop. Rides the DRAIN pass so a
+  // session's to-do accumulates mid-meeting; gated by act.tasks (default OFF), so the default pipeline is
+  // unchanged. A sibling of the Actor over the same store/voice/fabric + the shared prompt-template store.
+  const taskExtractor = new TaskExtractor({
+    store,
+    voice,
+    fabric,
+    templates: actDocs,
+    todos: todoDocs,
+    resolveKey,
+    runtimeManager: runtime,
+    mode: (id) => distillDocs.mode(id),
+    log,
+  })
   // The executor composes the SAME seams the legacy paths use (distill/transcribe/drainNow/acts), so
   // workflow.enabled ON with the seeded workflow-default is behavior-identical: same flags honored, same
   // retry-at-idle propagation (transcribe/distill throws bubble out so the drain re-queues), same
-  // drain-first flush before the act. See PHASE4-NOTES for the byte-for-byte proof.
+  // drain-first flush before the act. drainActs adds the task-extract drain act (best-effort, gated
+  // act.tasks). See PHASE4-NOTES for the byte-for-byte proof + the drain-vs-session-end decision.
   executor = new WorkflowExecutor({
     store,
     docs: workflow,
@@ -211,6 +226,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     transcribe: runTranscribe,
     drainNow: () => queue.drainNow(log),
     acts: { 'follow-up-draft': async (session) => void (await actor.runFollowUpDraft(session)) },
+    drainActs: { 'task-extract': (chunks, step) => taskExtractor.runOnDrain(chunks, step) },
     log,
   })
 

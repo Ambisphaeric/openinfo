@@ -40,12 +40,24 @@ interface Spy {
   distillCalls: { opts: { extractMoments?: boolean; extractEntities?: boolean } }[]
   drainNowCalls: number
   actCalls: string[]
+  drainActCalls: string[]
   logs: string[]
 }
-const build = (flags: Record<string, boolean>, spec = defaultSpec(), opts: { transcribeThrows?: boolean; distillThrows?: boolean; acts?: string[] } = {}) => {
-  const spy: Spy = { transcribeCalls: 0, distillCalls: [], drainNowCalls: 0, actCalls: [], logs: [] }
+const build = (
+  flags: Record<string, boolean>,
+  spec = defaultSpec(),
+  opts: { transcribeThrows?: boolean; distillThrows?: boolean; acts?: string[]; drainActs?: string[]; drainActThrows?: string } = {},
+) => {
+  const spy: Spy = { transcribeCalls: 0, distillCalls: [], drainNowCalls: 0, actCalls: [], drainActCalls: [], logs: [] }
   const acts: Record<string, (s: Session) => Promise<void>> = {}
   for (const id of opts.acts ?? ['follow-up-draft']) acts[id] = async () => void spy.actCalls.push(id)
+  const drainActs: Record<string, (c: readonly CaptureChunk[]) => Promise<void>> = {}
+  for (const id of opts.drainActs ?? []) {
+    drainActs[id] = async () => {
+      if (opts.drainActThrows === id) throw new Error(`${id} boom`)
+      spy.drainActCalls.push(id)
+    }
+  }
   const executor = new WorkflowExecutor({
     store: fakeStore(flags),
     docs: fakeDocs(spec),
@@ -53,9 +65,17 @@ const build = (flags: Record<string, boolean>, spec = defaultSpec(), opts: { tra
     distill: async (_c, o) => { spy.distillCalls.push({ opts: o }); if (opts.distillThrows) throw new Error('llm down'); return [] },
     drainNow: async () => void (spy.drainNowCalls += 1),
     acts,
+    drainActs,
     log: (m) => void spy.logs.push(m),
   })
   return { executor, spy }
+}
+
+/** A drain-triggered task-extract act step (gated act.tasks), appended to the default spec. */
+const withTaskExtract = (): WorkflowSpec => {
+  const spec = defaultSpec()
+  spec.steps.splice(4, 0, { id: 'task-extract', kind: 'act', slot: 'llm', trigger: 'drain', when: { flag: 'act.tasks' }, params: {} })
+  return spec
 }
 
 // --- drain seam ------------------------------------------------------------
@@ -113,12 +133,40 @@ test('runDrain: unwired kinds (ocr/vlm) on the drain skip-with-log, never crash;
   assert.ok(spy.logs.some((l) => l.includes('screen-ocr') && l.includes('no executor path yet')))
 })
 
-test('runDrain: an act step wrongly triggered on the drain is skipped-with-log (acts are session-end in v0)', async () => {
-  const spec = defaultSpec()
-  spec.steps.push({ id: 'stray-act', kind: 'act', trigger: 'drain', params: {} })
-  const { executor, spy } = build({ 'distill.enabled': true }, spec)
+test('runDrain: task-extract drain act — gated ON with a runner RUNS after the distill pass', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'act.tasks': true }, withTaskExtract(), { drainActs: ['task-extract'] })
   await executor.runDrain([chunk('a')])
-  assert.ok(spy.logs.some((l) => l.includes('stray-act') && l.includes('acts run on session-end')))
+  assert.equal(spy.distillCalls.length, 1) // distill still ran
+  assert.deepEqual(spy.drainActCalls, ['task-extract'])
+})
+
+test('runDrain: task-extract drain act — gated OFF (default) is skipped SILENTLY (behavior-identical)', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'act.tasks': false }, withTaskExtract(), { drainActs: ['task-extract'] })
+  await executor.runDrain([chunk('a')])
+  assert.equal(spy.distillCalls.length, 1)
+  assert.deepEqual(spy.drainActCalls, [])
+  assert.ok(!spy.logs.some((l) => l.includes('task-extract'))) // no noise for the OFF default
+})
+
+test('runDrain: a gated-ON drain act with NO registered runner is skipped-with-log, never crashes', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'act.tasks': true }, withTaskExtract(), { drainActs: [] })
+  await executor.runDrain([chunk('a')])
+  assert.equal(spy.distillCalls.length, 1)
+  assert.ok(spy.logs.some((l) => l.includes('task-extract') && l.includes('no runner registered')))
+})
+
+test('runDrain: a drain act throw is CAUGHT (best-effort) — never re-queues the already-distilled batch', async () => {
+  const { executor, spy } = build({ 'distill.enabled': true, 'act.tasks': true }, withTaskExtract(), { drainActs: ['task-extract'], drainActThrows: 'task-extract' })
+  await executor.runDrain([chunk('a')]) // must NOT reject
+  assert.equal(spy.distillCalls.length, 1)
+  assert.ok(spy.logs.some((l) => l.includes('task-extract') && l.includes('best-effort')))
+})
+
+test('runDrain: distill OFF → task-extract does NOT run (it rides the distill pass)', async () => {
+  const { executor, spy } = build({ 'distill.enabled': false, 'act.tasks': true }, withTaskExtract(), { drainActs: ['task-extract'] })
+  await executor.runDrain([chunk('a')])
+  assert.equal(spy.distillCalls.length, 0)
+  assert.deepEqual(spy.drainActCalls, [])
 })
 
 // --- session-end seam ------------------------------------------------------

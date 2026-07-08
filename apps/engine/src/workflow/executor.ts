@@ -11,8 +11,17 @@ import type { WorkflowDocuments } from './documents.js'
  */
 const seamOf = (step: WorkflowStep): string => step.trigger ?? 'drain'
 
-/** An act runner keyed by the act step's id (v0 act vocabulary; slice 4 registers a `task-extract` runner). */
+/** A SESSION-END act runner keyed by the act step's id; the `follow-up-draft` act = actor.runFollowUpDraft. */
 export type ActRunner = (session: Session, step: WorkflowStep) => Promise<void>
+
+/**
+ * A DRAIN act runner keyed by the act step's id — takes the drained CHUNKS (not a Session), because a
+ * drain has no single live session: the runner derives its affected sessions from the batch. The
+ * `task-extract` act (P4A slice 4) = taskExtractor.runOnDrain, riding the drain PASS so the to-do
+ * accumulates mid-meeting. Runs BEST-EFFORT (see runDrain): a throw is caught + logged, never re-queued
+ * (the batch already distilled — a re-queue would duplicate distillates).
+ */
+export type DrainActRunner = (chunks: readonly CaptureChunk[], step: WorkflowStep) => Promise<void>
 
 export interface WorkflowExecutorDeps {
   store: WorkspaceRegistry
@@ -23,8 +32,10 @@ export interface WorkflowExecutorDeps {
   transcribe: (chunks: readonly CaptureChunk[]) => Promise<CaptureChunk[]>
   /** flush pending chunks before the session-end acts (= queue.drainNow) — the drain-first flush. */
   drainNow: () => Promise<void>
-  /** act runners by step id; the `follow-up-draft` act = actor.runFollowUpDraft. */
+  /** SESSION-END act runners by step id; the `follow-up-draft` act = actor.runFollowUpDraft. */
   acts: Record<string, ActRunner>
+  /** DRAIN act runners by step id; the `task-extract` act = taskExtractor.runOnDrain. Optional. */
+  drainActs?: Record<string, DrainActRunner>
   log?: (message: string) => void
 }
 
@@ -65,14 +76,14 @@ export class WorkflowExecutor {
     for (const step of drainSteps) {
       if (step.kind === 'ocr' || step.kind === 'vlm') {
         this.log(`workflow ${doc.id}: step '${step.id}' (${step.kind}) skipped — no executor path yet (P4B owns invocation)`)
-      } else if (step.kind === 'act') {
-        this.log(`workflow ${doc.id}: drain-triggered act step '${step.id}' skipped — acts run on session-end in v0`)
       }
     }
 
     const distillStep = drainSteps.find((s) => s.kind === 'distill')
     // Whole distill-family gate: no distill step, or its flag off → nothing distills, and `transcribe`
     // (its pre-stage) does NOT run standalone. Mirrors the legacy `if (!distill.enabled) return`.
+    // Drain acts (task-extract) ride the distill PASS, so they too are gated behind this early return —
+    // no distill, no new material to extract follow-ups from (consistent with moments/index).
     if (!distillStep || !this.flagOn(distillStep.when)) return
 
     const transcribeStep = drainSteps.find((s) => s.kind === 'transcribe')
@@ -85,6 +96,27 @@ export class WorkflowExecutor {
       extractMoments: Boolean(momentsStep && this.flagOn(momentsStep.when)),
       extractEntities: Boolean(indexStep && this.flagOn(indexStep.when)),
     })
+
+    // Drain-triggered act steps (e.g. task-extract) run AFTER the distill pass, in document order. Each
+    // is gated by its own when-flag (OFF by default → skipped silently, so the default drain is
+    // behavior-identical); a gated-ON act with no registered runner is skipped-with-log. BEST-EFFORT: a
+    // runner throw is caught + logged, NEVER re-propagated — the batch already distilled successfully, so
+    // re-queuing would re-run distill and duplicate distillates. See PHASE4-NOTES for the DrainSample note.
+    for (const step of drainSteps) {
+      if (step.kind !== 'act' || !this.flagOn(step.when)) continue
+      const run = this.deps.drainActs?.[step.id]
+      if (!run) {
+        this.log(
+          `workflow ${doc.id}: drain act step '${step.id}' skipped — no runner registered (v0 knows: ${Object.keys(this.deps.drainActs ?? {}).join(', ') || 'none'})`,
+        )
+        continue
+      }
+      try {
+        await run(chunks, step)
+      } catch (error) {
+        this.log(`workflow ${doc.id}: drain act step '${step.id}' failed (best-effort, not re-queued): ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
   }
 
   /**
