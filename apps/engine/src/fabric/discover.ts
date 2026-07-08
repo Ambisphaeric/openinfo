@@ -29,31 +29,56 @@ interface Candidate {
   url: string
   model: string
   slots: CapabilitySlot[]
+  order: number
+}
+
+/**
+ * A rough parameter-size rank for a model id, in millions of params — the FIRST `NNb`/`NNm` token in the
+ * name (`llama-3.2-3b` → 3000, `qwen2.5-1.5b` → 1500, `whisper-350m` → 350). A model with no size token
+ * ranks last (Infinity) so a known-small model is always preferred over an unknown-size one. Lower =
+ * preferred. This is the cold-35B fix (slice b recorded a cold 35B blowing the 30s first-run invoke
+ * timeout): the first-run suggestion should favour a smaller, likely-warm model. Deterministic and
+ * inspectable (product principle 1). GRADUATION PATH: a real rank (measured tok/s, quant, MoE active-
+ * param awareness, an explicit `preferOrder`) belongs in a ranking DOCUMENT like the capability map —
+ * this in-code heuristic is the honest v0, and the user always sees every model in Advanced.
+ */
+export const modelSizeRank = (id: string): number => {
+  const match = /(\d+(?:\.\d+)?)\s*([bm])\b/i.exec(id.toLowerCase())
+  if (!match) return Number.POSITIVE_INFINITY
+  const n = Number(match[1])
+  return match[2] === 'b' ? n * 1000 : n
 }
 
 /**
  * Synthesize the config-1 suggestion: one best-available endpoint per slot (ARCHITECTURE §8 heuristic).
- * Reachable servers only, in probe-list order then model order; for each slot pick the first model
- * classified into it. For the llm slot, prefer a PURE chat model (classified llm and nothing else) over
- * a multi-slot model, so a vision-language model does not become the default chat model when a plain one
- * exists. Non-llm slots take the first explicit match. Pure — no I/O. Returns a full valid Fabric.
+ * Reachable servers only. For each slot, among the models classified into it, prefer the SMALLEST by
+ * `modelSizeRank` (the cold-35B first-run fix), tie-broken by probe-list order then model order. For the
+ * llm slot, a PURE chat model (classified llm and nothing else) is preferred over a multi-slot model, so
+ * a vision-language model does not become the default chat model when a plain one exists — size ranking
+ * then applies within the chosen pool. Pure — no I/O. Returns a full valid Fabric.
  */
 export const synthesizeSuggestion = (servers: DiscoverServer[]): Fabric => {
   const flat: Candidate[] = []
+  let order = 0
   for (const server of servers) {
     if (!server.reachable) continue
     for (const model of server.models) {
-      if (model.slots.length > 0) flat.push({ name: server.name, url: server.url, model: model.id, slots: model.slots })
+      if (model.slots.length > 0) flat.push({ name: server.name, url: server.url, model: model.id, slots: model.slots, order: order++ })
     }
   }
   const endpoint = (c: Candidate): HttpEndpoint => ({ kind: 'http', name: c.name, url: c.url, api: 'openai-compat', model: c.model })
+  // smallest first; ties keep discovery order (stable) — deterministic first-match with a size bias.
+  const smallestFirst = (pool: Candidate[]): Candidate[] =>
+    [...pool].sort((a, b) => modelSizeRank(a.model) - modelSizeRank(b.model) || a.order - b.order)
   const pick = (slot: CapabilitySlot): HttpEndpoint[] => {
+    const inSlot = flat.filter((c) => c.slots.includes(slot))
+    let pool = inSlot
     if (slot === 'llm') {
-      const pure = flat.find((c) => c.slots.length === 1 && c.slots[0] === 'llm')
-      if (pure) return [endpoint(pure)]
+      const pure = inSlot.filter((c) => c.slots.length === 1 && c.slots[0] === 'llm')
+      if (pure.length) pool = pure
     }
-    const match = flat.find((c) => c.slots.includes(slot))
-    return match ? [endpoint(match)] : []
+    const best = smallestFirst(pool)[0]
+    return best ? [endpoint(best)] : []
   }
   return {
     slots: { stt: pick('stt'), tts: pick('tts'), llm: pick('llm'), vlm: pick('vlm'), ocr: pick('ocr'), embed: pick('embed') },

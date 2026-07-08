@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CapabilityMap, ProbeList } from '@openinfo/contracts'
-import { classifyModel, discoverFabric, synthesizeSuggestion } from './discover.js'
+import { classifyModel, discoverFabric, modelSizeRank, synthesizeSuggestion } from './discover.js'
 import { seededCapabilityMap } from './discovery-defaults.js'
 
 const MAP = seededCapabilityMap
@@ -64,6 +64,38 @@ test('synthesizeSuggestion: llm prefers a PURE chat model over a multi-slot VL m
   assert.equal(suggestion.slots.llm[0]!.kind === 'http' && suggestion.slots.llm[0]!.model, 'qwen3-8b')
   // the VL model still fills vlm
   assert.equal(suggestion.slots.vlm[0]!.kind === 'http' && suggestion.slots.vlm[0]!.model, 'qwen2.5-vl-7b')
+})
+
+// --- the cold-35B fix: prefer smaller/likely-warm models for the first-run suggestion ---
+
+test('modelSizeRank: parses NNb/NNm; unknown ranks last', () => {
+  assert.equal(modelSizeRank('ornith-1.0-35b-mtplx'), 35000)
+  assert.equal(modelSizeRank('qwen2.5-1.5b-instruct'), 1500)
+  assert.equal(modelSizeRank('llama-3.2-3b'), 3000)
+  assert.equal(modelSizeRank('parakeet-110m'), 110)
+  assert.equal(modelSizeRank('lfm2.5-8b-a1b-mlx'), 8000) // first size token (nominal, not active-param)
+  assert.equal(modelSizeRank('gemma-instruct'), Number.POSITIVE_INFINITY)
+})
+
+test('synthesizeSuggestion: a 35b loses to a 4b for the first-run llm (cold-35B fix)', () => {
+  const suggestion = synthesizeSuggestion([
+    server({
+      models: [
+        { id: 'ornith-1.0-35b', slots: ['llm'] }, // appears first, but is huge + cold
+        { id: 'qwen2.5-4b-instruct', slots: ['llm'] }, // smaller → should win
+      ],
+    }),
+  ])
+  assert.equal(suggestion.slots.llm[0]!.kind === 'http' && suggestion.slots.llm[0]!.model, 'qwen2.5-4b-instruct')
+})
+
+test('synthesizeSuggestion: smallest wins across servers; order breaks ties', () => {
+  const suggestion = synthesizeSuggestion([
+    server({ name: 'a', url: 'http://a', models: [{ id: 'big-70b', slots: ['llm'] }] }),
+    server({ name: 'b', url: 'http://b', models: [{ id: 'small-1.5b', slots: ['llm'] }, { id: 'also-1.5b', slots: ['llm'] }] }),
+  ])
+  // 1.5b beats 70b; between the two 1.5b, discovery order keeps the first
+  assert.equal(suggestion.slots.llm[0]!.kind === 'http' && suggestion.slots.llm[0]!.model, 'small-1.5b')
 })
 
 test('synthesizeSuggestion: with only a VL model, it fills BOTH llm and vlm', () => {
