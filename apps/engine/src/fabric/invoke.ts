@@ -1,4 +1,4 @@
-import type { Endpoint, Fabric, VlmInvokeParams } from '@openinfo/contracts'
+import type { Endpoint, Fabric, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager } from './endpoints/local.js'
 import {
@@ -449,6 +449,165 @@ export const invokeVlm = async (
   throw new AggregateInvokeError(
     'vlm',
     `no vlm endpoint answered${lines.length ? ` (${lines.join('; ')})` : ' (fabric vlm slot is empty)'}`,
+    classified,
+  )
+}
+
+/**
+ * The v0 paddle-serving convention (DESIGN-CRITIQUE §5: `runtime:"paddle"` is a supported local runtime;
+ * an http endpoint speaks it via `api:'paddle-serving'`). We target PaddleOCR's standard PaddleHub
+ * serving contract — the widely-deployed, documented one:
+ *
+ *   POST {url}/predict/ocr_system   body {"images": ["<base64>"]}   (non-/v1, like whisper.cpp's /inference)
+ *   → {"results": [ [ {"text": str, "confidence": num, "text_region": [[x,y],[x,y],[x,y],[x,y]]}, … ] ]}
+ *
+ * `results` is per-image; we sent ONE image, so `results[0]` is its region list (an empty list = a blank
+ * frame, a normal empty result — never an error). Each region maps to a ScreenBlock: `text`, optional
+ * `confidence` (kept only when in 0..1), and a `region` axis-aligned bounding box derived from the four
+ * `text_region` corners in FRAME PIXEL coords (kept only when non-degenerate and non-negative, so a
+ * consumer never sees an out-of-contract box). The parse is deliberately TOLERANT of a missing field on
+ * one region (that region is skipped) but says `bad-response` HONESTLY when the top-level shape is wrong
+ * (no `results` array) rather than guessing. A managed LOCAL paddle runtime is future — until it lands in
+ * RUNTIME_SPECS its dialect/serving path resolve the same honest way whisper.cpp's `/inference` does.
+ */
+const PADDLE_OCR_PATH = '/predict/ocr_system'
+
+/** The default recognition prompt when an openai-compat VLM endpoint fills the ocr slot (prose, no boxes). */
+const OCR_VLM_PROMPT = 'Transcribe all text visible in this image exactly, preserving reading order. Output only the transcribed text.'
+
+interface PaddleResponse {
+  results?: unknown
+}
+
+/** Axis-aligned bounding box from PaddleOCR's four `text_region` corner points, in frame pixel coords.
+ * Returns a contract-valid box (x,y ≥ 0; width,height ≥ 1) or undefined when the corners are unusable. */
+const boxFromCorners = (corners: unknown): ScreenBlock['region'] | undefined => {
+  if (!Array.isArray(corners)) return undefined
+  const xs: number[] = []
+  const ys: number[] = []
+  for (const point of corners) {
+    if (Array.isArray(point) && typeof point[0] === 'number' && typeof point[1] === 'number') {
+      xs.push(point[0])
+      ys.push(point[1])
+    }
+  }
+  if (xs.length < 2) return undefined
+  const x = Math.max(0, Math.round(Math.min(...xs)))
+  const y = Math.max(0, Math.round(Math.min(...ys)))
+  const width = Math.round(Math.max(...xs) - Math.min(...xs))
+  const height = Math.round(Math.max(...ys) - Math.min(...ys))
+  return width >= 1 && height >= 1 ? { x, y, width, height } : undefined
+}
+
+/** One PaddleHub region → a ScreenBlock; undefined when the region carries no usable text. */
+const paddleRegionToBlock = (region: unknown): ScreenBlock | undefined => {
+  if (!region || typeof region !== 'object') return undefined
+  const text = (region as { text?: unknown }).text
+  if (typeof text !== 'string') return undefined
+  const block: ScreenBlock = { text }
+  const confidence = (region as { confidence?: unknown }).confidence
+  if (typeof confidence === 'number' && confidence >= 0 && confidence <= 1) block.confidence = confidence
+  const box = boxFromCorners((region as { text_region?: unknown }).text_region)
+  if (box !== undefined) block.region = box
+  return block
+}
+
+/** Call one paddle-serving ocr endpoint (POST /predict/ocr_system). Returns flattened text + region blocks. */
+const callPaddleOcr = async (
+  endpoint: HttpEndpoint,
+  params: OcrInvokeParams,
+  opts: ScreenInvokeOptions,
+): Promise<{ text: string; blocks: ScreenBlock[] }> => {
+  const ctx = ctxOf(endpoint)
+  const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 30_000)
+  let response: Response
+  try {
+    response = await fetch(`${endpoint.url.replace(/\/$/, '')}${PADDLE_OCR_PATH}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...auth },
+      body: JSON.stringify({ images: [params.image] }),
+      signal: controller.signal,
+    })
+  } catch (error) {
+    throw classifyFetchError(error, ctx)
+  } finally {
+    clearTimeout(timeout)
+  }
+  if (!response.ok) throw classifyHttpResponse(response.status, await response.text().catch(() => ''), ctx)
+  let json: PaddleResponse
+  try {
+    json = (await response.json()) as PaddleResponse
+  } catch {
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the paddle-serving endpoint' })
+  }
+  // A paddle server that answers MUST return a `results` array (one entry per image); anything else is a
+  // genuinely bad response (wrong URL/dialect), said honestly rather than guessed.
+  if (!Array.isArray(json.results)) {
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'no results array in the paddle-serving response' })
+  }
+  const first = json.results[0] // our single image's region list; absent/empty ⇒ a blank frame (normal)
+  const regions = Array.isArray(first) ? first : []
+  const blocks: ScreenBlock[] = []
+  for (const region of regions) {
+    const block = paddleRegionToBlock(region)
+    if (block !== undefined) blocks.push(block)
+  }
+  return { text: blocks.map((b) => b.text).join('\n'), blocks } // '' when nothing recognized — a normal result
+}
+
+/**
+ * Invoke the `ocr` slot: try endpoints in fabric order (order is fallback, first that answers wins),
+ * mirroring invokeLlm/invokeStt. An http `paddle-serving` endpoint speaks the PaddleHub OCR contract and
+ * yields region-aware blocks; an http `openai-compat` endpoint filling the ocr slot is handled gracefully
+ * as a VLM transcription (a default recognition prompt → prose, no blocks — the dialect field decides, so
+ * a user who only has a vision model still gets screen text). `local` resolves a spawned runtime (a
+ * managed paddle runtime is future — no v0 spec, so it falls through); `cloud` is out of scope. An empty
+ * recognition ('' / no blocks) is a normal result, exactly as stt silence is.
+ */
+export const invokeOcr = async (
+  fabric: Fabric,
+  params: OcrInvokeParams,
+  opts: ScreenInvokeOptions = {},
+): Promise<ScreenTextResult> => {
+  const endpoints = fabric.slots.ocr
+  const lines: string[] = []
+  const classified: ClassifiedFailure[] = []
+  for (const endpoint of endpoints) {
+    if (endpoint.kind === 'cloud') {
+      lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
+      continue
+    }
+    try {
+      const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint
+      let text: string
+      let blocks: ScreenBlock[] | undefined
+      if (http.api === 'paddle-serving') {
+        ;({ text, blocks } = await callPaddleOcr(http, params, opts))
+      } else if (http.api === 'openai-compat') {
+        // An openai-compat VLM filling the ocr slot: transcribe with a default recognition prompt (prose).
+        text = await callVlmHttp(
+          http,
+          { image: params.image, contentType: params.contentType, prompt: OCR_VLM_PROMPT, ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}) },
+          opts,
+        )
+      } else {
+        lines.push(`${endpoint.name}: unsupported api "${http.api}"`)
+        continue
+      }
+      const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'ocr' }
+      if (blocks !== undefined) result.blocks = blocks
+      if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
+      return result
+    } catch (error) {
+      if (error instanceof InvokeError) classified.push(error.toFailure())
+      lines.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw new AggregateInvokeError(
+    'ocr',
+    `no ocr endpoint answered${lines.length ? ` (${lines.join('; ')})` : ' (fabric ocr slot is empty)'}`,
     classified,
   )
 }
