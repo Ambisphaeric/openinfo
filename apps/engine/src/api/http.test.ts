@@ -864,3 +864,159 @@ test('use-this-setup e2e: discover → config-1 written+activated → GET /fabri
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// --- Slice (b): the Try-it "say something → watch it become a moment" loop on /setup ---
+
+/** Collect named WS events off the engine's /events socket (server→client frames). */
+const openEvents = async (base: string): Promise<{ events: { name: string; payload: { sessionId?: string } }[]; close: () => void }> => {
+  const events: { name: string; payload: { sessionId?: string } }[] = []
+  const socket = new WebSocket(base.replace(/^http/, 'ws') + '/events')
+  socket.addEventListener('message', (event) => {
+    const parsed = JSON.parse(String(event.data)) as { name: string; payload: { sessionId?: string } }
+    events.push(parsed)
+  })
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve(), { once: true })
+    socket.addEventListener('error', () => reject(new Error('ws failed')), { once: true })
+  })
+  return { events, close: () => socket.close() }
+}
+
+/** What the Try-it card's browser script does over HTTP: flip a flag on, preserving its doc shape. */
+const enableFlag = async (base: string, key: string): Promise<void> => {
+  await fetch(`${base}/flags/${key}`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+  })
+}
+
+test('e2e (Try-it TYPE path): flags flip → onboarding session → text chunk → drain → moment.created on WS → introspection trail', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // point the llm slot at the fake (as "Use this setup" would), then subscribe to the WS
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'qwen3-8b' }] } }),
+    })
+    const sub = await openEvents(base)
+    try {
+      // the card's consent-flip: distillation on (voice would add distill.transcribe; text needs neither)
+      await enableFlag(base, 'distill.enabled')
+      await enableFlag(base, 'distill.moments')
+
+      // start the onboarding session on the seeded meeting mode, then POST one utf8 text chunk to /capture/mic
+      const started = (await (await fetch(`${base}/sessions`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting', title: 'onboarding try-it' }),
+      })).json()) as Session
+      const chunk: CaptureChunk = {
+        id: 'try-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0,
+        capturedAt: new Date().toISOString(), contentType: 'text/plain', encoding: 'utf8', data: 'we should ship Thursday',
+      }
+      const ack = await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(chunk) })
+      assert.equal(ack.status, 200)
+
+      // the payoff: moment.created for THIS session arrives on the WS (the card renders it live)
+      await eventuallyHttp(async () => {
+        assert.ok(sub.events.some((e) => e.name === 'moment.created' && e.payload.sessionId === started.id))
+      }, 6000)
+      const created = sub.events.find((e) => e.name === 'moment.created' && e.payload.sessionId === started.id)!
+        .payload as unknown as Moment
+      assert.ok(created.text.length > 0)
+      assert.ok(created.provenance && created.provenance.endpoint === 'llm.fast')
+
+      // the introspection trail the card falls back on: moments read back, flags stuck on
+      const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
+      assert.ok(moments.some((m) => m.id === created.id))
+      const flags = (await (await fetch(`${base}/flags`)).json()) as { key: string; default: boolean }[]
+      const byKey = Object.fromEntries(flags.map((f) => [f.key, f.default]))
+      assert.equal(byKey['distill.enabled'], true)
+      assert.equal(byKey['distill.moments'], true)
+    } finally {
+      sub.close()
+    }
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('e2e (Try-it VOICE path): a canned base64 webm chunk rides the stt slot → transcribed → moment.created on WS', async () => {
+  const llm = await startFakeLlm()
+  const stt = await startFakeSttReply('we should ship Thursday')
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // both slots filled (llm + stt), as a rig with a transcription server would be
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'qwen3-8b' }], stt: [{ kind: 'http', name: 'whisper-box', url: stt.url, api: 'openai-compat', model: 'whisper-1' }] } }),
+    })
+    const sub = await openEvents(base)
+    try {
+      // the voice path flips the transcribe stage on too (the card's consent line names it when stt exists)
+      await enableFlag(base, 'distill.enabled')
+      await enableFlag(base, 'distill.moments')
+      await enableFlag(base, 'distill.transcribe')
+
+      const started = (await (await fetch(`${base}/sessions`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting', title: 'onboarding try-it' }),
+      })).json()) as Session
+      // the same base64 audio/webm CaptureChunk shape the browser MediaRecorder + Electron client emit
+      const chunk: CaptureChunk = {
+        id: 'try-voice-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0,
+        capturedAt: new Date().toISOString(), contentType: 'audio/webm', encoding: 'base64',
+        data: Buffer.from('fake-webm-bytes').toString('base64'),
+      }
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(chunk) })
+
+      // audio → stt slot → utf8 text → distill → moment.created for this session on the WS
+      await eventuallyHttp(async () => {
+        assert.ok(sub.events.some((e) => e.name === 'moment.created' && e.payload.sessionId === started.id))
+      }, 6000)
+      // the stt server was actually hit (the transcription stage ran the audio chunk through it)
+      assert.ok(stt.hits() >= 1)
+    } finally {
+      sub.close()
+    }
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+    await new Promise<void>((resolve) => stt.server.close(() => resolve()))
+  }
+})
+
+/** A fake OpenAI-compatible STT server that returns a fixed transcript and counts transcription hits. */
+const startFakeSttReply = async (reply: string): Promise<{ server: Server; url: string; hits: () => number }> => {
+  let hits = 0
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      if (req.url && req.url.includes('/v1/audio/transcriptions')) hits += 1
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ text: reply }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}`, hits: () => hits }
+}
