@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface } from '@openinfo/contracts'
-import { Actor, ActDocuments } from '../act/index.js'
+import { Actor, ActDocuments, TodoDocuments } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, type SecretStore } from '../fabric/index.js'
@@ -73,6 +73,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const voice = new VoiceDocuments(store)
   const distillDocs = new DistillDocuments(store)
   const actDocs = new ActDocuments(store)
+  const todoDocs = new TodoDocuments(store)
   const hintsDocs = new HintsDocuments(store)
   const surfaces = new SurfaceDocuments(store)
   const discovery = new DiscoveryDocuments(store)
@@ -192,6 +193,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     voice,
     fabric,
     docs: actDocs,
+    todos: todoDocs,
     resolveKey,
     runtimeManager: runtime,
     mode: (id) => distillDocs.mode(id),

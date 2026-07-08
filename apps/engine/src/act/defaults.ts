@@ -25,7 +25,9 @@ export const defaultFollowUpTemplate: PromptTemplate = {
     'Base the draft ONLY on what the summaries and moments below support. Invent no commitments, names, or dates.\n\n' +
     'What was discussed (distilled summaries):\n{{summaries}}\n\n' +
     'Key moments:\n{{moments}}\n\n' +
-    'Write the follow-up as markdown — a short greeting, a recap, and clear next steps or commitments. Follow-up draft:',
+    '{{todo}}\n\n' +
+    'Write the follow-up as markdown — a short greeting, a recap, and clear next steps or commitments. ' +
+    'If a running to-do is present above, fold those follow-ups into the next-steps section. Follow-up draft:',
 }
 
 /**

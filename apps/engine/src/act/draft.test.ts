@@ -8,7 +8,7 @@ import { FabricDocuments } from '../fabric/index.js'
 import { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { defaultMeetingMode } from '../distill/index.js'
-import { Actor, composeFollowUpDraft } from './index.js'
+import { Actor, composeFollowUpDraft, TodoDocuments } from './index.js'
 import { ActDocuments } from './documents.js'
 import { defaultFollowUpTemplate } from './defaults.js'
 
@@ -63,6 +63,50 @@ test('composeFollowUpDraft builds a provenance-stamped draft from distillates + 
   assert.match(draft.body, /▲ route via legal/)
 })
 
+test('{{todo}} interpolation: accumulated items reach the draft; empty is an omitted section', async () => {
+  const base = {
+    sessionId: 'ses-1', workspaceId: 'ws-1',
+    distillates: [distillate('dst-1', 'agreed to ship Thursday')], moments: [],
+    dials: { tone: 5, warmth: 5, wit: 5, charm: 5, specificity: 5, brevity: 5 } as const,
+    scope: 'global' as const, templateId: 'tpl-followup-default',
+  }
+  // non-empty: the item text is interpolated into the prompt the model saw (echoed back)
+  const withTodo = await composeFollowUpDraft(
+    { ...base, todo: [{ id: 't1', text: 'Send Dana the updated deck', createdAt: at }] },
+    { invoke: echoInvoke, template: defaultFollowUpTemplate },
+  )
+  assert.ok(withTodo.draft)
+  assert.match(withTodo.draft.body, /Accumulated follow-ups so far/)
+  assert.match(withTodo.draft.body, /Send Dana the updated deck/)
+
+  // empty / omitted: no heading, no dangling "to-do" label — the section is honestly absent
+  const noTodo = await composeFollowUpDraft({ ...base, todo: [] }, { invoke: echoInvoke, template: defaultFollowUpTemplate })
+  assert.ok(noTodo.draft)
+  assert.doesNotMatch(noTodo.draft.body, /Accumulated follow-ups so far/)
+})
+
+test('a user-edited to-do doc is reflected in the next draft (the editable-document loop)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-act-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const voice = new VoiceDocuments(store); voice.ensureDefaults()
+    const docs = new ActDocuments(store); docs.ensureDefaults()
+    const todos = new TodoDocuments(store)
+    store.saveDistillate(distillate('dst-1', 'agreed to ship Thursday'))
+    // a user edits the session's to-do doc directly (what PUT /todos/:id does)
+    todos.save({ id: 'ses-1', name: 'to-do', version: 1, sessionId: 'ses-1', workspaceId: 'ws-1', items: [{ id: 'u1', text: 'USER-EDITED: overnight the signed contract', createdAt: at }] })
+    const actor = new Actor({ store, voice, fabric: new FabricDocuments(store), docs, todos, mode: () => defaultMeetingMode, invoke: echoInvoke })
+    const session: Session = { id: 'ses-1', workspaceId: 'ws-1', modeId: 'mode-meeting', startedAt: at, attribution: { evidence: [{ kind: 'manual', detail: 'm', weight: 1 }], confidence: 1 } }
+    const draft = await actor.runFollowUpDraft(session)
+    assert.ok(draft)
+    // the NEXT draft interpolated the user's hand-edited item — the loop closes over the document
+    assert.match(draft.body, /USER-EDITED: overnight the signed contract/)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('a session with no distillates and no moments produces no draft (normal, not an error)', async () => {
   const { draft, attempts } = await composeFollowUpDraft(
     { sessionId: 'ses-1', workspaceId: 'ws-1', distillates: [], moments: [], dials: { tone: 5, warmth: 5, wit: 5, charm: 5, specificity: 5, brevity: 5 }, scope: 'global', templateId: 'tpl-followup-default' },
@@ -105,7 +149,7 @@ test('the bound register visibly shapes the draft: boardroom vs sales-floor read
 
     const drafts: Draft[] = []
     const actor = new Actor({
-      store, voice, fabric, docs,
+      store, voice, fabric, docs, todos: new TodoDocuments(store),
       mode: () => defaultMeetingMode, // declares a follow-up-draft act; registerId = reg-boardroom
       invoke: echoInvoke,
       publish: (d) => {
@@ -161,7 +205,7 @@ test('a mode that declares no follow-up-draft act produces no draft', async () =
     docs.ensureDefaults()
     store.saveDistillate(distillate('dst-1', 'agreed to ship Thursday'))
     const noActMode: Mode = { ...defaultMeetingMode, acts: [] }
-    const actor = new Actor({ store, voice, fabric: new FabricDocuments(store), docs, mode: () => noActMode, invoke: echoInvoke })
+    const actor = new Actor({ store, voice, fabric: new FabricDocuments(store), docs, todos: new TodoDocuments(store), mode: () => noActMode, invoke: echoInvoke })
     const session: Session = {
       id: 'ses-1', workspaceId: 'ws-1', modeId: 'mode-meeting', startedAt: at,
       attribution: { evidence: [{ kind: 'manual', detail: 'm', weight: 1 }], confidence: 1 },
