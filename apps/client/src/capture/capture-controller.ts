@@ -1,5 +1,5 @@
 import type { CaptureChunk } from '@openinfo/contracts'
-import { segmentToChunk, type CaptureContext } from './chunk.js'
+import { segmentToChunk, frameMetaToChunk, type CaptureContext } from './chunk.js'
 import type { CaptureSourceKind, CaptureStatus, RawSegment } from './protocol.js'
 
 /**
@@ -114,9 +114,22 @@ export class CaptureController {
     if (this.state === 'starting') this.setState('capturing')
     this.updateSilence(segment) // system-audio honesty: present-but-silent vs genuinely flowing
     this.sequence += 1
-    const chunk = segmentToChunk(segment, this.context, this.sequence)
+    await this.sendChunk(segmentToChunk(segment, this.context, this.sequence))
+    // Screen frames carry a companion typed descriptor (which display, pixel size, scale). Emit it as its
+    // OWN adjacent `source:'screen'` utf8/json chunk (records/screen.ts) at the NEXT sequence, so the
+    // image and its ScreenFrameMeta correlate by capture order. `screenMeta` is undefined for audio, so
+    // this is a strict no-op on the mic/system-audio paths. Re-check context: an await above could have
+    // let a stop/reset land in between (context cleared) — then there is nothing left to tag.
+    if (segment.screenMeta && this.context) {
+      this.sequence += 1
+      await this.sendChunk(frameMetaToChunk(segment, this.context, this.sequence))
+    }
+  }
+
+  /** Send one chunk to the engine — EngineLink spools on POST failure, so this never throws fatally. */
+  private async sendChunk(chunk: CaptureChunk): Promise<void> {
     try {
-      await this.deps.capture(chunk) // EngineLink spools on POST failure — this never throws fatally
+      await this.deps.capture(chunk)
     } catch (err) {
       this.deps.log?.(`[${this.deps.source}] capture send failed (will spool): ${String(err)}`)
     }

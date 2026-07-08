@@ -221,3 +221,88 @@ test('mic segments carry no silent flag ⇒ the silence path is a strict no-op (
   await h.controller.onSegment(seg())
   assert.deepEqual(h.silences, []) // onSilence never fires for mic
 })
+
+// --- screen source — a still-frame IMAGE plus its companion ScreenFrameMeta chunk --------------------
+
+const screenSeg = (over: Partial<RawSegment> = {}): RawSegment => ({
+  source: 'screen',
+  bytes: new Uint8Array([0xff, 0xd8, 0xff]).buffer,
+  mimeType: 'image/jpeg',
+  capturedAt: '2026-07-07T10:00:00.000Z',
+  screenMeta: { displayId: 'display-1', width: 1920, height: 1080, scale: 2 },
+  ...over,
+})
+
+test('screen: each frame emits TWO adjacent chunks — the image then its companion ScreenFrameMeta', async () => {
+  const h = harness({ source: 'screen' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'starting') // frame loop told to start, no frame yet
+
+  await h.controller.onSegment(screenSeg())
+  assert.equal(h.controller.currentState, 'capturing') // first frame → honestly capturing
+  assert.equal(h.captured.length, 2) // image + meta
+
+  const [image, meta] = h.captured
+  assert.equal(image?.source, 'screen')
+  assert.equal(image?.contentType, 'image/jpeg')
+  assert.equal(image?.encoding, 'base64')
+  assert.equal(image?.id, 'scr-A-000001')
+  assert.equal(meta?.source, 'screen')
+  assert.equal(meta?.contentType, 'application/json')
+  assert.equal(meta?.encoding, 'utf8')
+  assert.equal(meta?.id, 'scr-A-000002') // NEXT sequence → adjacency
+  assert.equal((image?.sequence ?? 0) + 1, meta?.sequence)
+  assert.deepEqual(JSON.parse(meta?.data ?? '{}'), { displayId: 'display-1', width: 1920, height: 1080, scale: 2 })
+})
+
+test('screen: consecutive frames keep advancing the shared sequence (image/meta/image/meta…)', async () => {
+  const h = harness({ source: 'screen' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(screenSeg())
+  await h.controller.onSegment(screenSeg())
+  assert.deepEqual(
+    h.captured.map((c) => c.id),
+    ['scr-A-000001', 'scr-A-000002', 'scr-A-000003', 'scr-A-000004'],
+  )
+  // Every screen chunk is image/* or application/json — never an audio type.
+  assert.deepEqual(
+    h.captured.map((c) => c.contentType),
+    ['image/jpeg', 'application/json', 'image/jpeg', 'application/json'],
+  )
+})
+
+test('screen: session end flushes the final frame then resets to idle (same lifecycle as audio)', async () => {
+  const h = harness({ source: 'screen' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(screenSeg())
+  h.controller.onSessionEnded()
+  assert.deepEqual(h.control, ['start', 'stop']) // frame loop told to stop
+  await h.controller.onSegment(screenSeg()) // a final in-flight frame still tagged the ended session
+  assert.equal(h.captured.length, 4) // 2 frames × (image + meta)
+  assert.ok(h.captured.every((c) => c.sessionId === 'A'))
+  await h.controller.onCaptureStopped()
+  assert.equal(h.controller.currentState, 'idle')
+})
+
+test('screen: config disabled ⇒ opt-out no-op (nothing requested, no frame loop started)', async () => {
+  let asked = false
+  const h = harness({ source: 'screen', enabled: false, requestPermission: async () => ((asked = true), true) })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(asked, false)
+  assert.equal(h.controller.currentState, 'idle')
+  assert.deepEqual(h.control, [])
+})
+
+test('screen: Screen-Recording denied ⇒ denied state, no frame loop, session unaffected', async () => {
+  const h = harness({ source: 'screen', requestPermission: async () => false })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'denied')
+  assert.deepEqual(h.control, []) // never started grabbing
+})
+
+test('a segment WITHOUT screenMeta emits exactly one chunk (audio path unchanged, no phantom meta)', async () => {
+  const h = harness({ source: 'mic' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(seg()) // mic segment, no screenMeta
+  assert.equal(h.captured.length, 1) // one chunk only — the companion-meta path is a strict no-op
+})

@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, desktopCapturer, type MenuItemConstructorOptions } from 'electron'
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { hudWindowSpec } from './window-options.js'
@@ -72,6 +72,11 @@ let needsSetup: boolean | undefined
 let engineLink: EngineLink | undefined
 let micController: CaptureController | undefined
 let systemController: CaptureController | undefined
+// The screen-capture controller ("what's on screen") + its cadence timer. Screen is captured in the MAIN
+// process (desktopCapturer, below) rather than the hidden audio renderer, but rides the same controller +
+// session lifecycle + EngineLink spool. Opt-IN (cfg.screenEnabled default OFF) — see config.ts.
+let screenController: CaptureController | undefined
+let screenTimer: ReturnType<typeof setInterval> | undefined
 // The focus (foreground-window context) poller — main-process, session-INDEPENDENT, gated on the
 // engine's route.detect flag + the local OPENINFO_FOCUS opt-out. `focusActive` mirrors whether it is
 // currently watching, for the tray's quiet "· watching context" tooltip.
@@ -300,9 +305,94 @@ const sharedAudioPermission = (): Promise<boolean> => {
   return permissionInFlight
 }
 
-/** Route a per-source IPC message (segment/stopped/status) to the controller that owns that source. */
+/** Route a per-source IPC message (segment/stopped/status) to the controller that owns that source. Screen */
+/** never uses these IPC channels (it's grabbed in the main process), so only the two audio sources map here. */
 const controllerFor = (source: CaptureSourceKind): CaptureController | undefined =>
-  source === 'mic' ? micController : systemController
+  source === 'mic' ? micController : source === 'system-audio' ? systemController : undefined
+
+/**
+ * Screen-Recording permission on macOS. There is NO `askForMediaAccess('screen')` counterpart to the mic
+ * — the TCC prompt appears the first time desktopCapturer actually grabs a frame. So we only hard-block
+ * when the status is ALREADY 'denied'/'restricted' (→ the controller's honest 'denied' state, never a
+ * false "capturing"); 'granted' and 'not-determined' proceed and let the first grab surface the prompt
+ * (until granted, macOS returns an empty image, which captureScreenFrame skips). Non-macOS has no gate.
+ */
+const requestScreenPermission = async (): Promise<boolean> => {
+  if (process.platform !== 'darwin') return true
+  try {
+    const status = systemPreferences.getMediaAccessStatus('screen')
+    console.log(`[shell] screen access status before capture: ${status}`)
+    return status !== 'denied' && status !== 'restricted'
+  } catch (err) {
+    console.error('[shell] screen permission check failed:', err)
+    return false
+  }
+}
+
+/**
+ * Grab ONE still frame of the primary display via desktopCapturer (MAIN process — no getUserMedia, no
+ * hidden renderer, no picker) and hand it to the screen controller as a RawSegment. CHOSEN over
+ * getDisplayMedia-in-a-renderer because it adds zero renderer/canvas plumbing and no
+ * session.setDisplayMediaRequestHandler, and NativeImage gives us JPEG bytes + the exact pixel size
+ * directly; the honest cost — each poll is a full capture — is fine at a ~5s still-frame cadence (we are
+ * NOT streaming video). We request a thumbnail at the display's PHYSICAL pixel size (logical × scaleFactor)
+ * so retina screens capture at real resolution, then read the produced image's actual size for the
+ * ScreenFrameMeta. An EMPTY image = the Screen-Recording grant hasn't landed yet (macOS returns black/empty
+ * until granted) → skip the frame rather than ship a black rectangle. The HUD window is
+ * setContentProtection(true)/NSWindowSharingNone, so it excludes ITSELF from the capture.
+ * Δ-gating (only keep changed frames) is deliberately future — every cadence tick is kept for now.
+ */
+const captureScreenFrame = async (): Promise<void> => {
+  const controller = screenController
+  if (!controller) return
+  try {
+    const primary = screen.getPrimaryDisplay()
+    const scale = primary.scaleFactor || 1
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: Math.round(primary.size.width * scale), height: Math.round(primary.size.height * scale) },
+    })
+    const primaryId = String(primary.id)
+    const source = sources.find((s) => s.display_id === primaryId) ?? sources[0]
+    const image = source?.thumbnail
+    if (!image || image.isEmpty()) return // no frame yet — Screen-Recording grant likely still pending
+    const size = image.getSize()
+    const jpeg = image.toJPEG(70) // ~0.7 quality — still frames, not video
+    // Copy into a fresh, exactly-sized ArrayBuffer (a Node Buffer's .buffer is a shared pool typed
+    // ArrayBuffer|SharedArrayBuffer; RawSegment.bytes is a plain ArrayBuffer).
+    const bytes = new Uint8Array(jpeg).buffer
+    await controller.onSegment({
+      source: 'screen',
+      bytes,
+      mimeType: 'image/jpeg',
+      capturedAt: new Date().toISOString(),
+      screenMeta: { displayId: source?.display_id || primaryId, width: size.width, height: size.height, scale },
+    })
+  } catch (err) {
+    console.error('[shell] screen frame capture failed:', err)
+  }
+}
+
+/** control.start for screen: grab a frame now (so the first isn't a full interval away), then on cadence. */
+const startScreenLoop = (): void => {
+  if (screenTimer) return
+  void captureScreenFrame()
+  screenTimer = setInterval(() => void captureScreenFrame(), cfg.screenIntervalMs)
+}
+
+/**
+ * control.stop for screen: stop the cadence and confirm the stop on the next tick. Unlike the audio
+ * renderer there is no async final-segment flush (each grab is a self-contained frame), but the controller
+ * still needs onCaptureStopped to complete its stopping→idle handshake (and honor any queued restart), so
+ * we defer it via setImmediate to mirror the audio path's asynchronous `stopped` signal.
+ */
+const stopScreenLoop = (): void => {
+  if (screenTimer) {
+    clearInterval(screenTimer)
+    screenTimer = undefined
+  }
+  setImmediate(() => void screenController?.onCaptureStopped())
+}
 
 /**
  * Build the capture controllers (one per source — mic "me" + system-audio "them") and wire the shared
@@ -349,10 +439,28 @@ const setupCapture = (): void => {
     },
     log: (message) => console.log(message),
   })
+  // Screen ("what's on screen") — grabbed in the MAIN process, so its control is the desktopCapturer
+  // cadence loop above rather than an IPC send to the hidden renderer. Opt-IN (default OFF) and driven by
+  // the SAME session lifecycle; frames spool through EngineLink.capture like audio (a lost frame is real
+  // data loss, not ephemeral). No onSilence — that is audio-only.
+  screenController = new CaptureController({
+    source: 'screen',
+    enabled: cfg.screenEnabled,
+    capture: (chunk) => link.capture(chunk),
+    control: { start: startScreenLoop, stop: stopScreenLoop },
+    requestPermission: requestScreenPermission,
+    onStateChange: (state) => {
+      console.log(`[shell] screen capture state → ${state}`)
+      refreshTray()
+    },
+    log: (message) => console.log(message),
+  })
   ipcMain.on(CAPTURE_CHANNELS.segment, (_event, segment: RawSegment) => void controllerFor(segment.source)?.onSegment(segment))
   ipcMain.on(CAPTURE_CHANNELS.stopped, (_event, source: CaptureSourceKind) => void controllerFor(source)?.onCaptureStopped())
   ipcMain.on(CAPTURE_CHANNELS.status, (_event, status: CaptureStatus) => controllerFor(status.source)?.onStatus(status))
-  console.log(`[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} (both follow the session lifecycle)`)
+  console.log(
+    `[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} · screen ${cfg.screenEnabled ? `enabled (every ${cfg.screenIntervalMs}ms)` : 'disabled by config (opt-in)'} (all follow the session lifecycle)`,
+  )
 }
 
 /**
@@ -368,10 +476,12 @@ const applyCaptureLifecycle = (live: boolean): void => {
       const context = { sessionId, workspaceId: cfg.workspace }
       void micController?.onSessionStarted(context)
       void systemController?.onSessionStarted(context)
+      void screenController?.onSessionStarted(context) // opt-in; a no-op unless cfg.screenEnabled
     }
   } else {
     micController?.onSessionEnded()
     systemController?.onSessionEnded()
+    screenController?.onSessionEnded()
   }
 }
 
@@ -579,8 +689,9 @@ app.on('window-all-closed', () => {
   /* keep the app alive as a menu-bar agent even with the HUD hidden/closed */
 })
 app.on('before-quit', () => {
-  micController?.shutdown() // stop both streams cleanly if quitting mid-capture
+  micController?.shutdown() // stop all capture cleanly if quitting mid-capture
   systemController?.shutdown()
+  screenController?.shutdown() // clears the desktopCapturer cadence loop
   focusPoller?.stop() // stop watching the foreground window
 })
 app.on('will-quit', () => globalShortcut.unregisterAll())
