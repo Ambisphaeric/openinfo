@@ -1,4 +1,7 @@
 # tools — dev-only
+- `redeploy-remote.sh` — kill + wipe + fresh rsync/install/build/run on a remote test
+  machine over ssh (`REMOTE_USER`/`REMOTE_HOST`/`REMOTE_PATH` env overrides). For dogfooding
+  on a second machine, not part of the product.
 - `schema-gen/` — TS types → JSON Schema into shared/contracts/schemas (the Rust-portable artifact)
 - `bench/` — endpoint benchmark harness; writes measured tok/s into fabric via the API
 - `fixtures/` — capture recorder/replayer: record a real meeting once, replay it into the

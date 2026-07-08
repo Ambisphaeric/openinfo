@@ -1,0 +1,19 @@
+{
+  "$id": "CloneProfileRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    }
+  }
+}

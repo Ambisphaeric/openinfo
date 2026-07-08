@@ -16,6 +16,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   captureChunk: 'CaptureChunk', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus',
   distillate: 'Distillate', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
   session: 'Session', startSessionRequest: 'StartSessionRequest', queryResult: 'QueryResult',
+  fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
 }
 
 for (const file of readdirSync(examplesDir).filter((f) => f.endsWith('.json'))) {

@@ -1,0 +1,1251 @@
+{
+  "$id": "FabricProfile",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "version",
+    "fabric"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "description": "store-stamped, monotonic; every prior version is kept",
+      "type": "integer"
+    },
+    "fabric": {
+      "$id": "Fabric",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "slots"
+      ],
+      "properties": {
+        "slots": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "stt",
+            "tts",
+            "llm",
+            "vlm",
+            "ocr",
+            "embed"
+          ],
+          "properties": {
+            "stt": {
+              "description": "order is fallback; first healthy wins",
+              "type": "array",
+              "items": {
+                "$id": "Endpoint",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "runtime",
+                      "model"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "local",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "runtime": {
+                        "$id": "LocalRuntime",
+                        "anyOf": [
+                          {
+                            "const": "mlx",
+                            "type": "string"
+                          },
+                          {
+                            "const": "ollama",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llama.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "whisper.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle",
+                            "type": "string"
+                          },
+                          {
+                            "const": "coreml",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "url",
+                      "api"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "http",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "pattern": "^https?://",
+                        "type": "string"
+                      },
+                      "api": {
+                        "anyOf": [
+                          {
+                            "const": "openai-compat",
+                            "type": "string"
+                          },
+                          {
+                            "const": "native",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "keyRef"
+                        ],
+                        "properties": {
+                          "keyRef": {
+                            "minLength": 1,
+                            "description": "name of a secret in the engine secret store — never the value",
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "enhancement, never dependency — offline is a guarantee",
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "provider",
+                      "auth"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "cloud",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "const": "keychain",
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "tts": {
+              "type": "array",
+              "items": {
+                "$id": "Endpoint",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "runtime",
+                      "model"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "local",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "runtime": {
+                        "$id": "LocalRuntime",
+                        "anyOf": [
+                          {
+                            "const": "mlx",
+                            "type": "string"
+                          },
+                          {
+                            "const": "ollama",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llama.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "whisper.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle",
+                            "type": "string"
+                          },
+                          {
+                            "const": "coreml",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "url",
+                      "api"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "http",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "pattern": "^https?://",
+                        "type": "string"
+                      },
+                      "api": {
+                        "anyOf": [
+                          {
+                            "const": "openai-compat",
+                            "type": "string"
+                          },
+                          {
+                            "const": "native",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "keyRef"
+                        ],
+                        "properties": {
+                          "keyRef": {
+                            "minLength": 1,
+                            "description": "name of a secret in the engine secret store — never the value",
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "enhancement, never dependency — offline is a guarantee",
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "provider",
+                      "auth"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "cloud",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "const": "keychain",
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "llm": {
+              "type": "array",
+              "items": {
+                "$id": "Endpoint",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "runtime",
+                      "model"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "local",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "runtime": {
+                        "$id": "LocalRuntime",
+                        "anyOf": [
+                          {
+                            "const": "mlx",
+                            "type": "string"
+                          },
+                          {
+                            "const": "ollama",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llama.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "whisper.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle",
+                            "type": "string"
+                          },
+                          {
+                            "const": "coreml",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "url",
+                      "api"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "http",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "pattern": "^https?://",
+                        "type": "string"
+                      },
+                      "api": {
+                        "anyOf": [
+                          {
+                            "const": "openai-compat",
+                            "type": "string"
+                          },
+                          {
+                            "const": "native",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "keyRef"
+                        ],
+                        "properties": {
+                          "keyRef": {
+                            "minLength": 1,
+                            "description": "name of a secret in the engine secret store — never the value",
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "enhancement, never dependency — offline is a guarantee",
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "provider",
+                      "auth"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "cloud",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "const": "keychain",
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "vlm": {
+              "type": "array",
+              "items": {
+                "$id": "Endpoint",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "runtime",
+                      "model"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "local",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "runtime": {
+                        "$id": "LocalRuntime",
+                        "anyOf": [
+                          {
+                            "const": "mlx",
+                            "type": "string"
+                          },
+                          {
+                            "const": "ollama",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llama.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "whisper.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle",
+                            "type": "string"
+                          },
+                          {
+                            "const": "coreml",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "url",
+                      "api"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "http",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "pattern": "^https?://",
+                        "type": "string"
+                      },
+                      "api": {
+                        "anyOf": [
+                          {
+                            "const": "openai-compat",
+                            "type": "string"
+                          },
+                          {
+                            "const": "native",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "keyRef"
+                        ],
+                        "properties": {
+                          "keyRef": {
+                            "minLength": 1,
+                            "description": "name of a secret in the engine secret store — never the value",
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "enhancement, never dependency — offline is a guarantee",
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "provider",
+                      "auth"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "cloud",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "const": "keychain",
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "ocr": {
+              "type": "array",
+              "items": {
+                "$id": "Endpoint",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "runtime",
+                      "model"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "local",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "runtime": {
+                        "$id": "LocalRuntime",
+                        "anyOf": [
+                          {
+                            "const": "mlx",
+                            "type": "string"
+                          },
+                          {
+                            "const": "ollama",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llama.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "whisper.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle",
+                            "type": "string"
+                          },
+                          {
+                            "const": "coreml",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "url",
+                      "api"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "http",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "pattern": "^https?://",
+                        "type": "string"
+                      },
+                      "api": {
+                        "anyOf": [
+                          {
+                            "const": "openai-compat",
+                            "type": "string"
+                          },
+                          {
+                            "const": "native",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "keyRef"
+                        ],
+                        "properties": {
+                          "keyRef": {
+                            "minLength": 1,
+                            "description": "name of a secret in the engine secret store — never the value",
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "enhancement, never dependency — offline is a guarantee",
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "provider",
+                      "auth"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "cloud",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "const": "keychain",
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "embed": {
+              "type": "array",
+              "items": {
+                "$id": "Endpoint",
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "runtime",
+                      "model"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "local",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "runtime": {
+                        "$id": "LocalRuntime",
+                        "anyOf": [
+                          {
+                            "const": "mlx",
+                            "type": "string"
+                          },
+                          {
+                            "const": "ollama",
+                            "type": "string"
+                          },
+                          {
+                            "const": "llama.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "whisper.cpp",
+                            "type": "string"
+                          },
+                          {
+                            "const": "paddle",
+                            "type": "string"
+                          },
+                          {
+                            "const": "coreml",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "url",
+                      "api"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "http",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "url": {
+                        "pattern": "^https?://",
+                        "type": "string"
+                      },
+                      "api": {
+                        "anyOf": [
+                          {
+                            "const": "openai-compat",
+                            "type": "string"
+                          },
+                          {
+                            "const": "native",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "additionalProperties": false,
+                        "type": "object",
+                        "required": [
+                          "keyRef"
+                        ],
+                        "properties": {
+                          "keyRef": {
+                            "minLength": 1,
+                            "description": "name of a secret in the engine secret store — never the value",
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "additionalProperties": false,
+                    "description": "enhancement, never dependency — offline is a guarantee",
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "name",
+                      "provider",
+                      "auth"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "const": "cloud",
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "provider": {
+                        "type": "string"
+                      },
+                      "auth": {
+                        "const": "keychain",
+                        "type": "string"
+                      },
+                      "model": {
+                        "type": "string"
+                      },
+                      "measured": {
+                        "additionalProperties": false,
+                        "description": "MEASURED by tools/bench — never vendor claims",
+                        "type": "object",
+                        "properties": {
+                          "tokPerSec": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "latencyMs": {
+                            "minimum": 0,
+                            "type": "number"
+                          },
+                          "measuredAt": {
+                            "format": "date-time",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "memoryBudgetMb": {
+          "minimum": 512,
+          "description": "concurrent slot residency (paddle + stt + tts + llm together) fits under this",
+          "type": "integer"
+        }
+      }
+    },
+    "description": {
+      "type": "string"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "type": "string"
+    }
+  }
+}

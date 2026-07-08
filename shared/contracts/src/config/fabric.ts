@@ -17,6 +17,19 @@ const Measured = Type.Optional(
   ),
 )
 
+/**
+ * An http endpoint's OPTIONAL credential reference. It names a key by `keyRef` — never the value.
+ * The value lives in the engine-side secret store (chmod-600 v0, Keychain P7) and is injected only
+ * at invoke time as `Authorization: Bearer <resolved>`. This shape never carries key material, so it
+ * is safe in documents, GET /fabric responses, exports, and the fabric.changed event.
+ */
+const EndpointAuth = Type.Optional(
+  Type.Object(
+    { keyRef: Type.String({ minLength: 1, description: 'name of a secret in the engine secret store — never the value' }) },
+    { additionalProperties: false },
+  ),
+)
+
 export const Endpoint = Type.Union(
   [
     Type.Object(
@@ -30,6 +43,7 @@ export const Endpoint = Type.Union(
         url: Type.String({ pattern: '^https?://' }),
         api: Type.Union(['openai-compat', 'native'].map((a) => Type.Literal(a))),
         model: Type.Optional(Type.String()),
+        auth: EndpointAuth,
         measured: Measured,
       },
       { additionalProperties: false },
@@ -70,3 +84,24 @@ export const Fabric = Type.Object(
   { $id: 'Fabric', additionalProperties: false },
 )
 export type Fabric = Static<typeof Fabric>
+
+/**
+ * A named, versioned, cloneable fabric configuration — a full slot→endpoints map the user can save,
+ * clone, and switch between (LM Studio 8B today; a 27B on another host + a 4B OCR box + parakeet STT
+ * tomorrow — any composition across hosts). `fabric` reuses the §8 Fabric shape verbatim (additive
+ * reuse, not a fork). One profile is "active" at a time; ACTIVATING it makes its `fabric` the live
+ * fabric that health/bench/invoke run against — so `GET`/`PUT /fabric` are simply the active-profile
+ * view. Stored like every other config document (versioned in _meta.db; cloning is copying a doc).
+ */
+export const FabricProfile = Type.Object(
+  {
+    id: Type.String({ minLength: 1 }),
+    name: Type.String({ minLength: 1 }),
+    version: Type.Integer({ minimum: 1, description: 'store-stamped, monotonic; every prior version is kept' }),
+    fabric: Fabric,
+    description: Type.Optional(Type.String()),
+    createdAt: Type.Optional(Type.String({ format: 'date-time' })),
+  },
+  { $id: 'FabricProfile', additionalProperties: false },
+)
+export type FabricProfile = Static<typeof FabricProfile>

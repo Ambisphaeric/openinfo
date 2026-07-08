@@ -30,15 +30,16 @@ import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './co
 import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surface.js'
 import { Mode } from './config/mode.js'
 import { PromptTemplate } from './config/promptTemplate.js'
-import { Fabric, Endpoint, LocalRuntime } from './config/fabric.js'
+import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
 import { Flag } from './config/flag.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest, CloneProfileRequest, SecretRef, SecretValue } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
   Moment, MomentKind, Entity, Distillate, Draft, Session, Workspace, Pin, Commitment, Watcher,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
-  Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, Flag,
+  Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile, Flag,
   Health, JsonSchema, CaptureSource, CaptureChunk, Ack, QueueStatus, RelevantEntity, QueryResult, StartSessionRequest,
+  CloneProfileRequest, SecretRef, SecretValue,
 } as const

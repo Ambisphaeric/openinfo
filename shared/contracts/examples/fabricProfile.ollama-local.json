@@ -1,0 +1,20 @@
+{
+  "id": "ollama-local",
+  "name": "Ollama (local)",
+  "version": 1,
+  "description": "Ollama on this Mac, OpenAI-compatible on :11434 — a small chat model plus a local embedder. No key needed.",
+  "fabric": {
+    "slots": {
+      "stt": [],
+      "tts": [],
+      "llm": [
+        { "kind": "http", "name": "ollama", "url": "http://localhost:11434", "api": "openai-compat", "model": "llama3.2:3b" }
+      ],
+      "vlm": [],
+      "ocr": [],
+      "embed": [
+        { "kind": "http", "name": "ollama-embed", "url": "http://localhost:11434", "api": "openai-compat", "model": "nomic-embed-text" }
+      ]
+    }
+  }
+}

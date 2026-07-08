@@ -107,6 +107,20 @@
         "model": {
           "type": "string"
         },
+        "auth": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "keyRef"
+          ],
+          "properties": {
+            "keyRef": {
+              "minLength": 1,
+              "description": "name of a secret in the engine secret store — never the value",
+              "type": "string"
+            }
+          }
+        },
         "measured": {
           "additionalProperties": false,
           "description": "MEASURED by tools/bench — never vendor claims",

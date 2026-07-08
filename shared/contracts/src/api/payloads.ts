@@ -116,3 +116,42 @@ export const StartSessionRequest = Type.Object(
   { $id: 'StartSessionRequest', additionalProperties: false },
 )
 export type StartSessionRequest = Static<typeof StartSessionRequest>
+
+/**
+ * The body of `POST /fabric/profiles/:id/clone` — the new profile's id (+ optional name). Cloning is
+ * copying a document (ARCHITECTURE §2/§8): the engine reads the source profile, restamps id/name/
+ * version, and writes a fresh document. Kept as a route (not client GET+PUT) so a clone is atomic.
+ */
+export const CloneProfileRequest = Type.Object(
+  {
+    id: Id,
+    name: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { $id: 'CloneProfileRequest', additionalProperties: false },
+)
+export type CloneProfileRequest = Static<typeof CloneProfileRequest>
+
+/**
+ * A secret REFERENCE — the ONLY secret-shaped thing that ever leaves the engine. `GET /fabric/secrets`
+ * returns these (the refs that have a stored value), and write/delete echo back the ref they touched.
+ * It carries NO value field, by design: no route, event, GET response, document, or export ever
+ * returns key material (the never-echo-to-UI discipline). The value is set via SecretValue (inbound
+ * only) and resolved server-side at invoke time.
+ */
+export const SecretRef = Type.Object(
+  { ref: Type.String({ minLength: 1, description: 'the keyRef an endpoint auth block points at' }) },
+  { $id: 'SecretRef', additionalProperties: false },
+)
+export type SecretRef = Static<typeof SecretRef>
+
+/**
+ * The body of `PUT /fabric/secrets/:ref` — the write-only inbound path for a secret value. This is
+ * the one schema that carries key material, and it is REQUEST-ONLY: it is never used as a response,
+ * never persisted in a document, never echoed. The engine stores the value in the secret store and
+ * replies with a bare SecretRef.
+ */
+export const SecretValue = Type.Object(
+  { value: Type.String({ minLength: 1, description: 'the secret value — inbound only, never returned' }) },
+  { $id: 'SecretValue', additionalProperties: false },
+)
+export type SecretValue = Static<typeof SecretValue>
