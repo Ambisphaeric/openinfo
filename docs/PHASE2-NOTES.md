@@ -761,3 +761,82 @@ capture-side concern independent of distill, which contradicts the gating decisi
   a raw label, not an entity id); retry-at-idle `llm.smart`/`stt` re-transcription upgrades (the queue
   seam supports it, endpoint tiering still unwired); a durable transcribed-text store for transcribe-
   without-distill (no consumer for it yet — see flag interaction).
+
+## Slice: The HUD window moves + remembers where you put it (drag · position persistence)
+
+A tight follow-up to the client shell slice above. The founder hit it immediately: the frameless HUD
+was **static — it couldn't be dragged**. This slice makes the header strip a grab handle, moves the
+window with the cursor, and remembers the spot across restarts. No engine/contracts change (client-only,
+`apps/client`), no resizing, no multi-display UI — deliberately tight.
+
+### The drag path that shipped: IPC cursor-follow, NOT CSS `-webkit-app-region: drag`
+The primary approach was the CSS drag region (`-webkit-app-region: drag` on the panel header). It does
+**not** work here, and by design it can't: the HUD is **`focusable: false`** (a glance, never a window
+you work in — the shell slice's deliberate no-focus-steal decision, which this slice must not flip). On
+macOS that CSS region rides the AppKit window-drag, which only engages for a **focusable** window, so the
+region is inert. So the shipped path is the IPC manual-drag pattern, and `focusable: false` stays:
+
+- A **mousedown on the `.hudtop` strip** (renderer) → the preload bridge (`window.openinfoDrag.start()`)
+  → `ipcMain` `hud:drag-start`. The main process captures the **grab offset** (cursor − window origin)
+  once, then on a ~60 Hz tick reads `screen.getCursorScreenPoint()` and `setPosition`s the window so the
+  grabbed point stays under the cursor. Any mouseup / pointer-leave → `hud:drag-end` stops the tick. The
+  move happens **in the main process off the live OS cursor**, which is exactly why it works while the
+  window is non-focusable — nothing depends on the window becoming key.
+- The grab strip is the existing header (`.hudtop`, the context/heartbeat line — hud-v2.html's title-bar
+  equivalent), not new chrome. Interactive descendants (`.mini`, `[data-verb]`) are excluded from the hit
+  test, so dragging the header never swallows an action click. `cursor: grab`/`grabbing` is the affordance.
+
+### The one preload — a two-verb drag channel, `contextIsolation` on, `nodeIntegration` off
+The shell slice shipped **no** preload (the HUD reads the engine over HTTP+WS like any browser). Dragging
+is the single thing the renderer can't do itself, so this adds a minimal `contextBridge` preload exposing
+a **coordinate-free** `start()`/`end()` (main reads the cursor; the renderer sends no geometry). No node
+surface reaches the page; `contextIsolation` stays on, `nodeIntegration` off — only the two IPC channels
+cross. In a plain browser (`dev-hud.html`) there is no bridge, so the drag wiring simply isn't installed
+and the browser HUD is unaffected. **`.cts` gotcha:** the client package is `type: module`, but Electron
+loads a `.js` preload as CommonJS, so an ESM preload fails to parse. Authoring the source as `preload.cts`
+makes `tsc` emit a real `preload.cjs` (CommonJS, `contextBridge`/`ipcRenderer` available under the default
+sandbox) — no sandbox flip, no build hack, still strict TypeScript. (`tsconfig` `include` gained `*.cts`.)
+
+### Position persistence — client-local JSON, on-screen-validated on restore
+The origin is saved (debounced, ~400 ms, on `moved` and on drag-end) to a tiny `window-state.json` under
+Electron's `userData` — **client-local config, not a flag document**, the same line the shell/sessions/HUD
+slices drew (where a window sits is how the client paints itself; it never reaches the engine or its
+store). On startup the saved origin is restored **only if it is still landable on a currently connected
+display** (≥80 px visible in both axes and the top/grab strip within the work area). An unplugged monitor
+or resolution change → the spot fails the check → the shell **centers** instead, so the HUD can never open
+off every screen where you couldn't drag it back. Fails closed.
+
+### Testability — same pure/shell split
+New pure logic is node-tested headless (no display, no `BrowserWindow`): the drag geometry (`grabOffset`
+→ `draggedOrigin` keeps the grabbed point under the cursor), the (de)serialize/parse (rejecting garbage),
+the on-screen validation (unplugged-monitor, off-top, sliver, secondary-display cases), the disk
+round-trip (`window-store` against a temp dir), and the renderer hit-testing (`window-drag`: the strip
+drags, an action button never does, non-primary buttons don't, pointer-leave ends). The `electron`-importing
+files stay untested-by-CI as before — now `shell.ts` **and** `preload.cts`. (+24 client tests: 51 total.)
+
+### Live machine verification (darwin 25.3, Electron 38, Node 25) — what actually ran
+The engine ran on **:8901** (:8787 is held by an unrelated service on this box; :8899 was the shell slice's
+pick — the default stays :8787). Verified against a real display:
+- **Real shell boots clean** with the new code: `electron apps/client` logged `HUD window created —
+  content-protection: ON`, then the new position branch, then `shortcut … registered` — no errors.
+- **`setPosition` moves a `focusable: false` window** — a harness built the window from the *real*
+  `hudWindowSpec` (focusable:false/frameless/transparent) and moved it `300,270 → 640,480` (PASS). This is
+  the primitive the whole drag rides.
+- **The full renderer→main drag chain fires under `focusable: false`**: the *real* `preload.cjs` exposed
+  `window.openinfoDrag` (typeof `object`, `.start` a function — `contextIsolation` on); a genuine
+  `MouseEvent('mousedown')` on the rendered `.hudtop` propagated through the shipped `window-drag` wiring →
+  bridge → IPC, and `ipcMain` **received `hud:drag-start` and `hud:drag-end`** in the main process.
+- **Persistence round-trip through the real shell**: seeding `window-state.json` with an on-screen origin
+  → `HUD position restored to 250,180`; seeding an off-screen origin (`5000,5000`) → `no usable saved HUD
+  position — centered`. The debounced save writes the same JSON shape the restore reads.
+- **Could not automate** (same ceiling the shell slice documented): a *physical* mouse drag — `cliclick`
+  needs Accessibility privileges this headless-automation context can't grant, so synthetic OS mouse input
+  is unavailable. Every *software* link is exercised above; the only unproven step is the OS delivering a
+  real pointer-down to the strip — and the shipped HUD already depends on real clicks reaching this same
+  `focusable: false` window (the copy buttons), consistent with macOS routing mouse input to non-key windows.
+
+### Deferred (out of this slice, by scope)
+- **⌘+arrow nudge (skipped, deliberately):** the shortcut machinery is `globalShortcut` — a global
+  ⌘+arrow would hijack system-wide text-editing keys (line start/end, etc.) for a marginal gain over
+  dragging. Not worth the surface; the grab strip covers repositioning.
+- Resizing, snap-to-edges, multi-display placement UI, opacity — all out of scope as stated.
