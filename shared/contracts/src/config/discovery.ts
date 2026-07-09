@@ -116,7 +116,7 @@ export const DiscoverResult = Type.Object(
 export type DiscoverResult = Static<typeof DiscoverResult>
 
 /**
- * The body of `POST /fabric/scan` — the founder's host-scan ("pick host, scan common ports, see if
+ * The body of `POST /fabric/scan` — the user's host-scan ("pick host, scan common ports, see if
  * missing api key, see if model list returns, list models on the call"). EXACTLY ONE of `url`/`host`:
  * an exact `url` probes that base URL; a bare `host` tries the probe-list DOCUMENT's ports against it
  * (the "common ports" are the same conventions discovery already carries — never a hardcoded list).

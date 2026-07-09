@@ -169,7 +169,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     })
     // When a drain re-queues (a transcribe/distill invoke failed), classify WHY and record it on the queue
     // so GET /queue, Status, and the Try-it card surface the real reason instead of re-queuing silently
-    // forever (the founder's wall). A model-load failure's hint is enriched with the loaded-model suggestion.
+    // forever (the user's wall). A model-load failure's hint is enriched with the loaded-model suggestion.
   }, toQueueFailure,
     // Typed-queue envelope seams (P4A slice 3), READ-ONLY, injected so the queue keeps zero fabric/store
     // imports (the describeFailure precedent). measuredTokPerSec: the primary (fabric-order first) llm
@@ -477,7 +477,7 @@ async function discover(res: ServerResponse, ctx: HandlerContext): Promise<void>
  * back classified through the capability map; failures come back in the invoke taxonomy's classes.
  * POSTURE: the engine is localhost-only (auth is P7) and this is a USER-DIRECTED probe of a host the
  * user typed — a few GETs to /v1/models, not an unsolicited subnet sweep (that consent-gated LAN sweep
- * stays future). Fresh per call (no cache, the founder's explicit call); value-free re keys — the
+ * stays future). Fresh per call (no cache, the user's explicit call); value-free re keys — the
  * keyRef resolves server-side and no response ever carries key material.
  */
 async function scanFabric(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
@@ -551,7 +551,7 @@ async function testEndpoint(req: IncomingMessage, res: ServerResponse, ctx: Hand
 
 /**
  * Run a REAL-generation probe against ONE endpoint — a minimal 1-token completion through the ACTUAL
- * invoke path, so a server that pings 200 but can't load its model (the founder's LM Studio 400) is
+ * invoke path, so a server that pings 200 but can't load its model (the user's LM Studio 400) is
  * caught honestly and CLASSIFIED (unreachable/timeout/auth/model-load/bad-response). An stt endpoint is
  * skipped-with-note (audio is out of scope). On a model-load failure the hint gains the loaded-model
  * suggestion (what the server DOES have). Value-free re keys — an auth failure names the keyRef only.

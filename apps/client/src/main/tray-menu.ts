@@ -6,7 +6,7 @@ import type { ShellCommand } from './shortcuts.js'
  * Tray. The shell maps this spec into `Menu.buildFromTemplate` and dispatches `item.command`.
  *
  * Live-session state is reflected TWO ways: a disabled header item (● live / ○ idle) at the top of
- * the menu, and the tray tooltip. The founder asked for a menu-bar on/off toggle — Start Session /
+ * the menu, and the tray tooltip. The user asked for a menu-bar on/off toggle — Start Session /
  * End Session IS that toggle, and its label flips with the live state so one item does both jobs.
  */
 export interface TrayState {

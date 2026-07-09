@@ -1,7 +1,7 @@
 import type { SetupData } from '../../setup/view.js'
 
 /**
- * The Benchmarks section — a reserved home (present-but-future, honest) for the founder's coming
+ * The Benchmarks section — a reserved home (present-but-future, honest) for the user's coming
  * capability-benchmarking system. That system will measure each endpoint's real throughput on THIS
  * hardware (RAM / VRAM constraints → measured tok/s per slot) and map those numbers to queue policies
  * that decide what runs where (audio / OCR / LLM / VLM work). It is a later slice with its own design

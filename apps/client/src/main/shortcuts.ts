@@ -3,7 +3,7 @@
  * a real OS shortcut (globalShortcut needs the app to be ready and a display). The shell registers
  * each accelerator with `globalShortcut.register` and dispatches the mapped command.
  *
- * ⌘\ is the inherited Glass toggle — the founder asked for "hide the window the way Glass does". The
+ * ⌘\ is the inherited Glass toggle — the user asked for "hide the window the way Glass does". The
  * accelerator uses electron's cross-platform `CommandOrControl` token (⌘ on macOS, Ctrl elsewhere).
  */
 /** The shell's command vocabulary — emitted by the tray menu and by global shortcuts. */

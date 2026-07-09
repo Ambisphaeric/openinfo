@@ -152,7 +152,7 @@ export class CaptureQueue {
           workChunks = countWork(parsed)
           await this.processor(parsed)
         } catch (error) {
-          // The drain no longer re-queues SILENTLY (the founder's wall): classify why it failed and record
+          // The drain no longer re-queues SILENTLY (the user's wall): classify why it failed and record
           // it so GET /queue / Status / the Try-it card can surface the real reason. A non-invoke error
           // (undescribable) is still logged and re-queued, just without a class — no false diagnosis.
           const at = new Date().toISOString()

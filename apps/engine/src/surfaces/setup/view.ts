@@ -18,7 +18,7 @@ import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelS
 
 /**
  * EVERY slot is a fully editable document field. A profile is a document that legitimately holds
- * endpoints in all six slots (the founder's own rig configures tts/vlm/ocr), so the page does not gate
+ * endpoints in all six slots (the user's own rig configures tts/vlm/ocr), so the page does not gate
  * DOCUMENT editing on whether the engine invokes a slot yet. v0 shipped llm+stt editable with
  * tts/vlm/ocr/embed present-but-inert; that scope line outgrew its use (see PHASE2-NOTES). Each slot
  * now carries an honest, INFORMATIONAL usage note — never a gate: llm/stt say what they power today;
@@ -479,7 +479,7 @@ export const getStartedHtml = (discovery: DiscoverResult, localModels: LocalMode
  * 5). Onboarding's last step is not a Test button, it is the product: after config-1 is active (an llm
  * endpoint exists) the user types a sentence (or speaks, when an stt endpoint exists) and watches it
  * become a typed moment, live. The loop lives on /setup — engine-served, any browser — so the browser
- * owns the mic-permission UX (the simplest TCC story) and the founder's remote-engine workflow works
+ * owns the mic-permission UX (the simplest TCC story) and the user's remote-engine workflow works
  * unchanged. Pure and exported so its states are asserted headless.
  *
  * States: llm empty ⇒ '' (hidden — the Get-Started lens/banner leads instead); llm present, stt empty
