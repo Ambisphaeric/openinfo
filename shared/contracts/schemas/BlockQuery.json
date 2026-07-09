@@ -36,6 +36,10 @@
         {
           "const": "todos",
           "type": "string"
+        },
+        {
+          "const": "drafts",
+          "type": "string"
         }
       ]
     },

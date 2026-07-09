@@ -742,6 +742,98 @@ test('e2e: session start → capture → distill → end → follow-up draft ≤
   }
 })
 
+test('e2e: a drafts surface hydrates its drafts block from the store over POST /query', async () => {
+  // The data path the HUD drives for the drafts block (#10). Drafts have no served WRITE route (they
+  // are prepared at session end, never posted), so this drives the whole PRODUCING pipeline over the
+  // live server — start → capture → distill → end → follow-up draft — then authors a surface carrying a
+  // drafts block and POSTs its query exactly as the client hydrates: the prepared body + provenance
+  // round-trip. Mirrors the pins/todos e2e for the read half, on top of the real act pass.
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-drafts-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const produced: Draft[] = []
+  app.bus.subscribe('draft.created', (d) => {
+    produced.push(d)
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    for (const key of ['distill.enabled', 'distill.moments', 'act.enabled']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+
+    // produce a real draft: start a session, capture, let it distill, then end (the act composes it)
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 7, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'agreed, Thursday it is')]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+    await eventuallyHttp(async () => {
+      const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
+      assert.ok(moments.length >= 1)
+    })
+    assert.equal((await fetch(`${base}/sessions/${encodeURIComponent(started.id)}/end`, { method: 'POST' })).status, 200)
+    await eventuallyHttp(async () => assert.equal(produced.length, 1))
+    const prepared = produced[0]!
+
+    // author a surface with a drafts block bound to the drafts source (saving a layout is not flagged)
+    const surface: Surface = {
+      id: 'surf-drafts', name: 'Drafts', context: 'meeting', version: 1,
+      stack: [
+        { block: 'now' },
+        { block: 'drafts', show: 'on-match', query: { source: 'drafts', params: { workspace: 'default' }, top: 3 } },
+      ],
+    }
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-drafts`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface),
+    })).status, 200)
+
+    // hydrate exactly as the client will: GET the surface, POST /query for the drafts block
+    const served = (await (await fetch(`${base}/layouts/surfaces/surf-drafts`)).json()) as Surface
+    const draftsBlock = served.stack.find((b) => b.block === 'drafts')!
+    const result = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draftsBlock.query),
+    })).json()) as QueryResult
+    // THE PROOF: the drafts block hydrates the prepared draft — body + provenance round-trip
+    assert.equal(result.source, 'drafts')
+    const items = result.items as Draft[]
+    assert.equal(items.length, 1)
+    assert.equal(items[0]!.id, prepared.id)
+    assert.equal(items[0]!.actKind, 'follow-up-draft')
+    assert.ok(items[0]!.body.length > 0) // the prepared prose the renderer shows
+    assert.ok(items[0]!.provenance.sourceDistillates.length >= 1) // the why-line's source count
+
+    // an empty backing store renders explainable-empty (items: [], not an error) — a draft-less workspace
+    const empty = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'drafts', params: { workspace: 'ws-none' }, top: 3 }),
+    })).json()) as QueryResult
+    assert.deepEqual(empty.items, [])
+    assert.equal(empty.truncated, false)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
 test('act.enabled OFF: ending a session prepares no draft', async () => {
   const llm = await startFakeLlm()
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
