@@ -53,6 +53,14 @@ export const checkEndpoint = async (
     const response = await fetch(endpoint.url, { method: 'GET', headers, signal: controller.signal })
     const latencyMs = Math.round(performance.now() - started)
     if (response.ok) return { name: endpoint.name, ok: true, latencyMs, checkedAt }
+    // An OpenAI-compat server may 404 its bare root (omlx/FastAPI does) while serving /v1 fine —
+    // fall back to the dialect's own listing route before calling the endpoint unhealthy. Root is
+    // still tried first so servers that only answer root (and any non-/v1 dialect) keep working.
+    if (endpoint.api === 'openai-compat') {
+      const models = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/models`, { method: 'GET', headers, signal: controller.signal })
+      const modelsLatencyMs = Math.round(performance.now() - started)
+      if (models.ok) return { name: endpoint.name, ok: true, latencyMs: modelsLatencyMs, checkedAt }
+    }
     return { name: endpoint.name, ok: false, latencyMs, checkedAt, error: `HTTP ${response.status}` }
   } catch (error) {
     return { name: endpoint.name, ok: false, checkedAt, error: error instanceof Error ? error.message : 'endpoint check failed' }
