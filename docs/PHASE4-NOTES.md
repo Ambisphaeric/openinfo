@@ -1721,6 +1721,88 @@ files are out of scope this slice).
 Pinned-doc renderer consuming `items[]` (live excerpt/title), the stale "pins store lands in P3" copy in
 the settings features/editor notes, `PUT`/`DELETE /pins/:id`.
 
+## Slice: #41 — capture consent + renderer readiness handshake + un-wedgeable controller
+
+Repeatedly clicking tray Start Session did nothing — no mic indicator, no chunks, zero client-side log
+evidence — and quitting then reopening booted straight into a live, auto-capturing session. The capture
+control path had no readiness or ack handshake anywhere, and one flag could wedge the controller
+permanently. This slice makes capture ALWAYS launch stopped, gives the start path a real handshake, makes
+the controller un-wedgeable, and gives the packaged app a log file so this failure class is never invisible
+again. Client-only — the `POST /sessions/:id/end` route already existed.
+
+### The mechanism that was wedging (diagnosed live)
+1. `before-quit` never ended the engine session, so sessions outlived the client.
+2. Next launch seeded the still-live session and `applyCaptureLifecycle(true)` fired `control.start()`
+   DURING boot, racing the hidden capture window's ESM load. `control.start` was a bare optional-chained
+   `webContents.send` — if the renderer had not yet registered its `capture:start` listener the send was
+   silently dropped (no queue, no ack, no retry).
+3. The controller set `starting` optimistically and sat there forever.
+4. The next manual Start auto-ended the old session; `onSessionEnded` saw `starting`, set `stopping = true`,
+   and awaited an `onCaptureStopped` ack a non-listening renderer never sent.
+5. With `stopping` stuck true, every later `onSessionStarted` was swallowed into `pendingStart`. Permanent.
+
+### What was built
+- **Always launch stopped (`main/capture-consent.ts`, new).** A tiny pure `CaptureConsent`: capture only
+  auto-starts on a live-session transition the USER initiated THIS launch (tray Start grants, End/quit
+  revokes; consent PERSISTS across the engine's auto-end→restart). `shell.ts`'s `applyCaptureLifecycle`
+  gates every source on `canAutoStart`, so a leftover live session seeded at boot opens STOPPED — the tray
+  still shows it live, the user starts capture explicitly. `before-quit` also ends the live session
+  (bounded, best-effort, `preventDefault`→end→quit with a 1.5s cap) so it does not outlive the client; the
+  consent guard is the deterministic backstop for a force-kill where `before-quit` never runs.
+- **Readiness + start-ack handshake (`main/capture-dispatcher.ts`, new).** The renderer pings
+  `capture:loaded` on module load (BEFORE getUserMedia) and acks each start (`capture:start-ack`) the moment
+  it receives it. The pure `CaptureDispatcher` QUEUES a start until it has heard `loaded`, then SENDS + awaits
+  the ack, RESENDS on timeout up to a cap, and finally raises a VISIBLE fault instead of a silent
+  forever-`starting`. `control.start/stop` for both audio sources route through it (screen keeps its
+  main-process loop). A dropped/failed start now shows on the tray (`captureFault` → `tray-menu.ts`).
+- **Un-wedgeable controller (`capture/capture-controller.ts`).** `onSessionEnded` arms a stop-ack timeout;
+  if `stopped` never comes back, `concludeStop` force-clears `stopping` AND drains any queued
+  `pendingStart` (shared with the real-ack path, so both converge identically). New `onStartFailed` drops a
+  stuck `starting` back to idle when the dispatcher gives up. `render-process-gone` / `did-fail-load`
+  handlers on the capture window mark the dispatcher unloaded (re-queue, don't drop), surface the fault, and
+  reload the host — on the reload's `capture:loaded` capture re-arms for a consented live session.
+- **Honest surfacing + log file (`main/client-log.ts`, new).** A dependency-free rotating client log
+  (`<userData>/logs/client.log` → `.1` at a size cap, ~2×cap on disk, never throws) — the packaged app has
+  no terminal, so capture lifecycle + failures went to a lost stdout. All capture logs + faults now flow to
+  it and mirror to the console.
+- **The sandbox preload bug the driven test surfaced.** `capture-preload.cts` imported the channel
+  constants from the ESM sibling `./protocol.js`. A preload runs under Electron's DEFAULT sandbox, where
+  `require` reaches only `electron` + builtins — so that import failed to load the WHOLE preload, leaving
+  `window.openinfoCapture` undefined and every chunk unsent (a direct contributor to the reported "no
+  chunks, zero log evidence"). Fixed by inlining the channel strings (the HUD preload's established
+  pattern); `protocol.ts` stays the typed source of truth, guarded by a test that reads the compiled `.cjs`.
+
+### Tests
+Client 208 → 231. New unit suites: `capture-consent.test.ts` (4 — the boot guard, grant/revoke,
+persist-across-restart, quit revokes), `capture-dispatcher.test.ts` (9 — dropped-start-queued-then-flushed,
+send+ack, retry-then-one-fault, ack-stops-the-loop, stop cancels, renderer-gone re-queues, stale ack,
+independent sources), `client-log.test.ts` (4 — append+dir, mirror, rotation bound, never-throws). The
+controller suite gains the un-wedge set (stop-timeout un-wedge, pendingStart-drains-on-timeout, real-ack
+clears the timer, onStartFailed, rapid cycles converge) and a self-contained-preload drift guard. `tray-menu`
+gains the visible capture-fault case.
+
+**Driven proof — `scripts/capture-lifecycle-e2e.mjs` (`pnpm --filter @openinfo/client test:e2e:capture`,
+GUI-only, not in the headless default).** A probe main (the hud-bounds-e2e precedent) that launches REAL
+Electron with the REAL compiled capture-preload + REAL capture-renderer against the REAL dispatcher /
+controller / consent, using Chromium's fake media device so getUserMedia runs unprompted. PHASE 1 (healthy
+renderer): asserts the `capture:loaded` readiness ping arrives; a live session with consent NOT granted
+starts NOTHING (the boot guard holds); after the user consents the `capture:start` is delivered, the
+renderer ACKS it, and capture genuinely begins (`status: ready`, only sent after getUserMedia resolves).
+PHASE 2 (sabotaged renderer that loads but registers no start listener — the ORIGINAL bug): the start send
+is dropped, no ack returns, and the dispatcher retries then surfaces a VISIBLE fault instead of wedging.
+This is what surfaced the sandbox preload bug — route/unit tests could not have.
+
+Known parallel-load flakes (untouched, unrelated): the engine `route.detect` timing test in
+`api/http.test.ts` and the client `engine-link/seam.test.ts` TOCTOU test each fail only under full parallel
+load and pass in isolation / on re-run (confirmed both). Contracts 62, engine 476 (475+1 flake), client 231
+(230+1 flake). `pnpm -r build` green.
+
+### Out of scope (recorded, NOT built)
+The settings debug panel that renders the confirming signals (controller state, `stopping`/`pendingStart`,
+renderer loaded-at, last start acked) — issue #41 flags it as a follow-up extending #7, and settings/UI
+files are another PR's ownership. Windows/Linux capture paths. Auto-reload backoff limits on repeated
+renderer crashes (one reload per crash for now).
+
 ## Slice: #40 — render hydrated pin content in the pinned-doc block
 
 The other half of #8's DoD. #8 put real pins on the `POST /query` wire and made an on-match `pinned-doc`

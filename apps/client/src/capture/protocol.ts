@@ -46,6 +46,18 @@ export const CAPTURE_CHANNELS = {
   stopped: 'capture:stopped',
   /** renderer → main: a permission/lifecycle/device status change for a source. */
   status: 'capture:status',
+  /**
+   * renderer → main: the capture module loaded and registered its start/stop listeners (issue #41). Sent
+   * ONCE on module load, BEFORE any getUserMedia. The main process gates every `start` on having heard
+   * this, so a start can never again race the renderer's listener registration and be silently dropped.
+   */
+  loaded: 'capture:loaded',
+  /**
+   * renderer → main: acknowledgement that a `start` command was RECEIVED for a source (issue #41). The
+   * main process retries the send until this arrives (or times out into a visible fault), so a dropped
+   * start is detected instead of leaving the controller wedged in `starting` forever.
+   */
+  startAck: 'capture:start-ack',
 } as const
 
 /**
@@ -111,4 +123,8 @@ export interface CaptureBridge {
   sendStopped(source: CaptureSourceKind): void
   /** Report a permission/lifecycle/device status change for a source. */
   sendStatus(status: CaptureStatus): void
+  /** Ping that the module loaded and registered its listeners — the readiness handshake (issue #41). */
+  sendLoaded(): void
+  /** Acknowledge that a `start` command was received for a source — the start-ack (issue #41). */
+  sendStartAck(source: CaptureSourceKind): void
 }

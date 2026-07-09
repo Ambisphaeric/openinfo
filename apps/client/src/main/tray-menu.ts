@@ -42,6 +42,13 @@ export interface TrayState {
   micStarting?: boolean
   /** Was mic access refused? Shows a clear indication; the session/text path still works. */
   micBlocked?: boolean
+  /**
+   * A capture start could NOT be completed (issue #41): the renderer never acknowledged the start after
+   * retries, or it died / failed to load. Surfaced VISIBLY on the status line + tooltip so a dropped
+   * start is never silent again (it used to log only to a lost stdout). Cleared once capture starts or
+   * the session ends. A short, human reason — not a stack.
+   */
+  captureFault?: string | undefined
   /** Is system audio (the far side — "them") genuinely being captured too? (drives "mic + system"). */
   systemCapturing?: boolean
   /**
@@ -116,6 +123,9 @@ export const trayStatusLabel = (state: TrayState): string => {
     return '○ connecting…'
   }
   if (!state.sessionLive) return '○ no session'
+  // A dropped/failed capture start is surfaced VISIBLY and takes priority over the warming-up state, so
+  // the user is never left staring at "mic…" while nothing happens (issue #41).
+  if (state.captureFault) return `● session live · ⚠ capture failed — ${state.captureFault}`
   if (state.micBlocked) return '● session live · mic blocked'
   if (state.capturing) return `● session live · ● rec (${recSourcesLabel(state)})`
   if (state.micStarting) return '● session live · ○ mic…'
@@ -138,6 +148,7 @@ export const trayTooltip = (state: TrayState): string => {
       return `openinfo — engine unreachable${url}${lanHint}`
     }
     if (!state.sessionLive) return 'openinfo — idle'
+    if (state.captureFault) return `openinfo — session live (⚠ capture failed: ${state.captureFault})`
     if (state.micBlocked) return 'openinfo — session live (mic blocked)'
     if (state.capturing) return `openinfo — session live ● rec (${recSourcesLabel(state)})`
     if (state.micStarting) return 'openinfo — session live (mic starting…)'
