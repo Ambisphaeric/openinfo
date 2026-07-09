@@ -1204,3 +1204,84 @@ STORED fabric + secret returns a clean completion from `dev-mac-omlx`.
 A cold 12B load (~6.3s) plus the 1-token completion exceeded the old 8s generate-probe budget, so the first
 Test press on a cold model timed out. Raised to 30s; the reachability ping (`checkEndpoint`, 4s) stays
 snappy since it only proves the socket answers, not that a model loaded.
+
+## Slice: rig-truth fabric defaults + managed omlx  *(P4-T8, on main)*
+
+Owner directive 2026-07-09: "support modern tooling like omlx… stop hardcoding lm studio or llama3-8b.
+Depend on what I really have." The fabric was describing a rig nobody has — seeded templates named a
+fictional `local-model` on LM Studio :1234 and `llama3.2:3b` on ollama :11434, while the real rig runs
+omlx (:8000, bearer-gated) serving MLX models, LM Studio (:1234, no auth), and an empty ollama. Two
+halves, committed separately; the discovery/scan machinery already existed (`fabric/discover.ts`,
+`fabric/scan.ts`) so this built on it rather than forking a parallel scanner.
+
+### (a) Discovery tells the truth — kill the fictions, surface omlx's 401 (`fabric/{defaults,discover,discovery-defaults}.ts`)
+The offered configs must not name a model or port a scan didn't actually see, so the truthful source is
+DISCOVERY (`GET /fabric/discover`) and the host SCAN (`POST /fabric/scan`), not a hardcoded list.
+- **`defaults.ts`**: deleted `lm-studio-local` and `ollama-local` (the fictional-model templates). The one
+  remaining seeded profile is the sanctioned exception — an explicit blank MANUAL scaffold for a host a
+  localhost scan can't reach (remote/LAN/authed), naming no model or port a scan hasn't confirmed. Two
+  `shared/contracts/examples/fabricProfile.*.json` deleted to match; `remote-http-template` demoted.
+- **`discover.ts`**: the gap the directive named — the probe sent no auth, so omlx's `401` on
+  `/v1/models` read as a silent miss. A `401/403` is now a DISCOVERY RESULT: `reachable:true,
+  authRequired:true` (the server ANSWERED, it just wants a key). When a probe names a `keyRef` AND that
+  secret is stored, discovery RETRIES with the bearer and enumerates the models; with no key it still
+  surfaces present-but-needs-a-key. Probe I/O (`fetchModels`) is split from pure classification
+  (`modelsFromBody`); value-free — only the ref is ever named. `DiscoveryProbe` gained optional `keyRef`,
+  `DiscoverServer` optional `authRequired` (both additive). The resolver is wired through the
+  `/fabric/discover` route and the Get-Started render path.
+- **`discovery-defaults.ts`** + probe-list example: added `omlx` (:8000, `keyRef:'api_d'`); dropped the
+  never-present `speaches` entry (omlx now owns :8000). The seeded capability map already classifies the
+  whole real rig correctly (parakeet→stt, kokoro/`*tts*`→tts, `*embed*`→embed, the rest→llm) — no change.
+
+### (b) omlx as a managed `mlx` runtime — adopt-not-collide (`fabric/endpoints/local.ts`, `invoke.ts`, `health.ts`)
+Absorbs P4-T7's mlx intent. A `kind:'local', runtime:'mlx'` endpoint now RESOLVES instead of throwing
+"local runtime not managed".
+- **`RUNTIME_SPECS.mlx`**: binary `omlx`, OpenAI-compat chat on a FIXED port (:8000), `/health`.
+  `multiModel` (one server backs llm/stt/tts from a model dir — `endpoint.model` selects per request, no
+  single `-m` file) + `adoptOnly`.
+- **Discover-and-adopt, never spawn-and-collide**: omlx is supervised OUTSIDE the engine (oMLX.app + the
+  `com.openinfo.omlx` LaunchAgent), so `ensureRunning` ADOPTS a server already answering on its port
+  (recorded WITHOUT a child, so `shutdown` never kills the supervisor's process) or fails honestly
+  ("not running on :8000 — start it via oMLX.app"). A multi-model runtime is keyed by port, so every slot
+  shares the one adopted process. The precedent (llama.cpp spawns on a FREE port, never colliding) is
+  followed and improved: omlx's fixed port is adopted, not raced.
+- **Auth on the local kind**: the `Endpoint` `local` variant gained the same optional `keyRef` auth the
+  `http` variant has (additive) — omlx needs a bearer even on localhost. `resolveLocal` carries it onto
+  the synthetic http endpoint so invoke injects the bearer; `checkEndpoint` LIVE-probes an adopt-only
+  runtime's port with the same keyRef→bearer (`status()` can't know an external process's liveness
+  synchronously — a live probe is the honest signal, exactly as an http endpoint is probed).
+
+### Templates-route shape decision
+No shape change and NO `apps/client` edits. The settings UI is engine-served (`surfaces/setup/view.ts`
+composed by `api/http.ts`); it reads `GET /fabric/profiles` and the discovery/scan results whose contracts
+grew only ADDITIVELY (`authRequired`, probe `keyRef`, local `auth`). Existing response shapes stay valid,
+so the client — which is a pure HTTP/WS client and does not read profiles/templates directly — was not
+touched.
+
+### Tests + live verification
+`pnpm -r build && pnpm -r test` green before each commit. Contracts **64 → 62** (two fictional example
+files removed), engine **432 → 440** (+3 discover-401 cases: no-key needs-auth, stored-key retry
+enumerates, wrong-key refusal; +5 mlx: spec shape, adopt/multi-model/absent-port, keyRef→bearer carry
+through invoke+health), client **154** (untouched). One pre-existing FLAKY engine test intermittently
+probes a real localhost port on this live rig (baseline flaked too) — two clean full runs confirmed 440/0.
+
+Verified LIVE against the real rig (compiled dist against the running servers):
+- Discovery with NO key → omlx `authRequired`, models=0, `needs a key (keyRef "api_d" not stored yet)`;
+  LM Studio enumerates 36 real models; ollama present-but-empty; kokoro/whisper absent.
+- Discovery WITH `api_d` resolved → omlx retry enumerates **32** real models; the config-1 suggestion fills
+  stt (`…parakeet-tdt_ctc-110m`), tts (`…Kokoro-82M-bf16`), and embed from real ids — one omlx, three slots.
+- Managed omlx adopt: `ensureRunning` adopts the running server (no spawn, no binary/model file needed),
+  authed health `ok:true` (2ms) / honest `unresolved secret keyRef "api_d"` without, a real completion
+  through the bearer, and omlx still up after `shutdown` (the engine never owned it).
+
+The engine on :8787 serves stale dist from memory (not restarted); staleness noted, not touched.
+
+### Deferred (out of this slice, by scope)
+- **Managed-local `paddle`/`vlm` runtime** — the remainder of the old P4-T7. Not trivial after mlx: a
+  different serving dialect (`paddle-serving`) and a single-model-file spawn story, unlike omlx's adopt.
+  Stays queued.
+- **`generate` probe + Test button over a local mlx endpoint** — the Test path targets `http`/`cloud`
+  today; pointing it at a `kind:'local'` omlx endpoint (adopt then probe) is a small `api/http.ts`
+  follow-up, not required for invoke/health which already carry it.
+- **ollama's `/api/tags`** — ollama serves OpenAI-compat `/v1/models` (present-but-empty on this rig via
+  the existing path), so the native tags route was not needed; a fallback is additive if wanted.
