@@ -2191,3 +2191,49 @@ A live-updating queue block driven by the `queue.updated` WS event (this slice r
 /query hydration path as the other blocks; the HUD controller's WS re-hydration already refreshes it). A
 `retry`/`flush-now` action verb on the block (the write path is the action-verbs slice). Per-kind ETA (the
 drain processes whole mixed-kind files, so the observed rate is mixed — recorded on `BacklogEta`).
+
+## Slice: #14 — render recorded provenance as the relevant-now why line
+
+Provenance is RECORDED on the moment/entity/draft/todo contracts, but the heart-of-the-HUD block
+(`relevant-now`) built its one-line WHY from a re-guessed heuristic — the mention count plus the latest
+joined moment's text — never from the provenance the pipeline actually stored (which distillate/window/
+endpoint/model named the entity). This slice wires the RECORDED trail into the why line so the card
+explains itself from the truth the pipeline stored, with the heuristic kept as an honest fallback.
+
+### The derivation (`client/surfaces/blocks/relevant-now.ts`)
+`whyLine` now: (1) looks for RECORDED provenance — the entity's own `provenance` trail wins (most recent
+window entry), else the first joined moment that carries a `provenance` object; (2) when present, builds
+the sentence from THAT object — `via <endpoint>[ · <model>] · <window-clock>`, where the window clock is
+the `windowEnd`/`windowStart` rendered through the shared `clockLabel` (a multi-window trail with no
+window timestamps reads `via <endpoint> · N windows`); (3) when NO provenance was recorded anywhere
+(Phase-0 rows, or a merge with an empty trail), falls back to the existing `Referenced N× · <latest
+moment>` / `last seen <clock>` heuristic UNCHANGED. `EntityProvenance`/`MomentProvenance` share the
+`{ endpoint, model?, windowStart?, windowEnd?, slot }` envelope, so ONE derivation reads both.
+
+Display rule #1 is now enforced structurally: `whyLine` returns `undefined` when NEITHER a recorded trail
+NOR the heuristic can state a sentence (no provenance, no mentions, no moments, an unparseable
+`lastSeen`), and `renderRelevantNow` DROPS such a row instead of rendering a why-less shell — the first
+block to make "no why ⇒ no card" a hard filter rather than a soft always-there fallback string.
+
+### Contract (additive, no schema regeneration)
+`records/moment.ts` gains `export type MomentProvenance = Static<typeof MomentProvenance>` — the value
+schema already existed and rode out via `export *`, but only the type export was missing (its
+`EntityProvenance` sibling already had both). Purely additive; no `$id` schema JSON changed, so the
+generator was not run.
+
+### Tests + verification
+Contracts 67 (unchanged), client 253→254 (all green in isolation; one engine parallel-load flake cleared
+on isolated rerun — 486/486). One new headless renderer test in `renderer.test.ts` asserts all three
+paths on ONE render: a row with an `entity.provenance` trail renders `via distill-fast · qwen3-4b · 2:46p`
+(the most-recent window) and NOT the mention-count phrasing; a row with no recorded trail renders the
+`Referenced 3× · <moment>` heuristic; and a why-less row (no provenance/mentions/moments + an unparseable
+`lastSeen`) renders NO `.rel` card — exactly two cards for three rows.
+
+### Out of scope (recorded, NOT built)
+Rewriting the OTHER blocks' hand-rolled why-lines (todos "from the meeting/added by you", drafts, teach,
+distillates, queue) onto a single shared provenance renderer. Each already derives its why from its own
+record's provenance-ish fields; unifying them behind one helper is a refactor with no user-visible change
+and is out of this slice's scope (the issue names `relevant-now` specifically — the one block still on a
+re-guessed heuristic). The recorded `distillateId`/`slot` are available on the provenance object but left
+out of the rendered sentence (endpoint · model · window is the inspectable minimum; the id is a lookup
+key, not a human why).
