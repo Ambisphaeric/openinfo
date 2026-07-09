@@ -222,10 +222,8 @@ workflow code.
   only forced when one act's input is another act's output.
 
 ### Deferred (out of this slice, by scope)
-- **GET/PUT `/workflows` resource route** — deferred to keep the slice tight (would need a contracts
-  `Routes` additive row + route tests). The read seam (`documents.active()`) is already the hot-editable
-  one, so the route drops in later with NO executor change; the document is read-only from the seed for
-  now.
+- **GET/PUT `/workflows` resource route** — RESOLVED by the P4-T1 slice below (contracts `Routes` rows +
+  `WorkflowDocuments.save` + the three handlers, NO executor change, as this note predicted).
 - The condition DSL in `StepGate`, graph edges/fan-out on `WorkflowSpec` (the DAG), `compile.ts`
   (Mode.acts → document), and typed queues / dynamic to-do (slices 3–4).
 
@@ -716,7 +714,8 @@ records. LIVE OCR was verified end-to-end in the P4B slice-4 note (glm-ocr on LM
 that exact recognition core (the shared `persist()`), driven from the drain instead of ingest.
 
 ### Deferred (still, out of this joint slice)
-- A GET/PUT `/workflows` edit route (the executor already reads the doc hot; only the route is missing).
+- A GET/PUT `/workflows` edit route — RESOLVED by the P4-T1 slice below (the executor's hot read seam
+  needed only the HTTP surface, exactly as this note called it).
 - `/screen/status` counters reflect only whichever path is the active owner; a per-path breakdown is unbuilt.
 - The whole-file re-queue-granularity fix (above) and the P4B tails (Δ-gating, managed-local paddle/vlm).
 
@@ -930,3 +929,71 @@ deduped row.
   is read-time only today).
 - **A PDF parser dependency** (owner sign-off) and **gdoc OAuth** (beyond the flag-gated seam).
 - **`/pins` CRUD + a teach-candidates read route** — the store/derivation read seams are ready.
+
+## Slice: GET/PUT `/workflows` — the pipeline is user-composable over the API  *(P4-T1, branch p4t1-workflows)*
+
+The executor (Executor v0 slice) already reads the workflow document FRESH per drain / session-end
+(`WorkflowDocuments.active()`), so a stored edit takes effect with no restart — the only thing missing
+was the HTTP surface. This slice lands it: `GET /workflows` (list), `GET /workflows/:id` (one, 404
+unknown), `PUT /workflows/:id` (validated, version-bumped edit). The pipeline itself is now editable over
+the API — the highest-leverage single route in the P4 tail. **ZERO executor change**, as both earlier
+deferral notes predicted. Committed per module: contracts → engine → tests → docs.
+
+### Contracts added (all additive)
+- Three `Routes` rows in `api/routes.ts` (phase 4): `GET /workflows` → `WorkflowSpec[]`, `GET
+  /workflows/:id` → `WorkflowSpec`, `PUT /workflows/:id` (request+response `WorkflowSpec`). No new schema
+  — `WorkflowSpec` already exists (P4A slice 1); no example file (the seeded `workflow.default.json`
+  already validates in `contracts.test`). Mirrors the `/todos` + `/layouts/surfaces` rows exactly.
+
+### DECISION — `WorkflowDocuments.save` is version-stamped + contract-validated (the Tier-A gate)
+Added an additive `save()` (and `list()`) mirroring `TodoDocuments.save` / `SurfaceDocuments.save`: it
+stamps `version` = latest stored + 1 (a caller-supplied/forged version never wins — the store is the
+monotonic source of truth, and every prior version is kept), and it `Value.Check`s the body against
+`WorkflowSpec` BEFORE write. This is the last line of defense: because `WorkflowStepKind` is a CLOSED
+union (a step *does work* and has no safe execution fallback, unlike a block that just renders), a step
+naming an unrunnable primitive (`foo`/`teleport`) is rejected at write time rather than reaching the
+executor as a silent no-op. A rejected write throws; the PUT route maps that to a 400 via the same
+`validationErrors('WorkflowSpec', body)` guard that runs first, so a bad kind is caught before `save`.
+
+### DECISION — PUT-unknown-id CREATES (does not 404), mirroring PUT /todos
+`PUT /workflows/:id` with an unknown id creates a new workflow document (version 1), it does NOT 404 —
+identical to `PUT /todos/:id` (which creates a session's list on first write) and `PUT
+/layouts/surfaces/:id`. Only `workflow-default` exists today, and the executor's `active()` is pinned to
+that id, so a newly-authored named workflow is inert until a future "which workflow is active" selector
+wires it in — creating it here is a harmless, forward-compatible document write. Refusing it would make
+the resource write-once for the default alone, out of step with every other document route. The body's
+`id` must still match the route (a mismatch is a 400, mirroring the `/todos` sessionId-matches-route
+policy). GET, by contrast, DOES 404 an unknown id (mirroring `GET /todos/:id` / `GET
+/layouts/surfaces/:id`) — you can only read what exists (or the seeded/code-fallback default).
+
+### Rule-7 check (CONTRIBUTING)
+Additive routes only — nothing removed, so no consumer goes stale. `skills/add-a-block/SKILL.md` is the
+only skill referencing `routes.ts`, and it is scoped to surface/block edits (`/layouts/surfaces`), which
+this slice does not touch. No skill or recipe references `/workflows` or the workflow document. Nothing to
+keep true.
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Final totals: contracts **64** (unchanged — no
+new example), engine **424** (from 417: +5 `workflow/documents.test` [list has the seed; save bumps +
+keeps history + ignores a forged version; the Tier-A reject; the create-new-id path], +2 `api/http.test`
+[the 4-in-1 route test: list/404/400-bad-body/400-bad-kind/400-id-mismatch/valid-bump; and the hot-edit
+e2e]), client **154** (untouched). The ONLY failures under the full parallel run are the two PRE-EXISTING
+documented flakes — `route.detect ON` teardown `ENOTEMPTY` (in `route/`, untouched) and the client
+engine-link seam TOCTOU (in `apps/client/`, untouched) — both confirmed passing in isolation.
+**HOT-EDIT e2e (the "user composes the pipeline" proof)**: with `workflow.enabled` + `distill.enabled` +
+`distill.moments` + `distill.index` all ON, PUT an edited `workflow-default` that DROPS the `moments`
+step (its `when.flag` stays ON), then capture a batch. Entities hydrate (distill+index ran → the pipeline
+is live under the edited doc) but the session's moments stay EMPTY — the removed step took effect on the
+very next drain with NO restart. If the executor read the flag rather than the document, moments would
+still have been extracted; it reads the document, so the edit wins.
+
+### Deferred (out of this slice, by scope)
+- **A `DELETE /workflows/:id`** — no delete story yet (the default must not be deletable; a named-workflow
+  delete waits on the selector below). Additive when a use case lands.
+- **An "active workflow" selector** — `active()` is pinned to `workflow-default`, so a PUT to a NEW id
+  authors an inert document. A `workflow.activeId`-style pointer (config doc or flag) makes authored
+  workflows selectable; deferred until there is more than one workflow to choose between.
+- **A `workflow.changed` WS broadcast** — surfaces/fabric publish on save so a live client hot-reloads;
+  a workflow edit does not (the executor re-reads per drain regardless, so no restart is needed — the WS
+  push would only be for a future workflow-EDITOR UI to reflect a concurrent edit). Additive, like
+  `surface.updated`.

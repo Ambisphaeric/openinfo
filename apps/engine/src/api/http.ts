@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
@@ -58,6 +58,7 @@ interface HandlerContext {
   surfaces: SurfaceDocuments
   distill: DistillDocuments
   todos: TodoDocuments
+  workflow: WorkflowDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
@@ -275,7 +276,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('surface.updated', (surface) => ws.broadcast('surface.updated', surface))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, todos: todoDocs, queue, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, todos: todoDocs, workflow, queue, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -357,6 +358,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
   if (req.method === 'GET' && todo?.[1]) return getTodo(res, ctx, decodeURIComponent(todo[1]))
   if (req.method === 'PUT' && todo?.[1]) return putTodo(req, res, ctx, decodeURIComponent(todo[1]))
+  if (req.method === 'GET' && url.pathname === '/workflows') return send(res, 200, ctx.workflow.list())
+  const workflow = url.pathname.match(/^\/workflows\/([^/]+)$/)
+  if (req.method === 'GET' && workflow?.[1]) return getWorkflow(res, ctx, decodeURIComponent(workflow[1]))
+  if (req.method === 'PUT' && workflow?.[1]) return putWorkflow(req, res, ctx, decodeURIComponent(workflow[1]))
   if (req.method === 'GET' && url.pathname === '/layouts/surfaces') return send(res, 200, ctx.surfaces.list())
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
@@ -867,6 +872,44 @@ async function putTodo(req: IncomingMessage, res: ServerResponse, ctx: HandlerCo
   const incoming = body as TodoList
   if (incoming.sessionId !== sessionId) return send(res, 400, { error: 'to-do list sessionId does not match route' })
   send(res, 200, ctx.todos.save(incoming))
+}
+
+/**
+ * Serve a workflow document by id — the read seam the workflow editor renders (a resource route, no
+ * flag, mirroring GET /layouts/surfaces/:id and GET /todos/:id). `workflow-default` always resolves
+ * (seeded + code fallback); an unknown id ⇒ 404 (only `workflow-default` exists today, until a user
+ * authors another via PUT). The executor reads the SAME record fresh per drain, so this is exactly the
+ * document it runs.
+ */
+function getWorkflow(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const spec = ctx.workflow.get(id)
+  if (!spec) return send(res, 404, { error: `no such workflow: ${id}` })
+  send(res, 200, spec)
+}
+
+/**
+ * Persist an edited workflow document — the highest-leverage write in the P4 tail: it makes the
+ * PIPELINE user-composable over the API. The body must validate as a WorkflowSpec (Tier-A gate: the
+ * CLOSED `kind` union rejects an unrunnable step kind AT WRITE TIME, so a wrong document never reaches
+ * the executor as a silent no-op) and its id must match the route; the store stamps the next version
+ * and keeps history. The executor reads `active()` fresh per drain / session-end, so a stored edit
+ * takes effect with NO restart and NO executor change (the whole point of the read-fresh seam).
+ *
+ * PUT-unknown-id policy: an unknown id CREATES a new workflow (version 1), it does NOT 404 — mirroring
+ * PUT /todos (which creates a session's list on first write) and PUT /layouts/surfaces/:id. Only
+ * `workflow-default` exists today, but the executor's `active()` is pinned to that id, so authoring a
+ * NEW named workflow is inert until a future "which workflow is active" selector wires it in — creating
+ * it here is a harmless, forward-compatible document write, and refusing it would make the resource
+ * write-once for the default alone, out of step with every other document route. A malformed body
+ * (bad kind, missing steps) is still rejected by save()'s validation → 400 via the invalid-body guard.
+ */
+async function putWorkflow(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('WorkflowSpec', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid WorkflowSpec', details: errors })
+  const incoming = body as WorkflowSpec
+  if (incoming.id !== id) return send(res, 400, { error: 'workflow id does not match route' })
+  send(res, 200, ctx.workflow.save(incoming))
 }
 
 /**

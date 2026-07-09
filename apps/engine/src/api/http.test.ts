@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Draft, Fabric, FabricProfile, Moment, QueryResult, RelevantEntity, Session, Surface, TodoList } from '@openinfo/contracts'
+import type { CaptureChunk, Draft, Entity, Fabric, FabricProfile, Moment, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 
 test('capture route validates and publishes chunks', async () => {
@@ -2231,5 +2231,110 @@ test('scan → select → save round-trip: a scanned model id lands intact in th
     await app.close()
     await new Promise<void>((resolve) => up.server.close(() => resolve()))
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ---- P4-T1: GET/PUT /workflows — the pipeline itself is user-composable over the API ----
+// The workflow document is the everything-is-a-document config the executor runs; these routes are the
+// HTTP surface (mirroring /todos + /layouts/surfaces). The executor already reads active() fresh per
+// drain, so the last test proves a stored edit takes effect with NO restart.
+
+test('/workflows routes: list has the seeded default, GET 404 unknown, PUT invalid 400, PUT valid bumps version', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // the seeded default enumerates and resolves by id
+    const listed = (await (await fetch(`${base}/workflows`)).json()) as WorkflowSpec[]
+    assert.deepEqual(listed.map((w) => w.id), ['workflow-default'])
+    const current = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
+    assert.equal(current.version, 1)
+    // unknown id ⇒ 404 (only workflow-default exists until a user authors another)
+    assert.equal((await fetch(`${base}/workflows/nope`)).status, 404)
+    // a garbage body is a 400, not a 500
+    assert.equal((await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ not: 'a workflow' }) })).status, 400)
+    // an unrunnable step kind is rejected at write time by the CLOSED union (Tier-A gate) ⇒ 400
+    const badKind = { ...current, steps: [{ id: 'x', kind: 'teleport', params: {} }] }
+    assert.equal((await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(badKind) })).status, 400)
+    // a valid body whose id disagrees with the route is a 400
+    assert.equal((await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...current, id: 'other' }) })).status, 400)
+    // a valid, matching edit persists (version stamped off the store) and reads back
+    const edited = { ...current, steps: current.steps.filter((s) => s.kind !== 'moments') }
+    const putRes = await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(edited) })
+    assert.equal(putRes.status, 200)
+    const saved = (await putRes.json()) as WorkflowSpec
+    assert.equal(saved.version, 2, 'the store stamped the next version')
+    const after = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
+    assert.equal(after.version, 2)
+    assert.ok(!after.steps.some((s) => s.kind === 'moments'), 'GET reflects the edit')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('e2e: PUT an edited workflow with workflow.enabled ON — the drain honors it with no restart', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    // the whole distill family ON (moments AND index) PLUS workflow.enabled → the executor runs the doc
+    for (const key of ['distill.enabled', 'distill.moments', 'distill.index', 'workflow.enabled']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+
+    // THE USER COMPOSES THE PIPELINE: edit the running document to DROP the moments step — while its
+    // when.flag (distill.moments) stays ON. If the executor read the flag it would still extract moments;
+    // it reads the DOCUMENT, so moments stop. The index step stays, so distill+index still run — proving
+    // the pipeline itself is live, not merely switched off. No engine restart between the PUT and the drain.
+    const current = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
+    const edited = { ...current, steps: current.steps.filter((s) => s.kind !== 'moments') }
+    const putRes = await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(edited) })
+    assert.equal(putRes.status, 200)
+
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 8, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'Dana agreed, ship Thursday')]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+
+    // POSITIVE: entities hydrate → distill+index ran, so the drain's distill pass completed under the
+    // edited document (the pipeline is live). Once this holds, moments WOULD have been extracted in the
+    // SAME pass if the step were present.
+    await eventuallyHttp(async () => {
+      const entities = (await (await fetch(`${base}/entities?workspace=default`)).json()) as Entity[]
+      assert.ok(entities.some((e) => /Dana/i.test(e.name)), 'distill+index ran under the edited document')
+    })
+    // NEGATIVE (the proof): no moments for this session — the removed step was honored with no restart,
+    // even though distill.moments is still ON.
+    const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
+    assert.equal(moments.length, 0, 'the dropped moments step took effect on the very next drain — hot edit')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
   }
 })
