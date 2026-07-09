@@ -209,7 +209,7 @@ is exercised by the test suites and, for the served surfaces, driven end-to-end.
 | **Surfaces & HUD** | Surfaces-as-documents, a generic block renderer, a content-sized HUD window that opens hidden | Working |
 | **Workflow substrate** | Executor + drain stages, hot-editable over `GET`/`PUT /workflows` | Working — flag-gated (`workflow.enabled`, off by default) |
 | **Fabric** | Profiles / secrets / discovery, engine-managed local runtimes (incl. mlx/omlx), STT adapters (openai · omlx · whisper-server) | Working |
-| **Canon · teach · pins** | Reference-merging canon, the reroute→hint teach loop, page-anchored pin ingestion; the `pins` query source now hydrates from the store | Working (engine) — live pin rendering lands in M1 (issue #40) |
+| **Canon · teach · pins** | Reference-merging canon, the reroute→hint teach loop, page-anchored pin ingestion; pins render live in the `pinned-doc` block, teach candidates in the `teach` block (accept wired to the hints document) | Working |
 | **Settings** | Engine-served `/settings` page: status, endpoints, profiles, keys, local runtimes, features, HUD layout, try-it | Working |
 | **DMG packaging** | arm64, ad-hoc signed; the shell adopts a running engine or spawns the bundled one on first launch | Working — dev/ad-hoc (no notarization or auto-update) |
 
@@ -252,14 +252,19 @@ The areas below are designed and tracked but not yet shipped. Each maps to a pub
 [issue tracker](https://github.com/Ambisphaeric/openinfo/milestones) (Ambisphaeric/openinfo); the
 milestone names are the section headings.
 
-### M1 — Blocks render the pipeline
+### M1 — Blocks render the pipeline ✓ (shipped)
 
-More block types rendering the full display primitive set — transcript/distillate stream, an honest
-queue/status block, recorded provenance as the why-line, live pin content, and wiring the inert action
-verbs to their real write paths.
-
-*Placeholder — lands with M1.*
-<!-- placeholder: filled in when the M1 block set ships -->
+The block set now renders the pipeline's primitives end to end. Five block types joined `now` /
+`moments` / `relevant-now` / `pinned-doc`: **todos** (✓/○ status, "from the meeting" vs "added by
+you"), **drafts** (the prepared follow-up, with its distillate/moment lineage), **teach** (suggested
+attribution hints with support counts), **distillates** (the rolling summary stream), and **queue**
+(honest backlog, basis-aware ETA, and the last classified failure as visible text). Why-lines render
+the **recorded provenance** (`via <endpoint> · <model> · <time>`) instead of hand-rolled strings, and
+a row that cannot state its one-line why is dropped rather than decorated. Action verbs write for
+real with visible outcomes — `copy` (clipboard + fallback, "Copied"/"Copy failed"), `mark-done`
+(flips the to-do over `PUT /todos`), `accept` (appends a teach candidate to the hints document);
+verbs with no honest write path yet (`dismiss`, `open`, `run-mode`, `draft-with`) render inert
+rather than pretend.
 
 ### M2 — Panel designer
 
