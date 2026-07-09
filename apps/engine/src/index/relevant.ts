@@ -1,6 +1,7 @@
 import type { Moment, RelevantEntity } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { rankEntities, DEFAULT_RANK_CONFIG, type RankConfig } from './rank.js'
+import { mergeCanon } from './canon.js'
 
 export interface RelevantNowOptions {
   /** narrow to entities referenced by this session's moments (and join only those moments) */
@@ -32,8 +33,12 @@ export const relevantNow = (store: WorkspaceRegistry, workspaceId: string, opts:
   const moments = opts.sessionId !== undefined ? store.listMoments(workspaceId, opts.sessionId) : store.listMoments(workspaceId)
   const byId = new Map(moments.map((moment) => [moment.id, moment]))
 
-  let entities = store.listEntities(workspaceId)
+  // Earned canon (P4D): fold same-entity duplicates into ONE canonical record before ranking, so a
+  // person written twice under overlapping aliases surfaces as a single row whose evidence (mentions,
+  // momentRefs, outboundCount) is the union. Read-time fold — deterministic, persists nothing (canon.ts).
+  let entities = mergeCanon(store.listEntities(workspaceId)).entities
   if (opts.sessionId !== undefined) {
+    // A canonical record qualifies when ANY of its folded forms referenced one of this session's moments.
     entities = entities.filter((entity) => entity.momentRefs.some((id) => byId.has(id)))
   }
 

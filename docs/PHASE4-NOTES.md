@@ -341,7 +341,7 @@ cleared immediately; the non-empty backlog path is unit-covered).
 
 ## Slice: Dynamic to-do seam (prompt engine v0)  *(P4A, Terminal A, branch p4a-workflow)*
 
-The fourth and final P4A slice lands the founder's **constrain/unconstrain loop**: a `task-extract` act
+The fourth and final P4A slice lands the product's **constrain/unconstrain loop**: a `task-extract` act
 CONSTRAINS a meeting's distillates+moments into a structured, editable to-do array; a follow-up draft
 UN-CONSTRAINS it back into prose via a `{{todo}}` template variable. Everything is a document: the to-do
 list is a versioned, editable `TodoList` a user can PUT and the next draft reflects.
@@ -357,7 +357,7 @@ list is a versioned, editable `TodoList` a user can PUT and the next draft refle
 
 ### DECISION — the drain-vs-session-end tension: task-extract rides the DRAIN as a best-effort ACT
 The mandate's design tension (does task-extract accumulate DURING the session on the drain, or run once at
-session-end?) is resolved in favor of the **drain**, because the founder value ("a mid-meeting draft
+session-end?) is resolved in favor of the **drain**, because the core value ("a mid-meeting draft
 live-updates from ACCUMULATED follow-ups") requires the to-do to grow across the meeting — session-end-only
 cannot demonstrate accumulation. Reconciled with slice 3's "keep to-do extraction an act, not a drain
 stage" warning as follows:
@@ -436,7 +436,7 @@ draft interpolates.
   since it rides the distill pass — distill OFF → the drain returns early → task-extract does not run).
 - **Routes** (additive, phase 4, no flag — resource routes like `/drafts`/`/layouts/surfaces`): `GET /todos`
   (list all), `GET /todos/:id` (one, 404 if none), `PUT /todos/:id` (edit — validated, sessionId must match
-  the route). The founder can now SEE the to-do list; the HUD renders it later off these.
+  the route). The user can now SEE the to-do list; the HUD renders it later off these.
 
 ### Dedupe wart (stated)
 Merge dedupe is normalized-text equality only (trim/lowercase/collapse whitespace — identical to store's
@@ -499,7 +499,7 @@ the small **P4A×P4B joint slice** (screen understanding as a workflow step) wil
 
 ## PHASEB — screen capture + OCR/VLM invocation  *(P4B, Terminal B, branch `p4b-screen-ocr`)*
 
-The founder's flagship use case (OSS-contribution screen watching) and the least-built element: OCR/VLM
+The flagship use case (OSS-contribution screen watching) and the least-built element: OCR/VLM
 existed only as contract slot names; nothing invoked them and screen capture was pending. P4B is the whole
 vertical — this note is self-contained across its four slices (contracts, fabric invocation, client
 capture, and the slice-4 processor+router that stitches capture → OCR → surfaces).
@@ -803,3 +803,130 @@ osascript sampling is NOT exercised in CI (the OS edge is injected/stubbed in te
   switch) should confirm the sampler shape before relying on it.
 - **Chunk-transported calendar** (the reserved `source:'calendar'` path) and a client-side collector, if/when
   calendar collection should move to the client alongside focus.
+## Slice: Canon + teach loop + pin ingestion  *(P4D, branch `p4d-canon`)*
+
+The P4D slice lands the three connected pieces ARCHITECTURE §5/§10 pre-designed into `index/` + `teach/`:
+earned canon (reference merging + "sent outranks viewed"), the teach-loop capture side (reroute
+corrections become labeled per-workspace signals), and pin ingestion with page anchors. Everything is
+additive; no route added, one gated behavior touched (the pre-seeded `ingest.gdoc` flag, seam only).
+
+### Contracts added (all additive)
+- **`TeachSignal`** (`records/teach.ts`): a labeled correction. `kind` is an OPEN, append-only union
+  (`reroute` wired; `dismiss` deferred) — closed-and-append like `WorkflowStepKind`/`MomentKind`, NOT
+  open-with-fallback, because a signal kind the derivation cannot interpret is a bug to surface. Carries
+  `fromWorkspaceId`/`toWorkspaceId`/`sessionId`/`evidence` (the router's ORIGINAL `AttributionEvidence`
+  trail, reused not forked) / `correctedAt`. No standalone `workspaceId` field — the per-workspace grain
+  is the STORAGE key (keyed by `toWorkspaceId`), not a duplicated field.
+- **`PinChunk`** (`records/pinChunk.ts`): one page-anchored chunk — `ordinal` (stable 0-based sequence) +
+  OPTIONAL `page` (the "p. 42" anchor; absent for pageless url/plaintext, never fabricated) + `text`.
+- Registered in `index.ts` (`AllSchemas` + re-exports), mapped `teachSignal`/`pinChunk`/`pin` in
+  `contracts.test.ts`, examples seeded (`teachSignal.reroute.json`, `pinChunk.pdf.json`, `pin.pdf.json` —
+  the previously-exampleless `Pin` now has one). Schemas regenerated (+3: PinChunk, TeachSignal,
+  TeachSignalKind). Contracts test 60 → 63.
+
+### DECISION — earned canon merges at READ time; the persist-the-merge write side is deferred
+The store's `upsertEntity` already merges at WRITE time by exact (kind, normalized-name-or-alias). What
+escapes it is the residue `mergeCanon` catches: two records sharing an ALIAS but written under different
+canonical names, or records mergeable only after aliases accrued. `relevant.ts` folds the workspace's
+entities through `mergeCanon` BEFORE ranking, so a person written twice surfaces as ONE canonical row
+(evidence unioned). This is a READ-time fold — pure, deterministic (union-find + total-ordered winner,
+input-order-independent), and reversible by simply not folding — rather than a write-time migration. A
+`store.mergeEntities(canonicalId, mergedIds)` that persists `canonicalOf` and remaps `Moment.refs` is the
+write side, DEFERRED until a surface needs persisted canon (no public store merge exists today —
+`mergeEntity` is private to `upsertEntity`).
+
+### DECISION — "sent outranks viewed" is a rank MULTIPLIER, unchanged at outboundCount 0 (honest v0)
+`rank.ts`'s formula gains `× (1 + outboundBoost·log2(1 + outboundCount))`, log-damped exactly like
+frequency (a 40×-sent artifact cannot dwarf everything). Shaped so `outboundCount === 0` yields multiplier
+1.0 — the score is byte-identical to the pre-canon formula, which is why every prior `rank.test.ts` case
+(all outboundCount 0) stays green. One send at `outboundBoost 1` doubles the score, so a sent version
+outranks an equally-frequent merely-viewed one (the design requirement). **Honest v0 note (not faked):**
+NO code path increments `Entity.outboundCount` — the Act pass prepares drafts that are never sent
+(`act/draft.ts`), so there is no honest "sent" event to count yet. The READ side is wired; the write side
+(a future outbound-mail/commit watcher or a "mark sent" action → a one-line store increment) is the
+documented deferred seam. Faking a source now would lie about which versions were actually sent.
+
+### DECISION — teach signals are store-backed documents keyed by the CORRECTED-TO workspace
+`TeachStore` mirrors `HintsDocuments`/`TodoDocuments`: a versioned document (`store.layouts`, kind
+`teach-signals`) keyed by `toWorkspaceId` — the workspace that should LEARN to claim these signals (its
+hint patterns are what the derivation suggests). `record()` is IDEMPOTENT by a session-deterministic
+signal id (`teach-reroute-${sessionId}`), so a replayed `session.rerouted` (or a re-reroute) replaces
+rather than double-counts. `teach/` never opens a DB (dep rule 2 — asks `store.layouts`). `wireTeach(app)`
+subscribes `session.rerouted` and records, mirroring `wireScreenOcr` (one line in `main.ts`, keeping bus
+wiring out of the P4A-owned `api/http.ts`). The derivation `deriveHintCandidates` is a PURE read →
+SUGGESTED `AttributionPattern` candidates (window/repo evidence → windowTitle/repoPath patterns,
+aggregated by support across reroutes); it is **never written into `route/hints` documents and never
+edits `route/`** — the loop SUGGESTS, the user APPLIES. calendar/voice evidence (not focus fields) and the
+`manual` reroute marker are excluded from candidates — a suggestion the detector can't honor is not made.
+
+### DECISION — PDF ingestion is an HONEST STUB (option b), not a new dependency
+The engine's dependency policy is deliberately minimal (`better-sqlite3` + `typebox` only). Weighed:
+- (a) add ONE small PDF parser dep — but `pdf.js`/`pdf-parse` pull a LARGE transitive tree, a real policy
+  change that deserves explicit owner sign-off, not a slice-author's unilateral add; and
+- (b) **land the full ingest seam + page-anchor chunking, with `pdf.ts` a documented honest stub** — chosen.
+The NOVEL part (page-anchored chunking — "how an answer cites p. 42") is fully built and tested against
+multi-page fetched docs; the `file` fetcher (form-feed `\f` = real plaintext page anchors) and `url`
+fetcher (pageless) exercise the entire lifecycle honestly. `pdf.ts` throws a clear, actionable error → the
+pin records `ingest.status: 'failed'`, NEVER fabricated pages. Hand-rolling a binary PDF parser was never
+on the table. The moment a vetted parser is approved it is the ONE file that changes. `gdoc` is a seam-only
+stub behind the seeded `ingest.gdoc` flag (added to the fetcher registry only when the flag is on; the OAuth
+flow is out of scope).
+
+### Module layout
+- `index/canon.ts` (pure) — `mergeCanon`; `index/rank.ts` — the canon weight in `scoreEntity`;
+  `index/relevant.ts` — folds through `mergeCanon` before ranking.
+- `teach/signals.ts` — `TeachStore` + `captureReroute` + `deriveHintCandidates`; `teach/index.ts` —
+  `wireTeach` + barrel.
+- `index/ingest/` — `chunk.ts` (pure page-anchored chunking, deterministic `${pinId}-${ordinal}` ids for
+  idempotent re-ingest), `fetcher.ts` (`PinFetcher` + file/url/pdf-stub/gdoc-seam + `defaultFetchers`),
+  `ingest.ts` (the lifecycle → store), `index.ts` (barrel).
+- `store/workspaces.ts` — `pins` + `pin_chunks` tables (per-workspace DB, since a pin is workspace-level
+  canon like an entity, NOT session-keyed → `moveSession` untouched) + `savePin`/`getPin`/`listPins` +
+  `savePinChunks`/`listPinChunks`/`deletePinChunks`, contract-validated (dep rule 2). One line in `main.ts`.
+
+### Deviation from the plan (with rationale)
+The plan batched all tests into a final slice 5; instead tests are COLOCATED WITH each module's commit
+(`canon.test.ts`, `rank.test.ts` additions, `signals.test.ts`, `chunk.test.ts`, `ingest.test.ts`, the store
+pin test), so every commit is independently green AND verified. Slice 5 is therefore docs only. This is
+the repo's own colocated-`node --test` convention and matches "each module ships green."
+
+### Rule-7 check (definition of done)
+- **Route:** NONE added — teach capture is a bus subscription (no HTTP surface), and pin CRUD / a
+  `/pins` route + a teach-candidates read route are deliberately deferred (the "API is the slice"
+  discipline — the read seams `TeachStore.list`/`deriveHintCandidates`/`store.listPins` are ready for a
+  later route with no logic change). So CONTRIBUTING rule 7's "changed a route surface" clause is
+  **satisfied vacuously**.
+- **Flag:** no NEW flag. `ingest.gdoc` already exists (seeded); this slice only reads it as the seam gate
+  for the gdoc fetcher — a pre-existing gated behavior, not a new one.
+- **Recipes/skills:** grepped `skills/` + `CONTRIBUTING.md` for `canon|teach|reroute|pin|ingest|outbound`.
+  No recipe or skill references any of these surfaces (the shipped `add-a-block` skill enumerates only the
+  flags/routes ITS block-source recipe touches). Nothing to keep true.
+- **Contracts:** additive only (two records + examples + regenerated schemas; existing examples still
+  validate). **CODE_MAP:** `index/` and `teach/` tree rows updated to BUILT; a new §3 "Canon + teach loop
+  + pin ingestion" row + the gdoc row reconciled.
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Final totals: contracts **63** (+3 examples),
+engine **401** (from 374: +8 canon/rank in `index/`, +6 `teach/signals.test`, +12 `ingest`
+[chunk 6 + ingest 6], +1 store pin test), client **154**. The ONLY failure seen under the full parallel run
+is the documented `route.detect ON` teardown flake (`ENOTEMPTY` on the temp-queue rmdir, in `route/` which
+this slice does not touch) — confirmed passing 3/3 in isolation; on the clean per-slice runs all three
+suites were fully green. **LIVE check** (real compiled `dist`, real sqlite `WorkspaceRegistry` + `EventBus`,
+no HTTP since no route was added): published a `session.rerouted` → one `TeachSignal` captured + a
+`repoPath` hint candidate derived; ingested a real form-feed file → status `ingested`, pages 2, chunks
+anchored `p.1 p.2`; a `pdf` pin → status `failed` with the honest error; two "Dana"/"Dana Cruz" forms →
+`mergeCanon` folded to ONE entity (aliases unioned, mentions summed to 2), relevant-now returned one
+deduped row.
+
+### Deferred (out of this slice, by scope)
+- **`outboundCount` write side** — nothing increments it yet (drafts are prepared-never-sent); a future
+  send event (outbound-mail/commit watcher or a "mark sent" action) feeds ranking with a one-line store
+  increment and no rank-formula change.
+- **`dismiss`-kind teach signals** — the union has room; deferred until a dismiss ("not a commitment" /
+  "not this entity") surface exists to emit it.
+- **Feeding derived candidates back into extraction prompts / a teach surface** — `deriveHintCandidates`
+  is the consumable output; wiring it into a prompt or a review UI (and an apply action) is the next step.
+- **Persisted canon** — a `store.mergeEntities` that writes `canonicalOf` + remaps `Moment.refs` (the fold
+  is read-time only today).
+- **A PDF parser dependency** (owner sign-off) and **gdoc OAuth** (beyond the flag-gated seam).
+- **`/pins` CRUD + a teach-candidates read route** — the store/derivation read seams are ready.

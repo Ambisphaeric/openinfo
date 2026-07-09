@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Draft, Entity, EntityProvenance, Moment, OcrResult, Session, Workspace } from '@openinfo/contracts'
-import { Entity as EntitySchema } from '@openinfo/contracts'
+import type { Distillate, Draft, Entity, EntityProvenance, Moment, OcrResult, Pin, PinChunk, Session, Workspace } from '@openinfo/contracts'
+import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { LayoutStore } from './layouts.js'
 import { resolveDataDir } from './paths.js'
@@ -318,6 +318,80 @@ export class WorkspaceRegistry {
   }
 
   /**
+   * Persist a pin record to its workspace's OWN sqlite file (P4D pinned canon; DB-handle hard rule: only
+   * store/ writes). A pin is a WORKSPACE-LEVEL record like an entity (NOT session-keyed) — it is pinned
+   * canon for the whole workspace, so it is not part of a session move (moveSession untouched). Workspace
+   * created on demand, idempotent per id, contract-validated before write (mirrors upsertEntity's last line
+   * of defense). The ingest lifecycle (index/ingest) asks store to write; store owns the id it was handed.
+   */
+  savePin(pin: Pin): Pin {
+    this.ensureWorkspace({ id: pin.workspaceId, name: pin.workspaceId })
+    const db = this.openWorkspace(pin.workspaceId)
+    const { kind, title } = pin
+    if (!Value.Check(PinSchema, pin)) throw new Error(`pin failed contract validation: ${kind} "${title}"`)
+    db.prepare('insert or replace into pins (id, kind, created_at, body) values (?, ?, ?, ?)').run(
+      pin.id,
+      pin.kind,
+      pin.createdAt,
+      JSON.stringify(pin),
+    )
+    return pin
+  }
+
+  getPin(workspaceId: string, id: string): Pin | undefined {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return undefined
+    const db = this.openWorkspace(workspaceId)
+    const row = db.prepare('select body from pins where id = ?').get(id) as { body: string } | undefined
+    return row ? (JSON.parse(row.body) as Pin) : undefined
+  }
+
+  /** List a workspace's pins, most recently created first; unknown workspace reads as [] (mirrors listEntities). */
+  listPins(workspaceId: string): Pin[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const rows = db.prepare('select body from pins order by created_at desc').all() as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as Pin)
+  }
+
+  /**
+   * Persist page-anchored pin chunks to their workspace's OWN sqlite file, in ONE atomic transaction
+   * (idempotent per chunk id — a re-ingest with the same deterministic ids replaces in place). Each chunk
+   * is contract-validated before write. Only this path writes pin chunks (DB-handle hard rule).
+   */
+  savePinChunks(chunks: readonly PinChunk[]): PinChunk[] {
+    if (chunks.length === 0) return []
+    const workspaceId = chunks[0]!.workspaceId
+    this.ensureWorkspace({ id: workspaceId, name: workspaceId })
+    const db = this.openWorkspace(workspaceId)
+    const insert = db.prepare('insert or replace into pin_chunks (id, pin_id, ordinal, page, body) values (?, ?, ?, ?, ?)')
+    db.transaction(() => {
+      for (const chunk of chunks) {
+        const { id, pinId, ordinal, page } = chunk
+        if (!Value.Check(PinChunkSchema, chunk)) throw new Error(`pin chunk failed contract validation: ${pinId} #${ordinal}`)
+        insert.run(id, pinId, ordinal, page ?? null, JSON.stringify(chunk))
+      }
+    })()
+    return [...chunks]
+  }
+
+  /** A pin's chunks in stable ordinal order (the citation order); `pinId` omitted lists the workspace's all. */
+  listPinChunks(workspaceId: string, pinId?: string): PinChunk[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const rows = pinId
+      ? (db.prepare('select body from pin_chunks where pin_id = ? order by ordinal').all(pinId) as { body: string }[])
+      : (db.prepare('select body from pin_chunks order by pin_id, ordinal').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as PinChunk)
+  }
+
+  /** Drop a pin's chunks (a re-ingest clears the old page anchors before writing fresh ones). Returns the count removed. */
+  deletePinChunks(workspaceId: string, pinId: string): number {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return 0
+    const db = this.openWorkspace(workspaceId)
+    return db.prepare('delete from pin_chunks where pin_id = ?').run(pinId).changes
+  }
+
+  /**
    * Retroactively move a session — and EVERYTHING keyed to it — from one workspace DB to another
    * (Phase 3, the correction loop the router's mistakes require; IMPLEMENTATION §3 risk register).
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
@@ -573,6 +647,12 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists ocr_results (id text primary key, session_id text not null, created_at text not null, body text not null)',
+    ).run()
+    db.prepare(
+      'create table if not exists pins (id text primary key, kind text not null, created_at text not null, body text not null)',
+    ).run()
+    db.prepare(
+      'create table if not exists pin_chunks (id text primary key, pin_id text not null, ordinal integer not null, page integer, body text not null)',
     ).run()
     this.workspaceHandles.set(id, db)
     return db

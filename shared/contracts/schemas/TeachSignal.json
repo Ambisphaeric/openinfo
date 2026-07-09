@@ -1,0 +1,92 @@
+{
+  "$id": "TeachSignal",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "fromWorkspaceId",
+    "toWorkspaceId",
+    "sessionId",
+    "evidence",
+    "correctedAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "kind": {
+      "const": "reroute",
+      "type": "string"
+    },
+    "fromWorkspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "toWorkspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "evidence": {
+      "description": "the router's original attribution trail at correction time (window/repo/calendar + the manual reroute marker)",
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "detail",
+          "weight"
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "const": "calendar",
+                "type": "string"
+              },
+              {
+                "const": "window",
+                "type": "string"
+              },
+              {
+                "const": "repo",
+                "type": "string"
+              },
+              {
+                "const": "voice",
+                "type": "string"
+              },
+              {
+                "const": "manual",
+                "type": "string"
+              }
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "weight": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          }
+        }
+      }
+    },
+    "correctedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}
