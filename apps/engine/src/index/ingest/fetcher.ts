@@ -81,7 +81,7 @@ export const createUrlFetcher = (deps: UrlFetcherDeps = {}): PinFetcher => {
 /**
  * `pdf` — HONEST STUB (P4D PDF decision, recorded in PHASE4-NOTES). The engine's dependency policy is
  * deliberately minimal (`better-sqlite3` + `typebox` only); adding a PDF text-extraction dependency
- * (pdf.js/pdf-parse pull a large transitive tree) is a real policy change that needs explicit founder
+ * (pdf.js/pdf-parse pull a large transitive tree) is a real policy change that needs explicit owner
  * sign-off, and hand-rolling a binary PDF parser is out of the question. So the ingest SEAM + page-anchor
  * chunking are fully built and exercised by the file/url fetchers, and PDF is a NAMED failure: it throws a
  * clear, actionable error → the pin records `ingest.status: 'failed'`, NEVER fabricated pages. The moment a

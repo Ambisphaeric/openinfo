@@ -341,7 +341,7 @@ cleared immediately; the non-empty backlog path is unit-covered).
 
 ## Slice: Dynamic to-do seam (prompt engine v0)  *(P4A, Terminal A, branch p4a-workflow)*
 
-The fourth and final P4A slice lands the founder's **constrain/unconstrain loop**: a `task-extract` act
+The fourth and final P4A slice lands the product's **constrain/unconstrain loop**: a `task-extract` act
 CONSTRAINS a meeting's distillates+moments into a structured, editable to-do array; a follow-up draft
 UN-CONSTRAINS it back into prose via a `{{todo}}` template variable. Everything is a document: the to-do
 list is a versioned, editable `TodoList` a user can PUT and the next draft reflects.
@@ -357,7 +357,7 @@ list is a versioned, editable `TodoList` a user can PUT and the next draft refle
 
 ### DECISION — the drain-vs-session-end tension: task-extract rides the DRAIN as a best-effort ACT
 The mandate's design tension (does task-extract accumulate DURING the session on the drain, or run once at
-session-end?) is resolved in favor of the **drain**, because the founder value ("a mid-meeting draft
+session-end?) is resolved in favor of the **drain**, because the core value ("a mid-meeting draft
 live-updates from ACCUMULATED follow-ups") requires the to-do to grow across the meeting — session-end-only
 cannot demonstrate accumulation. Reconciled with slice 3's "keep to-do extraction an act, not a drain
 stage" warning as follows:
@@ -436,7 +436,7 @@ draft interpolates.
   since it rides the distill pass — distill OFF → the drain returns early → task-extract does not run).
 - **Routes** (additive, phase 4, no flag — resource routes like `/drafts`/`/layouts/surfaces`): `GET /todos`
   (list all), `GET /todos/:id` (one, 404 if none), `PUT /todos/:id` (edit — validated, sessionId must match
-  the route). The founder can now SEE the to-do list; the HUD renders it later off these.
+  the route). The user can now SEE the to-do list; the HUD renders it later off these.
 
 ### Dedupe wart (stated)
 Merge dedupe is normalized-text equality only (trim/lowercase/collapse whitespace — identical to store's
@@ -499,7 +499,7 @@ the small **P4A×P4B joint slice** (screen understanding as a workflow step) wil
 
 ## PHASEB — screen capture + OCR/VLM invocation  *(P4B, Terminal B, branch `p4b-screen-ocr`)*
 
-The founder's flagship use case (OSS-contribution screen watching) and the least-built element: OCR/VLM
+The flagship use case (OSS-contribution screen watching) and the least-built element: OCR/VLM
 existed only as contract slot names; nothing invoked them and screen capture was pending. P4B is the whole
 vertical — this note is self-contained across its four slices (contracts, fabric invocation, client
 capture, and the slice-4 processor+router that stitches capture → OCR → surfaces).
@@ -779,7 +779,7 @@ edits `route/`** — the loop SUGGESTS, the user APPLIES. calendar/voice evidenc
 ### DECISION — PDF ingestion is an HONEST STUB (option b), not a new dependency
 The engine's dependency policy is deliberately minimal (`better-sqlite3` + `typebox` only). Weighed:
 - (a) add ONE small PDF parser dep — but `pdf.js`/`pdf-parse` pull a LARGE transitive tree, a real policy
-  change that deserves explicit founder sign-off, not a slice-author's unilateral add; and
+  change that deserves explicit owner sign-off, not a slice-author's unilateral add; and
 - (b) **land the full ingest seam + page-anchor chunking, with `pdf.ts` a documented honest stub** — chosen.
 The NOVEL part (page-anchored chunking — "how an answer cites p. 42") is fully built and tested against
 multi-page fetched docs; the `file` fetcher (form-feed `\f` = real plaintext page anchors) and `url`
@@ -845,5 +845,5 @@ deduped row.
   is the consumable output; wiring it into a prompt or a review UI (and an apply action) is the next step.
 - **Persisted canon** — a `store.mergeEntities` that writes `canonicalOf` + remaps `Moment.refs` (the fold
   is read-time only today).
-- **A PDF parser dependency** (founder sign-off) and **gdoc OAuth** (beyond the flag-gated seam).
+- **A PDF parser dependency** (owner sign-off) and **gdoc OAuth** (beyond the flag-gated seam).
 - **`/pins` CRUD + a teach-candidates read route** — the store/derivation read seams are ready.
