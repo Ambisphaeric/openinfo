@@ -2003,3 +2003,71 @@ Contracts 63→64, engine 478→480, client 234→237 (full `pnpm -r test` green
 ### Out of scope (recorded, NOT built)
 A `draft-with`/regenerate affordance or any write-back (this slice renders drafts read-only; only the copy
 verb is live). Markdown rendering of the draft body (shown as text, consistent with the other blocks).
+
+## Slice: #11 — teach-candidates / hint-review block + query source
+
+The teach loop's capture side and serving API already existed — `session.rerouted` corrections are recorded
+as `teach-signals`, `deriveHintCandidates` turns them into SUGGESTED attribution-hint patterns, and `GET
+/teach/candidates` + `GET`/`PUT /hints` serve/apply them — but the REVIEW half had no UI: candidates were
+derived read-only and never surfaced on a panel for a human to weigh. This is the missing block plus its
+query source (the `add-a-block` "new built-in block type" recipe: contract union append + new `BlockQuery`
+source + `compileQuery` arm + renderer + registry entry).
+
+### Contract (append-only, schemas regenerated)
+`BlockTypeName` gains `teach`; `BlockQuery.source` and `QueryResult.source` each gain `teach`. All three are
+append-only unions (existing members untouched), so every prior document still validates. Ran `pnpm --filter
+@openinfo/contracts gen` — the language-neutral `schemas/*.json` for `BlockTypeName`/`BlockQuery`/
+`QueryResult`/`Block`/`Surface` regenerated with the new member; the 8 unrelated schemas the generator
+rewrites from known pre-existing drift (DiscoverResult/Endpoint/EndpointProbe/Fabric/FabricProfile/
+GenerateProbe/Health/ProbeList) were reverted, matching the #9/#10 slices. `QueryResult.items` stays
+`Type.Array(Unknown)`; the element shape for `teach→HintCandidate` (already a contract, served by
+`/teach/candidates`) is documented in the arm. A `surface.teach.json` example exercises the block.
+
+### The query source (`surfaces/query.ts`)
+New `teach` arm: `deriveHintCandidates(new TeachStore(store).list(workspaceId))` — the SAME pure derivation
+`GET /teach/candidates` serves, so a teach block renders the identical inspectable, citable candidates the
+review surface would. Workspace-scoped only (a candidate teaches the workspace it was corrected TO — there
+is no session dimension). Deliberately NOT gated by the `known` (workspace-DB-exists) guard the record
+sources use: like `todos`, the teach signals are DOCUMENTS keyed by workspace (global `_meta.db`, not a
+workspace DB), and `TeachStore.list` reads `[]` for a workspace with no recorded corrections — an unknown
+workspace / no reroutes yet reads `[]`, explainable-empty, never an error. Candidates arrive support-sorted
+(deterministic); the shared `cap` takes top-K + flags truncation. READ-ONLY: the arm never writes hints and
+touches no route/ logic — the loop SUGGESTS, the user reviews and applies (the accept write path is the
+action-verbs slice).
+
+### The renderer (`client/surfaces/blocks/teach.ts` + registry)
+`renderTeach` reads `result.items` as `HintCandidate[]` and renders one `.rel` row per candidate (mirroring
+the sibling list blocks): the suggested match rule as `.ttl` (the humanized focus field + the substring the
+reroutes agreed on — `window contains "…"`, `repo contains "…"`), and a `.why` line built from the
+candidate's own trail — how many distinct corrections support it and which workspace it would teach
+(`supportCount` is the confidence; every candidate is traceable to its `sampleSessionIds`). The block's
+`actions` render through `actionButtons` (the copy verb carries the pattern text; the accept/dismiss verbs
+render visible-but-inert until the write path lands — mirroring the other blocks' non-copy verbs).
+`block.top` caps like the siblings. Empty is EXPLAINABLE, not silent: an always-visible block with no
+candidates renders a "nothing to review yet" line rather than a blank card; an `on-match` block just stays
+hidden. Registered in `defaultBlockRegistry`; the settings surface-editor picker gains a `teach`
+default-block seed (`show: on-match`, workspace-scoped, `top: 5`) so choosing it splices a real teach block.
+
+### Tests + verification
+Contracts 64→65, engine 480→482, client 244→247 (all green in isolation, and the full engine suite ran green
+end to end this run).
+- `surfaces/query.test.ts` — a store seeded via `TeachStore` with three reroutes into one workspace (two
+  agreeing on the same window title ⇒ support 2, one repo ⇒ support 1) plus a fourth into a DIFFERENT
+  workspace: the arm derives only the resolved workspace's candidates, support-sorted, traceable to their
+  sessions, `top` caps + flags truncation, and an untaught workspace derives `[]`; the unbuilt-store test
+  also covers an unknown-workspace `teach` read (`[]`, never a throw).
+- `api/http.test.ts` — a served e2e over the live server: `TeachStore` seeds two agreeing reroutes (the real
+  capture seam — there is no write route), a surface carries a `teach` block (`PUT /layouts/surfaces/:id`),
+  then GET + `POST /query` hydrate exactly as the client does — the SUGGESTED pattern + support + traceable
+  sessions round-trip; the query never applied the candidate (the workspace's hints doc stays untouched);
+  an untaught workspace query returns `items: []`.
+- `client/surfaces/blocks/teach.test.ts` (OWN new file — `renderer.test.ts` untouched) — proves
+  STORE-DERIVED content: seeded pattern text only reachable via `result.items`, the humanized field labels,
+  the singular/plural support why-line, and the accept/dismiss affordances (copy carrying the pattern);
+  plus the explainable-empty line on an always-block and the hidden on-match empty block.
+
+### Out of scope (recorded, NOT built)
+The APPLY/accept write path (a verb that PUTs the reviewed pattern into the workspace's `WorkspaceHints`) —
+tracked by the action-verbs issue; this slice renders the affordances inert (only `copy` is live). A
+`dismiss`-kind teach signal that suppresses a candidate (the `TeachSignalKind` union's deferred member).
+The transcript/distillate block (#12) and the queue/status block (#13), stacked on this branch.
