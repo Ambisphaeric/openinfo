@@ -1152,3 +1152,50 @@ proving the correction the user made once is generalized: teach → suggest → 
   slice over these routes, not this API slice (same posture as the deferred pins/candidates blocks above).
 - **Dismiss-kind teach signals feeding candidate suppression** — still the P4D-deferred item; applying a
   candidate here does not mark it applied, so it keeps appearing in `/teach/candidates` until dismiss lands.
+
+## Slice: three fabric/test-probe fixes from wiring a real omlx endpoint  *(on main)*
+
+Wiring a real local endpoint end-to-end (omlx serving `LFM2.5-8B-A1B-MLX-8bit` on `0.0.0.0:8000`, an
+`http`/`openai-compat` endpoint with `auth.keyRef`, stored via `PUT /fabric` + `PUT /fabric/secrets/:ref`)
+surfaced three places where the health/test path disagreed with how real servers behave. Real INVOCATIONS
+worked throughout — `invokeLlm` returned clean completions — but the settings **Test** button was
+structurally red for the whole omlx/reasoning-model class. Committed per module: fabric health → fabric
+invoke → api probe → docs.
+
+### Fix 1 — health ping falls back to `GET /v1/models` for openai-compat (`fabric/health.ts`)
+The ping GETs the endpoint's bare base url. FastAPI-style servers (omlx) serve no root route — `GET /` is
+404 while `/v1` answers fine — so a perfectly healthy server pinged `HTTP 404` forever. Root is still tried
+first; only an `openai-compat` endpoint whose root fails gets the dialect's own listing route as a second
+opinion. Root-answering servers and non-/v1 dialects (whisper.cpp, paddle) are untouched.
+
+### Fix 2 — a MISSING `message.content` with reasoning tells is reasoning-exhausted (`fabric/invoke.ts`)
+Some servers OMIT the `content` field entirely — instead of sending `''` — when every generated token went
+to reasoning (omlx does this for an LFM2.5/qwen3.5-class model at a small `max_tokens`). The missing-string
+check threw `bad-response` BEFORE the reasoning-exhausted classifier could see the tells
+(`reasoning_content` / `finish_reason: length`), flattening an actionable state into "garbled response".
+Same exhaustion, different wire shape; it now classifies the same. Missing content WITHOUT the tells stays
+`bad-response`.
+
+### Fix 3 — the generate probe counts reasoning-exhausted as generation ✓ (`api/http.ts`)
+The probe's REAL 1-token completion is exactly the budget a reasoning model spends thinking, so the Test
+button could never pass for one (the invoke.ts comment already documented qwen3.5-9b failing this way on
+LM Studio). But the probe exists to catch a server that pings 200 yet can't load its model — and a
+reasoning-exhausted failure means the model LOADED and GENERATED through the real invoke path. That is the
+probe's proof, so it reports `ok: true` with a note saying where the budget went. Real invocations run with
+a real token budget and keep the classified failure (raise the budget / pick an instruct model stays a real,
+surfaced state).
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit; each fix landed with a regression test that fails
+without it. Final totals: contracts **64** (unchanged), engine **432** (from 429: +1 `fabric/health.test`,
++1 `fabric/invoke-error.test`, +1 `api/http.test`), client **154** (untouched). Verified live against the
+running engine: `POST /fabric/test` with `probe:'generate'` on the omlx endpoint reports
+`ok: true · generation ✓` (previously `HTTP 404 · generation ✗ bad-response`), and `invokeLlm` over the
+STORED fabric + secret returns a clean completion from `dev-mac-omlx`.
+
+### Deferred (out of this slice, by scope)
+- **A managed `mlx` runtime spec** — `RUNTIME_SPECS` still has only llama.cpp/whisper.cpp, so a
+  `kind:'local', runtime:'mlx'` endpoint falls through (gracefully). omlx is its own server; the `http`
+  kind covers it. A spec entry is additive when engine-owned mlx lifecycle is wanted (CONTRIBUTING recipe).
+- **Probe wording in the setup surface** — the browser script already renders `generate.note`-less ✓ rows;
+  showing the note ("budget went to thinking") beside the ✓ is a surfaces touch, not this fix.
