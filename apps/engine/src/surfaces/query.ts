@@ -1,5 +1,6 @@
 import type { BlockQuery, QueryResult } from '@openinfo/contracts'
 import { relevantNow } from '../index/index.js'
+import { TeachStore, deriveHintCandidates } from '../teach/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 
 /** BlockQuery.top has a schema max of 50; the same cap bounds the superset we fetch for truncation. */
@@ -79,6 +80,19 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // `cap` takes top-K. Each row is a Draft — body + provenance/why-line — rendered client-side.
       const drafts = known ? store.listDrafts(workspaceId, sessionId) : []
       return cap([...drafts].reverse())
+    }
+    case 'teach': {
+      // SUGGESTED attribution-hint candidates (teach loop, P4D): the review half of the flywheel. The
+      // candidates are DERIVED read-only from the stored `teach-signals` documents (deriveHintCandidates
+      // over TeachStore.list) — the exact derivation GET /teach/candidates serves, so a teach block on a
+      // panel renders the same inspectable, citable candidates the review surface would. Workspace-scoped
+      // only (a candidate teaches the workspace it was corrected TO — no session dimension). NOT gated by
+      // `known`: like todos, the teach signals are DOCUMENTS keyed by workspace (global _meta.db, not a
+      // workspace DB), and TeachStore.list reads [] for a workspace with no recorded corrections — an
+      // unknown workspace / no reroutes yet reads as [], explainable-empty, never an error. The candidates
+      // are already sorted by support desc (deterministic); `cap` takes top-K. Never auto-applied — the
+      // loop SUGGESTS, the user reviews and PUTs the pattern (the accept write path is the action-verbs slice).
+      return cap(deriveHintCandidates(new TeachStore(store).list(workspaceId)))
     }
     case 'ledger':
       // Backing store not built yet (ledger P4): empty, explainable, not an error.

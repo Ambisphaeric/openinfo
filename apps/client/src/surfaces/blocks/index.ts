@@ -8,6 +8,7 @@ import { renderPinnedDoc } from './pinned-doc.js'
 import { renderAsk } from './ask.js'
 import { renderTodos } from './todos.js'
 import { renderDrafts } from './drafts.js'
+import { renderTeach } from './teach.js'
 import { renderCustom } from './custom.js'
 
 export { momentGlyph, entityGlyph } from './glyphs.js'
@@ -29,5 +30,6 @@ export const defaultBlockRegistry: BlockRegistry = {
   ask: renderAsk,
   todos: renderTodos,
   drafts: renderDrafts,
+  teach: renderTeach,
   custom: renderCustom,
 }

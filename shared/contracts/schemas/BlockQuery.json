@@ -40,6 +40,10 @@
         {
           "const": "drafts",
           "type": "string"
+        },
+        {
+          "const": "teach",
+          "type": "string"
         }
       ]
     },

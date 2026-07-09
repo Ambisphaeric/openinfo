@@ -42,6 +42,8 @@ export const defaultBlockFor = (type: string): Block => {
       return { block: 'todos', show: 'on-match', query: { source: 'todos', params: { session: 'current' }, top: 20 } }
     case 'drafts':
       return { block: 'drafts', show: 'on-match', query: { source: 'drafts', params: { session: 'current' }, top: 3 } }
+    case 'teach':
+      return { block: 'teach', show: 'on-match', query: { source: 'teach', params: {}, top: 5 } }
     case 'ask':
       return { block: 'ask' }
     case 'custom':

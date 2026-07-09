@@ -2767,6 +2767,69 @@ test('GET /teach/candidates derives SUGGESTED hint patterns per workspace (never
   }
 })
 
+test('e2e: a teach surface hydrates its teach block from the derived candidates over POST /query', async () => {
+  // The data path the HUD drives for the teach/hint-review block (#11). Teach candidates are DERIVED
+  // read-only over the stored teach-signals (there is no write route — corrections arrive as
+  // session.rerouted, recorded by TeachStore), so this seeds signals via the real store seam, authors a
+  // surface carrying a teach block whose query is `source: 'teach'`, then GET + POST /query hydrate
+  // exactly as the client does: the SUGGESTED candidate + its support + its traceable sessions round-trip.
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-teach-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // seed two reroutes corrected TO 'sales' agreeing on the same repo evidence ⇒ one candidate, support 2
+    const teach = new TeachStore(app.store)
+    teach.record({ id: 'teach-reroute-s1', kind: 'reroute', fromWorkspaceId: 'default', toWorkspaceId: 'sales', sessionId: 's1', evidence: [{ kind: 'repo', detail: '~/code/acme', weight: 0.6 }], correctedAt: '2026-07-08T10:00:00Z' })
+    teach.record({ id: 'teach-reroute-s2', kind: 'reroute', fromWorkspaceId: 'default', toWorkspaceId: 'sales', sessionId: 's2', evidence: [{ kind: 'repo', detail: '~/code/acme', weight: 0.9 }], correctedAt: '2026-07-08T11:00:00Z' })
+
+    // author a surface with a teach block bound to the teach source (saving a layout is not flagged)
+    const surface: Surface = {
+      id: 'surf-teach', name: 'Teach review', context: 'meeting', version: 1,
+      stack: [
+        { block: 'now' },
+        { block: 'teach', show: 'on-match', query: { source: 'teach', params: { workspace: 'sales' }, top: 5 } },
+      ],
+    }
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-teach`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface),
+    })).status, 200)
+
+    // hydrate exactly as the client will: GET the surface, POST /query for the teach block
+    const served = (await (await fetch(`${base}/layouts/surfaces/surf-teach`)).json()) as Surface
+    const teachBlock = served.stack.find((b) => b.block === 'teach')!
+    const result = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(teachBlock.query),
+    })).json()) as QueryResult
+    // THE PROOF: the teach block hydrates the DERIVED candidate — pattern + support + traceable sessions
+    assert.equal(result.source, 'teach')
+    const cands = result.items as HintCandidate[]
+    assert.equal(cands.length, 1)
+    assert.equal(cands[0]!.workspaceId, 'sales')
+    assert.equal(cands[0]!.pattern.field, 'repoPath')
+    assert.equal(cands[0]!.pattern.contains, '~/code/acme')
+    assert.equal(cands[0]!.supportCount, 2)
+    assert.deepEqual(cands[0]!.sampleSessionIds, ['s1', 's2']) // always traceable to its corrections
+
+    // the query NEVER applied the candidate: the workspace's hints document stays untouched (read-only loop)
+    assert.deepEqual(app.store.layouts.getLatest('workspace-hints', 'sales')?.body ?? null, null)
+
+    // an untaught workspace derives explainable-empty (items: [], not an error)
+    const empty = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'teach', params: { workspace: 'ws-untaught' }, top: 5 }),
+    })).json()) as QueryResult
+    assert.deepEqual(empty.items, [])
+    assert.equal(empty.truncated, false)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 // ---- P4-T3b: GET/PUT /hints — the APPLY-with-review half of the teach loop ----
 // /teach/candidates (above) SUGGESTS a pattern; these routes let the user review it and PUT it into the
 // workspace's WorkspaceHints document over the existing HintsDocuments store seam (no auto-apply, no

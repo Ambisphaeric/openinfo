@@ -1,0 +1,7 @@
+{ "id": "surf-teach", "name": "Teach review surface", "context": "meeting", "version": 1,
+  "stack": [
+    { "block": "now" },
+    { "block": "teach", "id": "blk-teach", "show": "on-match", "top": 5,
+      "query": { "source": "teach", "params": { "workspace": "default" }, "top": 5 },
+      "actions": [ { "id": "act-copy", "label": "Copy", "verb": "copy", "params": {} },
+                   { "id": "act-dismiss", "label": "Dismiss", "verb": "dismiss", "params": {} } ] } ] }

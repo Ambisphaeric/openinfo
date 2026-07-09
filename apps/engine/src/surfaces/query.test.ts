@@ -3,9 +3,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Draft, Moment, Pin, RelevantEntity, Session, TodoItem, TodoList } from '@openinfo/contracts'
+import type { Draft, Moment, Pin, RelevantEntity, Session, TeachSignal, TodoItem, TodoList } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { TodoDocuments } from '../act/index.js'
+import { TeachStore, type HintCandidate } from '../teach/index.js'
 import { compileQuery } from './query.js'
 
 const moment = (id: string, sessionId: string, at: string, refs: string[] = []): Moment => ({
@@ -197,6 +198,50 @@ test('compileQuery resolves the drafts source through the store (newest-first, t
   }
 })
 
+test('compileQuery derives the teach source through the store (SUGGESTED candidates, support-sorted, top caps + truncates)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-teach-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const teach = new TeachStore(store)
+    // three reroutes correct sessions INTO ws-q: two agree on the same window title (support 2), one names
+    // a repo (support 1); a fourth reroutes into a DIFFERENT workspace and must not leak into ws-q's view.
+    const signal = (id: string, session: string, toWs: string, kind: 'window' | 'repo', detail: string): TeachSignal => ({
+      id, kind: 'reroute', fromWorkspaceId: 'ws-other', toWorkspaceId: toWs, sessionId: session,
+      evidence: [{ kind, detail, weight: 0.7 }, { kind: 'manual', detail: 'user reroute', weight: 1 }],
+      correctedAt: '2026-07-07T14:40:00Z',
+    })
+    teach.record(signal('t1', 'ses-a', 'ws-q', 'window', 'Renewal — security review'))
+    teach.record(signal('t2', 'ses-b', 'ws-q', 'window', 'Renewal — security review')) // agrees ⇒ support 2
+    teach.record(signal('t3', 'ses-c', 'ws-q', 'repo', 'acme/infra'))
+    teach.record(signal('t4', 'ses-d', 'ws-elsewhere', 'window', 'not this workspace'))
+
+    // workspace-scoped: only ws-q's derived candidates, strongest support first (window support 2 leads)
+    const all = compileQuery(store, { source: 'teach', params: { workspace: 'ws-q' } })
+    assert.equal(all.source, 'teach')
+    const cands = all.items as HintCandidate[]
+    assert.deepEqual(cands.map((c) => c.pattern.contains), ['Renewal — security review', 'acme/infra'])
+    assert.equal(cands[0]!.supportCount, 2)
+    assert.equal(cands[0]!.pattern.field, 'windowTitle')
+    assert.deepEqual(cands[0]!.sampleSessionIds, ['ses-a', 'ses-b']) // traceable to its corrections
+    assert.equal(cands[1]!.pattern.field, 'repoPath')
+    assert.equal(all.truncated, false)
+
+    // top caps the derived rows and flags truncation (2 candidates exist for ws-q, 1 returned — the strongest)
+    const capped = compileQuery(store, { source: 'teach', params: { workspace: 'ws-q' }, top: 1 })
+    assert.deepEqual((capped.items as HintCandidate[]).map((c) => c.pattern.contains), ['Renewal — security review'])
+    assert.equal(capped.top, 1)
+    assert.equal(capped.truncated, true)
+
+    // a workspace with no recorded corrections derives [] (explainable-empty, not an error)
+    const none = compileQuery(store, { source: 'teach', params: { workspace: 'ws-untaught' } })
+    assert.deepEqual(none.items, [])
+    assert.equal(none.truncated, false)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('compileQuery returns [] (not an error) for the unbuilt ledger store and unknown workspaces', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-empty-'))
   const store = new WorkspaceRegistry(dir)
@@ -214,6 +259,7 @@ test('compileQuery returns [] (not an error) for the unbuilt ledger store and un
     assert.deepEqual(compileQuery(store, { source: 'pins', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'todos', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'drafts', params: { workspace: 'nowhere' } }).items, [])
+    assert.deepEqual(compileQuery(store, { source: 'teach', params: { workspace: 'nowhere' } }).items, [])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })
