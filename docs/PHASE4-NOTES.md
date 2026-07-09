@@ -1573,3 +1573,59 @@ reload and the chip clears; engine killed → the painted panel stays (stale, ne
   interact), not a patch.
 - The probe `sample`'s reasoning-preamble rendering (settings Test area) — inert and truncated, but a
   preamble-stripping/labelling pass would read better.
+
+## Slice: P4-T9 — STT interop seam (canonical transcript + per-flavor adapters)
+
+The `stt` slot had one wire-shape hard-coded and one broken pipeline. `invokeStt` read `json.text` inline
+for every flavor, a `local` mlx (omlx) STT endpoint threw `local runtime has no transcription path`
+(the mlx `RuntimeSpec` declares none — it is `chat`/`multiModel`, not whisper-style), and even when routed
+it never sent the served-model id omlx REQUIRES on `/v1/audio/transcriptions`. Adding a new engine meant a
+new branch at the call site. This slice makes the ENGINE own transcript normalization behind an adapter
+seam, so a new STT engine is an adapter + the CONTRIBUTING recipe, never a new invoke branch.
+
+### The canonical contract + adapters (`fabric/stt-adapters.ts`, new)
+- `TranscriptResult` — the ONE shape every flavor normalizes to: `text` ('' is valid silence, never an
+  error) + optional `language`, `durationSec`, `segments` (each `{text, startSec?, endSec?}` in canonical
+  SECONDS). Provenance (`endpoint`/`model`/`slot`) rides on `SttResult extends TranscriptResult`.
+- Per-flavor adapters (`STT_ADAPTERS`), each owning its request shape (path · whether the `model` form
+  field is sent · `response_format`) and a `normalize(body) → TranscriptResult | undefined` (undefined ⇒
+  the caller raises ONE honest `bad-response`; the adapter never throws or classifies):
+  - `openai` / `omlx` — `/v1/audio/transcriptions`, sends `model`, shares the OpenAI verbose_json
+    normalizer (`{text, language?, duration?, segments:[{start,end,text}]}`; a `duration:0.0` is dropped
+    as information-free). Distinct entries so a future omlx divergence touches only its record.
+  - `whisper-server` — whisper.cpp `/inference` (NOT `/v1`), sends NO `model` (it serves one via `-m`),
+    tolerates the plain `{text}` shape and converts its verbose `t0`/`t1` CENTISECONDS to canonical seconds.
+- `selectSttAdapter(endpoint)` — the ONE place flavor is chosen: http `openai-compat` → `openai`; local by
+  runtime (`mlx` → `omlx`, `whisper.cpp` → `whisper-server`); anything else ⇒ undefined (honest
+  "unsupported", falls through in fabric order).
+
+### Invoke rewired (`fabric/invoke.ts`)
+`postTranscription` is now adapter-driven (builds the multipart request from `adapter.request`, normalizes
+via `adapter.normalize`); `invokeStt` selects the adapter, resolves url + model + keyRef→bearer, and speaks
+only the canonical shape. `resolveLocal` returns `{http, spec}` (the transcribePath return is gone — the
+adapter owns the STT path). The local mlx path now sends the served model id + its bearer, fixing the
+broken pipeline. `fabric/index.ts` re-exports the contract + adapters.
+
+### Live verification (rig, omlx 0.4.5 on :8000, `api_d` bearer)
+Drove the built `invokeStt` end-to-end against the running omlx server with a real `say`-generated WAV
+("The quarterly report shipped on Thursday afternoon."). The omlx whisper model returned the OpenAI
+verbose_json body, normalized to `{text, language:'en', segments:[{startSec:0, endSec:2.48}]}` — the seam
+works end-to-end against a live engine. PARAKEET (`mlx-community_parakeet-tdt_ctc-110m` and every other
+parakeet variant) is REJECTED by omlx 0.4.5 for stt — `Model type … not supported for stt` — surfaced by
+the seam as a classified `model-load` failure, not swallowed. That is a server-side limitation of this
+omlx build (parakeet STT is not wired into its transcription backend), not an engine gap: the adapter is
+proven live via omlx-whisper and normalizes the identical response model parakeet will return once the
+server supports it.
+
+### Tests
+Engine 461 → 474. New `stt-adapters.test.ts` (12: per-flavor normalization incl. centisecond→second
+conversion, zero-duration drop, '' silence, missing-text→undefined; selection by api/runtime incl.
+unsupported paddle-serving/ollama). `stt.test.ts` gains the canonical-body assertion and the local-mlx
+proof (adopts a fake omlx, asserts `/v1/audio/transcriptions` + `Bearer` + the served-model form field —
+the previously-broken path). `pnpm -r build` green; contracts 62 / client 207 / engine 474 pass (one
+pre-existing timing-flaky route-detect test in `api/http.test.js` fails only under full parallel load,
+passes isolated and on re-run — untouched by this slice).
+
+### Out of scope (recorded, NOT built)
+Two-stream mic/system-audio separation, conversation-gated merging, diarization, tiered summaries,
+TTS/kokoro. This slice is the canonical transcript contract + adapters + the seam proven live only.

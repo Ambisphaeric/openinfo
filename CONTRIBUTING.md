@@ -89,7 +89,12 @@ shape, not files you can edit now. When P4 lands:
    discovery/spawn/readiness/kill/bounded-restart generically; the spec is all a new runtime needs.
 3. If the runtime speaks a NON-OpenAI-compat surface for its slot, wire it in `fabric/invoke.ts` (the
    `local` branch resolves the spawned url + spec, then speaks the right path — e.g. whisper.cpp's
-   `/inference` vs the http kind's `/v1/audio/transcriptions`).
+   `/inference` vs the http kind's `/v1/audio/transcriptions`). **For the `stt` slot this is now an
+   adapter, not a call-site branch:** add a flavor + adapter to `fabric/stt-adapters.ts` (its request
+   shape — path, whether the `model` field is sent, the `response_format` — and a `normalize` that maps
+   the response body to the canonical `TranscriptResult`), then map the endpoint's api/runtime to that
+   flavor in `selectSttAdapter`. `invokeStt` picks the adapter and speaks only the canonical shape, so a
+   new STT engine is an adapter entry + this recipe, never a new branch in the invoke loop.
 4. To make it downloadable at tier zero: add entries to the seeded `fabric/local-defaults.ts` catalog
    (slot, runtime, direct URL, filename, honest size) — `LocalModelStore` handles download/resume/state.
 5. Bench: `tools/bench` produces measured tok/s for **http** endpoints. For `local`, bench stays stubbed
