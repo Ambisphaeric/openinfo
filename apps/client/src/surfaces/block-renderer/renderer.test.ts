@@ -104,6 +104,27 @@ test('show/collapsed/top are honoured, and two different documents produce two d
   assert.notEqual(glassHtml, renderToHtml(renderSurface({ surface: hudSurface, now, results: [undefined, result('relevant-now', []), result('moments', [])] }, defaultBlockRegistry)))
 })
 
+test('a pinned-doc block renders when its pins query hydrates, and hides (on-match) when the store is empty', () => {
+  // The render half of the pins reconnect: `compileQuery('pins')` now returns real pins, so an on-match
+  // pinned-doc block that used to stay hidden (empty items) becomes visible once its query hydrates. The
+  // pinned-doc renderer surfaces the configured doc reference (`query.params.doc`) + an explainable
+  // why-line; consuming `result.items[].title` for a live excerpt is a follow-up renderer slice.
+  const surface: Surface = {
+    id: 's', name: 's', context: 'meeting', version: 1,
+    stack: [{ block: 'now' }, { block: 'pinned-doc', show: 'on-match', query: { source: 'pins', params: { doc: 'SOC 2 Type II report' } } }],
+  }
+  const soc2Pin = { id: 'pin-soc2', workspaceId: 'ws', uri: 'file:///soc2.pdf', title: 'SOC 2 Type II report', kind: 'pdf', ingest: { status: 'ingested' }, createdAt: '2026-07-07T14:00:00Z' }
+
+  // hydrated: a non-empty pins result makes the on-match block visible and names the pinned doc
+  const hydrated = renderToHtml(renderSurface({ surface, now: { live: true }, results: [undefined, result('pins', [soc2Pin])] }, defaultBlockRegistry))
+  assert.match(hydrated, /Pinned/)
+  assert.match(hydrated, /SOC 2 Type II report/)
+
+  // empty backing store: on-match + zero items hides the block — explainable-empty, never a broken card
+  const empty = renderToHtml(renderSurface({ surface, now: { live: true }, results: [undefined, result('pins', [])] }, defaultBlockRegistry))
+  assert.doesNotMatch(empty, /Pinned/)
+})
+
 test('an unknown/future block type degrades via the custom fallback instead of breaking the render', () => {
   const surface: Surface = {
     id: 's', name: 's', context: 'any', version: 1,
