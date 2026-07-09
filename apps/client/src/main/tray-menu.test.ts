@@ -60,6 +60,15 @@ test('rec indicator only shows for real audio; starting is a distinct honest sta
   assert.match(trayTooltip(state({ sessionLive: true, micStarting: true })), /starting/)
 })
 
+test('a dropped/failed capture start is surfaced VISIBLY and outranks the warming-up state (issue #41)', () => {
+  const fault = { sessionLive: true, micStarting: true, captureFault: 'capture renderer did not acknowledge start' }
+  assert.match(trayStatusLabel(state(fault)), /⚠ capture failed — capture renderer did not acknowledge start/)
+  assert.doesNotMatch(trayStatusLabel(state(fault)), /○ mic…/) // the fault wins over "warming up"
+  assert.match(trayTooltip(state(fault)), /capture failed/)
+  // No fault ⇒ the label is unchanged from before.
+  assert.equal(trayStatusLabel(state({ sessionLive: true })), '● session live')
+})
+
 test('rec indicator names the sources honestly: mic only vs mic + system vs system silent', () => {
   const cap = (over: Partial<TrayState>) => trayStatusLabel(state({ sessionLive: true, capturing: true, ...over }))
   // No system device (or not capturing) → mic only.

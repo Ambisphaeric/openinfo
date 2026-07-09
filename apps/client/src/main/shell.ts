@@ -23,6 +23,9 @@ import { readSavedPosition, savePosition } from './window-store.js'
 import { EngineLink } from '../engine-link/index.js'
 import { CaptureController, type CaptureState } from '../capture/capture-controller.js'
 import { CAPTURE_CHANNELS, type CaptureSourceKind, type CaptureStatus, type RawSegment } from '../capture/protocol.js'
+import { CaptureConsent } from './capture-consent.js'
+import { CaptureDispatcher, type DispatchChannel } from './capture-dispatcher.js'
+import { createClientLog, type ClientLog } from './client-log.js'
 import { FocusPoller, detectEnabledFrom, ROUTE_DETECT_FLAG } from '../capture/focus-poller.js'
 import type { FrontmostWindow } from '../capture/focus.js'
 
@@ -45,6 +48,13 @@ const CAPTURE_PRELOAD_JS = path.join(__dirname, '..', 'capture', 'capture-preloa
 const cfg: ShellConfig = resolveShellConfig(process.env, loadClientConfigFile())
 const session = new EngineSessionClient(cfg.engineUrl)
 const liveState = new SessionLiveState(cfg.workspace)
+// The boot guard (issue #41): capture only ever auto-starts on a live-session transition the USER
+// initiated this launch (Start Session), never on a leftover session seeded at boot. See capture-consent.ts.
+const captureConsent = new CaptureConsent()
+// The rotating client log file — the packaged app has no terminal, so capture lifecycle + failures went
+// to a lost stdout (issue #41). Assigned a real file logger in whenReady (needs app.getPath); until then
+// a console fallback so any early line is not lost. See client-log.ts.
+let clientLog: ClientLog = (message: string) => console.log(message)
 // True once the engine's LAN class is known — drives the honest "check Local Network permission?" hint
 // when a non-loopback engine is unreachable (a possibility, never a detection). See permission-help.ts.
 const lanEngine = isLanEngine(cfg.engineUrl)
@@ -85,6 +95,14 @@ let needsSetup: boolean | undefined
 let engineLink: EngineLink | undefined
 let micController: CaptureController | undefined
 let systemController: CaptureController | undefined
+// The renderer readiness + start-ack handshake for the two audio sources (issue #41). Gates every
+// control.start on the hidden renderer having loaded + acked, retrying/queueing instead of the old
+// fire-and-forget send that raced boot and was silently dropped. Screen never rides it (main-process).
+let captureDispatcher: CaptureDispatcher | undefined
+// A VISIBLE capture failure (dropped start / renderer gone) surfaced on the tray — see tray-menu.ts.
+let captureFault: string | undefined
+// True between a capture-renderer crash and its reload — so the reload re-arms capture for a live session.
+let captureRendererCrashed = false
 // The screen-capture controller ("what's on screen") + its cadence timer. Screen is captured in the MAIN
 // process (desktopCapturer, below) rather than the hidden audio renderer, but rides the same controller +
 // session lifecycle + EngineLink spool. Opt-IN (cfg.screenEnabled default OFF) — see config.ts.
@@ -143,6 +161,7 @@ const trayState = (): TrayState => ({
   capturing: micState === 'capturing',
   micStarting: micState === 'requesting' || micState === 'starting',
   micBlocked: micState === 'denied',
+  captureFault,
   systemCapturing: systemState === 'capturing',
   systemSilent,
   needsModelSetup: needsSetup,
@@ -195,13 +214,21 @@ const dispatch = (command: ShellCommand): void => {
     case 'toggle-visibility':
       return hudWindow?.isVisible() ? hideHud() : showHud()
     case 'start-session':
+      // The explicit consent gesture (issue #41): the user is turning capture ON this launch, so a
+      // live-session transition may now drive capture. A stale prior fault is cleared as we retry.
+      captureConsent.grant()
+      captureFault = undefined
+      clientLog('[shell] user started a session — capture consent granted for this launch')
       void session
         .startSession({ workspaceId: cfg.workspace, modeId: cfg.modeId, title: 'menu-bar session' })
-        .catch((err) => console.error('[shell] start session failed:', err))
+        .catch((err) => clientLog(`[shell] start session failed: ${String(err)}`))
       return
     case 'end-session': {
+      // The user is turning capture OFF — revoke consent so nothing auto-resumes it (and a leftover
+      // session, if any, will not silently re-capture).
+      captureConsent.revoke()
       const id = liveState.liveSessionId
-      if (id) void session.endSession(id).catch((err) => console.error('[shell] end session failed:', err))
+      if (id) void session.endSession(id).catch((err) => clientLog(`[shell] end session failed: ${String(err)}`))
       return
     }
     case 'open-setup':
@@ -361,9 +388,37 @@ const createCaptureWindow = (): void => {
       backgroundThrottling: false,
     },
   })
+  // Renderer observability (issue #41): this window is hidden, so a dead/never-loaded renderer used to
+  // be invisible — the exact silent-drop failure class. Surface load failure + renderer death, mark the
+  // dispatcher unloaded so no start is sent into the void, and recover by reloading the host.
+  captureWindow.webContents.on('did-fail-load', (_event, code, description) =>
+    onCaptureRendererLost(`page failed to load: ${code} ${description}`))
+  captureWindow.webContents.on('render-process-gone', (_event, details) =>
+    onCaptureRendererLost(`renderer gone: ${details.reason} (exitCode ${details.exitCode})`))
   void captureWindow.loadFile(CAPTURE_HTML)
   captureWindow.on('closed', () => (captureWindow = undefined))
   console.log('[shell] hidden capture window created — mic + system-audio renderer host')
+}
+
+/**
+ * The capture renderer died or failed to load. Surface it VISIBLY (tray + log), stop pretending the
+ * audio controllers are warming up, tell the dispatcher the renderer is gone (so starts re-queue rather
+ * than drop), and reload the host. On the reload's `capture:loaded` ping we re-arm capture if a session
+ * is live and the user consented — so a renderer crash mid-session self-heals instead of wedging.
+ */
+const onCaptureRendererLost = (reason: string): void => {
+  clientLog(`[shell] capture renderer lost — ${reason}`)
+  captureRendererCrashed = true
+  captureDispatcher?.markUnloaded(reason)
+  micController?.onStartFailed(reason)
+  systemController?.onStartFailed(reason)
+  if (liveState.live && captureConsent.canAutoStart) {
+    captureFault = 'capture renderer crashed — recovering'
+    refreshTray()
+  }
+  if (captureWindow && !captureWindow.isDestroyed()) {
+    captureWindow.webContents.reload() // re-runs the renderer → it re-pings capture:loaded
+  }
 }
 
 /**
@@ -495,32 +550,56 @@ const stopScreenLoop = (): void => {
  * drives both. The mic path is unchanged from the mic-only slice; system-audio rhymes with it and only
  * activates when a BlackHole-like device is present (else it reports no-device and stays a silent no-op).
  */
+/**
+ * A capture start could not be delivered (the dispatcher exhausted its retries — the renderer never
+ * acked). Surface it VISIBLY on the tray, log it to the client file, and reset the affected controller
+ * so it stops claiming a warming-up capture. This is the "no silent drop" guarantee (issue #41): the
+ * old path logged to a lost stdout and left the controller stuck in `starting`.
+ */
+const onCaptureFault = (source: CaptureSourceKind, reason: string): void => {
+  captureFault = reason
+  clientLog(`[shell] ${source} capture fault surfaced to tray: ${reason}`)
+  controllerFor(source)?.onStartFailed(reason)
+  refreshTray()
+}
+
 const setupCapture = (): void => {
   engineLink = new EngineLink({ baseUrl: cfg.engineUrl, spoolDir: path.join(app.getPath('userData'), 'capture-spool') })
   engineLink.startFlushLoop() // drain spooled chunks once the engine is reachable again (offline-safe)
   const link = engineLink
+  // The readiness/ack handshake (issue #41): every audio start flows through here, gated on the hidden
+  // renderer having pinged `capture:loaded` and acked the start — no more fire-and-forget send that
+  // could race the renderer's listener registration and vanish. A start unacked after retries becomes a
+  // VISIBLE tray fault + resets the controller (onCaptureFault) instead of a silent forever-`starting`.
+  const dispatcher = new CaptureDispatcher({
+    send: (channel: DispatchChannel, source: CaptureSourceKind) =>
+      captureWindow?.webContents.send(channel === 'start' ? CAPTURE_CHANNELS.start : CAPTURE_CHANNELS.stop, source),
+    onFault: onCaptureFault,
+    log: clientLog,
+  })
+  captureDispatcher = dispatcher
   micController = new CaptureController({
     source: 'mic',
     enabled: cfg.micEnabled,
     capture: (chunk) => link.capture(chunk),
     control: {
-      start: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.start, 'mic'),
-      stop: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.stop, 'mic'),
+      start: () => dispatcher.requestStart('mic'),
+      stop: () => dispatcher.requestStop('mic'),
     },
     requestPermission: sharedAudioPermission,
     onStateChange: (state) => {
       micState = state
       refreshTray()
     },
-    log: (message) => console.log(message),
+    log: clientLog,
   })
   systemController = new CaptureController({
     source: 'system-audio',
     enabled: cfg.systemAudioEnabled,
     capture: (chunk) => link.capture(chunk),
     control: {
-      start: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.start, 'system-audio'),
-      stop: () => captureWindow?.webContents.send(CAPTURE_CHANNELS.stop, 'system-audio'),
+      start: () => dispatcher.requestStart('system-audio'),
+      stop: () => dispatcher.requestStop('system-audio'),
     },
     requestPermission: sharedAudioPermission,
     onStateChange: (state) => {
@@ -532,7 +611,7 @@ const setupCapture = (): void => {
       systemSilent = silent
       refreshTray()
     },
-    log: (message) => console.log(message),
+    log: clientLog,
   })
   // Screen ("what's on screen") — grabbed in the MAIN process, so its control is the desktopCapturer
   // cadence loop above rather than an IPC send to the hidden renderer. Opt-IN (default OFF) and driven by
@@ -545,14 +624,27 @@ const setupCapture = (): void => {
     control: { start: startScreenLoop, stop: stopScreenLoop },
     requestPermission: requestScreenPermission,
     onStateChange: (state) => {
-      console.log(`[shell] screen capture state → ${state}`)
+      clientLog(`[shell] screen capture state → ${state}`)
       refreshTray()
     },
-    log: (message) => console.log(message),
+    log: clientLog,
   })
   ipcMain.on(CAPTURE_CHANNELS.segment, (_event, segment: RawSegment) => void controllerFor(segment.source)?.onSegment(segment))
   ipcMain.on(CAPTURE_CHANNELS.stopped, (_event, source: CaptureSourceKind) => void controllerFor(source)?.onCaptureStopped())
   ipcMain.on(CAPTURE_CHANNELS.status, (_event, status: CaptureStatus) => controllerFor(status.source)?.onStatus(status))
+  // The readiness handshake IPC (issue #41): the renderer pings `loaded` on module load and acks each
+  // start. `loaded` flushes any queued starts; a crash-recovery reload re-arms capture for a live session.
+  ipcMain.on(CAPTURE_CHANNELS.loaded, () => {
+    dispatcher.markLoaded()
+    if (captureRendererCrashed) {
+      captureRendererCrashed = false
+      captureFault = undefined
+      clientLog('[shell] capture renderer reloaded — re-arming capture if a consented session is live')
+      if (liveState.live && captureConsent.canAutoStart) applyCaptureLifecycle(true)
+      refreshTray()
+    }
+  })
+  ipcMain.on(CAPTURE_CHANNELS.startAck, (_event, source: CaptureSourceKind) => dispatcher.ackStart(source))
   console.log(
     `[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} · screen ${cfg.screenEnabled ? `enabled (every ${cfg.screenIntervalMs}ms)` : 'disabled by config (opt-in)'} (all follow the session lifecycle)`,
   )
@@ -566,6 +658,14 @@ const setupCapture = (): void => {
  */
 const applyCaptureLifecycle = (live: boolean): void => {
   if (live) {
+    // BOOT GUARD (issue #41): a live-session transition only drives capture when the user explicitly
+    // started a session THIS launch. A leftover session seeded at boot (a force-killed prior client, or
+    // a quit that could not end it in time) reads consent=false here, so the app opens STOPPED and the
+    // stale session is never silently resumed — the tray still shows it live; the user starts capture.
+    if (!captureConsent.canAutoStart) {
+      clientLog('[shell] live session present but capture consent not granted this launch — NOT auto-starting capture (start a session to capture)')
+      return
+    }
     const sessionId = liveState.liveSessionId
     if (sessionId) {
       const context = { sessionId, workspaceId: cfg.workspace }
@@ -835,6 +935,10 @@ app.on('second-instance', () => showHud())
 app.whenReady().then(async () => {
   if (!gotLock) return
   app.dock?.hide() // menu-bar-only agent (no dock icon), like a Glass-style companion
+  // Give the shell + capture lifecycle a durable log now that userData is resolvable (issue #41). The
+  // packaged .app has no terminal; without this the whole capture-failure class is invisible.
+  clientLog = createClientLog({ file: path.join(app.getPath('userData'), 'logs', 'client.log') })
+  clientLog(`[shell] launch — engine ${cfg.engineUrl}, workspace ${cfg.workspace}, capture opens STOPPED until you start a session`)
   // Grant only the media (mic) permission at the Chromium layer for our own windows; deny everything
   // else. The OS-level (TCC) gate is separate — requestMicPermission handles that before capture.
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(permission === 'media'))
@@ -866,11 +970,33 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   /* keep the app alive as a menu-bar agent even with the HUD hidden/closed */
 })
-app.on('before-quit', () => {
+// Guards the one-shot async quit path below so preventDefault → endSession → quit does not loop.
+let quitFinalizing = false
+app.on('before-quit', (event) => {
   micController?.shutdown() // stop all capture cleanly if quitting mid-capture
   systemController?.shutdown()
   screenController?.shutdown() // clears the desktopCapturer cadence loop
   focusPoller?.stop() // stop watching the foreground window
+  captureConsent.revoke() // never let a quit be read as consent to auto-resume next launch
+  // END THE SESSION ON QUIT (issue #41): a session must not outlive the client and auto-capture on the
+  // next boot. Best-effort + BOUNDED so quit never hangs — we hold the quit briefly for the end POST to
+  // land, then finalize regardless. The boot guard above is the deterministic backstop if this never
+  // runs (a force-kill) — either way the next launch opens STOPPED.
+  const id = liveState.liveSessionId
+  if (id && !quitFinalizing) {
+    quitFinalizing = true
+    event.preventDefault()
+    clientLog(`[shell] quitting — ending live session ${id} so it does not auto-resume next launch`)
+    const finalize = (): void => {
+      spawnedEngine?.kill() // shut down ONLY the engine we spawned; an adopted engine is left running
+      app.quit()
+    }
+    void Promise.race([
+      session.endSession(id).catch((err) => clientLog(`[shell] end session on quit failed: ${String(err)}`)),
+      new Promise((resolve) => setTimeout(resolve, 1500)),
+    ]).finally(finalize)
+    return
+  }
   spawnedEngine?.kill() // shut down ONLY the engine we spawned; an adopted engine is left running
 })
 app.on('will-quit', () => globalShortcut.unregisterAll())

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>openinfo — capture e2e (sabotaged renderer)</title>
+    <!--
+      A SABOTAGED capture renderer for the capture-lifecycle e2e (issue #41). It reproduces the exact
+      original bug: the module LOADS (so it pings `capture:loaded`) but never registers an
+      `onStart` listener, so every `capture:start` the main process sends is silently dropped and NO
+      start-ack ever comes back. The driven test asserts the dispatcher's retry + timeout surfaces a
+      VISIBLE fault instead of wedging forever in `starting`.
+    -->
+    <script>
+      const ping = () => {
+        if (window.openinfoCapture) window.openinfoCapture.sendLoaded()
+      }
+      // The preload exposes the bridge before page scripts run, but guard for readiness just in case.
+      if (window.openinfoCapture) ping()
+      else window.addEventListener('DOMContentLoaded', ping)
+    </script>
+  </head>
+  <body></body>
+</html>

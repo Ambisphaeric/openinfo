@@ -56,6 +56,16 @@ export interface CaptureControllerDeps {
    */
   onSilence?: (silent: boolean) => void
   log?: (message: string) => void
+  /**
+   * Un-wedge guard (issue #41): how long to wait for the renderer's `stopped` ack after a stop before
+   * force-clearing `stopping` ourselves. Without this a renderer that never received the stop (it was
+   * not listening / had died) leaves `stopping` true forever, and every later start is swallowed into
+   * `pendingStart` — a permanent wedge. Default 8000ms; tests drive it via the timer seam below.
+   */
+  stopAckTimeoutMs?: number
+  /** Timer seam so the stop-ack timeout is asserted headless. Defaults to setTimeout/clearTimeout (unref'd). */
+  setTimer?: (fn: () => void, ms: number) => unknown
+  clearTimer?: (handle: unknown) => void
 }
 
 export class CaptureController {
@@ -70,8 +80,23 @@ export class CaptureController {
   private silentSignal: boolean | undefined
   /** Once real audio is heard in a run, we never revert to "silent" for that run. */
   private heardAudio = false
+  /** The armed stop-ack timeout while `stopping` (undefined otherwise) — the un-wedge guard's handle. */
+  private stopTimer: unknown
+  private readonly stopAckTimeoutMs: number
+  private readonly setTimer: (fn: () => void, ms: number) => unknown
+  private readonly clearTimer: (handle: unknown) => void
 
-  constructor(private readonly deps: CaptureControllerDeps) {}
+  constructor(private readonly deps: CaptureControllerDeps) {
+    this.stopAckTimeoutMs = deps.stopAckTimeoutMs ?? 8000
+    this.setTimer =
+      deps.setTimer ??
+      ((fn, ms) => {
+        const t = setTimeout(fn, ms)
+        ;(t as { unref?: () => void }).unref?.() // never keep the process alive for a capture timer
+        return t
+      })
+    this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
+  }
 
   get currentState(): CaptureState {
     return this.state
@@ -100,6 +125,9 @@ export class CaptureController {
     if ((this.state === 'capturing' || this.state === 'starting') && this.context) {
       this.stopping = true
       this.deps.control.stop() // renderer emits its last segment, then `stopped` → onCaptureStopped
+      // Arm the un-wedge guard: if `stopped` never comes back (the renderer was never listening / died),
+      // force-clear `stopping` and drain any queued start rather than wedging on a lost ack (issue #41).
+      this.armStopTimeout()
       return
     }
     // Not capturing (idle / unavailable / denied / error): a session end just clears any such state.
@@ -137,7 +165,27 @@ export class CaptureController {
 
   /** The renderer confirmed capture fully stopped — clear the run and honor any queued start. */
   async onCaptureStopped(): Promise<void> {
+    await this.concludeStop()
+  }
+
+  /**
+   * A start could NOT be delivered to the renderer (the dispatcher exhausted its retries — issue #41).
+   * Rather than sit in `starting`/`requesting` forever, drop back to idle so the tray stops claiming a
+   * warming-up capture; the shell surfaces the visible fault. The session/text path is untouched.
+   */
+  onStartFailed(reason: string): void {
+    this.deps.log?.(`[${this.deps.source}] capture start failed: ${reason} — resetting to idle`)
+    this.pendingStart = undefined
     this.reset()
+  }
+
+  /**
+   * Finish a stop: clear the un-wedge timer, reset the run, and drain any start queued while stopping.
+   * Shared by the renderer's `stopped` ack (onCaptureStopped) and the timeout un-wedge, so both paths
+   * converge identically — a queued start ALWAYS eventually runs, and `stopping` ALWAYS clears.
+   */
+  private async concludeStop(): Promise<void> {
+    this.reset() // clears context/stopping/state and the stop timer
     if (this.pendingStart) {
       const next = this.pendingStart
       this.pendingStart = undefined
@@ -145,8 +193,32 @@ export class CaptureController {
     }
   }
 
+  private armStopTimeout(): void {
+    this.clearStopTimer()
+    this.stopTimer = this.setTimer(() => {
+      this.stopTimer = undefined
+      if (!this.stopping) return // the real ack already concluded the stop
+      this.deps.log?.(
+        `[${this.deps.source}] renderer never acknowledged stop in ${this.stopAckTimeoutMs}ms — force-clearing (un-wedge)`,
+      )
+      void this.concludeStop()
+    }, this.stopAckTimeoutMs)
+  }
+
+  private clearStopTimer(): void {
+    if (this.stopTimer !== undefined) {
+      this.clearTimer(this.stopTimer)
+      this.stopTimer = undefined
+    }
+  }
+
   /** A lifecycle/permission/device signal from the renderer (getUserMedia failed, no device, etc.). */
   onStatus(status: CaptureStatus): void {
+    // Any terminal-ish renderer signal ends the run, so the un-wedge timer (if a stop was in flight) is
+    // no longer needed — clear it rather than let it fire concludeStop on an already-reset controller.
+    if (status.state === 'permission-denied' || status.state === 'no-device' || status.state === 'error') {
+      this.clearStopTimer()
+    }
     if (status.state === 'permission-denied') {
       this.context = undefined
       this.stopping = false
@@ -223,6 +295,7 @@ export class CaptureController {
   }
 
   private reset(): void {
+    this.clearStopTimer()
     this.context = undefined
     this.sequence = 0
     this.stopping = false
