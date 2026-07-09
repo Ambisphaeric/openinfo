@@ -16,7 +16,7 @@ contract** so features degrade predictably instead of anecdotally:
 |---|---|---|
 | **T0** | qwen3-4b, qwen3-30b-a3b @ low ctx, phi-4-mini | distill merge, moments, follow-up draft — the core loop. Everything here is deliberately **high-compression / low-token**: ≤700 tok/pass budgets, tight schemas |
 | **T1** | qwen3-8b, llama-3.2-8b | + entity extraction at usable precision, relevant-now, register interpolation with visible effect |
-| **T2** | qwen3-30b-a3b full, 14–32B dense | + register *detection* (drift), canon merging, cross-workspace recall quality "up tenfold" — breadth of clarity is a tier property, not a promise |
+| **T2** | qwen3-30b-a3b full, 14–32B dense | + register *detection* (drift), canon merging, markedly higher cross-workspace recall quality — breadth of clarity is a tier property, not a promise |
 | **T3** | hosted/frontier (optional, flagged) | + long-horizon synthesis, org-pack authoring assistance |
 
 **Amendments:** (a) every feature declares its minimum tier in its flag document; (b) prompt templates carry a
@@ -30,8 +30,8 @@ The five shipped templates skew maker/meeting. Sales, support, exec, and PM user
 breadth: the plan's openness only helps people who can imagine a configuration.
 **Amendments:** (a) at least one shipped template is non-engineering (e.g. `sales-floor`: pre-call brief +
 CRM-ish pinned canon + high-charm register); (b) **taste packs** — a shareable folder of documents
-(`registers/ + surfaces/ + modes/ + flags.yaml`) importable in one action. "We can't architect in taste, but
-users can" → users *share* taste as config; the org curates a gallery of packs the way it curates dotfiles.
+(`registers/ + surfaces/ + modes/ + flags.yaml`) importable in one action. Taste can't be architected centrally, but
+users can share it → users *share* taste as config; the org curates a gallery of packs the way it curates dotfiles.
 
 ## 3. Org knowledge vs personal capture → the pack is the sharing unit, never the database
 

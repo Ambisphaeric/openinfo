@@ -15,3 +15,9 @@ spool/
 
 # engine-side secret store (chmod-600 JSON, keyRef values — never for git)
 secrets/
+
+# planning material stays on disk only; committed docs describe the system
+docs/local/
+docs/NEXT.md
+docs/RETRO.md
+docs/research/

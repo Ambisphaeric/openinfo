@@ -1374,7 +1374,7 @@ moment appearing live — and where it breaks, the honest error shows with the f
 
 ### Decision: the loop lives on `/setup` (engine-served, browser), NOT the Electron client
 The slice-a design note (ARCHITECTURE §8, principle 5) tentatively homed this in `apps/client/`. **Revised
-here (owner-agreed):** it is a card on the engine-served `/setup` page instead. Why: (1) the browser owns
+here:** it is a card on the engine-served `/setup` page instead. Why: (1) the browser owns
 the mic-permission UX (`getUserMedia`) — the simplest possible TCC story, no Electron entitlement dance;
 (2) it works for the user's **remote-engine** workflow (any browser pointed at the engine, incl. a
 machine not running the client at all — the §6 "engine speaks HTTP" property); (3) it composes only

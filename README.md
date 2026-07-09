@@ -24,7 +24,7 @@ emits summaries, typed moments (commitment, question, decision, artifact), and a
 by recency × frequency; sessions steer voice; the HUD renders entirely from a surface document; ending
 a session prepares a follow-up draft (prepared, never sent); and the router attributes sessions to a
 workspace from focus signals. Every feature ships behind a flag, **off by default**. The workflow
-substrate and screen/OCR are the work in flight — see `docs/NEXT.md` for the live queue.
+substrate and screen/OCR are the work in flight.
 
 ```
 CLIENT (thin)  ──HTTP + WS──▶  ENGINE (daemon)          localhost by default,
@@ -203,12 +203,11 @@ version (it keeps every prior one). Sharing your setup is sending a file.
 - **`CODE_MAP.md`** — the *where*: the tree, dependency rules, and where unbuilt features will land.
 - **`CONTRIBUTING.md`** — the *how*: the tier system above.
 - **`docs/PHASE*-NOTES.md`** — the decision log: every decision and deviation as each slice landed.
-- **`docs/NEXT.md`** — the live session queue: what is in flight and what is next.
 - **`design/renderings/`** — the versioned HTML mockups; the design source of truth for surfaces.
 
 ---
 
-## Not here yet (designed, not built — see `IMPLEMENTATION.md` and `docs/NEXT.md`)
+## Not here yet (designed, not built — see `IMPLEMENTATION.md`)
 
 - **Workflow substrate** (P4, in flight) — user-composed processing chains as documents; today the
   distill→index→act order is fixed wiring.
