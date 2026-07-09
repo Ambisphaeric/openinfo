@@ -62,6 +62,13 @@ export interface TrayState {
    * is INDEPENDENT of a session (focus flows outside sessions — it is what starts them). Nothing when off.
    */
   watchingContext?: boolean
+  /**
+   * The engine version handshake line the shell captured at startup ("engine v0.0.1 · adopted at :8787",
+   * "· spawned (bundled)", or a skew note when the adopted engine's version ≠ this app's). Shown as a
+   * disabled info item so the user can SEE which engine they are on. Undefined when unreachable (the
+   * status line already leads with that) or before the handshake resolves. See engine-supervisor.ts.
+   */
+  engineInfoLine?: string | undefined
 }
 
 export interface TrayMenuItem {
@@ -146,6 +153,13 @@ export const setupItemLabel = (needsModelSetup: boolean | undefined): string =>
 export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => {
   const items: TrayMenuItem[] = [
     { id: 'status', type: 'header', label: trayStatusLabel(state), enabled: false },
+  ]
+  // The engine version/disposition line, right under the status header — a disabled, at-a-glance
+  // "which engine am I on?" affordance (skew made plain when the adopted engine differs from this app).
+  if (state.engineInfoLine) {
+    items.push({ id: 'engine-info', type: 'header', label: state.engineInfoLine, enabled: false })
+  }
+  items.push(
     { id: 'sep-1', type: 'separator' },
     {
       id: 'toggle-window',
@@ -161,7 +175,7 @@ export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => {
       command: state.sessionLive ? 'end-session' : 'start-session',
       enabled: state.connected,
     },
-  ]
+  )
 
   // Permission fix-its — shown ONLY in the state they fix, each opening the exact Settings pane. Denial
   // must be actionable (an unsigned dev app can't re-fire a denied TCC prompt): the user re-grants in

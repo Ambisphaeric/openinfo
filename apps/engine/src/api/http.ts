@@ -19,7 +19,13 @@ import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
+import { readEngineVersion, readEngineBuild } from './version.js'
 import { EventSocketHub } from './ws.js'
+
+// Read ONCE at module load ("at startup") — the engine's own version + an optional build id, echoed on
+// every /health so the client's version handshake needs no extra route. Static for the process lifetime.
+const ENGINE_VERSION = readEngineVersion()
+const ENGINE_BUILD = readEngineBuild()
 
 export interface EngineApp {
   server: ReturnType<typeof createServer>
@@ -305,7 +311,14 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://localhost')
   if (req.method === 'GET' && url.pathname === '/health') {
-    return send(res, 200, { ok: true, phase: 1, uptimeMs: process.uptime() * 1000, checkedAt: new Date().toISOString() })
+    return send(res, 200, {
+      ok: true,
+      phase: 1,
+      uptimeMs: process.uptime() * 1000,
+      checkedAt: new Date().toISOString(),
+      ...(ENGINE_VERSION !== undefined ? { version: ENGINE_VERSION } : {}),
+      ...(ENGINE_BUILD !== undefined ? { build: ENGINE_BUILD } : {}),
+    })
   }
   if (req.method === 'GET' && url.pathname === '/contracts') return send(res, 200, Object.keys(AllSchemas))
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)

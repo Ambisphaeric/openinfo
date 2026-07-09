@@ -25,6 +25,17 @@ test('session toggle is disabled until the engine state is known', () => {
   assert.equal(item(buildTrayMenu(state({ connected: true })), 'toggle-session')?.enabled, true)
 })
 
+test('the engine version handshake line renders as a disabled info item when present', () => {
+  const line = 'engine v0.0.1 · adopted at :8787'
+  const info = item(buildTrayMenu(state({ engineInfoLine: line })), 'engine-info')
+  assert.equal(info?.label, line)
+  assert.equal(info?.enabled, false)
+})
+
+test('no engine-info item when the handshake line is absent (e.g. unreachable / not yet resolved)', () => {
+  assert.equal(item(buildTrayMenu(state({})), 'engine-info'), undefined)
+})
+
 test('the status header + tooltip reflect live-session state', () => {
   assert.equal(trayStatusLabel(state({ sessionLive: true })), '● session live')
   assert.equal(trayStatusLabel(state({ sessionLive: false })), '○ no session')

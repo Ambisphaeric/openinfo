@@ -10,6 +10,31 @@ import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
 
+test('GET /health carries the engine version (the version handshake), additive on the payload', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const health = (await (await fetch(`http://127.0.0.1:${address.port}/health`)).json()) as {
+      ok: boolean
+      phase: number
+      uptimeMs: number
+      checkedAt: string
+      version?: string
+    }
+    assert.equal(health.ok, true) // the original contract is intact
+    assert.equal(typeof health.checkedAt, 'string')
+    // The engine reads its OWN package version at startup; the bundle stages that package.json beside dist,
+    // so it resolves in both layouts. In-repo tests run against apps/engine/package.json ⇒ a semver string.
+    assert.match(health.version ?? '', /^\d+\.\d+\.\d+/)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('capture route validates and publishes chunks', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })

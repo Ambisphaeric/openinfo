@@ -11,6 +11,11 @@ export const Health = Type.Object(
     phase: Type.Integer({ minimum: 0, maximum: 7 }),
     uptimeMs: Type.Number({ minimum: 0 }),
     checkedAt: IsoTime,
+    // Additive version handshake: the engine's own package version, read at startup, so the client can
+    // surface WHICH engine it adopted/spawned and flag skew against its own app version. Optional — an
+    // older engine that predates this field simply omits it (itself a signal the client renders honestly).
+    version: Type.Optional(Type.String({ description: "the engine's package version, read at startup from its own package.json" })),
+    build: Type.Optional(Type.String({ description: 'an optional build id (e.g. a git short sha) when the build stamped one via OPENINFO_BUILD' })),
   },
   { $id: 'Health', additionalProperties: false },
 )

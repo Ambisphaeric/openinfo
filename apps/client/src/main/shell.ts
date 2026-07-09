@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, desktopCapturer, utilityProcess, type UtilityProcess, type MenuItemConstructorOptions } from 'electron'
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
-import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl } from './engine-supervisor.js'
+import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
 import { hudWindowSpec } from './window-options.js'
 import { buildTrayMenu, trayTooltip, type TrayState } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
@@ -57,6 +57,11 @@ let tray: Tray | undefined
 // engine). Undefined when we adopted an already-running engine — so we NEVER kill an engine we didn't
 // start; only this child is shut down, on quit. See engine-supervisor.ts + ensureEngine.
 let spawnedEngine: UtilityProcess | undefined
+// The engine version handshake captured at startup: which engine we ended up on (adopt/spawn/unreachable)
+// and its reported version/build. Feeds the tray's "engine v0.0.1 · adopted at :8787" info line + skew
+// note. Undefined until ensureEngine resolves. See engine-supervisor.ts (pure, tested headless).
+let engineDisposition: EngineDisposition | undefined
+let engineHealth: EngineHealth = {}
 let connected = false
 // Has the shell attempted the engine yet? Distinguishes first-boot "connecting…" from a genuine
 // "engine unreachable" leading state (set true once the first seed attempt resolves, success or fail).
@@ -110,6 +115,15 @@ const trayState = (): TrayState => ({
   needsModelSetup: needsSetup,
   watchingContext: focusActive,
   accessibilityHint: contextHealth.needsAccessibility,
+  engineInfoLine: engineDisposition
+    ? engineStatusLine({
+        disposition: engineDisposition,
+        engineUrl: cfg.engineUrl,
+        appVersion: app.getVersion(),
+        ...(engineHealth.version !== undefined ? { engineVersion: engineHealth.version } : {}),
+        ...(engineHealth.build !== undefined ? { build: engineHealth.build } : {}),
+      })
+    : undefined,
 })
 
 const refreshTray = (): void => {
@@ -645,8 +659,16 @@ const ensureEngine = async (): Promise<void> => {
   const entry = bundledEngineEntry(process.resourcesPath)
   const bundledEnginePresent = existsSync(entry)
   const disposition = decideEngineDisposition({ reachable, bundledEnginePresent })
+  engineDisposition = disposition
   console.log(`[shell] engine ${cfg.engineUrl}: reachable=${reachable} bundled=${bundledEnginePresent} → ${disposition}`)
-  if (disposition !== 'spawn') return // adopt (already answering) or unreachable (tray leads) — spawn nothing
+  if (disposition === 'adopt') {
+    // Adopted an already-running engine (the dev-rig case) — read its version so the tray can surface it
+    // and flag skew (a stale engine that predates our fixes reads as "older than this app"). Best-effort.
+    engineHealth = await fetchEngineHealth(cfg.engineUrl)
+    console.log(`[shell] adopted engine version: ${engineHealth.version ?? 'unknown (predates the /health version field)'}`)
+    return
+  }
+  if (disposition !== 'spawn') return // unreachable — the tray leads with the unreachable state; spawn nothing
   const port = portFromEngineUrl(cfg.engineUrl)
   try {
     // Electron's utilityProcess runs the engine in a Node child on Electron's OWN bundled Node runtime — so
@@ -669,6 +691,7 @@ const ensureEngine = async (): Promise<void> => {
     console.log(`[shell] spawned bundled engine (pid ${child.pid}) on :${port} — waiting for health…`)
     const up = await waitForEngine(cfg.engineUrl)
     console.log(up ? '[shell] bundled engine is serving' : '[shell] bundled engine did not answer in time — tray shows unreachable')
+    if (up) engineHealth = await fetchEngineHealth(cfg.engineUrl) // the bundled engine reports its own version
   } catch (err) {
     console.error('[shell] failed to spawn bundled engine:', err) // leave the unreachable state as the fallback
   }
