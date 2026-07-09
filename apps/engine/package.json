@@ -1,6 +1,6 @@
 {
   "name": "@openinfo/engine",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "scripts": {
     "build": "tsc -p .",
