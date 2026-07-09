@@ -42,6 +42,10 @@
       "type": "string"
     },
     {
+      "const": "distillates",
+      "type": "string"
+    },
+    {
       "const": "custom",
       "type": "string"
     }

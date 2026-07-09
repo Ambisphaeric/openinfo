@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Moment, Pin, PinChunk, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Moment, Pin, PinChunk, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
@@ -831,6 +831,69 @@ test('e2e: a drafts surface hydrates its drafts block from the store over POST /
     await app.close()
     await rm(dir, { recursive: true, force: true })
     await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('e2e: a distillates surface hydrates its distillate-stream block from the store over POST /query', async () => {
+  // The data path the HUD drives for the transcript/distillate stream block (#12). Distillates are the
+  // persisted merge-window summaries (the queryable substance of the stream — raw pre-distill transcripts
+  // are transient, rewritten in-flight with no persistence path), so this seeds them over the store seam
+  // (saveDistillate — the distiller's own write path, no POST /distillates route), authors a surface
+  // carrying a distillates block whose query is `source: 'distillates'`, then GET + POST /query hydrate
+  // exactly as the client does: the window text + timestamp + provenance round-trip, NEWEST-first.
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-distillates-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // seed two distilled windows for a session (the distiller's persistence path)
+    const distillate = (id: string, createdAt: string, text: string): Distillate => ({
+      id, sessionId: 'ses-d', workspaceId: 'ws-d', windowStart: createdAt, windowEnd: createdAt,
+      sourceChunks: [`c-${id}`], text,
+      voice: { scope: 'session', dials: { tone: 3, warmth: 4, wit: 2, charm: 2, specificity: 9, brevity: 8 } },
+      provenance: { slot: 'llm', endpoint: 'llm.fast' }, schemaVersion: 1, createdAt,
+    })
+    app.store.saveDistillate(distillate('dst-1', '2026-07-07T14:00:00Z', 'discussed the renewal timeline'))
+    app.store.saveDistillate(distillate('dst-2', '2026-07-07T14:30:00Z', 'agreed to ship Thursday'))
+
+    // author a surface with a distillates block bound to the distillates source (saving a layout is not flagged)
+    const surface: Surface = {
+      id: 'surf-distillates', name: 'Distillate stream', context: 'meeting', version: 1,
+      stack: [
+        { block: 'now' },
+        { block: 'distillates', show: 'on-match', query: { source: 'distillates', params: { workspace: 'ws-d' }, top: 20 } },
+      ],
+    }
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-distillates`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface),
+    })).status, 200)
+
+    // hydrate exactly as the client will: GET the surface, POST /query for the distillates block
+    const served = (await (await fetch(`${base}/layouts/surfaces/surf-distillates`)).json()) as Surface
+    const streamBlock = served.stack.find((b) => b.block === 'distillates')!
+    const result = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(streamBlock.query),
+    })).json()) as QueryResult
+    // THE PROOF: the block hydrates the stored windows, NEWEST-first — text + timestamp round-trip
+    assert.equal(result.source, 'distillates')
+    const items = result.items as Distillate[]
+    assert.deepEqual(items.map((d) => d.id), ['dst-2', 'dst-1']) // newest window leads the stream
+    assert.equal(items[0]!.text, 'agreed to ship Thursday')
+    assert.equal(items[0]!.windowEnd, '2026-07-07T14:30:00Z') // the timestamp the renderer shows
+
+    // an empty backing store renders explainable-empty (items: [], not an error) — a distillate-less workspace
+    const empty = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'distillates', params: { workspace: 'ws-none' }, top: 20 }),
+    })).json()) as QueryResult
+    assert.deepEqual(empty.items, [])
+    assert.equal(empty.truncated, false)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
   }
 })
 

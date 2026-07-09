@@ -1,0 +1,6 @@
+{ "id": "surf-distillates", "name": "Distillate stream surface", "context": "meeting", "version": 1,
+  "stack": [
+    { "block": "now" },
+    { "block": "distillates", "id": "blk-distillates", "top": 20,
+      "query": { "source": "distillates", "params": { "session": "current" }, "top": 20 },
+      "actions": [ { "id": "act-copy", "label": "Copy", "verb": "copy", "params": {} } ] } ] }

@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Draft, Moment, Pin, RelevantEntity, Session, TeachSignal, TodoItem, TodoList } from '@openinfo/contracts'
+import type { Distillate, Draft, Moment, Pin, RelevantEntity, Session, TeachSignal, TodoItem, TodoList } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { TodoDocuments } from '../act/index.js'
 import { TeachStore, type HintCandidate } from '../teach/index.js'
@@ -198,6 +198,47 @@ test('compileQuery resolves the drafts source through the store (newest-first, t
   }
 })
 
+test('compileQuery resolves the distillates source through the store (newest-first, top caps + truncates, session-scoped)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-distillates-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const distillate = (id: string, sessionId: string, createdAt: string): Distillate => ({
+      id, sessionId, workspaceId: 'ws-q', windowStart: createdAt, windowEnd: createdAt,
+      sourceChunks: [`c-${id}`], text: `window ${id}`,
+      voice: { scope: 'session', dials: { tone: 3, warmth: 4, wit: 2, charm: 2, specificity: 9, brevity: 8 } },
+      provenance: { slot: 'llm', endpoint: 'llm.fast' }, schemaVersion: 1, createdAt,
+    })
+    store.saveDistillate(distillate('dst-1', 'ses-a', '2026-07-07T14:00:00Z'))
+    store.saveDistillate(distillate('dst-2', 'ses-a', '2026-07-07T14:30:00Z'))
+    store.saveDistillate(distillate('dst-3', 'ses-b', '2026-07-07T14:45:00Z'))
+
+    // distillates hydrate from the store, NEWEST-first (listDistillates is oldest-first; the arm reverses)
+    const all = compileQuery(store, { source: 'distillates', params: { workspace: 'ws-q' } })
+    assert.equal(all.source, 'distillates')
+    assert.deepEqual((all.items as Distillate[]).map((d) => d.id), ['dst-3', 'dst-2', 'dst-1'])
+    assert.equal(all.truncated, false)
+
+    // top caps the returned rows and flags truncation (3 exist, 2 returned — newest two)
+    const capped = compileQuery(store, { source: 'distillates', params: { workspace: 'ws-q' }, top: 2 })
+    assert.deepEqual((capped.items as Distillate[]).map((d) => d.id), ['dst-3', 'dst-2'])
+    assert.equal(capped.top, 2)
+    assert.equal(capped.truncated, true)
+
+    // session-scoped: only that session's distillates (still newest-first)
+    const scoped = compileQuery(store, { source: 'distillates', params: { workspace: 'ws-q', session: 'ses-a' } })
+    assert.deepEqual((scoped.items as Distillate[]).map((d) => d.id), ['dst-2', 'dst-1'])
+
+    // a known workspace with no distillates reads as [] (explainable-empty, not an error)
+    store.upsertEntity({ workspaceId: 'ws-empty', kind: 'topic', name: 'x', seenAt: '2026-07-07T14:00:00Z' })
+    const none = compileQuery(store, { source: 'distillates', params: { workspace: 'ws-empty' } })
+    assert.deepEqual(none.items, [])
+    assert.equal(none.truncated, false)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('compileQuery derives the teach source through the store (SUGGESTED candidates, support-sorted, top caps + truncates)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-teach-'))
   const store = new WorkspaceRegistry(dir)
@@ -260,6 +301,7 @@ test('compileQuery returns [] (not an error) for the unbuilt ledger store and un
     assert.deepEqual(compileQuery(store, { source: 'todos', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'drafts', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'teach', params: { workspace: 'nowhere' } }).items, [])
+    assert.deepEqual(compileQuery(store, { source: 'distillates', params: { workspace: 'nowhere' } }).items, [])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })

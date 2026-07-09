@@ -81,6 +81,19 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       const drafts = known ? store.listDrafts(workspaceId, sessionId) : []
       return cap([...drafts].reverse())
     }
+    case 'distillates': {
+      // The distillate stream (Distill pass, P2): the merge-window summaries — one row per distilled
+      // window of raw capture. This is the persisted, queryable substance of the "transcript/distillate
+      // stream" (#12): raw pre-distill transcripts are transient (the stt stage rewrites audio chunks to
+      // text IN-FLIGHT with no persistence path — see api/http.ts — so there is nothing durable to query
+      // for the raw transcript), whereas distillates are workspace-DB records. So this mirrors the record
+      // sources — `known`-gated (unknown workspace ⇒ [], never an error), session-scopable. listDistillates
+      // returns them oldest-first (creation order); the stream reads NEWEST-first (mirroring the moments
+      // arm's ordering — hud-v2.html's stream), so reverse before `cap` takes top-K. Each row is a
+      // Distillate — window text + timestamp + endpoint provenance — rendered client-side.
+      const distillates = known ? store.listDistillates(workspaceId, sessionId) : []
+      return cap([...distillates].reverse())
+    }
     case 'teach': {
       // SUGGESTED attribution-hint candidates (teach loop, P4D): the review half of the flywheel. The
       // candidates are DERIVED read-only from the stored `teach-signals` documents (deriveHintCandidates

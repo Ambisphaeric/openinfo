@@ -300,7 +300,7 @@ export type HintCandidate = Static<typeof HintCandidate>
 export const QueryResult = Type.Object(
   {
     source: Type.Union(
-      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach'].map((s) => Type.Literal(s)),
+      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates'].map((s) => Type.Literal(s)),
     ),
     items: Type.Array(Type.Unknown(), { description: 'hydrated rows; element shape is keyed by `source`' }),
     top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),

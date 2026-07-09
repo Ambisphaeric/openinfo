@@ -9,6 +9,7 @@ import { renderAsk } from './ask.js'
 import { renderTodos } from './todos.js'
 import { renderDrafts } from './drafts.js'
 import { renderTeach } from './teach.js'
+import { renderDistillates } from './distillates.js'
 import { renderCustom } from './custom.js'
 
 export { momentGlyph, entityGlyph } from './glyphs.js'
@@ -31,5 +32,6 @@ export const defaultBlockRegistry: BlockRegistry = {
   todos: renderTodos,
   drafts: renderDrafts,
   teach: renderTeach,
+  distillates: renderDistillates,
   custom: renderCustom,
 }
