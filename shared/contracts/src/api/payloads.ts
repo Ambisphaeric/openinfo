@@ -412,6 +412,10 @@ export const GenerateProbe = Type.Object(
     hint: Type.Optional(Type.String({ description: 'the one-line troubleshoot step (incl. the loaded-model suggestion on a model-load failure)' })),
     skipped: Type.Optional(Type.Boolean({ description: 'true when generation was not run (e.g. an stt endpoint)' })),
     note: Type.Optional(Type.String({ description: 'why it was skipped' })),
+    // The model's ACTUAL reply text (truncated), so Test shows proof it can hear us — not a checkmark. The
+    // probe now sends a real prompt at a real token budget ("reply 'yes' if you can hear us", ~128 tokens),
+    // so most models return genuine text; present on a successful generation, absent on failure/skip.
+    sample: Type.Optional(Type.String({ description: "the model's actual reply text (truncated), rendered in the Test area as proof of a live completion" })),
   },
   { $id: 'GenerateProbe', additionalProperties: false },
 )

@@ -1284,10 +1284,37 @@ test('POST /fabric/test probe:generate — ping + REAL generation; llm success r
     const probe = (await (await fetch(`${base}/fabric/test`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ kind: 'http', name: 'lm', url: up.url, api: 'openai-compat', model: 'qwen', probe: 'generate', slot: 'llm' }),
-    })).json()) as { ok: boolean; generate?: { ok: boolean; latencyMs?: number } }
+    })).json()) as { ok: boolean; generate?: { ok: boolean; latencyMs?: number; sample?: string } }
     assert.equal(probe.ok, true) // reachable
     assert.equal(probe.generate?.ok, true) // AND generation succeeded
     assert.equal(typeof probe.generate?.latencyMs, 'number')
+    assert.equal(probe.generate?.sample, 'ok') // the model's actual reply rides back as the sample
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /fabric/test probe:generate — the model reply flows through as `sample` (proof, not a checkmark)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  // A real instruct model answers the probe prompt in words — that reply is what Test renders back.
+  const up = await startFakeChat({
+    status: 200,
+    body: JSON.stringify({ choices: [{ message: { content: 'Yes, I can hear you loud and clear.' } }] }),
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const probe = (await (await fetch(`${base}/fabric/test`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'http', name: 'lm', url: up.url, api: 'openai-compat', model: 'lfm2.5-8b-a1b', probe: 'generate', slot: 'llm' }),
+    })).json()) as { generate?: { ok: boolean; sample?: string } }
+    assert.equal(probe.generate?.ok, true)
+    assert.equal(probe.generate?.sample, 'Yes, I can hear you loud and clear.')
   } finally {
     await app.close()
     await new Promise<void>((resolve) => up.server.close(() => resolve()))

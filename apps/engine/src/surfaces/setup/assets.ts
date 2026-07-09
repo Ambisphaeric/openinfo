@@ -150,7 +150,13 @@ export const SETUP_SCRIPT = `
       var g=p.generate; var genBad=false;
       if(g){
         if(g.skipped){parts.push('generation skipped'+(g.note?' ('+g.note+')':''));}
-        else if(g.ok){parts.push('generation \\u2713'+(g.latencyMs!=null?' '+g.latencyMs+'ms':''));}
+        else if(g.ok){
+          parts.push('generation \\u2713'+(g.latencyMs!=null?' '+g.latencyMs+'ms':''));
+          // Show the model's ACTUAL reply (proof it heard us), or the reasoning-exhausted note when there
+          // was no content. The reply is truncated server-side; textContent below keeps it inert.
+          if(g.sample)parts.push('reply: \\u201c'+g.sample+'\\u201d');
+          else if(g.note)parts.push('('+g.note+')');
+        }
         else{genBad=true; parts.push('generation \\u2717 '+(g.class?g.class+': ':'')+(g.error||g.hint||'failed'));}
       }
       var bad=!p.ok||genBad;

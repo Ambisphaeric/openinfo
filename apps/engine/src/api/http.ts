@@ -598,10 +598,21 @@ async function testEndpoint(req: IncomingMessage, res: ServerResponse, ctx: Hand
   send(res, 200, probe)
 }
 
+/** The probe prompt — a plain, model-answerable question so the reply is real text we can show back. */
+const PROBE_PROMPT = "We are testing access from this host — simply respond 'yes' if you can hear us."
+
+/** Cap the reply shown in the Test area (~200 chars) — proof it answered, not the whole completion. */
+const truncateSample = (text: string): string | undefined => {
+  const trimmed = text.trim()
+  if (trimmed === '') return undefined
+  return trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed
+}
+
 /**
- * Run a REAL-generation probe against ONE endpoint — a minimal 1-token completion through the ACTUAL
- * invoke path, so a server that pings 200 but can't load its model (the user's LM Studio 400) is
- * caught honestly and CLASSIFIED (unreachable/timeout/auth/model-load/bad-response). An stt endpoint is
+ * Run a REAL-generation probe against ONE endpoint — an actual completion through the ACTUAL invoke
+ * path, so a server that pings 200 but can't load its model (the user's LM Studio 400) is caught
+ * honestly and CLASSIFIED (unreachable/timeout/auth/model-load/bad-response). On success it carries the
+ * model's actual reply (`sample`) so Test shows proof, not a checkmark. An stt endpoint is
  * skipped-with-note (audio is out of scope). On a model-load failure the hint gains the loaded-model
  * suggestion (what the server DOES have). Value-free re keys — an auth failure names the keyRef only.
  */
@@ -612,16 +623,21 @@ async function runGenerateProbe(endpoint: Endpoint, slot: string | undefined, ct
   const genFabric: Fabric = { slots: { stt: [], tts: [], llm: [endpoint], vlm: [], ocr: [], embed: [] } }
   const started = performance.now()
   try {
-    await invokeLlm(genFabric, [{ role: 'user', content: 'ping' }], {
-      maxTokens: 1,
+    // A REAL prompt at a REAL budget: the point is proof the host can reach a live model, so we ask a
+    // question a model actually answers and give it room to answer (~128 tokens). At 1 token every
+    // reasoner looked "exhausted"; at 128 most return genuine text we can show back as the sample.
+    const result = await invokeLlm(genFabric, [{ role: 'user', content: PROBE_PROMPT }], {
+      maxTokens: 128,
       // A cold 12B load (~6.3s) plus generation exceeded the old 8s budget, so the first Test press on a
-      // cold model timed out; 30s covers a cold load + the 1-token completion. The reachability ping
+      // cold model timed out; 30s covers a cold load + the completion. The reachability ping
       // (checkEndpoint above) stays snappy — it only proves the socket answers, not that a model loaded.
       timeoutMs: 30_000,
       resolveKey: (ref) => ctx.secrets.resolve(ref),
       runtimeManager: ctx.runtime,
     })
-    return { ok: true, latencyMs: Math.round(performance.now() - started) }
+    const latencyMs = Math.round(performance.now() - started)
+    const sample = truncateSample(result.text)
+    return { ok: true, latencyMs, ...(sample !== undefined ? { sample } : {}) }
   } catch (error) {
     const classified = describeInvokeFailure(error)
     if (!classified) return { ok: false, error: error instanceof Error ? error.message : String(error) }
