@@ -2071,3 +2071,68 @@ The APPLY/accept write path (a verb that PUTs the reviewed pattern into the work
 tracked by the action-verbs issue; this slice renders the affordances inert (only `copy` is live). A
 `dismiss`-kind teach signal that suppresses a candidate (the `TeachSignalKind` union's deferred member).
 The transcript/distillate block (#12) and the queue/status block (#13), stacked on this branch.
+
+## Slice: #12 — transcript / distillate stream block + query source
+
+Transcript results already flow through the pipeline (the three STT adapters, wired pre-distill) and
+distillates already persist as workspace records, but no block put the raw stream on a panel — moments
+render (`source: moments`), yet the distilled-window stream underneath them had no dedicated block. This is
+that block plus its query source (the `add-a-block` "new built-in block type" recipe: contract union append
++ new `BlockQuery` source + `compileQuery` arm + renderer + registry entry).
+
+### Store-shape decision (honest subset)
+The issue frames it as the "transcript / distillate stream". Raw pre-distill transcripts are TRANSIENT: the
+`distill.transcribe` stage rewrites base64 audio chunks to utf8 text IN-FLIGHT, before the distiller, with
+**no persistence path** for transcribed-but-undistilled text (documented in `api/http.ts` — running stt when
+nothing will distill it is pure waste, so it is gated inside `distill.enabled`). `TranscriptResult` is an
+internal `stt-adapters.ts` interface, not a stored contract. What IS durable and queryable is the
+DISTILLATE — the merge-window summary the distiller persists per session (`saveDistillate` → the workspace
+DB), which is also what feeds moments/entities downstream. So the source is named `distillates` (block type
+== source, matching the `todos`/`drafts` precedent) and renders the persisted distillate stream — the honest
+substance of the "transcript/distillate stream". Disclosed here and in the PR body.
+
+### Contract (append-only, schemas regenerated)
+`BlockTypeName` gains `distillates`; `BlockQuery.source` and `QueryResult.source` each gain `distillates`.
+Append-only unions (existing members untouched). Ran `pnpm --filter @openinfo/contracts gen`; the 5 affected
+schemas (`BlockTypeName`/`BlockQuery`/`QueryResult`/`Block`/`Surface`) regenerated, the 8 unrelated
+pre-existing-drift schemas reverted (as in #9/#10/#11). `QueryResult.items` stays `Type.Array(Unknown)`; the
+element shape for `distillates→Distillate` (already a contract) is documented in the arm. A
+`surface.distillates.json` example exercises the block.
+
+### The query source (`surfaces/query.ts`)
+New `distillates` arm reads `store.listDistillates(workspaceId, sessionId)` — workspace-DB records, so it
+mirrors the record sources: `known`-gated (unknown workspace ⇒ [], never an error), session-scopable.
+`listDistillates` returns them oldest-first (creation order); the stream reads NEWEST-first (mirroring the
+`moments` arm's ordering — hud-v2.html's stream), so the arm reverses before `cap` takes top-K + flags
+truncation.
+
+### The renderer (`client/surfaces/blocks/distillates.ts` + registry)
+`renderDistillates` reads `result.items` as `Distillate[]` and renders one `.rel` row per window: a clock
+label (`clockLabel(windowEnd)`, the same formatter the moments block uses) as the `.mk t` timestamp, the
+distilled text as `.ttl`, and a `.why` line naming the producing endpoint (every summary inspectable back to
+what produced it). The block's `actions` render through `actionButtons` (copy carries the window text).
+`block.top` caps like the siblings. Empty is EXPLAINABLE, not silent: an always-visible block with no windows
+renders a "no distilled windows yet" line; an `on-match` block stays hidden. Registered in
+`defaultBlockRegistry`; the surface-editor picker gains a `distillates` default-block seed (session-scoped,
+`top: 20`, uncollapsed — a stream reads best expanded).
+
+### Tests + verification
+Contracts 65→66, engine 482→484, client 247→250 (all green in isolation).
+- `surfaces/query.test.ts` — a store seeded via `saveDistillate` across two sessions in one workspace: the
+  arm returns them newest-first, narrows to one session, `top` caps + flags truncation, and a
+  known-but-distillate-less workspace reads `[]`; the unbuilt-store test also covers an unknown-workspace
+  `distillates` read (`[]`, never a throw).
+- `api/http.test.ts` — a served e2e over the live server: `saveDistillate` seeds two windows (the distiller's
+  own persistence path — there is no POST /distillates route), a surface carries a `distillates` block
+  (`PUT /layouts/surfaces/:id`), then GET + `POST /query` hydrate exactly as the client does — the window
+  text + timestamp round-trip NEWEST-first; a distillate-less workspace query returns `items: []`.
+- `client/surfaces/blocks/distillates.test.ts` (OWN new file — `renderer.test.ts` untouched) — proves
+  STORE-DERIVED content: seeded window text only reachable via `result.items`, the per-row timestamp
+  (`clockLabel` of `windowEnd`), the endpoint why-line, and the copy affordance; plus the explainable-empty
+  line on an always-block and the hidden on-match empty block.
+
+### Out of scope (recorded, NOT built)
+Persisting the raw pre-distill transcript so it could have its OWN stream distinct from the distillate
+stream (there is no persistence path today — a deliberate distill-hygiene decision; a `transcript` source
+would need one first). A speaker/me-them split on the row (distillates merge a window; the me/them channel
+split lives upstream on the audio chunks). The queue/status block (#13, stacked on this branch).
