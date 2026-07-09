@@ -1497,3 +1497,39 @@ omlx/needs-key server with its parakeet stt model grouped under stt.
   copy only; auto-detecting a fresh grant and prompting a relaunch is out of scope.
 - Per-source capture ingress on the engine /settings Status section still needs engine plumbing (noted
   there already) — the client tray readout is the live capture-debug surface meanwhile.
+
+### Slice 6 — Save profile persists (settings editor save-path regression) (`engine/surfaces/setup/view.ts|assets.ts`)
+The engine-served settings editor's "Save profile" did nothing: no request, no error, edits lost on reload —
+the core settings action was dead. Root cause was in the BROWSER path, not the routes (route/render tests all
+passed). `editorHtml` embedded the base fabric as `escapeHtml(JSON.stringify(fabric))` inside a raw-text
+`<script type="application/json" id="base-fabric">`. A `<script>` is a raw-text element — HTML entities are
+NOT decoded there — so the blob reached the browser literally as `{&quot;slots&quot;…` and `saveEditor`'s
+`JSON.parse(textContent)` threw (`SyntaxError` at position 1) BEFORE the save fetch: the classic silent no-op.
+This predated the scheme/host/port work (present since the page was born) — the compose mirrors were never
+reached. The module's own `jsonForScript` (only `<` neutralized, verbatim JSON — the JSON-in-script
+convention `getStartedHtml`/`tryItHtml` already use) is the correct embed; `escapeHtml` is only correct for
+the `data-profile` ATTRIBUTE, where the browser does decode entities.
+
+Fix + honesty net: `base-fabric` now uses `jsonForScript(fabric)`; a `#save-error` strip sits beside the Save
+button; `saveEditor` is wrapped so every failure (a throw, a rejected fetch, or a non-ok status) surfaces as
+"save failed — <reason>" in that strip in the page's existing `.bad` style — never a silent no-op again.
+
+Delete affordance: the per-row ✕ already worked in the DOM for every row (existing / fresh / blank); removals
+never *stuck* only because Save was dead. With Save fixed, remove + Save persists, and blank/urlless rows are
+filtered out of the saved fabric (they were never persisted).
+
+Probe sample (checked, not changed): the generate-probe `sample` is truncated server-side (~200 chars,
+`truncateSample`) and rendered via `probe.textContent` (inert — no JSON/HTML injection). A reasoning model's
+preamble showing up as the reply is the model's own output rendered sanely, not a render bug. Cleaner
+labelling/stripping of reasoning preambles is a design-pass candidate, not patched here.
+
+### Tests + verification
+Engine 454 → 461 (+7: `save-handler.test.ts`). The test drives the REAL served `SETUP_SCRIPT` (not a
+reimplementation) against a tiny hand-rolled DOM shim built by PARSING the served `editorHtml`/`rowTemplateHtml`
+— reproducing the exact fidelity the bug lived in (raw-text `<script>` NOT entity-decoded vs attributes
+decoded). No heavy dep; runs under `node --test`. Covers existing-row edit save, fresh-row save,
+blank-row delete-survives-save, blank-row filtered-on-save, save-failure surfaces text (non-ok + rejected),
+and a guard that the served base-fabric blob is verbatim JSON. Reverting the fix fails 6 of 7 (no fetch fires).
+Verified live end-to-end with a headless browser against a temp engine: the PUT fires and the profile document
+gains the edited port + fresh endpoint (version bump), and a forced 500 shows "save failed — 500: …" in the
+strip.
