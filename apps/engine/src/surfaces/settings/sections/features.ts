@@ -2,8 +2,8 @@ import type { Flag } from '@openinfo/contracts'
 import { escapeHtml, jsonForScript, type SetupData } from '../../setup/view.js'
 
 /**
- * The Features section — the vision-critical piece (
- * every capability toggles in any combination). Every seeded feature flag is
+ * The Features section — the vision-critical piece: every capability must be enable/disable-able
+ * in any combination, from a surface, without env edits. Every seeded feature flag is
  * rendered as a human-named toggle with a description, grouped by pipeline stage, showing its current
  * value and its dependencies. Flipping a toggle composes the EXISTING PUT /flags/:key route (the same
  * one the Try-it consent-flip already uses) — no new engine capability, per the P6 "forms over

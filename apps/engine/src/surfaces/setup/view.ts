@@ -13,7 +13,7 @@ import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelS
  * A user's rig is never their last (config 1 → clone → a 27B on another host → STT elsewhere): these
  * views name/clone/activate profiles and wire slot→endpoint rows across hosts. Deliberately barebones —
  * the FIRST setting, not a settings empire — now re-homed into a sidebar so the vision's many
- * configuration surfaces have somewhere to live .
+ * configuration surfaces have somewhere to live.
  */
 
 /**
@@ -99,7 +99,7 @@ export const firstRunNotice = (liveFabric: Fabric): string | null =>
     : null
 
 // --- The host-scan → model-dropdown views (HOST-SCAN + MODEL-DROPDOWN slice) -----------------------
-// Typing a full model id by hand is error-prone — Scan the server, list its
+// Typing a full model id by hand is error-prone — scan the server, list its
 // models, pick from a dropdown, see a capabilities list. These are the PURE decisions the browser
 // mirrors (the same discipline as tryItDiagnosis / MOMENT_GLYPHS): grouping, labels, summary, and the
 // row states — asserted headless here, rebuilt as DOM by the thin script in assets.ts.
@@ -619,7 +619,7 @@ export const tryItHtml = (data: SetupData): string => {
 }
 
 /**
- * The HUD-layout section — the HUD-customization gap finding, made discoverable from
+ * The HUD-layout section — closes the HUD-customization gap, made discoverable from
  * /setup. Lists every surface (seeded + user), marks the one the HUD renders by default, and links each
  * to its forms editor (/setup?surface=<id>). Pure and exported so its states are asserted headless.
  */

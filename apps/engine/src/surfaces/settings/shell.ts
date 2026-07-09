@@ -5,8 +5,8 @@ import { GROUP_ORDER, GROUP_LABEL, SECTIONS, defaultSectionId, sectionById, type
 /**
  * The Settings shell — a persistent left sidebar + a content pane, server-rendered per request (no SPA,
  * no framework: the repo's hand-rolled discipline). It walks the section registry (registry.ts) to build
- * the grouped nav and render the ACTIVE section's pure body. The old
- * one-page model setup becomes a real settings surface with nested configuration, like glass / openwebui
+ * the grouped nav and render the ACTIVE section's pure body. The old one-page model setup becomes a
+ * real settings surface with nested configuration, like glass / openwebui.
  * Pure — the engine route hands it live data + the active id.
  */
 

@@ -4,8 +4,8 @@ import { escapeHtml, jsonForScript } from './view.js'
 import { SURFACE_EDITOR_CSS, SURFACE_EDITOR_SCRIPT } from './editor-assets.js'
 
 /**
- * The HUD-layout editor — forms over surface DOCUMENTS (the HUD-customization gap
- * finding). Architecturally the HUD always was `render(surfaceDocument)`; this is the human affordance
+ * The HUD-layout editor — forms over surface DOCUMENTS (closing the HUD-customization gap).
+ * Architecturally the HUD always was `render(surfaceDocument)`; this is the human affordance
  * to edit that document without hand-writing JSON. Engine-served on /setup?surface=<id>, mirroring how
  * the fabric editor opens a profile with ?edit=<id> — same page family, same discipline: this module is
  * PURE (given the live data it returns the page string, no I/O, no DOM), so every state is asserted

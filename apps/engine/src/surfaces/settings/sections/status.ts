@@ -106,7 +106,7 @@ export const renderStatus = (data: SetupData): string => {
     queueCard +
     '</div>' +
     '<div class="stat-defer">Per-source capture ingress (mic / system-audio / focus, "last heard Ns ago") is a ' +
-    'follow-up — the queue exposes only aggregate counts today, so a per-source readout needs engine plumbing ' +
+    'follow-up — the queue exposes only aggregate counts today, so a per-source readout needs engine plumbing. ' +
     'The menu-bar tray shows live recording sources meanwhile.</div>'
   )
 }

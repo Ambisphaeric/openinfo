@@ -460,7 +460,7 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
 
 /**
  * Serve the HUD-layout editor for one surface (GET /setup?surface=<id>) — forms over the surface
- * document, the HUD-customization gap fix. Composes only the surface routes the
+ * document, closing the HUD-customization gap. Composes only the surface routes the
  * browser script calls (GET/PUT /layouts/surfaces[/:id]); no new engine capability. Unknown id ⇒ a
  * plain 404 HTML page with a way back (not a JSON error — this is a browser surface). The HUD default
  * is the shipped surface id (the client's own config picks which surface it renders; the engine marks
@@ -491,7 +491,7 @@ async function discover(res: ServerResponse, ctx: HandlerContext): Promise<void>
 
 /**
  * The host-scan (POST /fabric/scan) — pick host, scan common ports, list models, get a
- * capabilities list; backing the Endpoints editor's Scan button. Exactly one of url|host: an exact
+ * capabilities list; backs the Endpoints editor's Scan button. Exactly one of url|host: an exact
  * url probes that base URL; a bare host tries the probe-list DOCUMENT's ports against it. Models come
  * back classified through the capability map; failures come back in the invoke taxonomy's classes.
  * POSTURE: the engine is localhost-only (auth is P7) and this is a USER-DIRECTED probe of a host the

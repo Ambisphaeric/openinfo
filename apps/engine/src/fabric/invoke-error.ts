@@ -2,8 +2,8 @@
  * The invoke-failure taxonomy (INVOKE-RESILIENCE slice). Every transport/protocol failure of the llm
  * or stt slot becomes an `InvokeError` carrying a CLASS, the endpoint it happened on, and a one-line
  * troubleshoot hint — so the system can tell "the model won't load" from "the key is wrong" from "the
- * server isn't running" and say exactly what to do (detect the
- * difference between a failed API key and a model that's not loading, and suggest a troubleshoot step).
+ * server isn't running" and say exactly what to do: detect the difference between a failed API key
+ * and a model that's not loading, and suggest a troubleshoot step.
  *
  * Additive and engine-internal: invoke's fall-through semantics are unchanged (a classified failure is
  * still just a reason to try the next endpoint); the classes ride along in the per-endpoint failure list

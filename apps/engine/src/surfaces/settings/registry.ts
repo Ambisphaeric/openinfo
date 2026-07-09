@@ -5,9 +5,8 @@ import { renderPrivacy } from './sections/privacy.js'
 import { renderStatus } from './sections/status.js'
 
 /**
- * The Settings section registry — the spine of the sidebar:
- * a settings sidebar with many
- * configuration options / nesting (glass/openwebui shape). It mirrors the client's block-renderer
+ * The Settings section registry — the spine of the sidebar: many nested configuration
+ * options behind a grouped sidebar (the glass/openwebui shape). It mirrors the client's block-renderer
  * registry: each section is one pure render function registered in ONE table. The shell
  * (shell.ts) walks this table to build the grouped sidebar + the active section body.
  *
