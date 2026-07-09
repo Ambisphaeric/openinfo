@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readdir } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { CaptureChunk } from '@openinfo/contracts'
 import { EngineLink } from '../engine-link/index.js'
 import { CaptureController, type CaptureControllerDeps, type CaptureState } from './capture-controller.js'
@@ -17,11 +18,34 @@ const seg = (over: Partial<RawSegment> = {}): RawSegment => ({
 })
 
 /** A controller wired to spies, with sensible test defaults (mic source, enabled, permission granted). */
+/** A controllable timer so the stop-ack un-wedge timeout is fired on demand (no real clock in tests). */
+const timerHarness = () => {
+  const pending = new Map<unknown, () => void>()
+  let next = 0
+  return {
+    setTimer: (fn: () => void): unknown => {
+      const h = ++next
+      pending.set(h, fn)
+      return h
+    },
+    clearTimer: (h: unknown) => void pending.delete(h),
+    fireAll: () => {
+      const snapshot = [...pending.values()]
+      pending.clear()
+      for (const fn of snapshot) fn()
+    },
+    get size() {
+      return pending.size
+    },
+  }
+}
+
 const harness = (over: Partial<CaptureControllerDeps> = {}) => {
   const captured: CaptureChunk[] = []
   const control: string[] = []
   const states: CaptureState[] = []
   const silences: boolean[] = []
+  const timers = timerHarness()
   const deps: CaptureControllerDeps = {
     source: 'mic',
     enabled: true,
@@ -30,9 +54,11 @@ const harness = (over: Partial<CaptureControllerDeps> = {}) => {
     requestPermission: async () => true,
     onStateChange: (s) => states.push(s),
     onSilence: (silent) => silences.push(silent),
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
     ...over,
   }
-  return { controller: new CaptureController(deps), captured, control, states, silences }
+  return { controller: new CaptureController(deps), captured, control, states, silences, timers }
 }
 
 test('happy path: start → capture segments → end flushes the final in-flight segment → idle', async () => {
@@ -160,7 +186,23 @@ test('IPC protocol shape is stable (the renderer/preload/main contract)', () => 
     segment: 'capture:segment',
     stopped: 'capture:stopped',
     status: 'capture:status',
+    loaded: 'capture:loaded',
+    startAck: 'capture:start-ack',
   })
+})
+
+test('capture preload is self-contained: it inlines every channel and requires NO app module (sandbox-safe, #41)', async () => {
+  // The preload runs under Electron's default sandbox, where require reaches only electron + builtins.
+  // Requiring the ESM sibling ./protocol.js there fails to load the WHOLE preload — the bridge never
+  // exposes and every chunk is silently unsent. So the compiled preload must import nothing but electron
+  // and carry the channel strings inline; assert both, and that they still match CAPTURE_CHANNELS.
+  const preloadPath = join(dirname(fileURLToPath(import.meta.url)), 'capture-preload.cjs')
+  const cjs = await readFile(preloadPath, 'utf8')
+  assert.doesNotMatch(cjs, /require\(["']\.\/protocol\.js["']\)/, 'the preload must NOT require the ESM protocol sibling (sandbox would drop it)')
+  assert.doesNotMatch(cjs, /require\(["']\.\/device-match/, 'no app-module require at all')
+  for (const value of Object.values(CAPTURE_CHANNELS)) {
+    assert.ok(cjs.includes(`'${value}'`) || cjs.includes(`"${value}"`), `preload inlines the ${value} channel literal`)
+  }
 })
 
 test('spool integration: with the engine unreachable, capture spools instead of losing chunks', async () => {
@@ -175,6 +217,78 @@ test('spool integration: with the engine unreachable, capture spools instead of 
 
   const files = (await readdir(spoolDir)).filter((f) => f.endsWith('.json'))
   assert.equal(files.length, 2) // both segments durably spooled, nothing thrown, nothing lost
+})
+
+// --- un-wedge guard (issue #41): the controller can never get stuck in `stopping`/`starting` ---------
+
+test('un-wedge: a stop the renderer never acks force-clears `stopping` on timeout and returns to idle', async () => {
+  const h = harness()
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(seg())
+  h.controller.onSessionEnded() // stopping = true; renderer told to stop
+  assert.deepEqual(h.control, ['start', 'stop'])
+  assert.equal(h.timers.size, 1) // the un-wedge timer is armed
+  // The renderer never sends `stopped` (it was not listening / died). Firing the timeout un-wedges us.
+  h.timers.fireAll()
+  assert.equal(h.controller.currentState, 'idle')
+  // And a brand-new start now runs — proving `stopping` no longer swallows it into pendingStart forever.
+  await h.controller.onSessionStarted({ sessionId: 'B', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'starting')
+  assert.deepEqual(h.control, ['start', 'stop', 'start'])
+})
+
+test('un-wedge: a start queued while stopping STILL drains when the stop times out (pendingStart never stuck)', async () => {
+  const h = harness()
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(seg())
+  h.controller.onSessionEnded() // stopping = true
+  await h.controller.onSessionStarted({ sessionId: 'B', workspaceId: 'ws' }) // queued (A still "flushing")
+  assert.deepEqual(h.control, ['start', 'stop']) // B not begun yet
+  h.timers.fireAll() // A's stop never acked → timeout drains the queued B
+  await Promise.resolve() // let the queued beginRun's async permission resolve
+  assert.deepEqual(h.control, ['start', 'stop', 'start'])
+  await h.controller.onSegment(seg({})) // now under B
+  assert.equal(h.controller.currentState, 'capturing')
+})
+
+test('un-wedge: the real `stopped` ack clears the timer so the timeout is a no-op afterward', async () => {
+  const h = harness()
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  await h.controller.onSegment(seg())
+  h.controller.onSessionEnded()
+  assert.equal(h.timers.size, 1)
+  await h.controller.onCaptureStopped() // renderer acked promptly
+  assert.equal(h.timers.size, 0) // timer cleared — no dangling un-wedge
+  assert.equal(h.controller.currentState, 'idle')
+  h.timers.fireAll() // firing nothing is harmless
+  assert.equal(h.controller.currentState, 'idle')
+})
+
+test('un-wedge: onStartFailed (dispatcher exhausted retries) drops a stuck `starting` back to idle', async () => {
+  const h = harness()
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'starting') // told to start, dispatcher never got an ack
+  h.controller.onStartFailed('capture renderer did not acknowledge start')
+  assert.equal(h.controller.currentState, 'idle') // no longer claims a warming-up capture
+  // A later session starts cleanly.
+  await h.controller.onSessionStarted({ sessionId: 'B', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'starting')
+})
+
+test('un-wedge: rapid start/stop/start/stop cycles always converge to idle (no accumulated wedge)', async () => {
+  const h = harness()
+  for (let i = 0; i < 5; i += 1) {
+    await h.controller.onSessionStarted({ sessionId: `S${i}`, workspaceId: 'ws' })
+    await h.controller.onSegment(seg())
+    h.controller.onSessionEnded()
+    await h.controller.onCaptureStopped()
+    assert.equal(h.controller.currentState, 'idle')
+  }
+  // Even a cycle whose stop is dropped converges via the timeout.
+  await h.controller.onSessionStarted({ sessionId: 'last', workspaceId: 'ws' })
+  h.controller.onSessionEnded()
+  h.timers.fireAll()
+  assert.equal(h.controller.currentState, 'idle')
 })
 
 // --- system-audio ("them") source — rhymes with mic, plus its two source-scoped behaviours ------------

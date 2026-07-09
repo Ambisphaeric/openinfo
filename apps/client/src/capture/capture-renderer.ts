@@ -303,8 +303,17 @@ const stop = (source: CaptureSourceKind, bridge: CaptureBridge): void => {
 
 const bridge = g.openinfoCapture
 if (bridge) {
-  bridge.onStart((source) => start(source, bridge))
+  // Ack a start the MOMENT the command is received (before getUserMedia), so the main process knows the
+  // send landed and stops retrying — a dropped start is detected instead of wedging the controller. Then
+  // run the real start. The old `state: 'ready'` (post-getUserMedia) stays as the capturing signal.
+  bridge.onStart((source) => {
+    bridge.sendStartAck(source)
+    start(source, bridge)
+  })
   bridge.onStop((source) => stop(source, bridge))
+  // Readiness ping: listeners are now registered, so it is safe for the main process to send `start`.
+  // This fires on module load, BEFORE getUserMedia — the fix for the boot-time start/load race (#41).
+  bridge.sendLoaded()
 } else {
   console.error('[capture-renderer] window.openinfoCapture bridge missing — capture preload did not load')
 }
