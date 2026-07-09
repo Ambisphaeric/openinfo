@@ -1533,3 +1533,43 @@ and a guard that the served base-fabric blob is verbatim JSON. Reverting the fix
 Verified live end-to-end with a headless browser against a temp engine: the PUT fires and the profile document
 gains the edited port + fresh endpoint (version bump), and a forced 500 shows "save failed — 500: …" in the
 strip.
+
+### Slice 7 — invisible-HUD boot race (`client/surfaces/hud`, `client/main/shell.ts|config.ts`)
+The packaged app's HUD window opened COMPLETELY blank on the rig — present in the window picker with
+correct bounds, renderer alive, nothing painted. Root cause: the shell creates the frameless TRANSPARENT
+HUD window (and the renderer fires its one-shot fetches) BEFORE `ensureEngine()` finishes spawning the
+bundled engine. The surface fetch lost that race; `void hud.start()` swallowed the rejection; the WS never
+connected and never reconnected; and a transparent window with nothing painted reads as "the HUD
+disappeared". Latent since the engine-spawn seam (pre-0.0.1) — masked whenever an engine was ALREADY
+answering :8787 at launch (the adopt case), and biting on every spawn-case launch. Client HUD code was
+byte-identical v0.0.1→v0.0.3; the "0.0.3 broke it" report was the environment flipping from adopt to spawn.
+
+Fix (self-healing + visible, the same honesty rule as the settings save strip):
+- `surfaces/hud/boot.ts` (new, pure): a boot controller — retry `start()` with capped backoff (500ms→8s,
+  forever), report every state via `onStatus`, clear on success; `restart(err)` re-enters the loop when a
+  runtime refresh fails.
+- `dev-entry.ts`: boots through the controller; a `.hud-boot-status` chip paints the live failure
+  ("waiting for engine at <url> — <reason> (retry n)") — the ONLY painted pixel while the engine is
+  unreachable, so a broken HUD is never invisible. The WS transport reconnects with backoff and
+  synthesizes `ws.open` per (re)connect.
+- `hud.ts`: `ws.open` joins REFRESH_EVENTS (a fresh socket re-hydrates missed data); event-driven refresh
+  rejections route to the new `onError` hook (previously unhandled + invisible) → boot-loop restart.
+- `shell.ts`: renderer observability (did-fail-load / render-process-gone / error console lines → main
+  stdout, visible when the .app runs from a terminal).
+- Debug outline: `OPENINFO_HUD_OUTLINE=1` or `"hudOutline": true` in `~/.openinfo/client.json` → the shell
+  passes `?outline=1` → dashed-cyan window bounds + solid-orange panel bounds (`hudOutlineStyles`). CONFIG,
+  not a flag document — it must work precisely when the engine (where flags live) is unreachable.
+
+### Tests + verification
+Client 189 → 197 (+8: boot backoff ladder / status-per-failure / clean stop between attempts / restart
+hook / in-flight idempotence; `ws.open` re-hydration; refresh + reload failures route to onError;
+`hudOutline` precedence + file parsing). Verified in REAL Electron (a probe main with the HUD's exact
+webPreferences): engine down → chip + outline paint; engine spawned 2s later → the panel paints with no
+reload and the chip clears; engine killed → the painted panel stays (stale, never silently blank).
+
+### Deferred (design pass, not this slice)
+- The HUD window is a fixed 708×720 transparent frame; only the top of it is ever painted content — the
+  "box too big" report. Content-sized windowing is a deliberate design pass (drag/position/persistence
+  interact), not a patch.
+- The probe `sample`'s reasoning-preamble rendering (settings Test area) — inert and truncated, but a
+  preamble-stripping/labelling pass would read better.
