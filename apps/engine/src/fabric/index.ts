@@ -10,6 +10,14 @@ export { discoverFabric, classifyModel, synthesizeSuggestion, listLoadedModels, 
 export { scanHosts, hostTargets, type ScanOptions } from './scan.js'
 export { invokeLlm, type LlmMessage, type LlmResult, type InvokeOptions } from './invoke.js'
 export { invokeStt, type SttAudio, type SttResult, type SttOptions } from './invoke.js'
+export {
+  selectSttAdapter,
+  STT_ADAPTERS,
+  type SttAdapter,
+  type SttFlavor,
+  type TranscriptResult,
+  type TranscriptSegment,
+} from './stt-adapters.js'
 export { invokeVlm, invokeOcr, type ScreenTextResult, type ScreenBlock, type ScreenInvokeOptions } from './invoke.js'
 export {
   InvokeError,

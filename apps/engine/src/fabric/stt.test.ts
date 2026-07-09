@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import type { Fabric } from '@openinfo/contracts'
 import { defaultFabric } from './document.js'
 import { invokeStt, type SttAudio } from './invoke.js'
+import { LocalRuntimeManager, type LocalEndpoint, type RuntimeSpec } from './endpoints/local.js'
 
 interface FakeStt {
   server: Server
@@ -124,6 +125,80 @@ test('invokeStt with an unresolvable keyRef falls through gracefully (never cont
     assert.equal(sttAuthHeaders.length, 1)
   } finally {
     await stop(good)
+  }
+})
+
+test('invokeStt returns the canonical transcript (language + duration + segments) from an omlx-shaped body', async () => {
+  // The verbose_json body omlx 0.4.5 returns live; the openai adapter normalizes it to canonical form.
+  const bodies: string[] = []
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      bodies.push(Buffer.concat(chunks).toString('utf8'))
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ text: ' shipped Thursday', language: 'en', duration: 1.5, segments: [{ start: 0, end: 1.5, text: ' shipped Thursday' }] }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const addr = server.address()
+  assert.ok(addr && typeof addr === 'object')
+  try {
+    const fabric: Fabric = {
+      slots: { ...defaultFabric().slots, stt: [{ kind: 'http', name: 'omlx', url: `http://127.0.0.1:${addr.port}`, api: 'openai-compat', model: 'whisper' }] },
+    }
+    const result = await invokeStt(fabric, audio)
+    assert.equal(result.text, ' shipped Thursday')
+    assert.equal(result.language, 'en')
+    assert.equal(result.durationSec, 1.5)
+    assert.deepEqual(result.segments, [{ text: ' shipped Thursday', startSec: 0, endSec: 1.5 }])
+    assert.match(bodies[0]!, /name="response_format"[\s\S]*json/)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+// The ONE broken pipeline P4-T9 fixes: a `local` mlx (omlx) STT endpoint. Before the adapter seam it
+// hard-failed ("local runtime has no transcription path") and, even routed, never sent the `model` form
+// field omlx REQUIRES. This proves it now adopts the server, sends the served model id + a bearer, hits
+// /v1/audio/transcriptions (NOT whisper's /inference), and normalizes the omlx body.
+test('invokeStt routes a local mlx endpoint to /v1/audio/transcriptions with the served model + bearer (parakeet-shaped)', async () => {
+  const seen: { url?: string; auth?: string; body?: string } = {}
+  const server = createServer((req, res) => {
+    if (req.headers['authorization'] !== 'Bearer rig-secret') { res.writeHead(401); res.end('need key'); return }
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      seen.url = req.url ?? ''
+      seen.auth = String(req.headers['authorization'])
+      seen.body = Buffer.concat(chunks).toString('utf8')
+      if (req.url === '/health') { res.writeHead(200); res.end('ok'); return }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ text: 'parakeet transcript', language: 'en' }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const addr = server.address()
+  assert.ok(addr && typeof addr === 'object')
+  const mlxSpec: RuntimeSpec = {
+    runtime: 'mlx', binaryNames: ['omlx'], installHint: 'start omlx', args: () => [],
+    healthPath: '/health', chat: true, multiModel: true, defaultPort: addr.port, adoptOnly: true,
+  }
+  const mgr = new LocalRuntimeManager({ modelPath: () => undefined, findBinary: () => undefined, specs: { mlx: mlxSpec } })
+  const endpoint: LocalEndpoint = { kind: 'local', name: 'omlx-stt', runtime: 'mlx', model: 'mlx-community_parakeet-tdt_ctc-110m', auth: { keyRef: 'api_d' } }
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, stt: [endpoint] } }
+    const result = await invokeStt(fabric, audio, { runtimeManager: mgr, resolveKey: (r) => (r === 'api_d' ? 'rig-secret' : undefined) })
+    assert.equal(result.text, 'parakeet transcript')
+    assert.equal(result.language, 'en')
+    assert.equal(result.endpoint, 'omlx-stt')
+    assert.equal(result.model, 'mlx-community_parakeet-tdt_ctc-110m')
+    assert.equal(seen.url, '/v1/audio/transcriptions')
+    assert.equal(seen.auth, 'Bearer rig-secret')
+    assert.match(seen.body!, /name="model"[\s\S]*mlx-community_parakeet-tdt_ctc-110m/)
+  } finally {
+    mgr.shutdown()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
   }
 })
 
