@@ -23,6 +23,7 @@ export const MomentProvenance = Type.Object(
   },
   { additionalProperties: false },
 )
+export type MomentProvenance = Static<typeof MomentProvenance>
 
 export const Moment = Type.Object(
   {

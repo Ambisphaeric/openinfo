@@ -128,6 +128,42 @@ test('a pinned-doc block renders the hydrated pin from the store, and hides (on-
   assert.doesNotMatch(empty, /Pinned/)
 })
 
+test('relevant-now why line: recorded provenance is preferred, else the mention/moment heuristic, and a why-less row renders no card', () => {
+  // A block over relevant-now with no cap — one card per row that can state a why.
+  const surface: Surface = {
+    id: 's', name: 's', context: 'meeting', version: 1,
+    stack: [{ block: 'relevant-now', show: 'always', query: { source: 'relevant-now', params: {} } }],
+  }
+
+  // Row 1: the pipeline RECORDED provenance on the entity (which endpoint/model/window named it) → the
+  // why line derives from that trail, NOT from a re-guessed mention count.
+  const withProvenance: RelevantEntity = {
+    entity: { ...entity('person', 'Dana', 9), provenance: [
+      { slot: 'llm', endpoint: 'distill-fast', model: 'qwen3-4b', windowStart: '2026-07-07T14:40:00Z', windowEnd: '2026-07-07T14:43:00Z' },
+      { slot: 'llm', endpoint: 'distill-fast', model: 'qwen3-4b', windowStart: '2026-07-07T14:43:00Z', windowEnd: '2026-07-07T14:46:00Z' },
+    ] },
+    score: 1, moments: [moment('question', 'guarantee 30-day deletion?', '2026-07-07T14:45:00Z')],
+  }
+  // Row 2: no recorded trail anywhere (Phase-0 row) → falls back to the mention + latest-moment heuristic.
+  const withoutProvenance = rel(entity('artifact', 'SOC 2 report', 3), [moment('artifact', 'SOC 2 referenced again', '2026-07-07T14:41:00Z')])
+  // Row 3: no provenance, no mentions, no moments, an UNPARSEABLE lastSeen → can state no why → no card.
+  const whyless: RelevantEntity = { entity: { ...entity('topic', 'ghost', 0), lastSeen: 'not-a-date' }, score: 0, moments: [] }
+
+  const html = renderToHtml(renderSurface(
+    { surface, now, results: [result('relevant-now', [withProvenance, withoutProvenance, whyless])] },
+    defaultBlockRegistry,
+  ))
+
+  // recorded-provenance path: endpoint · model · most-recent window end (2:46p), and NO mention-count phrasing
+  assert.match(html, /via distill-fast · qwen3-4b · 2:46p/)
+  assert.doesNotMatch(html, /Referenced 9×/)
+  // heuristic fallback path for the row with no recorded trail
+  assert.match(html, /Referenced 3× · SOC 2 referenced again/)
+  // display rule #1: the why-less row is DROPPED, only the two whyable rows render cards
+  assert.doesNotMatch(html, /ghost<\/span>/)
+  assert.equal((html.match(/class="rel"/g) ?? []).length, 2)
+})
+
 test('an unknown/future block type degrades via the custom fallback instead of breaking the render', () => {
   const surface: Surface = {
     id: 's', name: 's', context: 'any', version: 1,
