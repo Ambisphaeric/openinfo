@@ -32,7 +32,34 @@ export const checkEndpoint = async (
   const checkedAt = new Date().toISOString()
   if (endpoint.kind === 'local') {
     if (!runtimeManager) return { name: endpoint.name, ok: false, checkedAt, error: 'local runtime not managed here' }
-    return localHealth(endpoint.name, runtimeManager.status(endpoint), checkedAt, runtimeManager.specFor(endpoint)?.installHint)
+    const spec = runtimeManager.specFor(endpoint)
+    // An adopt-only external runtime (omlx) is supervised outside the engine, so status() cannot know
+    // its liveness synchronously — a LIVE probe of its fixed port is the honest signal, exactly as an
+    // http endpoint is probed (with the same keyRef→bearer). Its port + health path are the endpoint;
+    // the rest of this function then treats it like the http case below.
+    if (spec?.adoptOnly && spec.defaultPort !== undefined) {
+      const keyRef = endpoint.auth?.keyRef
+      const headers: Record<string, string> = {}
+      if (keyRef !== undefined) {
+        const value = resolveKey?.(keyRef)
+        if (value === undefined || value === '') return { name: endpoint.name, ok: false, checkedAt, error: `unresolved secret keyRef "${keyRef}"` }
+        headers['authorization'] = `Bearer ${value}`
+      }
+      const started = performance.now()
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), timeoutMs)
+      try {
+        const res = await fetch(`http://127.0.0.1:${spec.defaultPort}${spec.healthPath}`, { method: 'GET', headers, signal: controller.signal })
+        const latencyMs = Math.round(performance.now() - started)
+        if (res.ok) return { name: endpoint.name, ok: true, latencyMs, checkedAt }
+        return { name: endpoint.name, ok: false, latencyMs, checkedAt, error: `HTTP ${res.status}` }
+      } catch {
+        return { name: endpoint.name, ok: false, checkedAt, error: `${spec.runtime} not running on :${spec.defaultPort} — ${spec.installHint}` }
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+    return localHealth(endpoint.name, runtimeManager.status(endpoint), checkedAt, spec?.installHint)
   }
   if (endpoint.kind === 'cloud') return { name: endpoint.name, ok: false, checkedAt, error: 'cloud endpoints are out of Phase 1' }
 

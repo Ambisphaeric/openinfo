@@ -1,9 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { LocalRuntime } from '@openinfo/contracts'
 import { LocalRuntimeManager, findRuntimeBinary, RUNTIME_SPECS, type LocalEndpoint, type RuntimeSpec } from './local.js'
 
 /**
@@ -92,7 +92,17 @@ test('the real specs name the v0 runtimes with honest install hints', () => {
   assert.equal(RUNTIME_SPECS['llama.cpp']?.installHint, 'brew install llama.cpp')
   assert.equal(RUNTIME_SPECS['whisper.cpp']?.installHint, 'brew install whisper-cpp')
   assert.equal(RUNTIME_SPECS['whisper.cpp']?.transcribePath, '/inference')
-  assert.equal(RUNTIME_SPECS['mlx' as LocalRuntime], undefined) // future runtime, unsupported in v0
+})
+
+test('mlx/omlx is a managed runtime: adopt-only, multi-model, fixed port, openai-compat chat', () => {
+  const mlx = RUNTIME_SPECS['mlx']
+  assert.ok(mlx, 'mlx now resolves (no longer unsupported)')
+  assert.equal(mlx.binaryNames[0], 'omlx')
+  assert.equal(mlx.adoptOnly, true) // externally managed by oMLX.app + the LaunchAgent — never spawned
+  assert.equal(mlx.multiModel, true) // one server backs llm/stt/tts from a model dir
+  assert.equal(mlx.defaultPort, 8000)
+  assert.equal(mlx.chat, true)
+  assert.match(mlx.installHint, /oMLX\.app|omlx start/)
 })
 
 test('ensureRunning: spawn → ready → localhost url that answers /health + chat; idempotent; shutdown kills', async () => {
@@ -155,4 +165,69 @@ test('readiness wait times out cleanly when the server never answers /health', a
     delete process.env['FAKE_READY_DELAY_MS']
     mgr.shutdown()
   }
+})
+
+// --- mlx/omlx: an ADOPT-ONLY runtime (managed outside the engine) is discovered-and-adopted, not spawned ---
+
+/** A stand-in for an already-running omlx on a fixed port: /health 200, openai-compat chat. */
+const startOmlxFake = async (): Promise<{ server: Server; port: number; url: string }> => {
+  const server = createServer((req, res) => {
+    if (req.url === '/health') { res.writeHead(200); res.end('ok'); return }
+    if (req.url === '/v1/chat/completions') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: 'OMLX-OK' } }] })); return }
+    res.writeHead(404); res.end('nope')
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const addr = server.address()
+  assert.ok(addr && typeof addr === 'object')
+  return { server, port: addr.port, url: `http://127.0.0.1:${addr.port}` }
+}
+const closeServer = (s: Server): Promise<void> => new Promise((resolve) => s.close(() => resolve()))
+
+const mlxSpec = (port: number): RuntimeSpec => ({
+  runtime: 'mlx', binaryNames: ['omlx'], installHint: 'start it via oMLX.app',
+  args: () => [], healthPath: '/health', chat: true, multiModel: true, defaultPort: port, adoptOnly: true,
+})
+const mlxEp = (over: Partial<LocalEndpoint> = {}): LocalEndpoint => ({ kind: 'local', name: 'omlx-llm', runtime: 'mlx', model: 'LFM2.5-8B-A1B-MLX-8bit', ...over })
+// adopt needs neither a binary on PATH nor a model file on disk — the server is already up, externally.
+const adoptManager = (port: number) => new LocalRuntimeManager({ modelPath: () => undefined, findBinary: () => undefined, specs: { mlx: mlxSpec(port) } })
+
+test('mlx adopt: an omlx already on its port is ADOPTED (no spawn, no binary/model needed); shutdown leaves it running', async () => {
+  const fake = await startOmlxFake()
+  const mgr = adoptManager(fake.port)
+  try {
+    assert.equal(mgr.status(mlxEp()), 'stopped') // adopt-only, not adopted yet (adopts on demand)
+    const { url, spec } = await mgr.ensureRunning(mlxEp())
+    assert.equal(url, fake.url)
+    assert.equal(spec.chat, true)
+    assert.equal(mgr.status(mlxEp()), 'ready') // adopted → ready
+    const answer = await fetch(`${url}/v1/chat/completions`, { method: 'POST', body: '{}' })
+    assert.equal(answer.status, 200)
+    mgr.shutdown()
+    // the engine never owned the process, so shutdown must NOT kill it — the external server still answers
+    assert.equal((await fetch(`${fake.url}/health`)).status, 200)
+  } finally {
+    await closeServer(fake.server)
+  }
+})
+
+test('mlx adopt: a multi-model server backs every slot from ONE adopted process (keyed by port, not model)', async () => {
+  const fake = await startOmlxFake()
+  const mgr = adoptManager(fake.port)
+  try {
+    const llm = await mgr.ensureRunning(mlxEp({ name: 'omlx-llm', model: 'LFM2.5-8B-A1B-MLX-8bit' }))
+    const stt = await mgr.ensureRunning(mlxEp({ name: 'omlx-stt', model: 'mlx-community_parakeet-tdt_ctc-110m' }))
+    assert.equal(llm.url, stt.url) // same adopted server — not adopted once per model
+  } finally {
+    mgr.shutdown()
+    await closeServer(fake.server)
+  }
+})
+
+test('mlx adopt: nothing listening on the port fails honestly (start it via the app), never spawns/collides', async () => {
+  const fake = await startOmlxFake()
+  const port = fake.port
+  await closeServer(fake.server) // free the port, then point the adopt at it → nothing there
+  const mgr = adoptManager(port)
+  await assert.rejects(mgr.ensureRunning(mlxEp()), new RegExp(`not running on :${port}`))
+  assert.equal(mgr.status(mlxEp()), 'stopped') // still just "adopts on demand", never crashed/spawned
 })

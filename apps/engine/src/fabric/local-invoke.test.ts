@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Fabric, LocalRuntime } from '@openinfo/contracts'
@@ -123,4 +124,49 @@ test('checkEndpoint: no manager ⇒ local endpoint is unhealthy but does not thr
   const h = await checkEndpoint(llmEndpoint, 1_000)
   assert.equal(h.ok, false)
   assert.match(h.error ?? '', /not managed here/)
+})
+
+// --- omlx-as-local carries a bearer the SAME way an http endpoint does (auth on the local variant) ---
+
+/** A fake omlx that DEMANDS a bearer on both /health and /v1/chat/completions (401 without it). */
+const startAuthedOmlx = async (bearer: string): Promise<{ server: Server; port: number }> => {
+  const server = createServer((req, res) => {
+    if (req.headers['authorization'] !== `Bearer ${bearer}`) { res.writeHead(401); res.end('need key'); return }
+    if (req.url === '/health') { res.writeHead(200); res.end('ok'); return }
+    if (req.url === '/v1/chat/completions') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: 'OMLX-AUTHED-OK' } }] })); return }
+    res.writeHead(404); res.end()
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const addr = server.address()
+  assert.ok(addr && typeof addr === 'object')
+  return { server, port: addr.port }
+}
+
+test('a local mlx endpoint carries its keyRef→bearer through invoke + health (omlx needs a key even locally)', async () => {
+  const fake = await startAuthedOmlx('rig-secret')
+  const mlxSpec: RuntimeSpec = {
+    runtime: 'mlx', binaryNames: ['omlx'], installHint: 'start omlx', args: () => [],
+    healthPath: '/health', chat: true, multiModel: true, defaultPort: fake.port, adoptOnly: true,
+  }
+  const mgr = new LocalRuntimeManager({ modelPath: () => undefined, findBinary: () => undefined, specs: { mlx: mlxSpec } })
+  const resolveKey = (ref: string) => (ref === 'api_d' ? 'rig-secret' : undefined)
+  const omlxEp: LocalEndpoint = { kind: 'local', name: 'omlx-llm', runtime: 'mlx', model: 'LFM2.5-8B-A1B-MLX-8bit', auth: { keyRef: 'api_d' } }
+  try {
+    // invoke: the bearer resolved from the local endpoint's keyRef reaches the adopted server
+    const ok = await invokeLlm(fabricWith({ llm: [omlxEp] }), [{ role: 'user', content: 'hi' }], { runtimeManager: mgr, resolveKey })
+    assert.match(ok.text, /OMLX-AUTHED-OK/)
+
+    // health: a live probe with the bearer is healthy; an unresolved keyRef is unhealthy (never a bad probe)
+    const healthy = await checkEndpoint(omlxEp, 1_000, resolveKey, mgr)
+    assert.equal(healthy.ok, true)
+    const unresolved = await checkEndpoint(omlxEp, 1_000, () => undefined, mgr)
+    assert.equal(unresolved.ok, false)
+    assert.match(unresolved.error ?? '', /unresolved secret keyRef "api_d"/)
+
+    // no key at all ⇒ invoke falls through with a classified auth failure (never crashes)
+    await assert.rejects(invokeLlm(fabricWith({ llm: [omlxEp] }), [{ role: 'user', content: 'hi' }], { runtimeManager: mgr }), /no llm endpoint answered/)
+  } finally {
+    mgr.shutdown()
+    await new Promise<void>((resolve) => fake.server.close(() => resolve()))
+  }
 })

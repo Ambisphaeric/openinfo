@@ -32,6 +32,10 @@ const resolveLocal = async (
   const { url, spec } = await manager.ensureRunning(endpoint)
   const http: HttpEndpoint = { kind: 'http', name: endpoint.name, url, api: 'openai-compat' }
   if (endpoint.model !== '') http.model = endpoint.model
+  // A managed-local runtime may still require a bearer (omlx does, even on localhost) — carry the local
+  // endpoint's keyRef onto the synthetic http endpoint so authHeaders injects it exactly like the http
+  // path. The value is resolved from the secret store at call time; only the ref rides in the document.
+  if (endpoint.auth !== undefined) http.auth = endpoint.auth
   return spec.transcribePath !== undefined ? { http, transcribePath: spec.transcribePath } : { http }
 }
 

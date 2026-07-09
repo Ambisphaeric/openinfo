@@ -25,7 +25,7 @@ export interface RuntimeSpec {
   binaryNames: string[]
   /** the honest "how to get it" line shown when no binary is found (never a silent failure). */
   installHint: string
-  /** argv (after the binary) given the resolved model path + the chosen localhost port. */
+  /** argv (after the binary) given the resolved model path (or model DIR when multiModel) + the port. */
   args: (modelPath: string, port: number) => string[]
   /** GET path that returns 200 once the model is loaded and serving. */
   healthPath: string
@@ -33,13 +33,36 @@ export interface RuntimeSpec {
   chat?: boolean
   /** set ⇒ transcription POST path (whisper-server is /inference, NOT /v1/audio/transcriptions). */
   transcribePath?: string
+  /**
+   * A multi-model server (omlx) serves a whole model DIRECTORY at once; `endpoint.model` selects which
+   * served model per request, so there is NO single model FILE to resolve, download, or pass as -m. Such
+   * a runtime is keyed by its port (one server backs every slot it fills), and readiness/model presence
+   * is the server's business, not a file on disk.
+   */
+  multiModel?: boolean
+  /**
+   * The fixed port this runtime serves on (omlx :8000). When set, the manager first probes this port and
+   * ADOPTS a server already answering there rather than spawn-and-collide — the discover-and-adopt rule.
+   */
+  defaultPort?: number
+  /**
+   * true ⇒ the engine NEVER spawns this runtime: it is supervised outside (omlx is managed by oMLX.app +
+   * a LaunchAgent, com.openinfo.omlx). `ensureRunning` only ADOPTS a server already answering on
+   * defaultPort; if none is, it fails honestly (start it via the app) instead of racing the supervisor.
+   */
+  adoptOnly?: boolean
 }
 
 /**
  * The runtimes v0 manages. llama.cpp binds localhost and serves OpenAI-compat chat at /v1; whisper.cpp
- * serves /inference (with --convert so it accepts webm/opus, not only WAV). Other LocalRuntime members
- * (mlx/ollama/paddle/coreml) are documented FUTURE runtimes — the CONTRIBUTING "add a fabric runtime"
- * recipe adds a spec here; until then they report `unsupported` gracefully.
+ * serves /inference (with --convert so it accepts webm/opus, not only WAV). mlx/omlx is an Apple-silicon
+ * MLX server: OpenAI-compat chat at /v1 on a FIXED port (:8000), serving a whole model directory at once
+ * (parakeet for stt, kokoro for tts, LFM/gemma for llm — one server, three slots). It is ADOPT-ONLY:
+ * oMLX.app + a LaunchAgent already own its lifecycle, so the engine discovers-and-adopts the running
+ * server rather than spawning a rival (the serve args are recorded for the record / a manual start, not
+ * run by the engine). The remaining LocalRuntime members (ollama/paddle/coreml) are documented FUTURE
+ * runtimes — the CONTRIBUTING "add a fabric runtime" recipe adds a spec here; until then they report
+ * `unsupported` gracefully.
  */
 export const RUNTIME_SPECS: Partial<Record<LocalRuntime, RuntimeSpec>> = {
   'llama.cpp': {
@@ -57,6 +80,19 @@ export const RUNTIME_SPECS: Partial<Record<LocalRuntime, RuntimeSpec>> = {
     args: (model, port) => ['--host', '127.0.0.1', '--port', String(port), '-m', model, '--convert'],
     healthPath: '/health',
     transcribePath: '/inference',
+  },
+  mlx: {
+    runtime: 'mlx',
+    binaryNames: ['omlx'],
+    installHint: 'omlx is managed by oMLX.app — start it there (or run `omlx start`); it serves OpenAI-compat on :8000',
+    // The real serve command, recorded for the record: the engine does NOT run this (adoptOnly) because
+    // oMLX.app + the com.openinfo.omlx LaunchAgent own it. modelPath is the model DIRECTORY (multiModel).
+    args: (modelDir, port) => ['serve', '--model-dir', modelDir, '--host', '0.0.0.0', '--port', String(port)],
+    healthPath: '/health',
+    chat: true,
+    multiModel: true,
+    defaultPort: 8000,
+    adoptOnly: true,
   },
 }
 
@@ -101,13 +137,15 @@ const freePortDefault = (): Promise<number> =>
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 interface Running {
-  child: ChildProcess
+  /** absent for an ADOPTED external server (omlx) — the engine did not spawn it, so it never kills it. */
+  child?: ChildProcess
   port: number
   url: string
   spec: RuntimeSpec
   ready: boolean
   readyAt?: number
   deliberateKill: boolean
+  adopted?: boolean
 }
 
 export interface LocalRuntimeManagerOptions {
@@ -155,6 +193,10 @@ export class LocalRuntimeManager {
   }
 
   private keyOf(endpoint: LocalEndpoint): string {
+    const spec = this.specFor(endpoint)
+    // A multi-model server backs every slot from ONE process on its port, so all its endpoints share
+    // one key (adopt/spawn once, not once per model). Single-model runtimes key by model as before.
+    if (spec?.multiModel) return `${endpoint.runtime}::${spec.defaultPort ?? 'port'}`
     return `${endpoint.runtime}::${endpoint.model}`
   }
 
@@ -171,10 +213,16 @@ export class LocalRuntimeManager {
     const running = this.running.get(key)
     if (running) return running.ready ? 'ready' : 'starting'
     if (this.pending.has(key)) return 'starting'
+    // An adopt-only runtime (omlx) is not spawned, so there is no binary/model/crash story to report
+    // synchronously — liveness is a live probe (checkEndpoint does it) or the adopted entry above.
+    // Un-adopted here means "not yet adopted"; report `stopped` (adopts on demand at first invoke).
+    if (spec.adoptOnly) return 'stopped'
     if ((this.crashes.get(key) ?? 0) >= this.opts.maxRestarts) return 'crashed'
     if (!this.opts.findBinary(spec)) return 'binary-missing'
-    const model = this.opts.modelPath(endpoint)
-    if (!model || !existsSync(model)) return 'model-missing'
+    if (!spec.multiModel) {
+      const model = this.opts.modelPath(endpoint)
+      if (!model || !existsSync(model)) return 'model-missing'
+    }
     return 'stopped'
   }
 
@@ -197,7 +245,44 @@ export class LocalRuntimeManager {
     return started
   }
 
+  /**
+   * Is a server ANSWERING on this health url? Any HTTP reply — including 401/403 — means "present"
+   * (omlx's /health is open, but an authed /health would still prove the process is up); only a
+   * transport failure (nothing listening) means absent. Never throws.
+   */
+  private async isServerUp(url: string): Promise<boolean> {
+    try {
+      await fetch(url, { signal: AbortSignal.timeout(2_000) })
+      return true // it answered (2xx/4xx/5xx all prove a live listener)
+    } catch {
+      return false // connection refused / DNS / timeout — nothing there
+    }
+  }
+
+  /**
+   * Adopt an externally-managed server already answering on its fixed port (omlx). Discover-and-adopt,
+   * never spawn-and-collide: this records the running server WITHOUT a child process (so shutdown never
+   * kills the supervisor's process), or fails honestly when nothing is listening — the user starts it
+   * via oMLX.app / `omlx start` rather than the engine racing the LaunchAgent for the port.
+   */
+  private async adopt(endpoint: LocalEndpoint, spec: RuntimeSpec, key: string): Promise<{ url: string; spec: RuntimeSpec }> {
+    const port = spec.defaultPort
+    if (port === undefined) throw new Error(`${spec.runtime} is adopt-only but declares no defaultPort`)
+    const url = `http://127.0.0.1:${port}`
+    if (!(await this.isServerUp(`${url}${spec.healthPath}`))) {
+      throw new Error(`${spec.runtime} is not running on :${port} — ${spec.installHint}`)
+    }
+    const entry: Running = { port, url, spec, ready: true, readyAt: Date.now(), deliberateKill: false, adopted: true }
+    this.running.set(key, entry)
+    this.opts.log(`adopted external ${spec.runtime} runtime for ${endpoint.name} on ${url} (managed outside the engine)`)
+    return { url, spec }
+  }
+
   private async start(endpoint: LocalEndpoint, spec: RuntimeSpec, key: string): Promise<{ url: string; spec: RuntimeSpec }> {
+    // Discover-and-adopt: a runtime supervised outside the engine (omlx) is never spawned — adopt the
+    // running server on its fixed port, or fail honestly. No crash budget (we did not start it).
+    if (spec.adoptOnly) return this.adopt(endpoint, spec, key)
+    if (spec.multiModel) throw new Error(`multi-model runtime "${spec.runtime}" is adopt-only in v0 (no managed spawn)`)
     if ((this.crashes.get(key) ?? 0) >= this.opts.maxRestarts) {
       throw new Error(`local runtime "${endpoint.name}" crashed ${this.opts.maxRestarts}× — not restarting (restart the engine)`)
     }
@@ -258,7 +343,8 @@ export class LocalRuntimeManager {
   private async waitReady(entry: Running): Promise<void> {
     const deadline = Date.now() + this.opts.readyTimeoutMs
     while (Date.now() < deadline) {
-      if (entry.child.exitCode !== null || entry.child.signalCode !== null) throw new Error('runtime exited before ready')
+      // waitReady only runs for a spawned entry (child present); adopted servers never reach here.
+      if (entry.child && (entry.child.exitCode !== null || entry.child.signalCode !== null)) throw new Error('runtime exited before ready')
       try {
         const res = await fetch(`${entry.url}${entry.spec.healthPath}`, { signal: AbortSignal.timeout(1_000) })
         if (res.ok) return
@@ -270,9 +356,14 @@ export class LocalRuntimeManager {
     throw new Error(`no health response within ${this.opts.readyTimeoutMs}ms`)
   }
 
-  /** Kill every spawned child — called on engine shutdown. Deliberate kills are not counted as crashes. */
+  /**
+   * Kill every SPAWNED child — called on engine shutdown. Deliberate kills are not counted as crashes.
+   * Adopted external servers (omlx) have no child and are left running: the engine never spawned them,
+   * so it never stops them (oMLX.app + the LaunchAgent own that lifecycle).
+   */
   shutdown(): void {
     for (const [, entry] of this.running) {
+      if (!entry.child) continue // adopted external server — not ours to kill
       entry.deliberateKill = true
       entry.child.kill('SIGTERM')
     }

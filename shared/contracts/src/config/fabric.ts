@@ -33,7 +33,18 @@ const EndpointAuth = Type.Optional(
 export const Endpoint = Type.Union(
   [
     Type.Object(
-      { kind: Type.Literal('local'), name: Type.String(), runtime: LocalRuntime, model: Type.String(), measured: Measured },
+      {
+        kind: Type.Literal('local'),
+        name: Type.String(),
+        runtime: LocalRuntime,
+        model: Type.String(),
+        // A managed-local runtime may require a bearer even on localhost (omlx does), so the local
+        // variant carries the SAME keyRef-by-reference auth the http variant does — resolved to a
+        // bearer only at invoke/health time, never key material in the document. Optional: llama.cpp /
+        // whisper.cpp the engine spawns need none.
+        auth: EndpointAuth,
+        measured: Measured,
+      },
       { additionalProperties: false },
     ),
     Type.Object(
