@@ -1,0 +1,7 @@
+{
+  "eventTitle": "Acme weekly sales sync",
+  "attendees": ["Dana Ret", "dana@acme.com", "sam@entera.ai"],
+  "calendarName": "Work",
+  "startsAt": "2026-07-08T15:00:00Z",
+  "endsAt": "2026-07-08T15:30:00Z"
+}

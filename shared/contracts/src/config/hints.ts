@@ -7,11 +7,14 @@ import { Id, Confidence } from '../common.js'
  * given, both must match; at least one must be present (a matcher-less pattern matches nothing). The
  * `weight` is this rule's contribution to the workspace's attribution evidence (a Confidence, 0..1),
  * and rides straight onto the AttributionEvidence entry the detector stamps on an auto-started session
- * (field→kind: repoPath→'repo', windowTitle/app→'window').
+ * (field→kind: repoPath→'repo', windowTitle/app→'window', eventTitle/attendee→'calendar'). The focus
+ * fields (repoPath/windowTitle/app) read a FocusSignal; the calendar fields (eventTitle/attendee) read a
+ * CalendarSignal — a pattern only matches the signal type that carries its field. `attendee` matches when
+ * ANY attendee of the event satisfies the matcher (the attendee list is the haystack, tested per entry).
  */
 export const AttributionPattern = Type.Object(
   {
-    field: Type.Union(['repoPath', 'windowTitle', 'app'].map((f) => Type.Literal(f))),
+    field: Type.Union(['repoPath', 'windowTitle', 'app', 'eventTitle', 'attendee'].map((f) => Type.Literal(f))),
     contains: Type.Optional(Type.String({ minLength: 1, description: 'case-insensitive substring match against the field' })),
     prefix: Type.Optional(Type.String({ minLength: 1, description: 'case-insensitive prefix match against the field' })),
     weight: Confidence,

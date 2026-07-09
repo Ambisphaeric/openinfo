@@ -14,7 +14,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface', workflow: 'WorkflowSpec', todo: 'TodoList',
   flag: 'Flag', workspaceHints: 'WorkspaceHints', commitment: 'Commitment', workspace: 'Workspace', moment: 'Moment',
   ocrInvokeParams: 'OcrInvokeParams', vlmInvokeParams: 'VlmInvokeParams',
-  captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
+  captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', ocrResult: 'OcrResult', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', queryResult: 'QueryResult',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
