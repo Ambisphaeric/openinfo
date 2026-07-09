@@ -2,12 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type Pin, type PinChunk, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, type SecretStore } from '../fabric/index.js'
-import { relevantNow } from '../index/index.js'
+import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
+import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
@@ -362,6 +363,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   const workflow = url.pathname.match(/^\/workflows\/([^/]+)$/)
   if (req.method === 'GET' && workflow?.[1]) return getWorkflow(res, ctx, decodeURIComponent(workflow[1]))
   if (req.method === 'PUT' && workflow?.[1]) return putWorkflow(req, res, ctx, decodeURIComponent(workflow[1]))
+  // P4-T2: pins ingest/read + teach candidates — the P4D store/derivation seams over HTTP, no logic change.
+  if (req.method === 'GET' && url.pathname === '/pins') return send(res, 200, readPins(ctx.store, url))
+  if (req.method === 'POST' && url.pathname === '/pins') return createPin(req, res, ctx)
+  const pinIngest = url.pathname.match(/^\/pins\/([^/]+)\/ingest$/)
+  if (req.method === 'POST' && pinIngest?.[1]) return ingestPinRoute(res, ctx, decodeURIComponent(pinIngest[1]), url)
+  const pinChunks = url.pathname.match(/^\/pins\/([^/]+)\/chunks$/)
+  if (req.method === 'GET' && pinChunks?.[1]) return getPinChunks(res, ctx, decodeURIComponent(pinChunks[1]), url)
+  if (req.method === 'GET' && url.pathname === '/teach/candidates') return send(res, 200, readTeachCandidates(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/layouts/surfaces') return send(res, 200, ctx.surfaces.list())
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
@@ -910,6 +919,73 @@ async function putWorkflow(req: IncomingMessage, res: ServerResponse, ctx: Handl
   const incoming = body as WorkflowSpec
   if (incoming.id !== id) return send(res, 400, { error: 'workflow id does not match route' })
   send(res, 200, ctx.workflow.save(incoming))
+}
+
+/**
+ * Serve a workspace's pins — pinned canon (P4D). A pin is a WORKSPACE-level record (like an entity, not
+ * session-keyed), so it is workspace-scoped via `?workspace=` (default `default`); mirrors readEntities:
+ * a read over store/, unknown workspace is an empty list, not an error. The pin's `ingest.status` tells
+ * the truth about whether it has been fetched/chunked yet (pending → POST /pins/:id/ingest resolves it).
+ */
+function readPins(store: WorkspaceRegistry, url: URL): Pin[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  if (!store.all().some((ws) => ws.id === workspaceId)) return []
+  return store.listPins(workspaceId)
+}
+
+/**
+ * Create a pin record (its workspace comes from the body's `workspaceId`, so no route param). The body
+ * must validate as a Pin — a freshly created pin carries `ingest.status: 'pending'` and no chunks until
+ * POST /pins/:id/ingest fetches + page-anchors it; the store persists it to the workspace's own sqlite
+ * file (DB-handle rule). Validation-first mirrors the other POST/PUT document routes (400 on a bad body).
+ */
+async function createPin(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('Pin', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid Pin', details: errors })
+  send(res, 200, ctx.store.savePin(body as Pin))
+}
+
+/**
+ * Run the ingest lifecycle for a pin (fetch → page-anchored chunk → persist pin_chunks + a terminal
+ * `ingest.status`). The pin is addressed by id within its `?workspace=` (default `default`); unknown pin
+ * ⇒ 404. The fetcher registry is the honest v0 set (file/url + the pdf HONEST STUB); `gdoc` is added ONLY
+ * when the seeded `ingest.gdoc` flag is on (the seam, read per-call so it is hot-flippable). ingestPin
+ * NEVER throws on a fetch failure — it records `ingest.status: 'failed'` with the fetcher's message and
+ * returns that pin — so a pdf/gdoc/unreachable-url failure comes back as a 200 whose `ingest` states the
+ * failure verbatim (the module reports it; the route does not fabricate success). NO logic change: this
+ * is `ingestPin` over the existing store + fetcher seams.
+ */
+async function ingestPinRoute(res: ServerResponse, ctx: HandlerContext, id: string, url: URL): Promise<void> {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const pin = ctx.store.getPin(workspaceId, id)
+  if (!pin) return send(res, 404, { error: `no such pin: ${id}` })
+  const fetchers = defaultFetchers(isFlagEnabled(ctx.store, 'ingest.gdoc') ? { gdoc: true } : {})
+  send(res, 200, await ingestPin(pin, { store: ctx.store, fetchers, log: ctx.log }))
+}
+
+/**
+ * Serve a pin's page-anchored chunks in stable ordinal order — the "cite p. 42" read (each chunk keeps
+ * the `page` it came from, absent for pageless sources). Addressed by pin id within its `?workspace=`
+ * (default `default`); unknown pin ⇒ 404 (a not-yet-ingested pin returns []). A read over store/.
+ */
+function getPinChunks(res: ServerResponse, ctx: HandlerContext, id: string, url: URL): void {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const pin = ctx.store.getPin(workspaceId, id)
+  if (!pin) return send(res, 404, { error: `no such pin: ${id}` })
+  send(res, 200, ctx.store.listPinChunks(workspaceId, id))
+}
+
+/**
+ * Serve SUGGESTED attribution-hint candidates for a workspace (`?workspace=`, default `default`) — the
+ * teach loop's derivation (`deriveHintCandidates` over `TeachStore.list`) turned into inspectable, citable
+ * chips. READ-ONLY and PURE: it never writes hints and never edits route/ (the loop suggests, the user
+ * applies — auto-applying is a separate future slice). The TeachStore is stateless over store/, so it is
+ * constructed per read; the derivation is the same one a future teach surface renders. NO logic change.
+ */
+function readTeachCandidates(store: WorkspaceRegistry, url: URL): HintCandidate[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  return deriveHintCandidates(new TeachStore(store).list(workspaceId))
 }
 
 /**
