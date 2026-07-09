@@ -1568,8 +1568,55 @@ webPreferences): engine down → chip + outline paint; engine spawned 2s later �
 reload and the chip clears; engine killed → the painted panel stays (stale, never silently blank).
 
 ### Deferred (design pass, not this slice)
-- The HUD window is a fixed 708×720 transparent frame; only the top of it is ever painted content — the
-  "box too big" report. Content-sized windowing is a deliberate design pass (drag/position/persistence
-  interact), not a patch.
+- **The fixed 708×720 transparent HUD frame ("box too big" — only the top is ever painted, the empty
+  lower portion blocks clicks)** — RESOLVED by Slice 8 below (the window is now content-sized: the
+  renderer measures the painted panel and the shell `setContentSize`s to match; drag/position persistence
+  is unaffected because growth is top-anchored).
 - The probe `sample`'s reasoning-preamble rendering (settings Test area) — inert and truncated, but a
   preamble-stripping/labelling pass would read better.
+
+### Slice 8 — HUD content-sizing (kill the 708×720 dead zone) (`client/main/window-options.ts|hud-height.ts|shell.ts|preload.cts`, `client/surfaces/hud/auto-resize.ts`)
+The HUD `BrowserWindow` was created at a fixed 708×720 and nothing anywhere ever resized it, so below the
+painted bar sat ~570px of transparent, click-blocking window — the "box too big" dead zone. Root cause of
+the "fixed three times, still broken" history: the earlier passes each fixed an ADJACENT bug (Slice 7's
+invisible-HUD boot race, and a prior transparency override) — the `height: 720` literal was never edited,
+and the real fix (content-sized windowing) had been diagnosed and explicitly deferred as a design pass in
+this doc's own Slice 7 Deferred note. The window is frameless + transparent, so it can't rely on native
+resize; and it has no CSS drag region either, which is why sizing (like dragging) must be driven from the
+main process, not the page.
+
+Fix — the window is now CONTENT-sized, top-anchored (origin stays put, it grows/shrinks downward, so
+drag/position persistence is untouched):
+- `surfaces/hud/auto-resize.ts` (new, pure over an injected element + bridge + rAF, like `window-drag.ts`):
+  a `ResizeObserver` on the painted panel wrapper (NOT body/html/`.stage`, whose 100vh base would make the
+  measurement self-fulfilling — the window would only ever grow) reports `ceil(panel height) + 24` (the
+  stage's vertical padding) over the preload bridge. Reports coalesce to one per animation frame and dedupe
+  unchanged heights so a quiet HUD never churns. Reports once immediately on the initial paint.
+- `main/preload.cts`: a new `resize(height)` verb rides the same one-way `openinfoDrag` bridge as the drag
+  verbs — the renderer reports the measured content height, main applies it (`contextIsolation` on,
+  `nodeIntegration` off, no node surface reaches the page).
+- `main/hud-height.ts` (new, pure `resolveHudHeight`): clamps a raw measurement — non-finite (a torn-down
+  frame) falls back to the floor (never resize to garbage), fractional is ceiled (a floored pixel would clip
+  the last row), capped at `max` (the display work-area height — never grows off-screen), floored at
+  `HUD_MIN_HEIGHT`. Headless-testable so the clamp is asserted without a real window.
+- `main/window-options.ts`: `height: 720` → `HUD_MIN_HEIGHT` (new export, 144 — the floor the window opens
+  at and never shrinks below, tuned just under the real empty-state's measured 152px so a quiet HUD is
+  content-sized exactly, not floor-padded). `resizable: false` is kept — `setContentSize` still works
+  programmatically.
+- `main/shell.ts`: a `hud:resize` IPC handler → `resizeHudToContent` runs `resolveHudHeight` (floor
+  `HUD_MIN_HEIGHT`, ceiling = the matching display's work-area height) then `setContentSize`; unchanged
+  heights are skipped. When `hudOutline` is on it logs the measured → applied bounds.
+- `surfaces/hud/dev-entry.ts`: installs `installAutoResize` on the panel only inside the Electron shell
+  (`g.openinfoDrag` present); a plain browser (dev-hud.html) has no bridge and stays a normal scrollable
+  page.
+
+### Tests + verification
+Client 197 → 207 (+10 headless: `hud-height.test.ts` — ceil / floor-clamp / non-finite fallback / max-cap /
+passthrough; `auto-resize.test.ts` — initial report, fractional ceil, change-reported-vs-unchanged-deduped
+grow/shrink, disposer disconnects). Green unit tests are not proof the SERVED window resizes, so a driven
+Electron e2e (`scripts/hud-bounds-e2e.mjs`, `pnpm test:e2e:hud`) launches REAL Electron with the REAL
+hud.html + compiled preload against a minimal fake engine and asserts REAL window bounds follow content:
+empty 152px → 12 pushed moments 398px → cleared back to 152px, each within ±4px of the painted content and
+never ≥ 720. It is a "probe main" (the Slice 7 precedent) that mirrors `shell.ts`'s `hud:resize` handler
+verbatim — window under test, nothing else. Needs a GUI (darwin), so it is not wired into the default
+headless `test`.
