@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsc -p .",
     "test": "node --test 'dist/**/*.test.js'",
+    "test:e2e:hud": "pnpm build && electron scripts/hud-bounds-e2e.mjs",
     "start": "pnpm build && electron .",
     "package": "pnpm build && node scripts/package.mjs",
     "dmg": "pnpm build && node scripts/dmg.mjs"

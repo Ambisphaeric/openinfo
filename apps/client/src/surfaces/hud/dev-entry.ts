@@ -5,6 +5,7 @@ import { createBootController } from './boot.js'
 import type { HudTransport } from './transport.js'
 import { hudStyles, hudOutlineStyles } from './styles.js'
 import { installWindowDrag, type DragBridge } from './window-drag.js'
+import { installAutoResize, type ResizeBridge } from './auto-resize.js'
 
 /**
  * A plain-browser dev entry that renders the live HUD against a running engine — the mountable view
@@ -99,8 +100,8 @@ interface DevGlobal {
   }
   location?: { search: string }
   navigator?: { clipboard?: { writeText(text: string): Promise<void> } }
-  /** Present only inside the Electron shell (preload.ts) — absent in a plain browser. */
-  openinfoDrag?: DragBridge
+  /** Present only inside the Electron shell (preload.cts) — absent in a plain browser. */
+  openinfoDrag?: DragBridge & ResizeBridge
 }
 
 const clipboardCopy =
@@ -138,8 +139,10 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   stage.appendChild(panel)
   doc.body.appendChild(stage)
 
-  // In the Electron shell only: let the header strip drag the frameless window (preload.ts bridge).
+  // In the Electron shell only: let the header strip drag the frameless window (preload.cts bridge)…
   if (g.openinfoDrag) installWindowDrag(doc as unknown as Parameters<typeof installWindowDrag>[0], g.openinfoDrag)
+  // …and content-size the frameless window to the painted panel (never the 100vh stage — see auto-resize.ts).
+  if (g.openinfoDrag) installAutoResize(panel as unknown as Parameters<typeof installAutoResize>[0], g.openinfoDrag)
 
   const copy = clipboardCopy(g.navigator)
   let mounted = false

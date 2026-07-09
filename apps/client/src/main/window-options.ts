@@ -58,12 +58,25 @@ export interface HudWindowSpec {
 const PANEL_WIDTH = 660
 const WINDOW_MARGIN = 24
 
+/**
+ * The HUD is CONTENT-sized: the renderer measures the painted panel and the shell sets the window's
+ * content height to match (auto-resize.ts → hud:resize → shell.ts), so the transparent frame never
+ * extends past the panel into a click-blocking dead zone. This is the floor the window opens at and
+ * never shrinks below — sized to the empty-state bar (the Now line + section headers) so a quiet HUD
+ * shows no dead zone and never clips its own bar. Tuned against the real rendered empty state, which
+ * measures 152px (Now line + the two section headers) in the hud-bounds e2e — the floor sits just below
+ * it so a normal empty HUD is content-sized exactly (never a floor-induced dead zone) while a degenerate
+ * zero/torn-down measurement still yields a plausible bar. `resizable: false` is kept — setContentSize
+ * still works programmatically (asserted by the e2e).
+ */
+export const HUD_MIN_HEIGHT = 144
+
 export const hudWindowSpec = (opts: { startVisible?: boolean } = {}): HudWindowSpec => {
   const startVisible = opts.startVisible ?? false
   return {
     browserWindow: {
       width: PANEL_WIDTH + WINDOW_MARGIN * 2,
-      height: 720,
+      height: HUD_MIN_HEIGHT,
       frame: false,
       transparent: true,
       hasShadow: false,

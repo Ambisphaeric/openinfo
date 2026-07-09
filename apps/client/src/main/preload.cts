@@ -7,7 +7,12 @@ import { contextBridge, ipcRenderer } from 'electron'
  * `focusable: false`, frameless window can't use CSS `-webkit-app-region: drag` on macOS, so moving it
  * must happen in the main process. This exposes a coordinate-free start/end — the main process reads
  * the live cursor and moves the window (see shell.ts + window-position.ts) — keeping `contextIsolation`
- * on and `nodeIntegration` off (only these two channels cross, no node surface reaches the page).
+ * on and `nodeIntegration` off (only these channels cross, no node surface reaches the page).
+ *
+ * `resize` rides the same bridge: the frameless, transparent HUD is CONTENT-sized (see auto-resize.ts +
+ * shell.ts), and like dragging, only the main process can change the window's bounds — the renderer just
+ * reports the measured content height and main applies it (top-anchored). Same one-way, coordinate-light
+ * shape as the drag verbs.
  *
  * Authored as `.cts` (→ compiled `preload.cjs`): the client package is `type: module`, but Electron
  * loads a `.js` preload as CommonJS, so an ESM preload would fail to parse. `.cts` makes tsc emit real
@@ -16,4 +21,5 @@ import { contextBridge, ipcRenderer } from 'electron'
 contextBridge.exposeInMainWorld('openinfoDrag', {
   start: () => ipcRenderer.send('hud:drag-start'),
   end: () => ipcRenderer.send('hud:drag-end'),
+  resize: (height: number) => ipcRenderer.send('hud:resize', height),
 })

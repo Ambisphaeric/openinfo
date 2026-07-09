@@ -7,7 +7,8 @@ import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, native
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
-import { hudWindowSpec } from './window-options.js'
+import { hudWindowSpec, HUD_MIN_HEIGHT } from './window-options.js'
+import { resolveHudHeight } from './hud-height.js'
 import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
 import { settingsUrlFor, isLanEngine } from './permission-help.js'
@@ -312,6 +313,27 @@ const endWindowDrag = (): void => {
   }
   dragOffset = undefined
   scheduleSavePosition()
+}
+
+/**
+ * Content-size the frameless HUD to the panel the renderer just measured (hud:resize, from
+ * auto-resize.ts). The transparent window is otherwise a fixed frame whose empty lower portion blocks
+ * clicks; sizing it to content removes that dead zone. `measured` is CONTENT height, so setContentSize
+ * (not setSize). Top-left origin is left untouched, so the window grows/shrinks downward — drag/position
+ * persistence is unaffected. Capped at the display work-area so a runaway panel never grows off-screen,
+ * floored at HUD_MIN_HEIGHT (the empty-state bar). Unchanged heights are skipped to avoid churn.
+ */
+const resizeHudToContent = (measured: number): void => {
+  if (!hudWindow) return
+  const max = screen.getDisplayMatching(hudWindow.getBounds()).workArea.height
+  const height = resolveHudHeight(measured, { min: HUD_MIN_HEIGHT, max })
+  const [w = 0, currentHeight = 0] = hudWindow.getContentSize()
+  if (height === currentHeight) return
+  hudWindow.setContentSize(w, height)
+  if (cfg.hudOutline) {
+    const b = hudWindow.getBounds()
+    console.log(`[shell] hud:resize measured=${measured} → content ${w}×${height} · bounds ${b.width}×${b.height} @ ${b.x},${b.y}`)
+  }
 }
 
 const createTray = (): void => {
@@ -822,6 +844,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('hud:drag-start', () => startWindowDrag())
   ipcMain.on('hud:drag-end', () => endWindowDrag())
+  ipcMain.on('hud:resize', (_event, height: number) => resizeHudToContent(height))
   createHudWindow()
   createCaptureWindow()
   createTray()
