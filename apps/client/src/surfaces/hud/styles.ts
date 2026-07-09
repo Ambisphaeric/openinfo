@@ -62,6 +62,10 @@ body{margin:0;background:var(--page-bg);
 .rel .go{display:flex;gap:6px;padding-top:2px}
 .mini{padding:3px 10px;border-radius:6px;font-size:10.5px;font-weight:600;border:1px solid var(--s-line);color:var(--s-ink);background:rgba(27,31,40,.9);white-space:nowrap;cursor:pointer}
 .mini.ghost{background:transparent;color:var(--s-muted);font-weight:500}
+/* Transient copy feedback (mount.ts paints these onto the clicked button; a failed copy must be
+   visible, never a silent no-op — #43). Reverts after ~1.2s or on the next live re-render. */
+.mini.copied{border-color:rgba(77,164,122,.55);color:#7cc4a0;background:rgba(77,164,122,.14)}
+.mini.copyfail{border-color:rgba(224,106,60,.6);color:#e0865c;background:rgba(224,106,60,.14)}
 
 .mk.a{color:var(--m-artifact)} .mk.c{color:var(--m-commit)} .mk.q{color:var(--m-quest)}
 .mk.d{color:var(--m-decide)} .mk.p{color:var(--s-muted)}

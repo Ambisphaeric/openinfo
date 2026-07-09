@@ -1847,6 +1847,54 @@ rather than adding test cases; no contract or engine logic touched).
 The `hint` block renderer's own `items[]` shape (it reads `{text,excerpt}`, pins carry `{title,uri}`) and
 its stale P3 doc-comment — left untouched; #40 names only the pinned-doc renderer. `PUT`/`DELETE /pins/:id`.
 
+## Slice: #43 — copy action reports its outcome honestly (no silent no-op)
+
+Copy buttons "weren't working" — clicked, nothing happened, no error. The event delegation was sound
+(`block-renderer/mount.ts` wires ONE listener on the container, survives re-render), so the failure was
+downstream in the injected `CopyFn`: the shell's `clipboardCopy` (`hud/dev-entry.ts`) was
+`void nav?.clipboard?.writeText(text)` — a missing Clipboard API (insecure context / no renderer
+permission) made the optional chain evaluate to `undefined` and `void` swallowed it, and even when
+present a rejected `writeText` promise was discarded. No fallback, no feedback: a failed copy was
+indistinguishable from a dead button. `/settings` (engine-served) has no copy affordance, so nothing to
+do there. Copy is the only action verb wired to a real effect, so this is where honest action-verbs start.
+
+### Honest outcome (`hud/dev-entry.ts`)
+`clipboardCopy(nav, doc)` now: tries `navigator.clipboard.writeText`; on a missing API OR a rejected
+write, falls back to the temp-`<textarea>` + `document.execCommand('copy')` path (synchronous — append,
+select, copy, remove in one tick, no repaint/flash); resolves ONLY on a confirmed write and otherwise
+REJECTS. The outcome is now a real promise the caller can read, not a swallowed value.
+
+### Feedback at the mount altitude (`block-renderer/mount.ts`)
+The visible feedback lives in `wireActions`, NOT the HUD entry — this is the better altitude the issue
+called for: every surface mounted through `wireActions` gets it, not just the browser dev entry, and the
+public `CopyFn` seam stays untouched (`(text) => void | Promise<void>`). `paintCopyFeedback` awaits the
+copy outcome (`Promise.resolve(outcome).then(ok, fail)`) and flips the clicked button's label to
+`Copied` / `Copy failed` plus a `copied` / `copyfail` class (styled in `hud/styles.ts`, matching the
+`.hud-boot-status` "never fail invisibly" idiom), reverting after ~1.2s (an unref'd timer — browser
+timers have no `unref`, so it never holds a node process open) or on the next live re-render, which
+simply repaints the button and discards a stale transient state. Driven by the real result, not
+fire-and-forget. The structural `MountClickEvent` element type gained `textContent`/`className` (both on
+every real DOM Element, so a live button satisfies it with no cast).
+
+### Tests + verification
+New file `client/surfaces/hud/copy-feedback.test.ts` (7 driven tests) — wires the REAL `clipboardCopy`
+through the REAL `wireActions` (not just markup assertions):
+- copy verb delegated AFTER a `renderInto` re-render, carrying the exact `data-copy` text to the injected
+  `CopyFn`; a non-copy verb stays inert.
+- working clipboard → the exact text reaches `writeText` AND the button paints `Copied`/`.copied`.
+- unavailable clipboard + failing `execCommand` fallback → the button paints `Copy failed`/`.copyfail` —
+  the never-silent guarantee.
+- `clipboardCopy` unit outcomes: resolves via the async API forwarding the exact text; falls back to the
+  textarea when the API is absent; falls back when the API rejects (denied/insecure); rejects when every
+  path fails.
+- Did NOT touch `renderer.test.ts` (a parallel PR is active there).
+- `pnpm -r build` green; `pnpm -r test`: client 238 (was 231; +7 here), the one red is the known
+  `engine-link/seam.test.ts` client-seam TOCTOU parallel-load flake — passed 3/3 on isolated rerun.
+
+### Out of scope (recorded, NOT built)
+A shared toast/affordance for the still-inert verbs (dismiss/mark-done/draft-with have no write path yet
+— PHASE2-NOTES); a `navigator.permissions` pre-check (the try/await-or-fallback already covers denial).
+
 ## Slice: #9 — todos block + query source
 
 The pipeline already extracted follow-ups (`task-extract`, P4A) into versioned to-do documents and served
