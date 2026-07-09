@@ -3,6 +3,7 @@ import { Id, IsoTime } from '../common.js'
 import { Entity } from '../records/entity.js'
 import { Moment } from '../records/moment.js'
 import { StarterModel } from '../config/local.js'
+import { AttributionPattern } from '../config/hints.js'
 
 export const Health = Type.Object(
   {
@@ -261,6 +262,25 @@ export const RelevantEntity = Type.Object(
   { $id: 'RelevantEntity', additionalProperties: false },
 )
 export type RelevantEntity = Static<typeof RelevantEntity>
+
+/**
+ * A SUGGESTED attribution-hint pattern derived from a workspace's teaching signals (the teach loop's
+ * `deriveHintCandidates`, ARCHITECTURE §10 item 2) — the GET /teach/candidates read, the inspectable
+ * "these corrections suggest this rule" chip a surface renders. It is CONSUMABLE OUTPUT ONLY: never
+ * auto-applied to `route/hints` (a human reviews a candidate and, if right, adds it — the loop suggests,
+ * the user applies). `supportCount` is how many distinct reroutes back the exact (field, contains);
+ * `sampleSessionIds` are the corrections behind it, so a candidate is always traceable to its evidence.
+ */
+export const HintCandidate = Type.Object(
+  {
+    workspaceId: Id,
+    pattern: AttributionPattern,
+    supportCount: Type.Integer({ minimum: 1, description: 'distinct reroutes supporting this exact (field, contains)' }),
+    sampleSessionIds: Type.Array(Id, { description: 'the reroutes behind the candidate — always traceable to its corrections' }),
+  },
+  { $id: 'HintCandidate', additionalProperties: false },
+)
+export type HintCandidate = Static<typeof HintCandidate>
 
 /**
  * The result of compiling a BlockQuery server-side (POST /query). A BlockQuery is "compiled

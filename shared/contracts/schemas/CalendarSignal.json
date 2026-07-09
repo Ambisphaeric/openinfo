@@ -1,0 +1,38 @@
+{
+  "$id": "CalendarSignal",
+  "additionalProperties": false,
+  "description": "decoded content of a calendar routing signal — meeting context, not a transcript",
+  "type": "object",
+  "required": [
+    "eventTitle"
+  ],
+  "properties": {
+    "eventTitle": {
+      "minLength": 1,
+      "description": "the event title/summary, e.g. \"openinfo weekly sync\"",
+      "type": "string"
+    },
+    "attendees": {
+      "description": "attendee display names and/or emails, as Calendar.app exposes them",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "calendarName": {
+      "description": "the calendar the event belongs to, e.g. \"Work\"",
+      "type": "string"
+    },
+    "startsAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "endsAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}
