@@ -26,8 +26,8 @@ const resolveScope = (store: WorkspaceRegistry, params: BlockQuery['params']): {
 /**
  * Compile a BlockQuery to store calls — the Phase-0 decision (surface.ts): the declarative JSON
  * pipeline is compiled server-side so a custom block can never express what the engine wouldn't
- * allow. Sources whose backing store exists (relevant-now, moments, sessions, entities) hydrate;
- * sources whose store lands later (ledger P4, pins P3) return `[]` with documented semantics, NOT an
+ * allow. Sources whose backing store exists (relevant-now, moments, sessions, entities, pins)
+ * hydrate; `ledger`'s store lands later (P4) so it returns `[]` with documented semantics, NOT an
  * error — a HUD composing a ledger block before P4 shows an empty, explainable block. `top` bounds
  * the returned rows; `truncated` reports whether more existed (HUD shows top-K, workbench holds rest).
  * Reads exclusively through store/ (the DB-handle rule); an unknown workspace reads as [].
@@ -56,9 +56,12 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       return cap(known ? store.listSessions(workspaceId) : [])
     case 'entities':
       return cap(known ? store.listEntities(workspaceId) : [])
-    case 'ledger':
     case 'pins':
-      // Backing store not built yet (ledger P4, pins P3): empty, explainable, not an error.
+      // Pinned canon (P4D): workspace-level records, most-recently-created first (listPins mirrors
+      // listEntities — unknown workspace reads as [], never an error).
+      return cap(known ? store.listPins(workspaceId) : [])
+    case 'ledger':
+      // Backing store not built yet (ledger P4): empty, explainable, not an error.
       return cap([])
     default:
       return cap([])

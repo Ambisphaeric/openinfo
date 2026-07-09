@@ -446,6 +446,66 @@ test('POST /query compiles block queries to store calls (moments, relevant-now, 
   }
 })
 
+test('e2e: a pinned-doc surface hydrates its pins block from the store over POST /query', async () => {
+  // The served surface here is the DATA path the HUD drives: GET the surface for the layout, POST /query
+  // per block. This slice reconnected `source: 'pins'` to the store — before, that route returned [] and a
+  // pinned-doc block was silently empty even with real pins. This drives the whole served path over the
+  // live server: ingest a pin (POST /pins), author a surface carrying a pinned-doc block whose query is
+  // `source: 'pins'` (PUT /layouts/surfaces/:id), then POST that block's query and assert the pin hydrates.
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-pins-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // ingest a pin over the real route (POST /pins) — its workspace comes from the body
+    const pin: Pin = {
+      id: 'pin-soc2', workspaceId: 'ws-pins', uri: 'file:///soc2.pdf', title: 'SOC 2 Type II report',
+      kind: 'pdf', ingest: { status: 'ingested', pages: 12, chunks: 24 }, createdAt: '2026-07-07T14:00:00Z',
+    }
+    assert.equal((await fetch(`${base}/pins`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pin),
+    })).status, 200)
+
+    // author a surface with a pinned-doc block bound to the pins source (saving a layout is not flagged)
+    const surface: Surface = {
+      id: 'surf-pins', name: 'Pins', context: 'meeting', version: 1,
+      stack: [
+        { block: 'now' },
+        { block: 'pinned-doc', show: 'on-match', query: { source: 'pins', params: { workspace: 'ws-pins' }, top: 1 } },
+      ],
+    }
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-pins`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface),
+    })).status, 200)
+
+    // hydrate exactly as the client will: GET the surface, POST /query for the pinned-doc block
+    const served = (await (await fetch(`${base}/layouts/surfaces/surf-pins`)).json()) as Surface
+    const pinnedBlock = served.stack.find((b) => b.block === 'pinned-doc')!
+    const result = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pinnedBlock.query),
+    })).json()) as QueryResult
+    // THE PROOF: the pins block now hydrates the ingested pin (the reconnect) — title + uri round-trip
+    assert.equal(result.source, 'pins')
+    assert.equal((result.items as Pin[]).length, 1)
+    assert.equal((result.items as Pin[])[0]!.title, 'SOC 2 Type II report')
+    assert.equal((result.items as Pin[])[0]!.uri, 'file:///soc2.pdf')
+
+    // an empty backing store renders explainable-empty (items: [], not an error) — a workspace with no pins
+    const empty = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'pins', params: { workspace: 'ws-nopins' }, top: 1 }),
+    })).json()) as QueryResult
+    assert.deepEqual(empty.items, [])
+    assert.equal(empty.truncated, false)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('e2e: fake llm + seeded HUD surface → data hydration round-trip through the API', async () => {
   const llm = await startFakeLlm()
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))

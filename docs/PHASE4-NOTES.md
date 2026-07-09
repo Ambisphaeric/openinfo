@@ -1676,3 +1676,47 @@ passes isolated and on re-run — untouched by this slice).
 ### Out of scope (recorded, NOT built)
 Two-stream mic/system-audio separation, conversation-gated merging, diarization, tiered summaries,
 TTS/kokoro. This slice is the canonical transcript contract + adapters + the seam proven live only.
+
+## Slice: #8 — wire the pins query source to the pins store
+
+The `pinned-doc` block already shipped in the renderer and the pins store already existed (P4D:
+`savePin`/`listPins`, the `pins`/`pin_chunks` tables, the ingest lifecycle over `POST /pins`), but the
+query compiler still returned `[]` for `source: 'pins'` — pins shared the `ledger` arm with a "backing
+store not built yet" comment. So a pinned-doc block was silently empty even against a workspace full of
+ingested pins. This is a one-file reconnect: the store was there, the wire was not.
+
+### The reconnect (`surfaces/query.ts`)
+`compileQuery` splits `pins` out of the shared `ledger`/`pins` arm and resolves it exactly like the
+`entities` arm — `cap(known ? store.listPins(workspaceId) : [])` — so pins hydrate workspace-scoped,
+most-recently-created first (listPins order), an unknown workspace reads as `[]` (never an error), and
+`top` caps/flags truncation through the shared `cap`. `ledger` keeps returning `[]` (its store is
+genuinely absent, P4) with a comment that now speaks only of ledger; the `compileQuery` doc comment no
+longer claims "pins P3" lands later. No contract change: `QueryResult.items` is `Type.Array(Unknown)`
+and its element shape is already documented `pins→Pin` in `payloads.ts`, so `Pin[]` satisfies it as-is.
+
+### Tests
+Engine 474 → 476, client 207 → 208 (contracts 62 unchanged — no contract touched).
+- `surfaces/query.test.ts` — a seeded store returns real pins through `compileQuery` (newest-first,
+  `top` caps + `truncated`), a KNOWN workspace with no pins reads `[]`, and the unbuilt-store test now
+  covers `ledger` alone plus an unknown-workspace `pins` read (all `[]`, never a throw).
+- `api/http.test.ts` — a served-surface e2e over the live server: ingest a pin via `POST /pins`, author
+  a surface carrying a `pinned-doc` block whose query is `source: 'pins'` (`PUT /layouts/surfaces/:id`),
+  then GET the surface and `POST /query` for that block exactly as the client hydrates — the pin's title
+  and uri round-trip back. A second `POST /query` against a pin-less workspace returns `items: []`
+  (explainable-empty, not an error). This drives the exact route that was returning `[]`.
+- `client/.../block-renderer/renderer.test.ts` — the render half: an on-match `pinned-doc` block that
+  used to stay hidden on empty items becomes visible once its pins query hydrates, and hides again on an
+  empty result (explainable-empty, never a broken card).
+
+### Surprise (recorded)
+The `pinned-doc` renderer does NOT yet consume `result.items` — it surfaces the configured
+`query.params.doc` reference plus a static "ingestion & page-anchored answers land in P3" why-line. So
+wiring the query source makes real pins DRIVE the block (on-match visibility, and the data is now on the
+`POST /query` wire), but rendering a live per-pin excerpt/title from `items[]` is a follow-up renderer
+slice (a client UI change, out of scope here). The pins-flavor future note in `features.ts` /
+`surface-editor.ts` (`pins store lands in P3`) is also now stale copy — left untouched (settings/UI
+files are out of scope this slice).
+
+### Out of scope (recorded, NOT built)
+Pinned-doc renderer consuming `items[]` (live excerpt/title), the stale "pins store lands in P3" copy in
+the settings features/editor notes, `PUT`/`DELETE /pins/:id`.

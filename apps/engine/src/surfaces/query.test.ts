@@ -3,12 +3,17 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Moment, RelevantEntity, Session } from '@openinfo/contracts'
+import type { Moment, Pin, RelevantEntity, Session } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { compileQuery } from './query.js'
 
 const moment = (id: string, sessionId: string, at: string, refs: string[] = []): Moment => ({
   id, sessionId, workspaceId: 'ws-q', at, kind: 'decision', text: `moment ${id}`, refs, source: 'mic', confidence: 0.8,
+})
+
+const pin = (id: string, title: string, createdAt: string): Pin => ({
+  id, workspaceId: 'ws-q', uri: `file:///${id}.pdf`, title, kind: 'pdf',
+  ingest: { status: 'ingested', pages: 3, chunks: 6 }, createdAt,
 })
 
 test('compileQuery hydrates each backed source, respects top, and reports truncation', async () => {
@@ -75,21 +80,53 @@ test('compileQuery binds session "current" to the workspace live session', async
   }
 })
 
-test('compileQuery returns [] (not an error) for unbuilt stores and unknown workspaces', async () => {
+test('compileQuery resolves the pins source through the store (most-recent first, top caps + truncates)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-pins-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    store.savePin(pin('pin-1', 'SOC 2 Type II report', '2026-07-07T14:00:00Z'))
+    store.savePin(pin('pin-2', 'MSA v3 redlines', '2026-07-07T14:30:00Z'))
+    store.savePin(pin('pin-3', 'Security questionnaire', '2026-07-07T14:45:00Z'))
+
+    // pins hydrate from the store, most-recently-created first (listPins order)
+    const all = compileQuery(store, { source: 'pins', params: { workspace: 'ws-q' } })
+    assert.equal(all.source, 'pins')
+    assert.deepEqual((all.items as Pin[]).map((p) => p.id), ['pin-3', 'pin-2', 'pin-1'])
+    assert.equal((all.items as Pin[])[0]!.title, 'Security questionnaire')
+    assert.equal(all.truncated, false)
+
+    // top caps the returned rows and flags truncation (3 exist, 2 returned)
+    const capped = compileQuery(store, { source: 'pins', params: { workspace: 'ws-q' }, top: 2 })
+    assert.deepEqual((capped.items as Pin[]).map((p) => p.id), ['pin-3', 'pin-2'])
+    assert.equal(capped.top, 2)
+    assert.equal(capped.truncated, true)
+
+    // a KNOWN workspace with no pins reads as an empty list (explainable-empty, not an error)
+    store.upsertEntity({ workspaceId: 'ws-empty', kind: 'topic', name: 'x', seenAt: '2026-07-07T14:00:00Z' })
+    const none = compileQuery(store, { source: 'pins', params: { workspace: 'ws-empty' } })
+    assert.deepEqual(none.items, [])
+    assert.equal(none.truncated, false)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileQuery returns [] (not an error) for the unbuilt ledger store and unknown workspaces', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-empty-'))
   const store = new WorkspaceRegistry(dir)
   try {
-    // ledger (P4) and pins (P3) have no backing store yet → empty, explainable, never throws
-    for (const source of ['ledger', 'pins'] as const) {
-      const result = compileQuery(store, { source, params: {}, top: 2 })
-      assert.deepEqual(result.items, [])
-      assert.equal(result.truncated, false)
-      assert.equal(result.source, source)
-    }
-    // unknown workspace reads as [] across backed sources too
+    // ledger (P4) has no backing store yet → empty, explainable, never throws
+    const ledger = compileQuery(store, { source: 'ledger', params: {}, top: 2 })
+    assert.deepEqual(ledger.items, [])
+    assert.equal(ledger.truncated, false)
+    assert.equal(ledger.source, 'ledger')
+
+    // unknown workspace reads as [] across every backed source (pins included), never an error
     assert.deepEqual(compileQuery(store, { source: 'moments', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'relevant-now', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'entities', params: { workspace: 'nowhere' } }).items, [])
+    assert.deepEqual(compileQuery(store, { source: 'pins', params: { workspace: 'nowhere' } }).items, [])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })
