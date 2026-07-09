@@ -1299,6 +1299,36 @@ test('POST /fabric/test probe:generate — a pings-200-but-model-load-400 server
   }
 })
 
+test('POST /fabric/test probe:generate — a reasoning model that spends the 1-token budget thinking still passes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  // A qwen3.5/LFM2.5-class reasoner burns the probe's whole budget on reasoning (content '', finish length).
+  // The probe exists to prove the model LOADED and generated — which it did — so this is generation ✓ with
+  // a note, not a failure that would mark every reasoning-model endpoint untestable.
+  const up = await startFakeChat({
+    status: 200,
+    body: JSON.stringify({ choices: [{ message: { content: '', reasoning_content: 'thinking…' }, finish_reason: 'length' }] }),
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const probe = (await (await fetch(`${base}/fabric/test`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'http', name: 'lm', url: up.url, api: 'openai-compat', model: 'lfm2.5-8b-a1b', probe: 'generate', slot: 'llm' }),
+    })).json()) as { ok: boolean; generate?: { ok: boolean; latencyMs?: number; note?: string } }
+    assert.equal(probe.ok, true)
+    assert.equal(probe.generate?.ok, true) // the model loaded and generated — the probe's purpose
+    assert.equal(typeof probe.generate?.latencyMs, 'number')
+    assert.match(probe.generate?.note ?? '', /thinking/) // but say WHY there was no content
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('POST /fabric/test probe:generate — auth 401 and stt-skip', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })

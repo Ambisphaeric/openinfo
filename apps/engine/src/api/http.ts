@@ -601,6 +601,12 @@ async function runGenerateProbe(endpoint: Endpoint, slot: string | undefined, ct
   } catch (error) {
     const classified = describeInvokeFailure(error)
     if (!classified) return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    // A reasoning model spends the probe's whole 1-token budget THINKING (qwen3.5/LFM2.5-class) — the
+    // server answered, the model LOADED and generated a token, which is exactly what this probe exists
+    // to prove. Count it as generation ✓ with a note; real invocations run with a real token budget.
+    if (classified.class === 'reasoning-exhausted') {
+      return { ok: true, latencyMs: Math.round(performance.now() - started), note: 'reasoning model — probe budget went to thinking; the model loaded and generated' }
+    }
     const hint = await enrichFailureHint(classified)
     return {
       ok: false,
