@@ -104,21 +104,24 @@ test('show/collapsed/top are honoured, and two different documents produce two d
   assert.notEqual(glassHtml, renderToHtml(renderSurface({ surface: hudSurface, now, results: [undefined, result('relevant-now', []), result('moments', [])] }, defaultBlockRegistry)))
 })
 
-test('a pinned-doc block renders when its pins query hydrates, and hides (on-match) when the store is empty', () => {
-  // The render half of the pins reconnect: `compileQuery('pins')` now returns real pins, so an on-match
-  // pinned-doc block that used to stay hidden (empty items) becomes visible once its query hydrates. The
-  // pinned-doc renderer surfaces the configured doc reference (`query.params.doc`) + an explainable
-  // why-line; consuming `result.items[].title` for a live excerpt is a follow-up renderer slice.
+test('a pinned-doc block renders the hydrated pin from the store, and hides (on-match) when it is empty', () => {
+  // The render half of the pins reconnect (#8 wired the store): the pinned-doc renderer now reads the
+  // hydrated `result.items` — one row per Pin with its store-derived title, kind and ingest state — not
+  // the static `query.params.doc`. The configured reference stays only as the empty/fallback body.
   const surface: Surface = {
     id: 's', name: 's', context: 'meeting', version: 1,
-    stack: [{ block: 'now' }, { block: 'pinned-doc', show: 'on-match', query: { source: 'pins', params: { doc: 'SOC 2 Type II report' } } }],
+    stack: [{ block: 'now' }, { block: 'pinned-doc', show: 'on-match', query: { source: 'pins', params: { doc: 'configured placeholder' } }, actions: [{ id: 'a-copy', label: 'Copy', verb: 'copy', params: {} }] }],
   }
-  const soc2Pin = { id: 'pin-soc2', workspaceId: 'ws', uri: 'file:///soc2.pdf', title: 'SOC 2 Type II report', kind: 'pdf', ingest: { status: 'ingested' }, createdAt: '2026-07-07T14:00:00Z' }
+  // the seeded pin's title deliberately differs from `params.doc` so a pass proves store-derived content
+  const soc2Pin = { id: 'pin-soc2', workspaceId: 'ws', uri: 'file:///soc2.pdf', title: 'SOC 2 Type II report', kind: 'pdf', ingest: { status: 'ingested', pages: 42 }, createdAt: '2026-07-07T14:00:00Z' }
 
-  // hydrated: a non-empty pins result makes the on-match block visible and names the pinned doc
+  // hydrated: the on-match block becomes visible and renders the PIN's title (not the configured doc)
   const hydrated = renderToHtml(renderSurface({ surface, now: { live: true }, results: [undefined, result('pins', [soc2Pin])] }, defaultBlockRegistry))
   assert.match(hydrated, /Pinned/)
-  assert.match(hydrated, /SOC 2 Type II report/)
+  assert.match(hydrated, /SOC 2 Type II report/) // store-derived title
+  assert.doesNotMatch(hydrated, /configured placeholder/) // the static reference is NOT what rendered
+  assert.match(hydrated, /ingested · 42 pages/) // why-line built from the Pin's ingest state
+  assert.match(hydrated, /data-copy="SOC 2 Type II report — file:\/\/\/soc2\.pdf"/) // copy carries title + uri
 
   // empty backing store: on-match + zero items hides the block — explainable-empty, never a broken card
   const empty = renderToHtml(renderSurface({ surface, now: { live: true }, results: [undefined, result('pins', [])] }, defaultBlockRegistry))
@@ -132,5 +135,5 @@ test('an unknown/future block type degrades via the custom fallback instead of b
   }
   const html = renderToHtml(renderSurface({ surface, now: { live: false }, results: [undefined, result('pins', [])] }, defaultBlockRegistry))
   assert.match(html, /class="livedot off"/) // no live session → dead heartbeat
-  assert.match(html, /soc2/) // pinned-doc shows its configured reference (ingestion is P3)
+  assert.match(html, /soc2/) // empty pins store → pinned-doc falls back to its configured reference
 })
