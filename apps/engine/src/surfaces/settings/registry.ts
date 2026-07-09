@@ -1,4 +1,4 @@
-import { escapeHtml, getStartedHtml, editorHtml, hudLayoutSection, profilesHtml, secretsHtml, starterOfferHtml, tryItHtml, type SetupData } from '../setup/view.js'
+import { escapeHtml, getStartedHtml, editorHtml, hudLayoutSection, localRuntimesHtml, profilesHtml, secretsHtml, starterOfferHtml, tryItHtml, type SetupData } from '../setup/view.js'
 import { renderBenchmarks } from './sections/benchmarks.js'
 import { renderFeatures } from './sections/features.js'
 import { renderPrivacy } from './sections/privacy.js'
@@ -67,13 +67,21 @@ const profilesBody = (data: SetupData): string =>
   'Activate one to make it the live fabric; edit endpoints under Endpoints.</div>' +
   profilesHtml(data)
 
-/** Local-runtimes body: the starter-model catalog (download/run llama.cpp / whisper.cpp), always shown. */
+/**
+ * Local-runtimes body: the runtime servers discovery FOUND on this machine (adopted mlx/omlx etc., with
+ * their parakeet-style stt models grouped by slot) FIRST, then the starter-model catalog (download/run
+ * llama.cpp / whisper.cpp). The discovered block only appears when discovery ran for this section (the
+ * route runs it for get-started AND local-runtimes) and something answered.
+ */
 const localRuntimesBody = (data: SetupData): string => {
+  const detected = data.discovery ? localRuntimesHtml(data.discovery.servers) : ''
   const offer = starterOfferHtml(data.localModels ?? [])
   return (
-    '<div class="sub">No server needed — openinfo can fetch a small model and run it for you locally ' +
-    '(llama.cpp for chat, whisper.cpp for audio). Downloaded models become <span class="mono">local</span> endpoints.</div>' +
-    (offer || '<div class="card"><div class="note">No starter models are catalogued.</div></div>')
+    '<div class="sub">Runtimes openinfo can use locally: servers already running on this machine (adopted over ' +
+    'HTTP), and starter models openinfo can fetch and run for you (llama.cpp for chat, whisper.cpp for audio — ' +
+    'downloaded models become <span class="mono">local</span> endpoints).</div>' +
+    detected +
+    (offer || (detected ? '' : '<div class="card"><div class="note">No runtimes detected and no starter models are catalogued.</div></div>'))
   )
 }
 

@@ -464,6 +464,66 @@ export const starterOfferHtml = (models: LocalModelStatus[]): string => {
   )
 }
 
+// --- Detected runtime servers in "Local runtimes" (RUNTIME-TRUTH slice) ----------------------------
+// The Local-runtimes section used to render ONLY the download catalog (starterOfferHtml), so a discovered
+// mlx/omlx server — and its parakeet-class stt models — was invisible there. These render the servers
+// discovery already found (the SAME DiscoverResult the Get-started lens uses): each with its name/flavor,
+// reachable / needs-key state, and its models grouped by the slot the capability map guessed. They are
+// ADOPTED (managed externally over HTTP), never downloaded/spawned here — the honest contrast with the
+// starter catalog below. Pure and exported so the states are asserted headless.
+
+export type DiscoveredRuntime = DiscoverResult['servers'][number]
+
+/** A discovered server's state chip: reachable (ok), reachable-but-wants-a-key (warn), or no answer (bad). Pure. */
+export const runtimeStateChip = (server: DiscoveredRuntime): { cls: 'ok' | 'warn' | 'bad'; text: string } => {
+  if (server.reachable && !server.authRequired) return { cls: 'ok', text: 'reachable' }
+  if (server.authRequired) return { cls: 'warn', text: 'reachable · needs a key' }
+  return { cls: 'bad', text: server.error ? `no answer — ${server.error}` : 'no answer' }
+}
+
+/** Group a server's discovered models by slot (canonical ALL_SLOTS order); a multi-slot model appears under each. Pure. */
+export const runtimeModelsBySlot = (models: DiscoveredRuntime['models']): Array<{ slot: string; ids: string[] }> =>
+  ALL_SLOTS.map((slot) => ({ slot: String(slot), ids: models.filter((m) => (m.slots as readonly string[]).includes(slot)).map((m) => m.id) })).filter((g) => g.ids.length > 0)
+
+/** One discovered runtime server card: name/flavor · url · state, then its models grouped by slot guess. */
+const runtimeCardHtml = (server: DiscoveredRuntime): string => {
+  const chip = runtimeStateChip(server)
+  const groups = runtimeModelsBySlot(server.models)
+  const slotLines = groups.length
+    ? `<div class="rt-slots">${groups.map((g) => `<div class="rt-slot"><b>${escapeHtml(g.slot)}</b>${escapeHtml(g.ids.join(', '))}</div>`).join('')}</div>`
+    : server.reachable && !server.authRequired
+      ? '<div class="rt-slot" style="color:var(--faint)">reachable — no models loaded on this server</div>'
+      : ''
+  return (
+    `<div class="runtime">` +
+    `<div class="runtime-head"><span class="runtime-name">${escapeHtml(server.name)}</span>` +
+    `<span class="runtime-url">${escapeHtml(server.url)}</span>` +
+    `<span class="rt-state ${chip.cls}">${escapeHtml(chip.text)}</span>` +
+    `<span class="badge">adopted · managed externally</span></div>` +
+    slotLines +
+    `</div>`
+  )
+}
+
+/**
+ * The detected-runtimes block for the Local-runtimes section: every server discovery found that ANSWERED
+ * (reachable, or present-but-wants-a-key like omlx) rendered as an adopted runtime with its models grouped
+ * by slot — so parakeet-style stt on an mlx/omlx server is finally visible here. Servers that did not answer
+ * are omitted (the Get-started lens is where "nothing responded" is diagnosed). '' when none answered — the
+ * caller then leads with the download catalog. Pure.
+ */
+export const localRuntimesHtml = (servers: DiscoveredRuntime[]): string => {
+  const detected = servers.filter((s) => s.reachable || s.authRequired)
+  if (detected.length === 0) return ''
+  return (
+    '<div class="card runtimes"><div class="starter-head">Detected runtimes</div>' +
+    '<div class="sub">Model servers running on this machine, adopted over HTTP — openinfo talks to them, it does not download or ' +
+    'spawn them (an mlx/omlx server is managed externally). Their models are grouped by the capability slot their names classified into.</div>' +
+    detected.map(runtimeCardHtml).join('') +
+    '</div>'
+  )
+}
+
 export const getStartedHtml = (discovery: DiscoverResult, localModels: LocalModelStatus[]): string => {
   const reachable = discovery.servers.filter((s) => s.reachable)
   const modelCount = reachable.reduce((n, s) => n + s.models.length, 0)

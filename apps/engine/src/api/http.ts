@@ -470,10 +470,11 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
   const requested = pathId || (editParam ? 'endpoints' : wantDiscover ? 'get-started' : defaultSectionId(data))
   const active = sectionById(requested) ?? sectionById(defaultSectionId(data))!
 
-  // The Get-Started capability lens runs discovery (localhost probes) — but ONLY when that section is
-  // what we're rendering, so navigating any other section stays cheap. A probe that names a keyRef
-  // (omlx) is retried with the stored secret; the value never leaves the call, only the ref is named.
-  if (active.id === 'get-started') {
+  // Discovery (localhost probes) runs ONLY for the two sections that render its result — Get-started's
+  // capability lens and Local-runtimes' detected-servers block — so navigating any other section stays
+  // cheap. A probe that names a keyRef (omlx) is retried with the stored secret; the value never leaves
+  // the call, only the ref is named.
+  if (active.id === 'get-started' || active.id === 'local-runtimes') {
     data.discovery = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap(), {
       resolveKey: (ref) => ctx.secrets.resolve(ref),
     })

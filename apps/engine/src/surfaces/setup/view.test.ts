@@ -9,6 +9,10 @@ import {
   firstRunNotice,
   getStartedHtml,
   groupModelsForSlot,
+  localRuntimesHtml,
+  runtimeModelsBySlot,
+  runtimeStateChip,
+  type DiscoveredRuntime,
   jsonForScript,
   modelDropdownHtml,
   momentGlyph,
@@ -503,4 +507,56 @@ test('http rows carry the advanced request-extras field, seeded from the endpoin
   // its value is the endpoint's extras as JSON (escaped) — so the save path reads it back unchanged
   assert.match(html, /class="f-extras"[^>]*value="[^"]*chatTemplateKwargs[^"]*enable_thinking/)
   assert.match(rowTemplateHtml([]), /class="f-extras"/) // and a fresh add-row row has it too
+})
+
+// --- Detected runtimes in "Local runtimes" (RUNTIME-TRUTH slice) -----------------------------------
+
+const runtime = (over: Partial<DiscoveredRuntime> = {}): DiscoveredRuntime => ({
+  name: 'omlx',
+  url: 'http://localhost:8000',
+  reachable: true,
+  models: [{ id: 'parakeet-tdt_ctc-110m', slots: ['stt'] }],
+  ...over,
+})
+
+test('runtimeStateChip classifies reachable / needs-key / no-answer', () => {
+  assert.deepEqual(runtimeStateChip(runtime({ reachable: true })), { cls: 'ok', text: 'reachable' })
+  assert.deepEqual(runtimeStateChip(runtime({ reachable: true, authRequired: true })), { cls: 'warn', text: 'reachable · needs a key' })
+  assert.equal(runtimeStateChip(runtime({ reachable: false, error: 'ECONNREFUSED' })).cls, 'bad')
+  assert.match(runtimeStateChip(runtime({ reachable: false, error: 'ECONNREFUSED' })).text, /ECONNREFUSED/)
+})
+
+test('runtimeModelsBySlot groups by canonical slot order; a multi-slot model appears under each', () => {
+  const groups = runtimeModelsBySlot([
+    { id: 'qwen3-8b', slots: ['llm'] },
+    { id: 'parakeet-tdt_ctc-110m', slots: ['stt'] },
+    { id: 'qwen2-vl', slots: ['vlm', 'llm'] },
+  ])
+  // llm before stt before vlm (ALL_SLOTS order), and qwen2-vl is under both llm and vlm.
+  assert.deepEqual(groups.map((g) => g.slot), ['llm', 'stt', 'vlm'])
+  assert.deepEqual(groups.find((g) => g.slot === 'llm')!.ids, ['qwen3-8b', 'qwen2-vl'])
+  assert.deepEqual(groups.find((g) => g.slot === 'stt')!.ids, ['parakeet-tdt_ctc-110m'])
+})
+
+test('localRuntimesHtml renders an adopted omlx/mlx server with its parakeet stt model visible', () => {
+  const html = localRuntimesHtml([runtime()])
+  assert.match(html, /omlx/)
+  assert.match(html, /adopted · managed externally/) // adopt-only, not downloadable
+  assert.match(html, /parakeet-tdt_ctc-110m/) // parakeet-style stt is now visible here
+  assert.match(html, /<b>stt<\/b>/) // grouped under its slot guess
+})
+
+test('localRuntimesHtml shows an authRequired server (present, wants a key) and omits servers that did not answer', () => {
+  const html = localRuntimesHtml([
+    runtime({ name: 'omlx', reachable: true, authRequired: true, models: [] }),
+    runtime({ name: 'ollama', reachable: false, models: [], error: 'fetch failed' }),
+  ])
+  assert.match(html, /omlx/)
+  assert.match(html, /needs a key/)
+  assert.doesNotMatch(html, /ollama/) // a silent probe is not surfaced here (the Get-started lens diagnoses that)
+})
+
+test('localRuntimesHtml is empty when nothing answered — the caller then leads with the download catalog', () => {
+  assert.equal(localRuntimesHtml([{ name: 'ollama', url: 'http://localhost:11434', reachable: false, models: [], error: 'x' }]), '')
+  assert.equal(localRuntimesHtml([]), '')
 })

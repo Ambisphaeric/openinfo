@@ -88,6 +88,17 @@ a:hover{text-decoration:underline}
 .starter-hint code{font-family:var(--mono);background:#0c0e13;border:1px solid var(--line);border-radius:5px;padding:1px 6px}
 .starter-progress{color:var(--accent);font-family:var(--mono);font-size:12px}
 .starter-error{color:var(--bad);font-size:12px}
+.runtimes{margin-bottom:16px}
+.runtime{padding:10px 0;border-top:1px solid var(--line)}
+.runtime:first-of-type{border-top:0}
+.runtime-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.runtime-name{font-size:13px;font-weight:600}
+.runtime-url{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.rt-state{font-family:var(--mono);font-size:11px}
+.rt-state.ok{color:var(--ok)}.rt-state.warn{color:var(--warn)}.rt-state.bad{color:var(--bad)}
+.rt-slots{margin-top:6px;display:flex;flex-direction:column;gap:3px}
+.rt-slot{font-size:12px;color:var(--muted)}
+.rt-slot b{color:var(--accent);font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;font-weight:600;margin-right:6px}
 details.advanced{margin-top:24px;border-top:1px solid var(--line);padding-top:8px}
 details.advanced>summary{cursor:pointer;font-size:11px;font-weight:600;letter-spacing:.14em;
   text-transform:uppercase;color:var(--faint);padding:8px 0;list-style-position:inside}
