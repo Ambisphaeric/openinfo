@@ -1720,3 +1720,47 @@ files are out of scope this slice).
 ### Out of scope (recorded, NOT built)
 Pinned-doc renderer consuming `items[]` (live excerpt/title), the stale "pins store lands in P3" copy in
 the settings features/editor notes, `PUT`/`DELETE /pins/:id`.
+
+## Slice: #40 — render hydrated pin content in the pinned-doc block
+
+The other half of #8's DoD. #8 put real pins on the `POST /query` wire and made an on-match `pinned-doc`
+block VISIBLE when its pins query hydrates — but the renderer still drew the static `query.params.doc`
+reference plus a hardcoded "ingestion & page-anchored answers land in P3" why-line (P3 landed). The data
+was at the door; the block never opened it. This slice is the client-only render change.
+
+### The renderer (`client/surfaces/blocks/pinned-doc.ts`)
+`renderPinnedDoc` now reads `result.items` as `Pin[]` and renders one `.rel` row per pin (mirroring the
+`relevant-now`/`ledger`/`moments` list blocks): title as the `.ttl` with the pin `kind` as its `.ext`
+badge, a why-line built from the pin's own ingest state (`ingested · N pages` / `ingestion pending` /
+`ingestion failed`), and the copy affordance carrying `title — uri`. `block.top` caps the list exactly
+like the siblings; pins arrive newest-first off the wire (#8), so the renderer does not re-sort. With
+zero hydrated pins it falls back to the configured `params.doc` reference + an explainable
+`configured reference · awaiting a matching pin` why-line, so an always-visible card never shows a blank
+body — an `on-match` block just stays hidden (`renderSurface` skips it). No contract change.
+
+### Stale-copy sweep (copy-only, no logic)
+Removed the now-false "pins store lands in P3" future-notes (the pins store landed in #8): the
+`FUTURE_STORE_NOTE` map in `engine/surfaces/setup/surface-editor.ts` and its browser twin
+`futureNote()` in `editor-assets.ts` drop their `pinned-doc`/`hint` entries (both hydrate today; the map
+already documented "absent ⇒ no note"), keeping only `ledger` (P4). The `surface.block.pinned-doc`
+feature note in `settings/sections/features.ts` now describes the hydrated render + fallback instead of
+"present-but-future".
+
+### Tests + verification
+Client 208, contracts 62, engine 476 (all unchanged in count — this slice extends existing assertions
+rather than adding test cases; no contract or engine logic touched).
+- `client/.../block-renderer/renderer.test.ts` — the hydrated case now seeds a pin whose title
+  (`SOC 2 Type II report`) deliberately DIFFERS from `params.doc` (`configured placeholder`) and asserts
+  the store-derived title renders while the configured reference does NOT, plus the ingest why-line
+  (`ingested · 42 pages`) and the copy text (`title — uri`); empty store still hides the on-match block.
+  The fallback-degradation test keeps asserting the configured reference shows on an empty always-block.
+- `engine/surfaces/setup/surface-editor.test.ts` — flipped the pinned-doc assertion: the row now carries
+  NO `lands in P` future-note (ledger still does).
+- Re-ran the #8 served e2e `api/http.test.ts` ("a pinned-doc surface hydrates its pins block over
+  POST /query") in isolation — green, wire contract unchanged.
+- `route.detect ON` is the known parallel-load timing flake: fails under `pnpm -r test`, passes in
+  isolation (confirmed both runs).
+
+### Out of scope (recorded, NOT built)
+The `hint` block renderer's own `items[]` shape (it reads `{text,excerpt}`, pins carry `{title,uri}`) and
+its stale P3 doc-comment — left untouched; #40 names only the pinned-doc renderer. `PUT`/`DELETE /pins/:id`.
