@@ -14,11 +14,14 @@ export const seededProbeList: ProbeList = {
   description:
     'Well-known local model servers discovery probes on this machine. Conventions, not truth — GET {url}/v1/models decides what is actually loaded. Edit this document to add a nonstandard port or host.',
   probes: [
+    // omlx (Apple-silicon MLX server) speaks OpenAI-compat on :8000 but demands a bearer even on
+    // localhost — the keyRef lets discovery retry with a stored secret and enumerate it; with no key
+    // stored the server is still surfaced as authRequired (present, needs a key), never a silent miss.
+    { name: 'omlx', url: 'http://localhost:8000', keyRef: 'api_d' },
     { name: 'lm-studio', url: 'http://localhost:1234' },
     { name: 'ollama', url: 'http://localhost:11434' },
     { name: 'kokoro', url: 'http://localhost:8880' },
     { name: 'whisper-cpp', url: 'http://localhost:8080' },
-    { name: 'speaches', url: 'http://localhost:8000' },
   ],
 }
 

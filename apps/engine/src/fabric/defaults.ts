@@ -1,59 +1,37 @@
 import type { FabricProfile } from '@openinfo/contracts'
 
 /**
- * Seeded example fabric profiles — the starter configs a first run gets to inspect, clone, and
- * activate (never a verdict: a user composes their own map across hosts). These mirror the validated
- * examples in shared/contracts/examples/fabricProfile.*.json. They are seeded as DOCUMENTS only when
- * absent, and are INERT until explicitly activated — seeding them does not change what GET /fabric
- * returns (the live fabric stays the legacy/empty map until a user opts in), so the quickstart's
- * empty-llm-slot promise holds. None carries a key: `remote-http-template` references keys by keyRef.
+ * Seeded fabric profiles — the starter configs a first run gets to inspect, clone, and activate (never
+ * a verdict: a user composes their own map across hosts). Seeded as DOCUMENTS only when absent, and
+ * INERT until explicitly activated — seeding them does not change what GET /fabric returns (the live
+ * fabric stays the legacy/empty map until a user opts in), so the quickstart's empty-llm-slot promise
+ * holds.
+ *
+ * WHY THIS LIST IS ALMOST EMPTY: the offered configs must not name a model or port that a scan did not
+ * actually see. The truthful source of a "LM Studio on :1234 serving X" or "omlx on :8000 serving Y"
+ * offer is DISCOVERY (GET /fabric/discover) and the host SCAN (POST /fabric/scan) — they probe the real
+ * ports and list the real model ids, then "Use this setup" writes the result as a profile. Hardcoded
+ * `lm-studio-local`/`ollama-local` templates that named a fictional `local-model` / `llama3.2:3b` on a
+ * fixed port described a rig nobody has; they are gone. The one seeded profile is the sanctioned
+ * exception: an explicit MANUAL scaffold for a host a localhost scan can't reach (a remote/LAN/authed
+ * box), naming no fictional model — clone it, set the URL/model, wire a key by keyRef if the host needs
+ * one, then activate. It carries no key: the value lives in the engine secret store, referenced by ref.
  */
 export const seededProfiles: readonly FabricProfile[] = [
   {
-    id: 'lm-studio-local',
-    name: 'LM Studio (local)',
-    version: 1,
-    description: 'An 8B-class model served by LM Studio on this Mac (OpenAI-compatible on :1234). No key needed — localhost.',
-    fabric: {
-      slots: {
-        stt: [],
-        tts: [],
-        llm: [{ kind: 'http', name: 'lm-studio', url: 'http://localhost:1234', api: 'openai-compat', model: 'local-model' }],
-        vlm: [],
-        ocr: [],
-        embed: [],
-      },
-    },
-  },
-  {
-    id: 'ollama-local',
-    name: 'Ollama (local)',
-    version: 1,
-    description: 'Ollama on this Mac, OpenAI-compatible on :11434 — a small chat model plus a local embedder. No key needed.',
-    fabric: {
-      slots: {
-        stt: [],
-        tts: [],
-        llm: [{ kind: 'http', name: 'ollama', url: 'http://localhost:11434', api: 'openai-compat', model: 'llama3.2:3b' }],
-        vlm: [],
-        ocr: [],
-        embed: [{ kind: 'http', name: 'ollama-embed', url: 'http://localhost:11434', api: 'openai-compat', model: 'nomic-embed-text' }],
-      },
-    },
-  },
-  {
     id: 'remote-http-template',
-    name: 'Remote hosts (template)',
+    name: 'Manual endpoint (scaffold)',
     version: 1,
     description:
-      'A template for a multi-host rig: a bigger LLM on one box and STT on another, reached over http (LAN or tailscale). Each authed endpoint names a key by keyRef — set the values via PUT /fabric/secrets/:ref; they never live in this document. Clone this, edit the URLs/models, wire your keys, then activate.',
+      'A blank scaffold for a host discovery can\'t auto-detect — a model server on another box (LAN or tailscale), or one behind a key. Clone it, then set the real URL and model in the Endpoints editor (or run Scan to fill them from a live host). If the host needs a key, reference it by keyRef and set the value under Settings → Keys; it never lives in this document. Names no model or port a scan hasn\'t confirmed.',
     fabric: {
       slots: {
-        // Placeholder URLs are deliberately localhost — a made-up LAN IP reads as a real machine
-        // on the user's own subnet (it happened). Replace host:port with your actual boxes.
-        stt: [{ kind: 'http', name: 'remote-stt', url: 'http://localhost:9000', api: 'openai-compat', auth: { keyRef: 'remote-stt-key' } }],
+        stt: [],
         tts: [],
-        llm: [{ kind: 'http', name: 'remote-llm', url: 'http://localhost:8000', api: 'openai-compat', model: 'qwen3-27b', auth: { keyRef: 'remote-llm-key' } }],
+        // A single placeholder llm endpoint to edit — deliberately the only concrete value, and only
+        // because this IS the explicit manual template. No model id and no keyRef are invented: a scan
+        // or the editor fills them from what the host actually serves.
+        llm: [{ kind: 'http', name: 'my-endpoint', url: 'http://localhost:8000', api: 'openai-compat' }],
         vlm: [],
         ocr: [],
         embed: [],

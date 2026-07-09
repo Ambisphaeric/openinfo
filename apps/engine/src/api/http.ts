@@ -457,10 +457,13 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
   const requested = pathId || (editParam ? 'endpoints' : wantDiscover ? 'get-started' : defaultSectionId(data))
   const active = sectionById(requested) ?? sectionById(defaultSectionId(data))!
 
-  // The Get-Started capability lens runs discovery (localhost probes, no secrets) — but ONLY when that
-  // section is what we're rendering, so navigating any other section stays cheap.
+  // The Get-Started capability lens runs discovery (localhost probes) — but ONLY when that section is
+  // what we're rendering, so navigating any other section stays cheap. A probe that names a keyRef
+  // (omlx) is retried with the stored secret; the value never leaves the call, only the ref is named.
   if (active.id === 'get-started') {
-    data.discovery = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap())
+    data.discovery = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap(), {
+      resolveKey: (ref) => ctx.secrets.resolve(ref),
+    })
   }
 
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -494,7 +497,12 @@ function getSurfaceEditor(res: ServerResponse, ctx: HandlerContext, id: string):
  * suggestion through the EXISTING profile routes (no new write semantics).
  */
 async function discover(res: ServerResponse, ctx: HandlerContext): Promise<void> {
-  const result = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap())
+  // A probe that names a keyRef (omlx) is retried with the stored secret so an authed-but-present server
+  // is enumerated; the value never leaves this call (only the ref is named in the result). A 401 with no
+  // stored key still surfaces as authRequired — present, needs a key — never a silent miss.
+  const result = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap(), {
+    resolveKey: (ref) => ctx.secrets.resolve(ref),
+  })
   send(res, 200, result)
 }
 

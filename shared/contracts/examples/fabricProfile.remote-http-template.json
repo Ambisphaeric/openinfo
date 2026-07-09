@@ -1,32 +1,18 @@
 {
   "id": "remote-http-template",
-  "name": "Remote hosts (template)",
+  "name": "Manual endpoint (scaffold)",
   "version": 1,
-  "description": "A template for a multi-host rig: a bigger LLM on one box and STT on another, reached over http (LAN or tailscale). Each authed endpoint names a key by keyRef \u2014 set the values via PUT /fabric/secrets/:ref; they never live in this document. Clone this, edit the URLs/models, wire your keys, then activate.",
+  "description": "A blank scaffold for a host discovery can't auto-detect — a model server on another box (LAN or tailscale), or one behind a key. Clone it, then set the real URL and model in the Endpoints editor (or run Scan to fill them from a live host). If the host needs a key, reference it by keyRef and set the value under Settings → Keys; it never lives in this document. Names no model or port a scan hasn't confirmed.",
   "fabric": {
     "slots": {
-      "stt": [
-        {
-          "kind": "http",
-          "name": "remote-stt",
-          "url": "http://localhost:9000",
-          "api": "openai-compat",
-          "auth": {
-            "keyRef": "remote-stt-key"
-          }
-        }
-      ],
+      "stt": [],
       "tts": [],
       "llm": [
         {
           "kind": "http",
-          "name": "remote-llm",
+          "name": "my-endpoint",
           "url": "http://localhost:8000",
-          "api": "openai-compat",
-          "model": "qwen3-27b",
-          "auth": {
-            "keyRef": "remote-llm-key"
-          }
+          "api": "openai-compat"
         }
       ],
       "vlm": [],

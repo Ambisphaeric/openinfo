@@ -904,14 +904,15 @@ test('fabric profiles: seeded list, GET, PUT create, clone, activate, delete-act
     assert.ok(address && typeof address === 'object')
     const base = `http://127.0.0.1:${address.port}`
 
-    // the three example profiles are seeded and listable
+    // the seeded manual scaffold is listable (the fictional lm-studio/ollama templates are gone —
+    // discovery/scan are the truthful source of real-host offers, so nothing hardcodes a fake model)
     const seeded = (await (await fetch(`${base}/fabric/profiles`)).json()) as { id: string }[]
-    assert.deepEqual(seeded.map((p) => p.id).sort(), ['lm-studio-local', 'ollama-local', 'remote-http-template'])
+    assert.deepEqual(seeded.map((p) => p.id).sort(), ['remote-http-template'])
     // seeded but INERT — GET /fabric is still the empty/legacy map
     assert.deepEqual(((await (await fetch(`${base}/fabric`)).json()) as Fabric).slots.llm, [])
 
     // GET one; unknown id → 404
-    assert.equal((await fetch(`${base}/fabric/profiles/lm-studio-local`)).status, 200)
+    assert.equal((await fetch(`${base}/fabric/profiles/remote-http-template`)).status, 200)
     assert.equal((await fetch(`${base}/fabric/profiles/nope`)).status, 404)
 
     // PUT create a profile; id mismatch → 400
@@ -1119,12 +1120,12 @@ test('GET /settings serves the sidebar shell; sections carry profiles/editor; /s
 
     // the Profiles section lists the seeded profiles and offers Activate (none active)
     const profiles = await (await fetch(`${base}/settings/profiles`)).text()
-    assert.match(profiles, /data-act="activate" data-id="lm-studio-local"/)
+    assert.match(profiles, /data-act="activate" data-id="remote-http-template"/)
     // on a non-get-started section, the fresh-install banner rides along
     assert.match(profiles, /class="banner"/)
     // ?edit selects which profile the Endpoints editor opens (301 from /setup?edit= carries the query)
-    const edited = await (await fetch(`${base}/setup?edit=ollama-local`)).text()
-    assert.match(edited, /data-target-id="ollama-local"/)
+    const edited = await (await fetch(`${base}/setup?edit=remote-http-template`)).text()
+    assert.match(edited, /data-target-id="remote-http-template"/)
     assert.match(edited, /class="nav-item active" href="\/settings\/endpoints"/)
   } finally {
     await app.close()

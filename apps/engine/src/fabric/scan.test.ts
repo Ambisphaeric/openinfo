@@ -12,11 +12,11 @@ const MAP = seededCapabilityMap
 test('hostTargets applies the probe-list ports to a bare host, in document order', () => {
   const urls = hostTargets('192.168.1.40', seededProbeList)
   assert.deepEqual(urls, [
+    'http://192.168.1.40:8000',
     'http://192.168.1.40:1234',
     'http://192.168.1.40:11434',
     'http://192.168.1.40:8880',
     'http://192.168.1.40:8080',
-    'http://192.168.1.40:8000',
   ])
 })
 

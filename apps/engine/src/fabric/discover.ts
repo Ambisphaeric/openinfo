@@ -1,4 +1,5 @@
 import type { CapabilityMap, CapabilitySlot, DiscoverResult, Endpoint, Fabric, ProbeList } from '@openinfo/contracts'
+import type { SecretResolver } from './secrets.js'
 
 type DiscoverServer = DiscoverResult['servers'][number]
 type DiscoveredModel = DiscoverServer['models'][number]
@@ -135,49 +136,102 @@ export const loadedModelSuggestion = async (
   return `server reports ${others.length} other model${others.length === 1 ? '' : 's'} (e.g. ${eg}) — switch in Settings → Endpoints`
 }
 
-/** Probe ONE server: GET {url}/v1/models, classify every model. Never throws — failures become error. */
-const probeServer = async (
+/** Turn a live /v1/models body into classified models, or an honest shape error. Pure — no I/O. */
+const modelsFromBody = (
   probe: ProbeList['probes'][number],
   map: CapabilityMap,
+  json: ModelsResponse,
+): DiscoverServer => {
+  if (!Array.isArray(json.data)) {
+    return { name: probe.name, url: probe.url, reachable: false, models: [], error: 'unexpected /v1/models shape (no data array)' }
+  }
+  const models: DiscoveredModel[] = []
+  for (const entry of json.data) {
+    const id = (entry as { id?: unknown })?.id
+    if (typeof id === 'string' && id.length > 0) models.push({ id, slots: classifyModel(map, id) })
+  }
+  return { name: probe.name, url: probe.url, reachable: true, models }
+}
+
+/** GET {url}/v1/models with an optional bearer; returns the parsed body or a classified failure. Never throws. */
+const fetchModels = async (
+  url: string,
+  bearer: string | undefined,
   timeoutMs: number,
-): Promise<DiscoverServer> => {
+): Promise<{ ok: true; json: ModelsResponse } | { ok: false; status?: number; error: string }> => {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const headers: Record<string, string> = bearer !== undefined ? { authorization: `Bearer ${bearer}` } : {}
   try {
-    const response = await fetch(`${probe.url.replace(/\/$/, '')}/v1/models`, { method: 'GET', signal: controller.signal })
-    if (!response.ok) return { name: probe.name, url: probe.url, reachable: false, models: [], error: `HTTP ${response.status}` }
-    let json: ModelsResponse
+    const response = await fetch(`${url.replace(/\/$/, '')}/v1/models`, { method: 'GET', headers, signal: controller.signal })
+    if (!response.ok) return { ok: false, status: response.status, error: `HTTP ${response.status}` }
     try {
-      json = (await response.json()) as ModelsResponse
+      return { ok: true, json: (await response.json()) as ModelsResponse }
     } catch {
-      return { name: probe.name, url: probe.url, reachable: false, models: [], error: 'invalid JSON from /v1/models' }
+      return { ok: false, error: 'invalid JSON from /v1/models' }
     }
-    if (!Array.isArray(json.data)) {
-      return { name: probe.name, url: probe.url, reachable: false, models: [], error: 'unexpected /v1/models shape (no data array)' }
-    }
-    const models: DiscoveredModel[] = []
-    for (const entry of json.data) {
-      const id = (entry as { id?: unknown })?.id
-      if (typeof id === 'string' && id.length > 0) models.push({ id, slots: classifyModel(map, id) })
-    }
-    return { name: probe.name, url: probe.url, reachable: true, models }
   } catch (error) {
-    const message = error instanceof Error ? (error.name === 'AbortError' ? 'timed out' : error.message) : 'probe failed'
-    return { name: probe.name, url: probe.url, reachable: false, models: [], error: message }
+    return { ok: false, error: error instanceof Error ? (error.name === 'AbortError' ? 'timed out' : error.message) : 'probe failed' }
   } finally {
     clearTimeout(timeout)
   }
 }
 
+/**
+ * Probe ONE server: GET {url}/v1/models, classify every model. Never throws — failures become `error`.
+ * A 401/403 is NOT a miss: the server ANSWERED, it just wants a key (omlx does even on localhost). We
+ * surface that as `reachable:true, authRequired:true` (the onboarding lens shows "present, needs a key"
+ * and the user wires a keyRef). If the probe carries a `keyRef` AND that secret is stored, we RETRY with
+ * the bearer and enumerate the models — so an authed server that the engine already holds a key for is
+ * discovered fully, with no key material ever leaving this call (only the ref is named).
+ */
+const probeServer = async (
+  probe: ProbeList['probes'][number],
+  map: CapabilityMap,
+  timeoutMs: number,
+  resolveKey: SecretResolver | undefined,
+): Promise<DiscoverServer> => {
+  const first = await fetchModels(probe.url, undefined, timeoutMs)
+  if (first.ok) return modelsFromBody(probe, map, first.json)
+
+  const needsAuth = first.status === 401 || first.status === 403
+  if (needsAuth) {
+    const value = probe.keyRef !== undefined ? resolveKey?.(probe.keyRef) : undefined
+    if (value !== undefined && value !== '') {
+      const retry = await fetchModels(probe.url, value, timeoutMs)
+      if (retry.ok) return { ...modelsFromBody(probe, map, retry.json), authRequired: true }
+      // still refused with the stored key (wrong/expired) — present, but the key did not open it.
+      return { name: probe.name, url: probe.url, reachable: true, authRequired: true, models: [], error: retry.error }
+    }
+    // present, wants a key, none stored to try — a discovery result, not a miss.
+    return {
+      name: probe.name,
+      url: probe.url,
+      reachable: true,
+      authRequired: true,
+      models: [],
+      error: probe.keyRef !== undefined ? `needs a key (keyRef "${probe.keyRef}" not stored yet)` : 'needs a key (attach a keyRef and rescan)',
+    }
+  }
+  return { name: probe.name, url: probe.url, reachable: false, models: [], error: first.error }
+}
+
 export interface DiscoverOptions {
   /** per-probe timeout; probes run in parallel so total wall time is ~this, not the sum. */
   timeoutMs?: number
+  /**
+   * Resolve a probe's `keyRef` to its bearer value at probe time — the value never leaves this call.
+   * When absent, an authed server (401) is surfaced as authRequired rather than enumerated. Localhost
+   * probes need no secret; a server that demands one (omlx) does.
+   */
+  resolveKey?: SecretResolver
 }
 
 /**
  * Discover local model servers: probe the probe list in PARALLEL (short timeout each, never throws),
- * classify every reported model by name, and synthesize a config-1 suggestion. No secrets involved
- * (localhost). This is the one new read-only engine capability the onboarding lens needs (§8).
+ * classify every reported model by name, and synthesize a config-1 suggestion. A 401 server is surfaced
+ * as present-but-needs-a-key (and retried with a stored secret when the probe names one). This is the
+ * one read-only engine capability the onboarding lens needs (§8).
  */
 export const discoverFabric = async (
   probeList: ProbeList,
@@ -185,6 +239,6 @@ export const discoverFabric = async (
   opts: DiscoverOptions = {},
 ): Promise<DiscoverResult> => {
   const timeoutMs = opts.timeoutMs ?? 1_000
-  const servers = await Promise.all(probeList.probes.map((probe) => probeServer(probe, map, timeoutMs)))
+  const servers = await Promise.all(probeList.probes.map((probe) => probeServer(probe, map, timeoutMs, opts.resolveKey)))
   return { servers, suggestion: synthesizeSuggestion(servers), probedAt: new Date().toISOString() }
 }

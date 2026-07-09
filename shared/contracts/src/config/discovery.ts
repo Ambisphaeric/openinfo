@@ -17,11 +17,18 @@ export const CapabilitySlot = Type.Union(
 )
 export type CapabilitySlot = Static<typeof CapabilitySlot>
 
-/** One well-known local server to probe: a friendly name and its base URL (GET {url}/v1/models). */
+/**
+ * One well-known local server to probe: a friendly name and its base URL (GET {url}/v1/models).
+ * `keyRef` is OPTIONAL and names a stored secret — never a value: some local servers demand a bearer
+ * even on localhost (omlx does). When a probe carries a keyRef AND that secret is stored, discovery
+ * retries the probe with the bearer so an authed-but-present server is enumerated instead of counted
+ * a miss; with no stored value the server is still surfaced (reachable + authRequired), never guessed.
+ */
 const DiscoveryProbe = Type.Object(
   {
     name: Type.String({ minLength: 1 }),
     url: Type.String({ pattern: '^https?://' }),
+    keyRef: Type.Optional(Type.String({ minLength: 1, description: 'a secret REFERENCE sent as a bearer when stored — never a value' })),
   },
   { additionalProperties: false },
 )
@@ -93,6 +100,12 @@ const DiscoverServer = Type.Object(
     name: Type.String(),
     url: Type.String(),
     reachable: Type.Boolean(),
+    authRequired: Type.Optional(
+      Type.Boolean({
+        description:
+          'the server answered 401/403 to an unauthenticated /v1/models — it is PRESENT but wants a key (omlx). A discovery RESULT, not a miss: wire a keyRef and rescan. reachable stays true (it answered).',
+      }),
+    ),
     models: Type.Array(DiscoveredModel),
     error: Type.Optional(Type.String()),
   },

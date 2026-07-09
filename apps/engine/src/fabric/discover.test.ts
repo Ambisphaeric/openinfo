@@ -168,6 +168,78 @@ test('discoverFabric: an unreachable server is reported, never throws', async ()
   assert.deepEqual(result.suggestion.slots.llm, [])
 })
 
+// --- the omlx case: a 401 is a DISCOVERY RESULT (present, needs a key), not a miss ---
+
+/** A fake that 401s an unauthenticated /v1/models and serves the list only with the right bearer. */
+const authGated = (bearer: string, ids: string[]) => (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+  if (req.headers['authorization'] !== `Bearer ${bearer}`) {
+    res.writeHead(401, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: 'missing or invalid api key' }))
+    return
+  }
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ object: 'list', data: ids.map((id) => ({ id, object: 'model' })) }))
+}
+
+test('discoverFabric: a 401 with NO stored key surfaces as present + authRequired (never a silent miss)', async () => {
+  const omlx = await startFake(authGated('sekret', ['LFM2.5-8B-A1B-MLX-8bit']))
+  try {
+    const result = await discoverFabric(
+      probeList([{ name: 'omlx', url: omlx.url, keyRef: 'api_d' }]),
+      seededCapabilityMap,
+      { timeoutMs: 1_000 }, // no resolveKey → nothing to retry with
+    )
+    const server = result.servers[0]!
+    assert.equal(server.reachable, true) // it ANSWERED — reachable stays true
+    assert.equal(server.authRequired, true)
+    assert.deepEqual(server.models, [])
+    assert.match(server.error!, /api_d/) // names the ref, never a value
+    assert.deepEqual(result.suggestion.slots.llm, []) // no models to suggest yet
+  } finally {
+    await stop(omlx)
+  }
+})
+
+test('discoverFabric: a 401 IS retried with a stored secret and the models are enumerated', async () => {
+  const omlx = await startFake(authGated('sekret', ['LFM2.5-8B-A1B-MLX-8bit', 'mlx-community_parakeet-tdt_ctc-110m', 'mlx-community_Kokoro-82M-bf16']))
+  try {
+    const result = await discoverFabric(
+      probeList([{ name: 'omlx', url: omlx.url, keyRef: 'api_d' }]),
+      seededCapabilityMap,
+      { timeoutMs: 1_000, resolveKey: (ref) => (ref === 'api_d' ? 'sekret' : undefined) },
+    )
+    const server = result.servers[0]!
+    assert.equal(server.reachable, true)
+    assert.equal(server.authRequired, true) // the server demanded a key; we had it
+    assert.equal(server.models.length, 3)
+    assert.deepEqual(server.models.find((m) => m.id.includes('parakeet'))!.slots, ['stt'])
+    assert.deepEqual(server.models.find((m) => m.id.includes('Kokoro'))!.slots, ['tts'])
+    // the enumerated real models feed the suggestion (llm from LFM, stt from parakeet)
+    assert.equal(result.suggestion.slots.llm[0]!.kind === 'http' && result.suggestion.slots.llm[0]!.model, 'LFM2.5-8B-A1B-MLX-8bit')
+    assert.equal(result.suggestion.slots.stt[0]!.kind === 'http' && result.suggestion.slots.stt[0]!.model, 'mlx-community_parakeet-tdt_ctc-110m')
+  } finally {
+    await stop(omlx)
+  }
+})
+
+test('discoverFabric: a 401 that a WRONG stored key cannot open is present + authRequired with the refusal', async () => {
+  const omlx = await startFake(authGated('right-key', ['LFM2.5-8B-A1B-MLX-8bit']))
+  try {
+    const result = await discoverFabric(
+      probeList([{ name: 'omlx', url: omlx.url, keyRef: 'api_d' }]),
+      seededCapabilityMap,
+      { timeoutMs: 1_000, resolveKey: () => 'wrong-key' },
+    )
+    const server = result.servers[0]!
+    assert.equal(server.reachable, true)
+    assert.equal(server.authRequired, true)
+    assert.deepEqual(server.models, [])
+    assert.match(server.error!, /401/)
+  } finally {
+    await stop(omlx)
+  }
+})
+
 test('discoverFabric: a malformed /v1/models (no data array) is reachable:false with an honest error', async () => {
   const bad = await startFake((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })

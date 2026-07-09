@@ -2,6 +2,14 @@
   "probedAt": "2026-07-07T15:00:00Z",
   "servers": [
     {
+      "name": "omlx",
+      "url": "http://localhost:8000",
+      "reachable": true,
+      "authRequired": true,
+      "models": [],
+      "error": "needs a key (keyRef \"api_d\" not stored yet)"
+    },
+    {
       "name": "lm-studio",
       "url": "http://localhost:1234",
       "reachable": true,

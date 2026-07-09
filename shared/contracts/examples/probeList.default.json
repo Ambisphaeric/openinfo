@@ -3,10 +3,10 @@
   "version": 1,
   "description": "Well-known local model servers discovery probes on this machine. Conventions, not truth — GET {url}/v1/models decides what is actually loaded. Edit this document to add a nonstandard port or host.",
   "probes": [
+    { "name": "omlx", "url": "http://localhost:8000", "keyRef": "api_d" },
     { "name": "lm-studio", "url": "http://localhost:1234" },
     { "name": "ollama", "url": "http://localhost:11434" },
     { "name": "kokoro", "url": "http://localhost:8880" },
-    { "name": "whisper-cpp", "url": "http://localhost:8080" },
-    { "name": "speaches", "url": "http://localhost:8000" }
+    { "name": "whisper-cpp", "url": "http://localhost:8080" }
   ]
 }
