@@ -1,0 +1,7 @@
+{ "id": "pin-soc2-typeII-2026",
+  "workspaceId": "ws-sales",
+  "uri": "file:///Users/founder/docs/soc2-typeII-2026.pdf",
+  "title": "SOC 2 Type II — 2026",
+  "kind": "pdf",
+  "ingest": { "status": "ingested", "pages": 58, "chunks": 214, "lastFetchedAt": "2026-07-07T15:00:00Z" },
+  "createdAt": "2026-07-07T14:59:00Z" }

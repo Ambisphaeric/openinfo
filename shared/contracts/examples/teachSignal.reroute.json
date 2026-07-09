@@ -1,0 +1,11 @@
+{ "id": "teach-reroute-1",
+  "kind": "reroute",
+  "fromWorkspaceId": "ws-sales",
+  "toWorkspaceId": "ws-oss",
+  "sessionId": "ses-2026-07-07-mislabeled",
+  "evidence": [
+    { "kind": "window", "detail": "VS Code — openinfo/apps/engine", "weight": 0.6 },
+    { "kind": "repo", "detail": "github.com/openinfo/openinfo", "weight": 0.7 },
+    { "kind": "manual", "detail": "rerouted from workspace ws-sales by user", "weight": 1 }
+  ],
+  "correctedAt": "2026-07-07T16:20:00Z" }

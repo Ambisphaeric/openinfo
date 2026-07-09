@@ -9,6 +9,8 @@ export * from './records/draft.js'
 export * from './records/session.js'
 export * from './records/workspace.js'
 export * from './records/pin.js'
+export * from './records/pinChunk.js'
+export * from './records/teach.js'
 export * from './records/commitment.js'
 export * from './config/voice.js'
 export * from './config/surface.js'
@@ -35,6 +37,8 @@ import { Draft } from './records/draft.js'
 import { Session } from './records/session.js'
 import { Workspace } from './records/workspace.js'
 import { Pin } from './records/pin.js'
+import { PinChunk } from './records/pinChunk.js'
+import { TeachSignal, TeachSignalKind } from './records/teach.js'
 import { Commitment, Watcher } from './records/commitment.js'
 import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './config/voice.js'
 import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surface.js'
@@ -52,7 +56,7 @@ import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, Ack, Queu
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
-  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, Commitment, Watcher,
+  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
