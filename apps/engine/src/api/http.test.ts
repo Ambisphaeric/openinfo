@@ -5,8 +5,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Draft, Entity, Fabric, FabricProfile, Moment, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec } from '@openinfo/contracts'
+import type { CaptureChunk, Draft, Entity, Fabric, FabricProfile, HintCandidate, Moment, Pin, PinChunk, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
+import { TeachStore } from '../teach/index.js'
 
 test('capture route validates and publishes chunks', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
@@ -2336,5 +2337,132 @@ test('e2e: PUT an edited workflow with workflow.enabled ON — the drain honors 
     await app.close()
     await rm(dir, { recursive: true, force: true })
     await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+// ---- P4-T2: /pins ingest/read + /teach/candidates — the P4D seams over HTTP (visible, citable chips) ----
+// The store methods (savePin/getPin/listPins/listPinChunks) and pure derivations (ingestPin,
+// deriveHintCandidates) already existed; these tests exercise the new HTTP surface end to end. The ingest
+// e2e uses the FILE fetcher over a temp fixture (form-feed pages) so nothing touches the network.
+
+test('/pins routes: create → ingest a file fixture → GET chunks returns page-anchored excerpts; 404/400', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // a two-page plaintext fixture (\f is the classic plaintext page separator the file fetcher splits on)
+    const fixture = join(dir, 'acme-canon.txt')
+    writeFileSync(fixture, 'First page prose about the Acme account.\fSecond page prose naming Dana and the Q3 renewal.')
+
+    // an unknown workspace reads as an empty pin list, not an error (mirrors GET /entities)
+    assert.deepEqual(await (await fetch(`${base}/pins?workspace=canon-ws`)).json(), [])
+
+    // POST a PENDING pin (file kind, uri = the fixture path); it validates and persists
+    const pin: Pin = {
+      id: 'pin-1', workspaceId: 'canon-ws', uri: fixture, title: 'Acme canon', kind: 'file',
+      ingest: { status: 'pending' }, createdAt: '2026-07-08T09:00:00Z',
+    }
+    const created = await fetch(`${base}/pins`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pin) })
+    assert.equal(created.status, 200)
+    const listed = (await (await fetch(`${base}/pins?workspace=canon-ws`)).json()) as Pin[]
+    assert.deepEqual(listed.map((p) => p.id), ['pin-1'])
+
+    // a garbage POST body is a 400, not a 500
+    assert.equal((await fetch(`${base}/pins`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ not: 'a pin' }) })).status, 400)
+
+    // before ingest, the pin has no chunks yet (pending, never fetched)
+    assert.deepEqual(await (await fetch(`${base}/pins/pin-1/chunks?workspace=canon-ws`)).json(), [])
+
+    // run the ingest lifecycle over the file fetcher: fetch → page-anchored chunk → persist
+    const ingestRes = await fetch(`${base}/pins/pin-1/ingest?workspace=canon-ws`, { method: 'POST' })
+    assert.equal(ingestRes.status, 200)
+    const ingested = (await ingestRes.json()) as Pin
+    assert.equal(ingested.ingest.status, 'ingested')
+    assert.equal(ingested.ingest.pages, 2, 'the two form-feed pages were counted')
+
+    // the "cite p. N" read: chunks come back in ordinal order, each anchored to its source page
+    const chunks = (await (await fetch(`${base}/pins/pin-1/chunks?workspace=canon-ws`)).json()) as PinChunk[]
+    assert.deepEqual(chunks.map((c) => c.page), [1, 2], 'page anchors preserved (the citation)')
+    assert.ok(/Acme/.test(chunks[0]!.text) && /Dana/.test(chunks[1]!.text), 'each excerpt is the prose of its page')
+
+    // unknown pin ⇒ 404 on both sub-routes
+    assert.equal((await fetch(`${base}/pins/nope/ingest?workspace=canon-ws`, { method: 'POST' })).status, 404)
+    assert.equal((await fetch(`${base}/pins/nope/chunks?workspace=canon-ws`)).status, 404)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /pins/:id/ingest surfaces the pdf HONEST STUB failure verbatim — no fabricated success', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const pin: Pin = {
+      id: 'pin-pdf', workspaceId: 'canon-ws', uri: 'file:///tmp/does-not-matter.pdf', title: 'a pdf', kind: 'pdf',
+      ingest: { status: 'pending' }, createdAt: '2026-07-08T09:00:00Z',
+    }
+    await fetch(`${base}/pins`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pin) })
+
+    // ingestPin NEVER throws on a fetch failure — it records status:'failed' with the message — so the
+    // HTTP call is a 200 whose ingest states the failure verbatim (the route fabricates no success).
+    const res = await fetch(`${base}/pins/pin-pdf/ingest?workspace=canon-ws`, { method: 'POST' })
+    assert.equal(res.status, 200)
+    const p = (await res.json()) as Pin
+    assert.equal(p.ingest.status, 'failed')
+    assert.match(p.ingest.error ?? '', /PDF text extraction is not wired/)
+    // nothing was written — a failed ingest leaves no chunks (never fabricated pages)
+    assert.deepEqual(await (await fetch(`${base}/pins/pin-pdf/chunks?workspace=canon-ws`)).json(), [])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('GET /teach/candidates derives SUGGESTED hint patterns per workspace (never writes hints)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // no signals yet ⇒ an empty candidate list, not an error
+    assert.deepEqual(await (await fetch(`${base}/teach/candidates?workspace=sales`)).json(), [])
+
+    // seed two reroutes corrected TO 'sales', both carrying the SAME repo evidence → one aggregated
+    // candidate with supportCount 2 and the strongest supporting weight (the real capture path via TeachStore)
+    const teach = new TeachStore(app.store)
+    teach.record({ id: 'teach-reroute-s1', kind: 'reroute', fromWorkspaceId: 'default', toWorkspaceId: 'sales', sessionId: 's1', evidence: [{ kind: 'repo', detail: '~/code/acme', weight: 0.6 }], correctedAt: '2026-07-08T10:00:00Z' })
+    teach.record({ id: 'teach-reroute-s2', kind: 'reroute', fromWorkspaceId: 'default', toWorkspaceId: 'sales', sessionId: 's2', evidence: [{ kind: 'repo', detail: '~/code/acme', weight: 0.9 }], correctedAt: '2026-07-08T11:00:00Z' })
+
+    const candidates = (await (await fetch(`${base}/teach/candidates?workspace=sales`)).json()) as HintCandidate[]
+    assert.equal(candidates.length, 1)
+    const only = candidates[0]!
+    assert.equal(only.workspaceId, 'sales')
+    assert.equal(only.pattern.field, 'repoPath', 'repo evidence maps onto the repoPath focus field')
+    assert.equal(only.pattern.contains, '~/code/acme')
+    assert.equal(only.pattern.weight, 0.9, 'the strongest supporting evidence weight')
+    assert.equal(only.supportCount, 2)
+    assert.deepEqual(only.sampleSessionIds, ['s1', 's2'], 'traceable to the corrections behind it')
+
+    // scoped by workspace: a different workspace's corrections do not leak in
+    assert.deepEqual(await (await fetch(`${base}/teach/candidates?workspace=other`)).json(), [])
+
+    // the read NEVER applied the candidate: the workspace's hints document is untouched (empty)
+    assert.deepEqual(app.store.layouts.getLatest('workspace-hints', 'sales')?.body ?? null, null)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
   }
 })

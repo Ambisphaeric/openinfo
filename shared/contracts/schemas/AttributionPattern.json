@@ -20,6 +20,14 @@
         {
           "const": "app",
           "type": "string"
+        },
+        {
+          "const": "eventTitle",
+          "type": "string"
+        },
+        {
+          "const": "attendee",
+          "type": "string"
         }
       ]
     },
