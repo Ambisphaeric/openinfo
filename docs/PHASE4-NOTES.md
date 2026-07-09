@@ -928,7 +928,9 @@ deduped row.
 - **Persisted canon** — a `store.mergeEntities` that writes `canonicalOf` + remaps `Moment.refs` (the fold
   is read-time only today).
 - **A PDF parser dependency** (owner sign-off) and **gdoc OAuth** (beyond the flag-gated seam).
-- **`/pins` CRUD + a teach-candidates read route** — the store/derivation read seams are ready.
+- **`/pins` CRUD + a teach-candidates read route** — RESOLVED by the P4-T2 slice below (GET/POST
+  `/pins`, POST `/pins/:id/ingest`, GET `/pins/:id/chunks`, GET `/teach/candidates` — over the exact
+  read seams this note called ready, NO logic change, as predicted).
 
 ## Slice: GET/PUT `/workflows` — the pipeline is user-composable over the API  *(P4-T1, branch p4t1-workflows)*
 
@@ -997,3 +999,94 @@ still have been extracted; it reads the document, so the edit wins.
   a workflow edit does not (the executor re-reads per drain regardless, so no restart is needed — the WS
   push would only be for a future workflow-EDITOR UI to reflect a concurrent edit). Additive, like
   `surface.updated`.
+
+## Slice: `/pins` + `/teach` read/write surfaces — corrections + pinned canon become inspectable chips  *(P4-T2, branch p4t2-pins-teach)*
+
+P4D shipped the pin-ingestion lifecycle (`index/ingest/`), the pinned-canon store methods, and the teach
+loop's capture + pure derivation — but every one of those was reachable only in-process. This slice lands
+the HTTP surface, so a correction and a pinned document become inspectable, citable chips a surface can
+render. **ZERO logic change to `index/ingest` or `teach/`**, exactly as the P4D rule-7 note called it: the
+store reads (`listPins`/`getPin`/`listPinChunks`), the ingest orchestrator (`ingestPin`), and the pure
+`deriveHintCandidates` over `TeachStore.list` all already existed; only the routes were missing. Committed
+per module: contracts → engine → tests → docs.
+
+### Routes built (all over existing seams)
+- `GET /pins?workspace=` — a workspace's pins (workspace-level canon, `?workspace=` default `default`;
+  unknown workspace → `[]`, mirroring `GET /entities`).
+- `POST /pins` — create a pin (validate body as `Pin` → `store.savePin`; 400 on a bad body). A created pin
+  carries `ingest.status: 'pending'` until ingest resolves it.
+- `POST /pins/:id/ingest?workspace=` — run `ingestPin` (fetch → page-anchored chunk → persist
+  `pin_chunks` + a terminal `ingest.status`). Unknown pin → 404.
+- `GET /pins/:id/chunks?workspace=` — the page-anchored excerpts in ordinal order (the "cite p. 42" read).
+  Unknown pin → 404; a not-yet-ingested pin → `[]`.
+- `GET /teach/candidates?workspace=` — `deriveHintCandidates` over `TeachStore.list` for the workspace.
+
+### Contracts added (all additive)
+- Three `Routes` rows in `api/routes.ts`: `POST /pins/:id/ingest` → `Pin`, `GET /pins/:id/chunks` →
+  `PinChunk[]`, `GET /teach/candidates` → `HintCandidate[]` (GET/POST `/pins` were already declared, phase
+  3, unimplemented until now).
+- New `HintCandidate` payload (`api/payloads.ts`, mirroring `RelevantEntity` — a derived/join type): the
+  SUGGESTED attribution-hint pattern the derivation emits (`workspaceId` + `AttributionPattern` +
+  `supportCount` + traceable `sampleSessionIds`). The engine's `teach/signals.ts` `HintCandidate` interface
+  is structurally identical, so the route serves it with no engine change and no duplication of intent.
+- `schema-gen` (`pnpm contracts:gen`) regenerated `shared/contracts/schemas/`: adds `HintCandidate.json`,
+  and incidentally brought `AttributionPattern.json` / `WorkspaceHints.json` / `CalendarSignal.json` back in
+  sync with source — pre-existing drift a prior P4C calendar-evidence merge left un-regenerated (the
+  `eventTitle`/`attendee` fields and the `CalendarSignal` schema had never been emitted).
+
+### DECISION — pins are workspace-scoped via `?workspace=` (not a cross-workspace id lookup)
+A pin is a WORKSPACE-level record (like an entity, not session-keyed — it lives in the workspace's own
+sqlite file and is NOT moved by `moveSession`). The store's read methods are all keyed by workspace
+(`getPin(workspaceId, id)`, `listPinChunks(workspaceId, pinId)`), so the routes take `?workspace=` (default
+`default`) — the exact convention `/moments`, `/entities`, `/drafts`, `/relevant` already use. No
+cross-workspace `findPin` was added: it would duplicate the keying the store already enforces, and a pin id
+is only meaningful within its workspace. (This differs from `/sessions/:id` — sessions ARE globally unique
+by design; pins are not.)
+
+### DECISION — an ingest failure is a 200 whose `ingest.status` tells the truth (not a 5xx)
+`ingestPin` NEVER throws on a fetch failure — it catches the fetcher's throw and records
+`ingest.status: 'failed'` with the message, writing no chunks (it never leaves a half-state and never
+fabricates pages). So `POST /pins/:id/ingest` returns **200** with the resolved pin whose `ingest` states
+the outcome verbatim: `ingested` (pages + chunk count) OR `failed` (the fetcher's error). The only 404 is an
+unknown pin id. This surfaces exactly what the module reports — the pdf HONEST STUB comes back
+`failed` with "PDF text extraction is not wired…" and gdoc (behind the `ingest.gdoc` flag seam, read
+per-call) with its auth message — rather than dressing a known-unsupported path as an HTTP error or a fake
+success. A transport/HTTP-layer failure (bad JSON, etc.) is still the normal 500/400; the ingest OUTCOME is
+document state, not an HTTP status.
+
+### DECISION — `/teach/candidates` is read-only and never applies a candidate (P4-T3b owns apply)
+The handler constructs a stateless `TeachStore` over `store/`, reads the workspace's signals, and returns
+`deriveHintCandidates` — a PURE fold. It writes nothing, and in particular never touches a workspace's
+`WorkspaceHints` document (a test asserts the hints doc stays absent after the read). Candidates are
+SUGGESTIONS a human reviews; auto-applying them to `route/hints` is a separate future slice. Signals are
+captured by `wireTeach` (a bus subscription on `session.rerouted`, wired in `main.ts` — not by this route);
+a bare `createEngineApp` has no teach wiring, so the route reads whatever signals exist (empty → `[]`).
+
+### Rule-7 check (CONTRIBUTING)
+Additive routes only — nothing removed, so no consumer goes stale. `skills/add-a-block/SKILL.md` is the
+only skill referencing `routes.ts`, scoped to surface/block edits; neither it nor the CONTRIBUTING recipes
+reference `/pins`, `/teach`, ingest, or the pin/teach documents (`skills/README.md` lists a "pin-and-ingest"
+skill only as PLANNED/not-yet-written). No rail to keep true.
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Final totals: contracts **64** (unchanged — no
+new example; `HintCandidate` needs none), engine **427** (from 424: +3 in `api/http.test` — the pins
+create→ingest→chunks e2e over a FILE fixture, the pdf honest-stub failure surfacing, and the teach-candidate
+derivation), client **154** (untouched). **Pins e2e (the "cite p. 42" proof):** POST a pending `file` pin
+whose uri is a temp two-page (form-feed) fixture → POST ingest → the pin resolves to `ingested` with
+`pages: 2` → GET chunks returns two excerpts anchored to pages `[1, 2]`, each carrying its page's prose (no
+network — the file fetcher over a temp fixture). **Teach flow:** two reroutes corrected to `sales` with the
+same repo evidence derive ONE aggregated candidate (`repoPath` / `~/code/acme`, `supportCount: 2`, strongest
+weight `0.9`, both session ids), scoped per workspace, with the hints document left untouched.
+
+### Deferred (out of this slice, by scope)
+- **`PUT/DELETE /pins/:id`** — edit/forget a pin. Create + ingest + read is the P4-T2 charter; a mutable pin
+  document (retitle, re-point uri) and a delete (drop pin + its chunks) are additive when a surface needs
+  them.
+- **Applying a hint candidate** (`POST` to add the pattern to a workspace's `WorkspaceHints`) — P4-T3b; this
+  slice is the inspectable READ only, keeping "the loop suggests, the user applies."
+- **A real PDF parser + gdoc OAuth** — unchanged from P4D: the ingest route faithfully surfaces both as
+  honest failures until the vetted parser / auth flow lands.
+- **Pins/candidates as rendered HUD blocks** — the block `source` for pins is still unbuilt (renders
+  empty-but-explainable, per `skills/add-a-block`); wiring a `BlockQuery.source` for pins/teach-candidates so
+  a surface renders the chips is a surfaces slice, not this API slice.
