@@ -5,9 +5,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Draft, Entity, Fabric, FabricProfile, HintCandidate, Moment, Pin, PinChunk, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec } from '@openinfo/contracts'
+import type { CaptureChunk, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Moment, Pin, PinChunk, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
+import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
 
 test('capture route validates and publishes chunks', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
@@ -2461,6 +2462,112 @@ test('GET /teach/candidates derives SUGGESTED hint patterns per workspace (never
 
     // the read NEVER applied the candidate: the workspace's hints document is untouched (empty)
     assert.deepEqual(app.store.layouts.getLatest('workspace-hints', 'sales')?.body ?? null, null)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ---- P4-T3b: GET/PUT /hints — the APPLY-with-review half of the teach loop ----
+// /teach/candidates (above) SUGGESTS a pattern; these routes let the user review it and PUT it into the
+// workspace's WorkspaceHints document over the existing HintsDocuments store seam (no auto-apply, no
+// route/ logic touched). The final e2e closes the flywheel: correction → candidate → applied hint →
+// the detector's hint provider (hintsDocs.all(), = GET /hints) now attributes on it.
+
+test('/hints routes: list has the seeded default, GET 404 unknown, PUT invalid 400 / id-mismatch 400, PUT valid reads back and bumps version', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // v0 seeds ONE empty hints doc for the default workspace (patterns: []) — it enumerates and resolves
+    const listed = (await (await fetch(`${base}/hints`)).json()) as WorkspaceHints[]
+    assert.deepEqual(listed, [{ workspaceId: 'default', patterns: [] }])
+    const seeded = (await (await fetch(`${base}/hints/default`)).json()) as WorkspaceHints
+    assert.deepEqual(seeded, { workspaceId: 'default', patterns: [] })
+
+    // a workspace with no hints doc yet ⇒ 404 (only default is seeded; others exist only once PUT)
+    assert.equal((await fetch(`${base}/hints/sales`)).status, 404)
+
+    // a garbage body is a 400, not a 500
+    assert.equal((await fetch(`${base}/hints/sales`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ not: 'hints' }) })).status, 400)
+    // a valid body whose workspaceId disagrees with the route is a 400
+    assert.equal((await fetch(`${base}/hints/sales`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: 'other', patterns: [] }) })).status, 400)
+
+    // a valid, matching PUT CREATES the workspace's hints doc (unknown workspace is not a 404 — mirrors
+    // PUT /workflows creating on an unknown id) and reads back through GET
+    const doc: WorkspaceHints = { workspaceId: 'sales', patterns: [{ field: 'repoPath', contains: '~/code/acme', weight: 0.7 }] }
+    const putRes = await fetch(`${base}/hints/sales`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) })
+    assert.equal(putRes.status, 200)
+    assert.deepEqual(await putRes.json(), doc)
+    assert.deepEqual(await (await fetch(`${base}/hints/sales`)).json(), doc)
+    assert.equal(app.store.layouts.getLatest('workspace-hints', 'sales')?.version, 1, 'first write is version 1')
+
+    // a second edit is version-stamped by the store (history preserved) and the new patterns read back
+    const edited: WorkspaceHints = { workspaceId: 'sales', patterns: [...doc.patterns, { field: 'windowTitle', contains: 'Salesforce', weight: 0.5 }] }
+    assert.equal((await fetch(`${base}/hints/sales`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(edited) })).status, 200)
+    assert.deepEqual(await (await fetch(`${base}/hints/sales`)).json(), edited, 'GET reflects the edit')
+    assert.equal(app.store.layouts.getLatest('workspace-hints', 'sales')?.version, 2, 'the store stamped the next version')
+
+    // the list now carries both the seeded default and the applied workspace
+    const after = (await (await fetch(`${base}/hints`)).json()) as WorkspaceHints[]
+    assert.deepEqual(after.map((h) => h.workspaceId).sort(), ['default', 'sales'])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('e2e flywheel: a correction derives a candidate → PUT /hints applies it → the detector now attributes on it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // CORRECTIONS: two reroutes to 'sales' carrying the same repo evidence (the real capture path). Before
+    // any hint is applied, a stream of matching focus signals detects NOTHING — 'sales' has no hints yet.
+    const teach = new TeachStore(app.store)
+    teach.record({ id: 'teach-reroute-s1', kind: 'reroute', fromWorkspaceId: 'default', toWorkspaceId: 'sales', sessionId: 's1', evidence: [{ kind: 'repo', detail: '~/code/acme', weight: 0.6 }], correctedAt: '2026-07-08T10:00:00Z' })
+    teach.record({ id: 'teach-reroute-s2', kind: 'reroute', fromWorkspaceId: 'default', toWorkspaceId: 'sales', sessionId: 's2', evidence: [{ kind: 'repo', detail: '~/code/acme', weight: 0.9 }], correctedAt: '2026-07-08T11:00:00Z' })
+
+    // 11 focus signals at 10s spacing span 100s > the sustain window, all in ~/code/acme (the corrected repo)
+    const at = (sec: number): string => new Date(Date.UTC(2026, 6, 8, 14, 0, 0) + sec * 1000).toISOString()
+    const inAcme: FocusSignal = { app: 'Code', windowTitle: 'crm.ts — acme', repoPath: '~/code/acme/crm' }
+    const stream: TimedFocusSignal[] = Array.from({ length: 11 }, (_, i) => ({ at: at(i * 10), signal: inAcme }))
+
+    // NEGATIVE (pre-apply): the detector scores the SAME view the attributor uses (GET /hints = hintsDocs.all()).
+    // With only the seeded empty default, the signals match nothing → stay, no attribution to 'sales'.
+    const before = (await (await fetch(`${base}/hints`)).json()) as WorkspaceHints[]
+    assert.equal(detectSwitch(stream, before, undefined).decision, 'stay')
+
+    // SUGGEST: the corrections derive one candidate (repoPath / ~/code/acme). The user reviews it.
+    const candidates = (await (await fetch(`${base}/teach/candidates?workspace=sales`)).json()) as HintCandidate[]
+    assert.equal(candidates.length, 1)
+    const candidate = candidates[0]!
+    assert.equal(candidate.pattern.field, 'repoPath')
+    assert.equal(candidate.pattern.contains, '~/code/acme')
+
+    // APPLY: PUT a hints doc for 'sales' that includes the reviewed candidate's pattern — a plain edit
+    const applied: WorkspaceHints = { workspaceId: 'sales', patterns: [candidate.pattern] }
+    assert.equal((await fetch(`${base}/hints/sales`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(applied) })).status, 200)
+
+    // GET /hints reflects the applied pattern (the detector's hint provider, hintsDocs.all())
+    const after = (await (await fetch(`${base}/hints`)).json()) as WorkspaceHints[]
+    const salesHints = after.find((h) => h.workspaceId === 'sales')
+    assert.deepEqual(salesHints?.patterns, [candidate.pattern], 'the applied candidate is now live in the workspace hints')
+
+    // POSITIVE (post-apply): the SAME focus stream now sustains dominance for 'sales' — the correction the
+    // user made once is generalized by the detector. This is the flywheel closing: teach → suggest → apply → attribute.
+    const result = detectSwitch(stream, after, undefined)
+    assert.equal(result.decision, 'switch')
+    assert.equal(result.toWorkspaceId, 'sales')
+    assert.ok(result.evidence.some((e) => e.kind === 'repo' && /acme/.test(e.detail)), 'attributed on the applied repo hint')
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })
