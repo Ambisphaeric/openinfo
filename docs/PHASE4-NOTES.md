@@ -1425,3 +1425,75 @@ restarted.)
 - `responseFormat` is typed `unknown` (passed verbatim); a stricter schema can land when a consumer needs it.
 - Threading the extras onto the `local` Endpoint variant (managed runtimes) — the confirmed case (omlx on
   :8000) is an `http` endpoint; additive later if a managed-local runtime needs a template toggle.
+
+## Slice: wired-up arc Phase 2 — senses on the desktop app + runtime/endpoint truth  *(on main)*
+
+Two slices per the WIRED-UP ARC directive (Phase 2): make the desktop app ask for its senses like a
+capture app and let the user debug capture; make the discovered runtimes and the endpoint editor tell the
+truth. All contracts unchanged (this phase touched only client main-process modules + engine-served
+surfaces); `pnpm -r build && pnpm -r test` green before each commit (the one intermittent failure is the
+pre-existing `route.detect … sustained focus` timing test, which passes on rerun).
+
+### Slice 4 — proactive first-launch permissions + debuggable capture status (`client/main/*`)
+**First-launch mic ask (4a).** `askForMediaAccess('microphone')` used to fire only inside
+`CaptureController.beginRun` reached from the `session.started` WS frame — so a first-run user saw no mic
+popup until they started a session. `maybeAskMicOnFirstLaunch` now fires it PROACTIVELY in `whenReady`
+(before any /settings auto-open), once-only via a new persisted `micPromptedAt` marker (added to
+`FirstRunState` alongside `firstRunShownAt`; `first-run-store` writes are merge-writes so the two markers
+coexist). It is macOS-only (off darwin `askForMediaAccess` resolves true with no popup, so we skip and
+don't burn the marker), non-blocking, and independent of engine/model state — a denial degrades harmlessly
+(the capture paths already run a mic-off session). The marker is written BEFORE the ask so a crash can't
+re-nag; it reuses the shared in-flight permission dedup so a session that starts mid-prompt awaits the same
+ask, not a second.
+
+**Debuggable capture-status readout (4b/4c).** New pure `capture-status.ts` maps raw macOS TCC statuses
+(`getMediaAccessStatus` for mic + screen) plus system-audio device presence (the capture controller's
+`unavailable`/`capturing` states) into an honest per-sense readout. The tray renders it as a "Capture
+status" submenu (new `TrayMenuItem.submenu` + recursive shell mapping) — mic / screen / system-audio each
+show a state line + an honest detail line, and where the OS won't popup a prompt (a re-denied mic, screen
+recording) a one-click link opens the exact System Settings pane (`open-screen-settings` added, mapping to
+`Privacy_ScreenCapture`). Copy tells the macOS truth: mic HAS a triggerable popup; screen recording does
+NOT (flip in Settings, then RELAUNCH); system-audio is device presence, not a permission (missing ⇒ install
+a BlackHole-class loopback). Screen stays OFF by default (`cfg.screenEnabled`) — only its permission state
+and the enable path are surfaced, never enabled. No IPC bridge was needed: the tray builds in the main
+process, so the readout is assembled from state the main process already holds (statuses read live at each
+tray paint, so a user's Settings flip shows on the next open).
+
+### Slice 5 — runtime/endpoint truth in the settings UI (`engine/surfaces/settings|setup`, `api/http.ts`)
+**Detected runtimes in Local runtimes (5a).** `localRuntimesBody` rendered only the download catalog
+(starter llama.cpp/whisper.cpp), so a discovered mlx/omlx server — and its parakeet-class stt models — was
+invisible there. New pure `localRuntimesHtml` renders the servers discovery already found (the SAME
+`DiscoverResult` the Get-started lens uses): each with name/flavor, reachable / needs-key state, and its
+models grouped by the capability slot their names classified into (`runtimeModelsBySlot`, canonical
+ALL_SLOTS order) — so parakeet-style stt on an omlx server is finally visible. Discovered servers render as
+adopted ("managed externally over HTTP", never downloaded/spawned) — the honest contrast with the
+downloadable starter catalog below. Servers that did not answer are omitted (the Get-started lens diagnoses
+"nothing responded"). The settings route now runs discovery for the `local-runtimes` section too (it already
+did for `get-started`), keeping every other section's render cheap.
+
+**Endpoint editor: scheme/host/port fields (5b).** The editor had one URL string; the owner's real workflow
+is testing an "upgrade" from LM Studio to omlx on the SAME host under the same reference name — a port swap.
+The row now renders scheme (advanced, default http) + host + port as separate fields. The stored
+`Endpoint.url` shape is UNCHANGED — this is a UI affordance: pure `parseEndpointUrl`/`composeEndpointUrl`
+(IPv6-aware; any trailing path/query preserved via a `data-urlrest` attribute so a URL round-trips
+losslessly) split the stored url into fields on render, and the browser mirrors compose to rebuild the url
+on save/test/scan. Scan reads host+port: a blank port scans the probe-list common ports on the bare host, a
+filled port scans the exact composed url; a chosen scan host splits back into the fields (a port swap is one
+field). Existing editor tests updated to the host/port fields.
+
+### Tests + verification
+Contracts 62 (unchanged — no contract touched). Client 179 → 189 (+10: `shouldPromptMic` + the two markers
+coexisting via merge-write; `captureStatuses` mapping across every TCC state / device presence / off-macOS;
+the tray Capture-status submenu lines + fix-it commands; `senseDot`; the Screen Recording settings URL +
+`settingsUrlFor` mapping). Engine 446 → 454 (+8: `runtimeStateChip`/`runtimeModelsBySlot`/`localRuntimesHtml`
+states incl. authRequired-shown + silent-omitted + parakeet-visible; `parseEndpointUrl`/`composeEndpointUrl`
+lossless round-trip incl. IPv6 + path + the port-swap workflow). A static render check confirmed the editor
+row emits scheme/host/port with no leftover `.f-url`, and the Local-runtimes block renders an adopted
+omlx/needs-key server with its parakeet stt model grouped under stt.
+
+### Deferred (out of this slice)
+- A runtime toggle for `screenEnabled` (still config/env only, restart to change) — wired-up-arc Phase 3.
+- Screen-recording state is read at each tray paint but the "did the user just grant it?" relaunch nudge is
+  copy only; auto-detecting a fresh grant and prompting a relaunch is out of scope.
+- Per-source capture ingress on the engine /settings Status section still needs engine plumbing (noted
+  there already) — the client tray readout is the live capture-debug surface meanwhile.
