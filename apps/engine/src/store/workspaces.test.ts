@@ -117,3 +117,30 @@ test('addEntityMomentRefs appends refs; unknown entity is undefined', async () =
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('pins + page-anchored chunks persist per workspace; unknown workspace reads empty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-pins-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.savePin({
+      id: 'pin-1', workspaceId: 'ws-pins', uri: 'file:///doc.txt', title: 'Doc', kind: 'file',
+      ingest: { status: 'ingested', pages: 2, chunks: 2, lastFetchedAt: '2026-07-07T15:00:00Z' }, createdAt: '2026-07-07T14:59:00Z',
+    })
+    registry.savePinChunks([
+      { id: 'pin-1-0', pinId: 'pin-1', workspaceId: 'ws-pins', ordinal: 0, page: 1, text: 'page one', createdAt: '2026-07-07T15:00:00Z' },
+      { id: 'pin-1-1', pinId: 'pin-1', workspaceId: 'ws-pins', ordinal: 1, page: 42, text: 'page forty-two', createdAt: '2026-07-07T15:00:00Z' },
+    ])
+    assert.equal(registry.getPin('ws-pins', 'pin-1')!.kind, 'file')
+    assert.deepEqual(registry.listPins('ws-pins').map((p) => p.id), ['pin-1'])
+    assert.deepEqual(registry.listPinChunks('ws-pins', 'pin-1').map((c) => c.page), [1, 42]) // ordinal order
+
+    assert.equal(registry.deletePinChunks('ws-pins', 'pin-1'), 2)
+    assert.deepEqual(registry.listPinChunks('ws-pins', 'pin-1'), [])
+    // unknown workspace never throws — reads empty (mirrors listEntities)
+    assert.deepEqual(registry.listPins('ws-nowhere'), [])
+    assert.equal(registry.getPin('ws-nowhere', 'pin-1'), undefined)
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
