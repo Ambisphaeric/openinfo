@@ -4,6 +4,9 @@ import type { Distillate, QueryResult, Surface } from '@openinfo/contracts'
 import { renderSurface, renderToHtml, type NowContext } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from './index.js'
 
+// clockLabel renders viewer-local; pin this process to UTC so the clock assertion below is host-stable.
+process.env.TZ = 'UTC'
+
 const now: NowContext = { live: true, workspace: 'acme', title: 'Renewal — security review' }
 const result = (items: unknown[]): QueryResult => ({ source: 'distillates', items, truncated: false })
 

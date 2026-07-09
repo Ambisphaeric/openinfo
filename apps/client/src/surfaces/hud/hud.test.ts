@@ -5,6 +5,10 @@ import { renderToHtml, type VElement } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import type { HudTransport } from './transport.js'
 
+// clockLabel (via the session status line) renders viewer-local; pin this process to UTC so the elapsed
+// clock assertion below is host-stable.
+process.env.TZ = 'UTC'
+
 const surface: Surface = {
   id: 'surf-openinfo-hud', name: 'openinfo HUD', context: 'meeting', version: 1,
   stack: [
