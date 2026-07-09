@@ -1364,3 +1364,64 @@ health probe (unit), and `utilityProcess.fork` of the shipped bundle (executed a
   each rebuild and Gatekeeper needs right-click → Open. The upgrade path is documented in package.mjs.
 - **First-run permissions "senses" flow** — the research doc's Deliverable-2 design; a frontends-session task,
   untouched here.
+
+## Slice: wired-up arc Phase 1 — trust & debuggability  *(on main)*
+
+Three slices making the running system inspectable and the distill path unblockable, per the WIRED-UP ARC
+directive (Phase 1: engine version handshake · probe returns proof · per-endpoint request extras). All
+contracts additive; `pnpm -r build && pnpm -r test` green before each commit (the one intermittent failure
+is the pre-existing `route.detect ON … sustained focus` timing test, which passes in isolation and on rerun).
+
+### Slice 1 — engine version handshake (`api/version.ts`, `api/http.ts`, `client/main/*`)
+`GET /health` gained additive optional `version` (+ optional `build`). `readEngineVersion` walks up from the
+compiled module to the `@openinfo/engine` package.json, so it resolves UNCHANGED in dev and in the packaged
+`engine-bundle/apps/engine/{dist,package.json}` layout (package.mjs stages that package.json). Read ONCE at
+module load, echoed on every /health. `build` is an optional `OPENINFO_BUILD` env stamp (undefined in a plain
+dev run — never fabricated). The engine package version was bumped `0.0.0 → 0.0.1` to match the shipped app,
+so version parity is the norm and the client's skew note flags only REAL skew.
+
+Client (main-process shell/supervisor only): `fetchEngineHealth` reads the body best-effort; pure
+`compareVersions` + `engineStatusLine` (both node-tested) render the tray info line
+`engine v0.0.1 · adopted at :8787` / `· spawned (bundled)`, with a plain skew note (`older than this app
+(vX)` / `newer than…`) when an ADOPTED engine differs — an engine that omits the field reads as
+"predates this app's version reporting". `shell.ts` captures the adopted/spawned health and feeds the line
+into `TrayState.engineInfoLine`, rendered as a disabled item under the status header. `unreachable` shows no
+line (the tray already leads with unreachable). This makes the stale-rig case (a launchd engine predating the
+fabric fixes, which the DMG ADOPTS) visible at a glance.
+
+### Slice 2 — the probe returns proof, not a checkmark (`api/http.ts`, `surfaces/setup/assets.ts`)
+`runGenerateProbe` sent `'ping'` at `maxTokens:1` and returned only `ok` — at one token every reasoner
+looked exhausted. Now it sends a real, model-answerable prompt ("We are testing access from this host —
+simply respond 'yes' if you can hear us.") at `maxTokens:128`. `GenerateProbe` gained an additive optional
+`sample`: the model's actual reply, trimmed + truncated (~200 chars), carried on success. The Settings Test
+area renders the reply text + generation latency. The reasoning-exhausted grace is unchanged (a genuine
+all-thinking response still passes with its note, no sample) — at 128 tokens that is now the exception.
+
+### Slice 3 — `chat_template_kwargs` + `response_format` through the invoke path (`config/fabric.ts`, `fabric/invoke.ts`, `surfaces/setup/{view,assets}.ts`)
+CONFIRMED biting on the rig: qwen3.5-9b burned the 700-token distill budget reasoning, distill failing on
+repeat, with no way to tell the model not to think. The `http` Endpoint variant gained additive optional
+`chatTemplateKwargs` (object) and `responseFormat`; `InvokeOptions` carries the same two as a per-call
+override. `callHttp` includes each in the completions body ONLY when set (`opts ?? endpoint`), omitting both
+entirely when unset — byte-for-byte the legacy body for existing endpoints. Nothing auto-sets
+`enable_thinking` (per-endpoint user config; some templates have no such toggle, e.g. LFM2.5). The endpoint
+editor exposes a minimal advanced JSON field (`.f-extras`) that round-trips `{chatTemplateKwargs,
+responseFormat}`; blank sends nothing.
+
+### Tests + verification
+Contracts 62 (additive, no count change). Client 166 → 179 (+13: version parse/compare, health-fetch
+best-effort, status-line wording incl. skew/spawn/unknown, tray info item). Engine 440 → 446 (+6: /health
+version; probe `sample` flows through + the existing success test asserts it; callHttp includes/omits the
+extras; a classify-level test proving the qwen thinking-burn is addressable via `enable_thinking:false`;
+the editor row round-trips the extras field).
+
+**Live probe proof (real LM Studio on :1234, `lfm2.5-8b-a1b-mlx`):** a temp engine on a free port ran
+`POST /fabric/test` `probe:'generate'`; the probe returned `ok:true` with `sample` carrying the model's
+actual reply text — proof the reply now flows end-to-end, not a checkmark. (Owner's dev engine on :8787 +
+the omlx LaunchAgent left untouched throughout; that engine serves stale dist from memory — noted, not
+restarted.)
+
+### Deferred (out of this slice)
+- Auto-detecting skew and offering to redeploy/restart the adopted engine — the line only SURFACES skew.
+- `responseFormat` is typed `unknown` (passed verbatim); a stricter schema can land when a consumer needs it.
+- Threading the extras onto the `local` Endpoint variant (managed runtimes) — the confirmed case (omlx on
+  :8000) is an `http` endpoint; additive later if a managed-local runtime needs a template toggle.
