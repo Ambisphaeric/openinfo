@@ -89,6 +89,10 @@ interface DevElement extends MountTarget {
   className: string
   textContent: string
   appendChild(child: DevElement): void
+  // The execCommand copy fallback drives a throwaway <textarea>; these live on every real DOM element.
+  value?: string
+  select?(): void
+  remove?(): void
 }
 interface DevGlobal {
   document?: {
@@ -97,6 +101,8 @@ interface DevGlobal {
     body: DevElement
     createElement(tag: string): DevElement
     addEventListener(type: string, listener: () => void): void
+    // Legacy synchronous copy path — present in every renderer, absent in a bare node test.
+    execCommand?(command: string): boolean
   }
   location?: { search: string }
   navigator?: { clipboard?: { writeText(text: string): Promise<void> } }
@@ -104,10 +110,48 @@ interface DevGlobal {
   openinfoDrag?: DragBridge & ResizeBridge
 }
 
-const clipboardCopy =
-  (nav?: DevGlobal['navigator']) =>
-  (text: string): void => {
-    void nav?.clipboard?.writeText(text)
+/**
+ * The temp-<textarea> + `document.execCommand('copy')` fallback. Used when the async Clipboard API is
+ * unavailable (insecure context / no renderer permission) or rejects. Synchronous — append, select,
+ * copy, remove all in one tick, so the throwaway textarea never repaints. Returns the honest boolean.
+ */
+const execCommandCopy = (doc: DevGlobal['document'] | undefined, text: string): boolean => {
+  if (!doc?.execCommand) return false
+  const area = doc.createElement('textarea')
+  area.value = text
+  doc.body.appendChild(area)
+  area.select?.()
+  let ok = false
+  try {
+    ok = doc.execCommand('copy')
+  } catch {
+    ok = false
+  } finally {
+    area.remove?.()
+  }
+  return ok
+}
+
+/**
+ * Honest clipboard copy (#43): try the async Clipboard API, fall back to the execCommand path when it
+ * is absent OR rejects, and resolve only on a confirmed write — otherwise REJECT. The old body
+ * `void nav?.clipboard?.writeText(text)` swallowed a missing API and discarded a rejected promise, so a
+ * failed copy was indistinguishable from a dead button. The caller (wireActions) paints visible
+ * success/failure feedback off this outcome, so there is no longer a silent path.
+ */
+export const clipboardCopy =
+  (nav?: DevGlobal['navigator'], doc?: DevGlobal['document']) =>
+  async (text: string): Promise<void> => {
+    if (nav?.clipboard?.writeText) {
+      try {
+        await nav.clipboard.writeText(text)
+        return
+      } catch {
+        /* fall through to the execCommand fallback */
+      }
+    }
+    if (execCommandCopy(doc, text)) return
+    throw new Error('copy failed: no clipboard path available')
   }
 
 export const startHud = (options: { baseUrl?: string; workspace?: string; surfaceId?: string } = {}): void => {
@@ -144,7 +188,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   // …and content-size the frameless window to the painted panel (never the 100vh stage — see auto-resize.ts).
   if (g.openinfoDrag) installAutoResize(panel as unknown as Parameters<typeof installAutoResize>[0], g.openinfoDrag)
 
-  const copy = clipboardCopy(g.navigator)
+  const copy = clipboardCopy(g.navigator, doc)
   let mounted = false
   // Event-driven refresh failures re-enter the boot loop — visible, never an unhandled rejection.
   let onHudError: (error: unknown) => void = () => {}
