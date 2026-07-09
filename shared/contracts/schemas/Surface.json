@@ -67,6 +67,10 @@
                 "type": "string"
               },
               {
+                "const": "todos",
+                "type": "string"
+              },
+              {
                 "const": "custom",
                 "type": "string"
               }
@@ -110,6 +114,10 @@
                   },
                   {
                     "const": "entities",
+                    "type": "string"
+                  },
+                  {
+                    "const": "todos",
                     "type": "string"
                   }
                 ]

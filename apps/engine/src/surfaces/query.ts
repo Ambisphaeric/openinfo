@@ -60,6 +60,17 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // Pinned canon (P4D): workspace-level records, most-recently-created first (listPins mirrors
       // listEntities — unknown workspace reads as [], never an error).
       return cap(known ? store.listPins(workspaceId) : [])
+    case 'todos': {
+      // Accumulated follow-ups (task-extract, P4): the to-do documents live in the global _meta.db
+      // keyed by session; the store filters them to the resolved workspace (and session, when the
+      // block says `session: current`). Flatten each list to its ITEMS — one row per follow-up with
+      // its `done` status + provenance why-line — in accumulation order (the running-list order the
+      // draft's `{{todo}}` also reads). NOT gated by `known`: unlike the per-workspace record sources,
+      // a to-do document exists without a workspace DB (PUT /todos writes the document, not a
+      // workspace), and listTodos filters by the body's workspaceId — an unknown workspace / no
+      // extraction yet already reads as [], explainable-empty, never an error.
+      return cap(store.listTodos(workspaceId, sessionId).flatMap((list) => list.items))
+    }
     case 'ledger':
       // Backing store not built yet (ledger P4): empty, explainable, not an error.
       return cap([])
