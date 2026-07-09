@@ -80,7 +80,7 @@ test('a working clipboard paints visible success feedback on the clicked button'
   const { target, clickButton } = makeStage()
   let written: string | undefined
   const nav = { clipboard: { writeText: async (t: string) => void (written = t) } }
-  wireActions(target, clipboardCopy(nav as unknown as CopyNav, undefined))
+  wireActions(target, { copy: clipboardCopy(nav as unknown as CopyNav, undefined) })
 
   const button = makeButton({ 'data-verb': 'copy', 'data-copy': 'SOC 2 report — file:///soc2.pdf' })
   clickButton(button)
@@ -94,7 +94,7 @@ test('a working clipboard paints visible success feedback on the clicked button'
 test('an unavailable clipboard + failing fallback paints visible failure feedback — never a silent no-op', async () => {
   const { target, clickButton } = makeStage()
   // no navigator.clipboard AND execCommand returns false: every copy path fails
-  wireActions(target, clipboardCopy(undefined, fakeDoc({ execOk: false })))
+  wireActions(target, { copy: clipboardCopy(undefined, fakeDoc({ execOk: false })) })
 
   const button = makeButton({ 'data-verb': 'copy', 'data-copy': 'x' })
   clickButton(button)

@@ -18,7 +18,10 @@ const surface: Surface = {
     {
       block: 'todos', show: 'always',
       query: { source: 'todos', params: { session: 'current' } },
-      actions: [{ id: 'a-copy', label: 'Copy', verb: 'copy', params: {} }],
+      actions: [
+        { id: 'a-copy', label: 'Copy', verb: 'copy', params: {} },
+        { id: 'a-done', label: 'Done', verb: 'mark-done', params: {} },
+      ],
     },
   ],
 }
@@ -51,6 +54,12 @@ test('the todos block renders STORE-DERIVED items: text, done status and a prove
   assert.match(html, /class="why">added by you/)
   // the copy action carries the item text (verbs never send — the app prepares)
   assert.match(html, /data-copy="Send Dana the signed MSA"/)
+  // mark-done is WIRED (#15): an item whose provenance carries its session renders a LIVE `.mini` button
+  // addressing PUT /todos/:sessionId (data-session + data-todo — the read-flip-write key).
+  assert.match(html, /<button class="mini" data-verb="mark-done" data-action="a-done" data-session="ses" data-todo="t1">Done<\/button>/)
+  // an item with NO session trail (hand-added, t3) leaves mark-done visible-but-INERT (ghost, no payload) —
+  // it can't address a write, so it is honestly inert rather than a falsely-live button (#15).
+  assert.match(html, /<button class="mini ghost" data-verb="mark-done" data-action="a-done">Done<\/button>/)
 })
 
 test('empty is EXPLAINABLE, not silent: an always-visible todos block renders a no-follow-ups line', () => {
