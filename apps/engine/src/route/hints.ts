@@ -12,8 +12,9 @@ const HINTS_KIND = 'workspace-hints'
  * and only when absent (a user's edits are never clobbered). Empty patterns match nothing, so with the
  * shipped default an unmatched focus signal takes NO action — there is deliberately NO permissive
  * catch-all, which would attribute everything to `default` and defeat detection. Real hints are added
- * per workspace by editing the document (in v0, via `put` at the store layer — an HTTP editing route is
- * a later slice, matching the "the API is the slice" discipline elsewhere).
+ * per workspace by editing the document — via `put` at this store layer, exposed over HTTP since P4-T3b
+ * as GET/PUT `/hints[/:workspaceId]` (api/http.ts), the APPLY-with-review half of the teach loop: the
+ * user reviews a suggested candidate and PUTs it into the workspace's hints (there is no auto-apply).
  */
 export class HintsDocuments {
   constructor(private readonly store: WorkspaceRegistry) {}

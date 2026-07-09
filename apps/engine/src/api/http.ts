@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type Pin, type PinChunk, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type Pin, type PinChunk, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
@@ -60,6 +60,7 @@ interface HandlerContext {
   distill: DistillDocuments
   todos: TodoDocuments
   workflow: WorkflowDocuments
+  hints: HintsDocuments
   queue: CaptureQueue
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
@@ -277,7 +278,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('surface.updated', (surface) => ws.broadcast('surface.updated', surface))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, todos: todoDocs, workflow, queue, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, todos: todoDocs, workflow, hints: hintsDocs, queue, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -371,6 +372,14 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   const pinChunks = url.pathname.match(/^\/pins\/([^/]+)\/chunks$/)
   if (req.method === 'GET' && pinChunks?.[1]) return getPinChunks(res, ctx, decodeURIComponent(pinChunks[1]), url)
   if (req.method === 'GET' && url.pathname === '/teach/candidates') return send(res, 200, readTeachCandidates(ctx.store, url))
+  // P4-T3b: the APPLY-with-review half of the teach loop — GET/PUT the workspace's attribution-hints
+  // document. /teach/candidates SUGGESTS a pattern; the user reviews it and PUTs an updated hints doc
+  // here, and the detector then attributes on it. No auto-apply: "apply a candidate" is just this plain
+  // document edit over the existing HintsDocuments store seam (no logic in route/ is touched).
+  if (req.method === 'GET' && url.pathname === '/hints') return send(res, 200, ctx.hints.all())
+  const hintsDoc = url.pathname.match(/^\/hints\/([^/]+)$/)
+  if (req.method === 'GET' && hintsDoc?.[1]) return getHints(res, ctx, decodeURIComponent(hintsDoc[1]))
+  if (req.method === 'PUT' && hintsDoc?.[1]) return putHints(req, res, ctx, decodeURIComponent(hintsDoc[1]))
   if (req.method === 'GET' && url.pathname === '/layouts/surfaces') return send(res, 200, ctx.surfaces.list())
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
@@ -986,6 +995,42 @@ function getPinChunks(res: ServerResponse, ctx: HandlerContext, id: string, url:
 function readTeachCandidates(store: WorkspaceRegistry, url: URL): HintCandidate[] {
   const workspaceId = url.searchParams.get('workspace') ?? 'default'
   return deriveHintCandidates(new TeachStore(store).list(workspaceId))
+}
+
+/**
+ * Serve a workspace's attribution-hints document by id — the read seam the /teach review surface renders
+ * (a resource route, no flag, mirroring GET /workflows/:id and GET /todos/:id). Unknown workspace ⇒ 404:
+ * only the default workspace is seeded with an (empty) hints doc; any other workspace has none until a
+ * user PUTs one, so there is genuinely nothing to serve. GET /hints (the list) is the whole-fabric view
+ * the detector scores against (hintsDocs.all()); this is the single-workspace view for editing.
+ */
+function getHints(res: ServerResponse, ctx: HandlerContext, workspaceId: string): void {
+  const doc = ctx.hints.get(workspaceId)
+  if (!doc) return send(res, 404, { error: `no hints document for workspace: ${workspaceId}` })
+  send(res, 200, doc)
+}
+
+/**
+ * Persist a workspace's attribution-hints document — the APPLY half of the teach loop. The user reviews a
+ * SUGGESTED candidate from GET /teach/candidates and PUTs a hints doc that includes its pattern; the
+ * detector reads hintsDocs.all() fresh per window, so an applied pattern takes effect with NO restart.
+ * This is a PLAIN document edit (versioned, history-preserving via the store), NOT an auto-apply — the
+ * route adds no derivation and touches no route/ logic (the loop suggests, the user applies).
+ *
+ * The body must validate as a WorkspaceHints and its workspaceId must match the route (mirroring PUT
+ * /workflows/:id and PUT /todos/:id — a bad body ⇒ 400, an id/route mismatch ⇒ 400). Like those routes,
+ * an unknown workspaceId is NOT a 404: the PUT CREATES the workspace's hints doc (version 1). We do not
+ * gate on the workspace record existing — no other document write does (PUT /workflows creates on an
+ * unknown id, createPin persists without a workspace-existence check), and inventing that policy here
+ * would be out of step; an empty patterns array simply matches nothing.
+ */
+async function putHints(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, workspaceId: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('WorkspaceHints', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid WorkspaceHints', details: errors })
+  const incoming = body as WorkspaceHints
+  if (incoming.workspaceId !== workspaceId) return send(res, 400, { error: 'hints workspaceId does not match route' })
+  send(res, 200, ctx.hints.put(incoming))
 }
 
 /**
