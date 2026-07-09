@@ -1,8 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Entity, Moment, QueryResult, RelevantEntity, Surface } from '@openinfo/contracts'
-import { renderSurface, renderToHtml, type NowContext } from './index.js'
+import { renderSurface, renderToHtml, clockLabel, type NowContext } from './index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
+
+// clockLabel renders viewer-local; pin this process to UTC so the integration assertions below are
+// stable on any host. The seam itself (explicit-zone parameterisation) is proven directly further down.
+process.env.TZ = 'UTC'
 
 const entity = (kind: Entity['kind'], name: string, mentions: number): Entity => ({
   id: `ent-${name}`, workspaceId: 'ws', kind, name, aliases: [], momentRefs: [], outboundCount: 0, mentions,
@@ -172,4 +176,16 @@ test('an unknown/future block type degrades via the custom fallback instead of b
   const html = renderToHtml(renderSurface({ surface, now: { live: false }, results: [undefined, result('pins', [])] }, defaultBlockRegistry))
   assert.match(html, /class="livedot off"/) // no live session → dead heartbeat
   assert.match(html, /soc2/) // empty pins store → pinned-doc falls back to its configured reference
+})
+
+test('clockLabel renders in the viewer timezone: one instant, two explicit zones, two clocks (#55)', () => {
+  const iso = '2026-07-07T14:44:00Z'
+  // Same instant, different wall-clocks — the seam that lets a human read local time, not UTC.
+  assert.equal(clockLabel(iso, 'UTC'), '2:44p')
+  assert.equal(clockLabel(iso, 'America/New_York'), '10:44a') // UTC-4 in July
+  assert.notEqual(clockLabel(iso, 'UTC'), clockLabel(iso, 'America/New_York'))
+  // shape is preserved for edge instants: midnight/noon read 12, minutes stay 2-digit
+  assert.equal(clockLabel('2026-07-07T00:05:00Z', 'UTC'), '12:05a')
+  assert.equal(clockLabel('2026-07-07T12:00:00Z', 'UTC'), '12:00p')
+  assert.equal(clockLabel('not-a-date', 'UTC'), '') // unparseable stays empty
 })

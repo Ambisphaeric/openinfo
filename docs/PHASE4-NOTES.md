@@ -2314,3 +2314,38 @@ the queue block. Seeding these verbs into the SHIPPED template surfaces — the 
 only `copy`/`open` on relevant-now; the mark-done/accept wiring is exercised by blocks a user composes (the
 todos/teach blocks), and pointing the shipped templates at them is a surface-authoring choice, not this
 plumbing slice.
+
+## Slice: #55 — render HUD clocks in viewer-local time
+
+BUG FIX. Every wall-clock the HUD showed a human read UTC, not local time — a moment created via the
+Try-it card rendered hours off the system clock. `clockLabel` in `client/surfaces/block-renderer/format.ts`
+built its compact clock (`2:44p`) from `getUTCHours()`/`getUTCMinutes()`. The doc comment promised "the
+live HUD shell can localize later"; that layer was never added, so the one helper leaked UTC to all five
+render sites (moments time, distillate window-end, relevant-now why-line + last-seen, the session status
+line).
+
+### The seam
+`clockLabel(iso, timeZone?)` now formats via `Intl.DateTimeFormat('en-US', { hour:'numeric',
+minute:'2-digit', hour12:true, timeZone })` and reassembles the exact compact shape from `formatToParts`
+(hour with no leading zero, 2-digit minute, lowercase `a`/`p`, no space/`M`) — output is byte-for-byte what
+it was, only the zone changed. `timeZone` is an EXPLICIT optional override: production callers omit it →
+viewer-local (the fix); tests pass a fixed zone → deterministic assertions with no `process.env.TZ` games;
+a future Settings timezone control (out of scope, as is per-entity timezone display — a recorded design
+question) has a ready seam. No caller changed — the five sites stay zone-less/viewer-local. Machine-facing
+timestamps are untouched: this helper only ever fed human-read HUD text; contract fields, client log ISO
+prefixes, persisted state, and `query.ts` computation params stay ISO/UTC. The engine-served
+settings/setup HTML renders only relative durations (elapsed/uptime) — no engine change.
+
+### Tests + verification
+Client 259 → 260 (all green), contracts 67, engine 486 — all green in isolation.
+- `block-renderer/renderer.test.ts` (NEW seam test) — one fixed instant under two explicit zones renders
+  two clocks (`2:44p` UTC vs `10:44a` America/New_York), proving determinism now comes from the parameter,
+  not UTC; plus edge shapes (midnight `12:05a`, noon `12:00p`) and the unparseable-stays-empty guard.
+- The four integration test files whose full-render assertions round-trip a `clockLabel` string
+  (`renderer.test.ts`, `blocks/distillates.test.ts`, `hud/hud.test.ts`) pin `process.env.TZ = 'UTC'` at
+  module top so the exercised viewer-local path stays host-stable — the existing expected strings
+  (`2:44p`, `2:46p`, `2:30p`, `2:16p · 31m`) are unchanged. Pinning the process zone is the only way to
+  keep these end-to-end assertions deterministic without threading a zone through the whole render pipeline
+  (which the fix deliberately avoids); the explicit-param seam is what the NEW unit test proves TZ-free.
+  (`renderer.test.ts:33/57`'s `2:47p · 31m` is a literal `NowContext.elapsed` fixture, not a `clockLabel`
+  output, so it needed no change.)
