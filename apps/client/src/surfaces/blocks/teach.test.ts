@@ -24,6 +24,7 @@ const surface: Surface = {
       query: { source: 'teach', params: { workspace: 'sales' } },
       actions: [
         { id: 'a-copy', label: 'Copy', verb: 'copy', params: {} },
+        { id: 'a-accept', label: 'Accept', verb: 'accept', params: {} },
         { id: 'a-dismiss', label: 'Dismiss', verb: 'dismiss', params: {} },
       ],
     },
@@ -50,9 +51,14 @@ test('the teach block renders STORE-DERIVED candidates: the suggested pattern + 
   // WHY-line built from the candidate's own trail: support count + which workspace it would teach
   assert.match(html, /class="why">2 reroutes → would teach sales/)
   assert.match(html, /class="why">1 reroute → would teach sales/) // singular reroute reads "1 reroute"
-  // the accept/dismiss affordances render (copy carries the pattern text; verbs never apply — the user reviews)
+  // the accept/dismiss affordances render (copy carries the pattern text)
   assert.match(html, /data-copy="Renewal — security review"/)
-  assert.match(html, /data-verb="dismiss"/)
+  // accept is WIRED (#15): a live `.mini` button carrying the workspace + the exact pattern to apply via
+  // PUT /hints — self-sufficient, the mount layer needs nothing else from the DOM.
+  assert.match(html, /<button class="mini" data-verb="accept" data-action="a-accept" data-workspace="sales" data-pattern="\{&quot;field&quot;:&quot;windowTitle&quot;,&quot;contains&quot;:&quot;Renewal — security review&quot;,&quot;weight&quot;:0\.9\}">Accept<\/button>/)
+  // dismiss stays visible-but-INERT (ghost, no payload): candidates re-derive from reroutes each read, so
+  // a client-only dismissal has no store to persist to — falsely-live is worse than honestly inert (#15).
+  assert.match(html, /<button class="mini ghost" data-verb="dismiss" data-action="a-dismiss">Dismiss<\/button>/)
 })
 
 test('empty is EXPLAINABLE, not silent: an always-visible teach block renders a nothing-to-review line', () => {

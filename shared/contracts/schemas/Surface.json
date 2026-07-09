@@ -260,6 +260,10 @@
                     {
                       "const": "navigate",
                       "type": "string"
+                    },
+                    {
+                      "const": "accept",
+                      "type": "string"
                     }
                   ]
                 },

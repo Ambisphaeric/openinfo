@@ -1,0 +1,228 @@
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import type { TodoList, WorkspaceHints } from '@openinfo/contracts'
+import { wireActions, type ActionHandlers, type MountTarget } from '../block-renderer/index.js'
+import { markTodoDone, acceptHintCandidate } from './dev-entry.js'
+
+/**
+ * The FIRST driven coverage over the wired action verbs (#15): mark-done and accept. Two layers —
+ * (1) a DOM-level test that mounts the delegated listener, dispatches a click on each verb, and asserts
+ *     the injected handler is called with the payload read off the button AND that a failed write paints
+ *     visible failure text (never a silent no-op); and
+ * (2) a served e2e that wires the REAL dev-entry write orchestrators through real `fetch` against a live
+ *     throwaway HTTP engine, proving the write ROUND-TRIPS over the wire (mark-done flips `done` on the
+ *     stored list; accept appends the pattern to the workspace's hints) and that a 500 surfaces as text.
+ */
+
+// ---- DOM harness (mirrors copy-feedback.test.ts: a structural target + a dispatchable button) ----
+interface ActionButton {
+  textContent: string
+  className: string
+  getAttribute(name: string): string | null
+}
+const makeStage = (): { target: MountTarget; clickButton: (button: ActionButton) => void } => {
+  let handler: ((event: { target: { closest(sel: string): ActionButton | null } | null }) => void) | undefined
+  const target = {
+    innerHTML: '',
+    addEventListener: (_type: 'click', h: typeof handler) => {
+      handler = h
+    },
+  }
+  return {
+    target: target as unknown as MountTarget,
+    clickButton: (button) => handler?.({ target: { closest: () => button } }),
+  }
+}
+const makeButton = (attrs: Record<string, string>, label: string, className = 'mini'): ActionButton => ({
+  textContent: label,
+  className,
+  getAttribute: (name) => attrs[name] ?? null,
+})
+const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+const eventually = async (fn: () => void): Promise<void> => {
+  for (let i = 0; i < 200; i++) {
+    try {
+      fn()
+      return
+    } catch {
+      await sleep(10)
+    }
+  }
+  fn()
+}
+
+test('mark-done click calls its handler with the button payload, and a rejected write paints "Failed"', async () => {
+  const calls: Array<{ sessionId: string; todoId: string }> = []
+  const { target, clickButton } = makeStage()
+  const handlers: ActionHandlers = {
+    copy: () => undefined,
+    markDone: async (payload) => void calls.push(payload),
+    accept: async () => undefined,
+  }
+  wireActions(target, handlers)
+
+  const ok = makeButton({ 'data-verb': 'mark-done', 'data-session': 'ses-1', 'data-todo': 't1' }, 'Mark done')
+  clickButton(ok)
+  await flush()
+  assert.deepEqual(calls, [{ sessionId: 'ses-1', todoId: 't1' }]) // the exact payload reached the handler
+  assert.equal(ok.textContent, 'Done')
+  assert.match(ok.className, /\bcopied\b/)
+
+  // an inert mark-done button (no data-session, e.g. a hand-added item) never calls the handler
+  clickButton(makeButton({ 'data-verb': 'mark-done', 'data-todo': 't9' }, 'Done', 'mini ghost'))
+  await flush()
+  assert.equal(calls.length, 1) // unchanged — honestly inert, not a silent misfire
+
+  // a rejected write paints visible failure text, never a silent no-op
+  const failStage = makeStage()
+  wireActions(failStage.target, { copy: () => undefined, markDone: async () => Promise.reject(new Error('boom')) })
+  const bad = makeButton({ 'data-verb': 'mark-done', 'data-session': 'ses-1', 'data-todo': 't1' }, 'Mark done')
+  failStage.clickButton(bad)
+  await flush()
+  assert.equal(bad.textContent, 'Failed')
+  assert.match(bad.className, /\bcopyfail\b/)
+})
+
+test('accept click calls its handler with the workspace + pattern payload, and a rejected write paints "Failed"', async () => {
+  const calls: Array<{ workspaceId: string; pattern: string }> = []
+  const { target, clickButton } = makeStage()
+  wireActions(target, { copy: () => undefined, accept: async (payload) => void calls.push(payload) })
+
+  const pattern = JSON.stringify({ field: 'windowTitle', contains: 'Renewal', weight: 0.9 })
+  const btn = makeButton({ 'data-verb': 'accept', 'data-workspace': 'sales', 'data-pattern': pattern }, 'Accept')
+  clickButton(btn)
+  await flush()
+  assert.deepEqual(calls, [{ workspaceId: 'sales', pattern }])
+  assert.equal(btn.textContent, 'Accepted')
+
+  const failStage = makeStage()
+  wireActions(failStage.target, { copy: () => undefined, accept: async () => Promise.reject(new Error('nope')) })
+  const bad = makeButton({ 'data-verb': 'accept', 'data-workspace': 'sales', 'data-pattern': pattern }, 'Accept')
+  failStage.clickButton(bad)
+  await flush()
+  assert.equal(bad.textContent, 'Failed')
+})
+
+// ---- served e2e: a live throwaway engine implementing the two write routes over real fetch ----
+interface FakeEngine {
+  baseUrl: string
+  todos: Map<string, TodoList>
+  hints: Map<string, WorkspaceHints>
+  putStatus: number // the status the PUT routes return (200 = success; set to 500 to force failure)
+  close: () => Promise<void>
+}
+const readBody = async (req: IncomingMessage): Promise<string> => {
+  let body = ''
+  for await (const chunk of req) body += chunk
+  return body
+}
+const startFakeEngine = async (): Promise<FakeEngine> => {
+  const engine: Partial<FakeEngine> = { todos: new Map(), hints: new Map(), putStatus: 200 }
+  const send = (res: ServerResponse, status: number, payload: unknown): void => {
+    res.writeHead(status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(payload))
+  }
+  const server: Server = createServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url ?? '/', 'http://x')
+      const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
+      const hint = url.pathname.match(/^\/hints\/([^/]+)$/)
+      if (req.method === 'GET' && todo) {
+        const list = engine.todos!.get(decodeURIComponent(todo[1]!))
+        return list ? send(res, 200, list) : send(res, 404, { error: 'no such list' })
+      }
+      if (req.method === 'PUT' && todo) {
+        if (engine.putStatus !== 200) return send(res, engine.putStatus!, { error: 'forced failure' })
+        const list = JSON.parse(await readBody(req)) as TodoList
+        engine.todos!.set(decodeURIComponent(todo[1]!), list)
+        return send(res, 200, list)
+      }
+      if (req.method === 'GET' && hint) {
+        const doc = engine.hints!.get(decodeURIComponent(hint[1]!))
+        return doc ? send(res, 200, doc) : send(res, 404, { error: 'no hints doc' })
+      }
+      if (req.method === 'PUT' && hint) {
+        if (engine.putStatus !== 200) return send(res, engine.putStatus!, { error: 'forced failure' })
+        const doc = JSON.parse(await readBody(req)) as WorkspaceHints
+        engine.hints!.set(decodeURIComponent(hint[1]!), doc)
+        return send(res, 200, doc)
+      }
+      send(res, 404, { error: 'not found' })
+    })()
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  if (!address || typeof address !== 'object') throw new Error('no server address')
+  engine.baseUrl = `http://127.0.0.1:${address.port}`
+  engine.close = () => new Promise<void>((resolve) => server.close(() => resolve()))
+  return engine as FakeEngine
+}
+
+test('served e2e: a mark-done click flips `done` on the stored list over the live server and paints "Done"', async () => {
+  const engine = await startFakeEngine()
+  try {
+    engine.todos.set('ses-1', {
+      id: 'ses-1', name: 'to-do', version: 3, sessionId: 'ses-1', workspaceId: 'ws',
+      items: [
+        { id: 't1', text: 'Send Dana the MSA', createdAt: '2026-07-07T14:40:00Z' },
+        { id: 't2', text: 'Book the walkthrough', done: true, createdAt: '2026-07-07T14:41:00Z' },
+      ],
+    })
+    const { target, clickButton } = makeStage()
+    wireActions(target, { copy: () => undefined, markDone: markTodoDone(engine.baseUrl) })
+
+    const button = makeButton({ 'data-verb': 'mark-done', 'data-session': 'ses-1', 'data-todo': 't1' }, 'Mark done')
+    clickButton(button)
+
+    await eventually(() => assert.equal(button.textContent, 'Done')) // real round-trip resolved → success paint
+    const stored = engine.todos.get('ses-1')!
+    assert.equal(stored.items.find((i) => i.id === 't1')!.done, true) // t1 flipped over the wire
+    assert.equal(stored.items.find((i) => i.id === 't2')!.done, true) // t2 untouched
+  } finally {
+    await engine.close()
+  }
+})
+
+test('served e2e: an accept click appends the candidate pattern to the workspace hints over the live server', async () => {
+  const engine = await startFakeEngine()
+  try {
+    // the workspace has no hints doc yet → GET 404 → the orchestrator starts a fresh doc and PUTs it
+    const pattern = { field: 'windowTitle', contains: 'Renewal — security review', weight: 0.9 }
+    const { target, clickButton } = makeStage()
+    wireActions(target, { copy: () => undefined, accept: acceptHintCandidate(engine.baseUrl) })
+
+    const button = makeButton(
+      { 'data-verb': 'accept', 'data-workspace': 'sales', 'data-pattern': JSON.stringify(pattern) },
+      'Accept',
+    )
+    clickButton(button)
+
+    await eventually(() => assert.equal(button.textContent, 'Accepted'))
+    const doc = engine.hints.get('sales')!
+    assert.deepEqual(doc, { workspaceId: 'sales', patterns: [pattern] }) // pattern applied over the wire
+  } finally {
+    await engine.close()
+  }
+})
+
+test('served e2e: a failed write (HTTP 500) surfaces as visible "Failed" text — never a silent swallow', async () => {
+  const engine = await startFakeEngine()
+  try {
+    engine.todos.set('ses-1', {
+      id: 'ses-1', name: 'to-do', version: 1, sessionId: 'ses-1', workspaceId: 'ws',
+      items: [{ id: 't1', text: 'x', createdAt: '2026-07-07T14:40:00Z' }],
+    })
+    engine.putStatus = 500 // the PUT will fail
+    const { target, clickButton } = makeStage()
+    wireActions(target, { copy: () => undefined, markDone: markTodoDone(engine.baseUrl) })
+
+    const button = makeButton({ 'data-verb': 'mark-done', 'data-session': 'ses-1', 'data-todo': 't1' }, 'Mark done')
+    clickButton(button)
+    await eventually(() => assert.equal(button.textContent, 'Failed'))
+    assert.match(button.className, /\bcopyfail\b/)
+  } finally {
+    await engine.close()
+  }
+})

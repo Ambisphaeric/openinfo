@@ -30,7 +30,7 @@ export const Action = Type.Object(
     id: Id,
     label: Type.String({ minLength: 1, maxLength: 24 }),
     verb: Type.Union(
-      ['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate'].map((v) => Type.Literal(v)),
+      ['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate', 'accept'].map((v) => Type.Literal(v)),
     ),
     params: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
   },

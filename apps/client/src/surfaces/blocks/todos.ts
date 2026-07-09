@@ -28,6 +28,12 @@ const whyLine = (item: TodoItem): string => {
 
 const todoRow = (item: TodoItem, actions: Actions): VNode => {
   const done = item.done === true
+  // mark-done addresses PUT /todos/:sessionId. The flattened query row keeps the item's provenance, and
+  // the extraction pass stamps `provenance.sessionId` on every item it distils (act/todo composeTaskExtract);
+  // an item lacking it (a hand-added row with no session trail) leaves the verb inert rather than firing a
+  // write it can't address — honest, not falsely live (#15).
+  const sessionId = item.provenance?.sessionId
+  const markDone = sessionId !== undefined ? { sessionId, todoId: item.id } : undefined
   return h(
     'div',
     { class: 'rel' },
@@ -38,7 +44,7 @@ const todoRow = (item: TodoItem, actions: Actions): VNode => {
       h('span', { class: done ? 'ttl done' : 'ttl' }, item.text),
       h('span', { class: 'why' }, whyLine(item)),
     ),
-    h('span', { class: 'go' }, ...actionButtons(actions, item.text)),
+    h('span', { class: 'go' }, ...actionButtons(actions, item.text, { markDone })),
   )
 }
 

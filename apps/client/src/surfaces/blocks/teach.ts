@@ -50,7 +50,14 @@ const candidateRow = (candidate: HintCandidate, actions: Actions): VNode =>
       h('span', { class: 'ttl' }, patternText(candidate)),
       h('span', { class: 'why' }, whyLine(candidate)),
     ),
-    h('span', { class: 'go' }, ...actionButtons(actions, candidate.pattern.contains ?? '')),
+    // accept applies this SUGGESTED candidate to the workspace's hints via PUT /hints/:workspaceId. The
+    // candidate carries both the target workspace and the exact pattern, so the row is self-sufficient —
+    // the mount layer reads current hints, appends this pattern, and writes (#15). `dismiss` stays inert:
+    // candidates are DERIVED read-only from reroutes each read, so a client-only dismissal would silently
+    // reappear on the next refresh — falsely live; there is no dismissed-candidate store this slice.
+    h('span', { class: 'go' }, ...actionButtons(actions, candidate.pattern.contains ?? '', {
+      accept: { workspaceId: candidate.workspaceId, pattern: candidate.pattern },
+    })),
   )
 
 const emptyRow = (): VNode =>

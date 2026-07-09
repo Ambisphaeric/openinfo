@@ -1,4 +1,4 @@
-import type { BlockQuery, QueryResult, Session, Surface } from '@openinfo/contracts'
+import type { AttributionPattern, BlockQuery, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
 import { mountSurface, renderInto, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import { createBootController } from './boot.js'
@@ -154,6 +154,58 @@ export const clipboardCopy =
     throw new Error('copy failed: no clipboard path available')
   }
 
+/** Injectable fetch so the served e2e can drive these against a live throwaway server (default: global). */
+type FetchLike = typeof fetch
+
+/**
+ * The `mark-done` write path (#15): read the session's to-do document, flip the addressed item's `done`,
+ * and PUT the whole edited list back (PUT /todos/:sessionId takes the full TodoList — read-flip-write, so
+ * the store stamps the next version and keeps history). The outcome is HONEST: a non-ok GET or PUT REJECTS
+ * with the HTTP status, so the mount layer paints visible failure text rather than a silent no-op (#43).
+ */
+export const markTodoDone =
+  (baseUrl: string, fetchFn: FetchLike = fetch) =>
+  async ({ sessionId, todoId }: { sessionId: string; todoId: string }): Promise<void> => {
+    const url = `${baseUrl}/todos/${encodeURIComponent(sessionId)}`
+    const current = await fetchFn(url)
+    if (!current.ok) throw new Error(`mark-done: could not load the to-do list (HTTP ${current.status})`)
+    const list = (await current.json()) as TodoList
+    const items = list.items.map((item) => (item.id === todoId ? { ...item, done: true } : item))
+    const res = await fetchFn(url, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...list, items }),
+    })
+    if (!res.ok) throw new Error(`mark-done: write failed (HTTP ${res.status})`)
+  }
+
+/**
+ * The `accept` write path (#15) — the APPLY half of the teach loop. The user reviews a SUGGESTED hint
+ * candidate and accepts it: read the workspace's hints document (an unknown workspace has none yet → 404
+ * → start a fresh empty doc, mirroring the engine's PUT-creates policy), append the candidate's pattern
+ * (idempotent — a pattern already present is not duplicated), and PUT it back. Honest outcome: a real
+ * load error (non-404) or a failed write REJECTS, so the click paints visible failure text.
+ */
+export const acceptHintCandidate =
+  (baseUrl: string, fetchFn: FetchLike = fetch) =>
+  async ({ workspaceId, pattern }: { workspaceId: string; pattern: string }): Promise<void> => {
+    const parsed = JSON.parse(pattern) as AttributionPattern
+    const url = `${baseUrl}/hints/${encodeURIComponent(workspaceId)}`
+    const current = await fetchFn(url)
+    let doc: WorkspaceHints
+    if (current.ok) doc = (await current.json()) as WorkspaceHints
+    else if (current.status === 404) doc = { workspaceId, patterns: [] }
+    else throw new Error(`accept: could not load hints (HTTP ${current.status})`)
+    const has = doc.patterns.some((p) => JSON.stringify(p) === JSON.stringify(parsed))
+    const patterns = has ? doc.patterns : [...doc.patterns, parsed]
+    const res = await fetchFn(url, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...doc, workspaceId, patterns }),
+    })
+    if (!res.ok) throw new Error(`accept: write failed (HTTP ${res.status})`)
+  }
+
 export const startHud = (options: { baseUrl?: string; workspace?: string; surfaceId?: string } = {}): void => {
   const g = globalThis as unknown as DevGlobal
   const doc = g.document
@@ -189,6 +241,10 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   if (g.openinfoDrag) installAutoResize(panel as unknown as Parameters<typeof installAutoResize>[0], g.openinfoDrag)
 
   const copy = clipboardCopy(g.navigator, doc)
+  // The verb write-paths (#15): both read-then-write against the live engine and reject on any HTTP
+  // failure, so the mount layer paints visible success/failure text on the clicked button (never silent).
+  const markDone = markTodoDone(baseUrl)
+  const accept = acceptHintCandidate(baseUrl)
   let mounted = false
   // Event-driven refresh failures re-enter the boot loop — visible, never an unhandled rejection.
   let onHudError: (error: unknown) => void = () => {}
@@ -198,7 +254,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     ...(resolvedSurfaceId !== undefined ? { surfaceId: resolvedSurfaceId } : {}),
     onRender: (node) => {
       if (!mounted) {
-        mountSurface(panel, node, { copy })
+        mountSurface(panel, node, { copy, markDone, accept })
         mounted = true
       } else {
         renderInto(panel, node)
