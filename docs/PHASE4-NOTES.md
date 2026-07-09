@@ -1285,3 +1285,82 @@ The engine on :8787 serves stale dist from memory (not restarted); staleness not
   follow-up, not required for invoke/health which already carry it.
 - **ollama's `/api/tags`** — ollama serves OpenAI-compat `/v1/models` (present-but-empty on this rig via
   the existing path), so the native tags route was not needed; a fallback is additive if wanted.
+
+## Slice: release 0.0.1 — an installable DMG that runs the pipeline on first launch  *(on main)*
+
+The client was a pure HTTP/WS client to an engine URL; a double-clicked .app had nothing to talk to (the
+feasibility research in `docs/local/packaging-and-first-run.md` named this the fatal gap). 0.0.1 closes it:
+the app now **ships the engine** and **spawns it on first launch** unless one already answers — an installable
+arm64 DMG that isn't a dead shell.
+
+### Engine-spawn seam (`apps/client/src/main/engine-supervisor.ts` + `shell.ts`)
+- **Decision is PURE + headless-tested; shell.ts holds only the electron edge.** `decideEngineDisposition`:
+  reachable ⇒ `adopt` (spawn nothing), unreachable + bundled ⇒ `spawn`, unreachable + no bundle ⇒
+  `unreachable`. `checkEngineReachable` is a `GET /health` under an AbortController timeout (any error/non-ok
+  ⇒ false); `waitForEngine` polls it after a spawn over an injected sleeper (deterministic in tests).
+  `bundledEngineEntry`/`portFromEngineUrl` are pure path/port helpers. 13 new client tests (166 total).
+- **`shell.ts` `ensureEngine`** runs once in `whenReady` BEFORE seeding: probe → decide → on `spawn`,
+  `utilityProcess.fork` the bundled entry and wait for health. **Adopt-not-collide**: a reachable engine
+  (the owner's dev rig on :8787) is adopted and never touched; only a child WE spawned is `kill()`ed, on
+  `before-quit`. Best-effort: a failed spawn or a child that never answers degrades to the SAME tray
+  "engine unreachable" state — the seam never masks failure. Data dir stays the engine default
+  (`~/.openinfo/data`); only `OPENINFO_PORT` is pinned so the child answers the exact URL the client talks to.
+
+### Runtime + native-module (ABI) decision — utilityProcess, no second Node, prebuilt binary
+- **`utilityProcess` over an ELECTRON_RUN_AS_NODE fork or a bundled Node binary.** utilityProcess runs the
+  engine on Electron's OWN bundled Node — so there is **no second Node runtime to ship** (smaller DMG, one
+  runtime to trust) and Electron manages the child's lifecycle (clean stdout/stderr + kill-on-quit). The
+  engine talks to the client over HTTP on localhost, so no IPC bridge is needed.
+- **better-sqlite3 (the one native module) is rebuilt for Electron's ABI at package time.** System Node is
+  ABI 141 (v25); Electron 38.8.6's Node is ABI 139 (v22.22) — a mismatch that would `ERR_DLOPEN_FAILED`
+  under utilityProcess. `prebuild-install -r electron -t <electronVersion>` fetches the official WiseLibs
+  **electron-v139 prebuilt** — no node-gyp/Xcode compile. This runs against a hoisted deploy under
+  `release/`, so `apps/engine/node_modules` (the dev rig's system-Node build) is never disturbed.
+
+### Packaging (`scripts/package.mjs` extended + new `scripts/dmg.mjs`)
+- **Engine staged as a REPO-SHAPED `engine-bundle/` extraResource** so the engine source is consumed as-is,
+  never patched. The engine reads two data files (`flag.examples.json`, `workflow.default.json`) via a
+  hardcoded compiled path `dist/api → ../../../../shared/contracts/examples` (repo-relative). The bundle
+  reproduces exactly that depth: `engine-bundle/apps/engine/{dist,node_modules,package.json}` +
+  `engine-bundle/shared/contracts/examples/`, landing under `Contents/Resources/engine-bundle` — so the
+  4-levels-up resolves inside the .app. node_modules is a `pnpm deploy --prod --config.node-linker=hoisted`
+  tree (symlink-free, so nothing dangles when copied into the bundle), with `.bin` stripped.
+- **`pnpm dmg`** runs the full packaging (stage bundle → @electron/packager → ad-hoc codesign) then wraps
+  `openinfo.app` into `openinfo-<version>-arm64.dmg` with an `/Applications` symlink via built-in `hdiutil`
+  (`ditto` copies the bundle verbatim, preserving its symlinks + ad-hoc signature). No new committed deps.
+- **Signing: ad-hoc only** (no Developer ID on this machine) — a downloaded copy needs a one-time
+  right-click → Open. **NOT notarized** (out of scope for 0.0.1), consistent with the research doc.
+
+### Version
+0.0.0 → 0.0.1 in root + `apps/client/package.json` (the client version drives the .app appVersion + the DMG
+name). Engine/contracts/workbench stay 0.0.0 — internal workspace packages, not the release artifact.
+
+### Tests + honest verification
+`pnpm -r build && pnpm -r test` green before each commit — contracts 62, client **153 → 166** (+13 spawn
+tests), engine 440. Built `release/openinfo-0.0.1-arm64.dmg` (127 MB).
+
+**PROVEN** (executed against the shipped artifact, owner's :8787 left running throughout):
+- The DMG mounts and contains `openinfo.app` + an `/Applications` symlink; a `ditto` copy out (simulated
+  install) yields an app with `engine-bundle/` present (entry, examples, and the rebuilt
+  `better_sqlite3.node`), Info.plist `CFBundleShortVersionString` 0.0.1, `Signature=adhoc`.
+- The bundled engine BOOTS and SERVES from the installed app, on a free port (8791) with a temp data dir,
+  driven by the installed app's OWN binary as Node: `/health` ok, `/fabric` returns all six slots,
+  `/sessions` empty, and it writes its SQLite DB (`_meta.db`/`default.db`) — proving the rebuilt native
+  module loads under the shipped Electron runtime.
+- The exact **`utilityProcess.fork`** path `ensureEngine` uses spawns the installed bundle, answers `/health`,
+  and is `kill()`ed cleanly by the app on quit (lifecycle ownership).
+- The adopt/spawn/unreachable decision, the health probe (incl. timeout + connection-refusal), and
+  wait-for-engine are all covered by the 13 headless unit tests.
+
+**INFERRED, not executed:** launching the full packaged GUI app via `open` and observing `ensureEngine`
+spawn in-process was deliberately NOT run — the owner's dev engine is live on :8787 (the app would ADOPT it,
+not spawn) and a real launch registers the global ⌘\ shortcut, a tray, and TCC prompts that would disturb
+the live session. The composition is thin glue over units that ARE proven: the decision matrix (unit), the
+health probe (unit), and `utilityProcess.fork` of the shipped bundle (executed above).
+
+### Deferred (out of this slice)
+- **Custom app icon** — still the stock Electron diamond (cosmetic; noted in the research doc).
+- **Stable self-signed cert / Developer ID + notarization** — 0.0.1 is ad-hoc-signed; grants re-prompt after
+  each rebuild and Gatekeeper needs right-click → Open. The upgrade path is documented in package.mjs.
+- **First-run permissions "senses" flow** — the research doc's Deliverable-2 design; a frontends-session task,
+  untouched here.
