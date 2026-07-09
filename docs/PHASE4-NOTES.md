@@ -1090,3 +1090,65 @@ weight `0.9`, both session ids), scoped per workspace, with the hints document l
 - **Pins/candidates as rendered HUD blocks** — the block `source` for pins is still unbuilt (renders
   empty-but-explainable, per `skills/add-a-block`); wiring a `BlockQuery.source` for pins/teach-candidates so
   a surface renders the chips is a surfaces slice, not this API slice.
+
+## Slice: GET/PUT `/hints` — apply-with-review closes the teach flywheel  *(P4-T3b, branch p4t3b-hints, on main)*
+
+P4-T2 landed `GET /teach/candidates` (read-only: a correction SUGGESTS a pattern) and explicitly deferred
+"applying a hint candidate" to P4-T3b. This slice lands the APPLY half: the HTTP edit surface for a
+workspace's `WorkspaceHints` document. "Apply a candidate" is NOT a special auto-apply verb — it is just the
+client PUTting an updated hints doc that includes the reviewed candidate's pattern. **ZERO logic change to
+`route/`**: the `HintsDocuments` store class (`all`/`get`/`put`) already existed (its own comment called an
+HTTP editing route "a later slice" — this is that slice; the comment was updated). Committed per module:
+contracts → engine → tests → docs.
+
+### Routes built (all over the existing `HintsDocuments` seam)
+- `GET /hints` — every workspace's latest hints document (`hintsDocs.all()`). This is the exact view the
+  detector scores signals against (route/detector.ts), so it is the whole-fabric read a review surface reads.
+- `GET /hints/:workspaceId` — one workspace's hints document. Unknown workspace → 404 (only `default` is
+  seeded with an empty doc; any other workspace has none until a user PUTs one — nothing to serve).
+- `PUT /hints/:workspaceId` — persist an edited hints document (validate body as `WorkspaceHints` → 400 on a
+  bad body, 400 on a body whose `workspaceId` ≠ the route; store version-stamps + preserves history). The
+  detector reads `hintsDocs.all()` fresh per window, so an applied pattern takes effect with NO restart.
+
+### Contracts added (all additive)
+- Three `Routes` rows in `api/routes.ts`: `GET /hints` → `WorkspaceHints[]`, `GET /hints/:workspaceId` →
+  `WorkspaceHints`, `PUT /hints/:workspaceId` request `WorkspaceHints` response `WorkspaceHints` (phase 4).
+  `WorkspaceHints`/`AttributionPattern` were already exported contracts (P3, `config/hints.ts`) — no new
+  schema, so `schema-gen` and the contracts example count are unchanged.
+
+### DECISION — PUT does NOT gate on the workspace record existing (mirrors PUT /workflows, createPin)
+An unknown `workspaceId` on PUT CREATES the workspace's hints doc (version 1); it is NOT a 404. This is the
+same policy `PUT /workflows/:id` uses (an unknown id creates version 1, it does not 404) and consistent with
+`createPin` (persists without a workspace-existence check). No other document write invents a
+workspace-existence precondition, and doing so here would be out of step; an empty `patterns` array simply
+matches nothing, so a hints doc for a not-yet-populated workspace is harmless. GET-by-id still 404s, because
+there is genuinely no document to serve until a PUT creates one (the seeded `default` is the one exception).
+
+### DECISION — no auto-apply; "apply a candidate" is a plain document edit
+The route adds no derivation and touches no `route/` logic. `/teach/candidates` suggests; the user reviews;
+the client PUTs a hints doc containing the chosen pattern. Keeping apply as an ordinary versioned-document
+write (not a `POST /teach/candidates/:id/apply`-style verb) means the same route edits, reorders, tunes
+weights, or removes a pattern — the whole hints doc is user-composable, exactly like every other config
+document — and the human stays in the loop (the loop suggests, the user applies).
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before each commit. Final totals: contracts **64** (unchanged — no new
+schema), engine **429** (from 427: +2 in `api/http.test`), client **154** (untouched). The two new tests:
+(1) **routes** — the seeded default lists + resolves, GET-by-id 404s an unknown workspace, PUT rejects a
+garbage body (400) and an id/route mismatch (400), a valid PUT creates + reads back and a second edit
+version-bumps in the store. (2) **flywheel e2e** — seed two reroutes to `sales` (the real `TeachStore`
+capture path) → a matching focus stream detects NOTHING first (`detectSwitch` over `GET /hints` = the seeded
+empty default → `stay`) → `GET /teach/candidates` yields the candidate → PUT it into `sales` hints → `GET
+/hints` reflects the applied pattern → the SAME focus stream now `switch`es to `sales` with the repo hint as
+evidence. This drives the detector over the exact hint provider the attributor uses (`hintsDocs.all()`),
+proving the correction the user made once is generalized: teach → suggest → apply → attribute.
+
+### Deferred (out of this slice, by scope)
+- **`DELETE /hints/:workspaceId`** — forget a workspace's hints entirely. Editing to `patterns: []` already
+  neutralizes a workspace's detection; a hard delete of the versioned document is additive when a surface
+  needs it (mirrors the deferred `DELETE /pins/:id`).
+- **A `/teach` review surface (rendered HUD block)** — the block `source` that renders candidate chips beside
+  the workspace's live hints, with an in-UI "apply this pattern" that PUTs the merged doc, is a surfaces
+  slice over these routes, not this API slice (same posture as the deferred pins/candidates blocks above).
+- **Dismiss-kind teach signals feeding candidate suppression** — still the P4D-deferred item; applying a
+  candidate here does not mark it applied, so it keeps appearing in `/teach/candidates` until dismiss lands.
