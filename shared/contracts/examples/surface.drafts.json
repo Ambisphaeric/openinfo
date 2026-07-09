@@ -1,0 +1,6 @@
+{ "id": "surf-drafts", "name": "Drafts surface", "context": "meeting", "version": 1,
+  "stack": [
+    { "block": "now" },
+    { "block": "drafts", "id": "blk-drafts", "show": "on-match", "top": 3,
+      "query": { "source": "drafts", "params": { "session": "current" }, "top": 3 },
+      "actions": [ { "id": "act-copy", "label": "Copy", "verb": "copy", "params": {} } ] } ] }

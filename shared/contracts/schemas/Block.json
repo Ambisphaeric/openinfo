@@ -42,6 +42,10 @@
           "type": "string"
         },
         {
+          "const": "drafts",
+          "type": "string"
+        },
+        {
           "const": "custom",
           "type": "string"
         }
@@ -89,6 +93,10 @@
             },
             {
               "const": "todos",
+              "type": "string"
+            },
+            {
+              "const": "drafts",
               "type": "string"
             }
           ]

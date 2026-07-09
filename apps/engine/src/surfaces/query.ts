@@ -71,6 +71,15 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // extraction yet already reads as [], explainable-empty, never an error.
       return cap(store.listTodos(workspaceId, sessionId).flatMap((list) => list.items))
     }
+    case 'drafts': {
+      // Prepared follow-up drafts (Act pass, P2): workspace-level records in the workspace DB, so this
+      // mirrors the record sources — `known`-gated (unknown workspace ⇒ [], never an error), scoped to a
+      // session when the block says so. listDrafts returns them oldest-first (creation order); the HUD
+      // wants the freshest prepared draft on top, so reverse to newest-first (like moments/pins) before
+      // `cap` takes top-K. Each row is a Draft — body + provenance/why-line — rendered client-side.
+      const drafts = known ? store.listDrafts(workspaceId, sessionId) : []
+      return cap([...drafts].reverse())
+    }
     case 'ledger':
       // Backing store not built yet (ledger P4): empty, explainable, not an error.
       return cap([])

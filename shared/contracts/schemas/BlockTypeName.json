@@ -34,6 +34,10 @@
       "type": "string"
     },
     {
+      "const": "drafts",
+      "type": "string"
+    },
+    {
       "const": "custom",
       "type": "string"
     }

@@ -1955,3 +1955,51 @@ Contracts 62→63, engine 476→478, client 233→234 (all green in isolation).
 A `mark-done`/toggle affordance that writes back through `PUT /todos` (this slice renders status
 read-only; the action button is inert like the other non-copy verbs). Semantic dedupe of items (WART
 already recorded in `act/todo.ts`). The drafts block (#10, stacked on this branch).
+
+## Slice: #10 — drafts block + query source
+
+Stacked on #9. The Act pass (P2) already prepared follow-up drafts at session end and served them over
+`GET /drafts`, but no block rendered them, so a prepared draft lived nowhere a user could see it. This is
+the drafts block + its query source — the same `add-a-block` "new built-in block type" shape as #9.
+
+### Contract (append-only, schemas regenerated)
+`BlockTypeName` gains `drafts`; `BlockQuery.source` and `QueryResult.source` each gain `drafts`. Append-only
+(prior documents still validate). Ran `pnpm --filter @openinfo/contracts gen` — the affected
+`BlockTypeName`/`BlockQuery`/`QueryResult`/`Block`/`Surface` `schemas/*.json` regenerated (unrelated
+pre-existing schema drift left untouched). A `surface.drafts.json` example exercises the block.
+
+### The query source (`surfaces/query.ts`)
+The `drafts` arm reads the EXISTING `store.listDrafts(workspaceId, sessionId?)` — drafts are
+workspace-level RECORDS in the workspace DB, so unlike todos this arm mirrors the record sources: it is
+`known`-gated (unknown workspace ⇒ [], never an error) and session-scopable via `session: current`.
+`listDrafts` returns oldest-first (creation order); the HUD wants the freshest prepared draft on top, so
+the arm reverses to newest-first (like moments/pins) before the shared `cap` takes top-K / flags
+truncation. No new store method needed.
+
+### The renderer (`client/surfaces/blocks/drafts.ts` + registry)
+`renderDrafts` reads `result.items` as `Draft[]` and renders one `.rel` row per draft: the draft BODY as
+the `.ttl` and a PROVENANCE why-line built from the draft's own trail — its act kind, the source
+distillate + moment counts it was composed from, and the fabric endpoint that produced it (product
+principle 1: inspectable back to what it was built from). The copy affordance carries the body (prepared,
+never sent — the human executes). `block.top` caps like the siblings; empty is explainable (a "No drafts
+prepared yet" line on an always-block, hidden when `on-match`). Registered in `defaultBlockRegistry`; the
+surface-editor picker gains a `drafts` default-block seed (`show: on-match`, `session: current`, `top: 3`).
+
+### Tests + verification
+Contracts 63→64, engine 478→480, client 234→237 (full `pnpm -r test` green, no flakes this run).
+- `surfaces/query.test.ts` — a store seeded via `saveDraft` across two sessions: the arm hydrates
+  newest-first, `top` caps + flags truncation, narrows to one session, and a draft-less/unknown workspace
+  reads `[]`; the unbuilt-store test also covers an unknown-workspace `drafts` read.
+- `api/http.test.ts` — a served e2e over the live server. Drafts have NO served write route (they are
+  prepared at session end, never posted), so the test drives the whole PRODUCING pipeline (start →
+  capture → distill → end → follow-up draft via the fake llm), then authors a surface with a `drafts`
+  block and `POST /query`s it exactly as the client hydrates — the prepared body + provenance round-trip;
+  a draft-less workspace query returns `items: []`.
+- `client/surfaces/blocks/drafts.test.ts` (OWN new file — `renderer.test.ts` untouched) — proves
+  STORE-DERIVED content: the seeded body only reachable via `result.items`, the provenance why-line
+  (`follow-up draft · from 2 distillates + 1 moment · via llm.fast`), the copy affordance carrying the
+  body, and both empty-state paths.
+
+### Out of scope (recorded, NOT built)
+A `draft-with`/regenerate affordance or any write-back (this slice renders drafts read-only; only the copy
+verb is live). Markdown rendering of the draft body (shown as text, consistent with the other blocks).
