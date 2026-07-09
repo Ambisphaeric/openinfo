@@ -1,4 +1,6 @@
 import type { WorkflowSpec } from '@openinfo/contracts'
+import { WorkflowSpec as WorkflowSpecSchema } from '@openinfo/contracts'
+import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { DEFAULT_WORKFLOW_ID, loadDefaultWorkflow } from './defaults.js'
 
@@ -10,9 +12,10 @@ const WORKFLOW_KIND = 'workflow'
  * pipeline mirror) only when absent, so a user's edits are never clobbered.
  *
  * The executor reads `active()` FRESH per drain / per session-end (the flags/surfaces hot-edit pattern),
- * so a future edit takes effect with NO engine restart. This slice ships no edit ROUTE (deferred, see
- * PHASE4-NOTES) — the document is read-only from the seed for now — but the read seam is already the
- * hot-editable one, so a GET/PUT /workflows resource route drops in later with no executor change.
+ * so a stored edit takes effect with NO engine restart. `save()` is the write half the GET/PUT
+ * /workflows routes bind to (P4-T1): a validated, version-stamped edit lands in the SAME record the
+ * executor reads next, so "the user composes the pipeline" over the API takes effect with no restart
+ * and no executor change.
  */
 export class WorkflowDocuments {
   constructor(private readonly store: WorkspaceRegistry) {}
@@ -33,5 +36,29 @@ export class WorkflowDocuments {
     const stored = this.store.layouts.getLatest<WorkflowSpec>(WORKFLOW_KIND, id)?.body
     if (stored) return stored
     return id === DEFAULT_WORKFLOW_ID ? loadDefaultWorkflow() : undefined
+  }
+
+  /** Every stored workflow (latest version of each) — the GET /workflows enumeration read. Because the
+   * shipped default is seeded on `ensureDefaults()`, the list always contains `workflow-default`. */
+  list(): WorkflowSpec[] {
+    return this.store.layouts.latestOfKind<WorkflowSpec>(WORKFLOW_KIND).map((doc) => doc.body)
+  }
+
+  /**
+   * Persist an edited workflow, stamping `version` = latest stored version + 1 (LayoutStore keeps every
+   * prior version — editable history), mirroring TodoDocuments.save / SurfaceDocuments.save. The body is
+   * contract-validated against WorkflowSpec BEFORE write (the Tier-A gate, the last line of defense): the
+   * `kind` union is CLOSED, so a step naming an unrunnable primitive — one the executor has no path for —
+   * is rejected here rather than reaching the executor as a silent no-op (see the WorkflowStepKind
+   * comment). A rejected write throws, which the PUT route maps to a 400.
+   */
+  save(spec: WorkflowSpec): WorkflowSpec {
+    const current = this.store.layouts.getLatest<WorkflowSpec>(WORKFLOW_KIND, spec.id)
+    const next: WorkflowSpec = { ...spec, version: (current?.body.version ?? 0) + 1 }
+    if (!Value.Check(WorkflowSpecSchema, next)) {
+      throw new Error(`workflow failed contract validation: ${spec.id}`)
+    }
+    this.store.layouts.put(WORKFLOW_KIND, spec.id, next)
+    return next
   }
 }
