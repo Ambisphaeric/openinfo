@@ -1,6 +1,7 @@
 import type { Endpoint, Fabric, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
-import type { LocalEndpoint, LocalRuntimeManager } from './endpoints/local.js'
+import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
+import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
 import {
   AggregateInvokeError,
   InvokeError,
@@ -27,7 +28,7 @@ type HttpEndpoint = Extract<Endpoint, { kind: 'http' }>
 const resolveLocal = async (
   endpoint: LocalEndpoint,
   manager: LocalRuntimeManager | undefined,
-): Promise<{ http: HttpEndpoint; transcribePath?: string }> => {
+): Promise<{ http: HttpEndpoint; spec: RuntimeSpec }> => {
   if (!manager) throw new Error('local runtime not managed here (no runtime manager)')
   const { url, spec } = await manager.ensureRunning(endpoint)
   const http: HttpEndpoint = { kind: 'http', name: endpoint.name, url, api: 'openai-compat' }
@@ -36,7 +37,7 @@ const resolveLocal = async (
   // endpoint's keyRef onto the synthetic http endpoint so authHeaders injects it exactly like the http
   // path. The value is resolved from the secret store at call time; only the ref rides in the document.
   if (endpoint.auth !== undefined) http.auth = endpoint.auth
-  return spec.transcribePath !== undefined ? { http, transcribePath: spec.transcribePath } : { http }
+  return { http, spec }
 }
 
 /** The endpoint identity a failure is classified against — name/url/model/keyRef, never a secret value. */
@@ -225,9 +226,13 @@ export interface SttAudio {
   contentType: string
 }
 
-export interface SttResult {
-  /** the transcript; '' is a valid silence outcome, not an error */
-  text: string
+/**
+ * The `stt` slot result: the canonical `TranscriptResult` (text — '' is valid silence, not an error —
+ * plus language/duration/segments when the flavor supplied them) with invoke provenance. Every STT
+ * flavor is normalized to this ONE shape by its adapter, so a consumer reads `text` uniformly whether
+ * the transcript came from whisper.cpp, an OpenAI-compatible host, or omlx.
+ */
+export interface SttResult extends TranscriptResult {
   endpoint: string
   model?: string
   slot: 'stt'
@@ -252,30 +257,31 @@ const audioFilename = (contentType: string): string => {
 }
 
 /**
- * POST one multipart transcription request and return the transcript. Used by BOTH the http kind
- * (OpenAI-compat `/v1/audio/transcriptions`, model + file) and the local whisper.cpp runtime
- * (`/inference` with `response_format=json` — whisper-server does NOT serve the /v1 path). Throws on
- * transport or protocol failure so the caller falls through to the next endpoint in fabric order.
+ * POST one multipart transcription request and NORMALIZE the response via the flavor's adapter. The
+ * adapter owns the wire quirks — its `path` (whisper.cpp is `/inference`, not `/v1`), whether the `model`
+ * form field is sent (openai/omlx yes, whisper-server no), and the `response_format` — plus mapping the
+ * body to the canonical `TranscriptResult`. Throws a CLASSIFIED InvokeError on transport/protocol failure
+ * so the caller falls through to the next endpoint in fabric order; the adapter itself never throws.
  */
 const postTranscription = async (
   url: string,
-  path: string,
+  adapter: SttAdapter,
   audio: SttAudio,
   opts: SttOptions,
-  extra: { model?: string; auth?: Record<string, string>; responseFormat?: boolean },
+  extra: { model?: string; auth?: Record<string, string> },
   ctx: InvokeCtx,
-): Promise<string> => {
+): Promise<TranscriptResult> => {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 60_000)
   let response: Response
   try {
     const form = new FormData()
-    if (extra.model !== undefined) form.set('model', extra.model)
+    if (adapter.request.sendModel && extra.model !== undefined) form.set('model', extra.model)
     if (opts.language !== undefined) form.set('language', opts.language)
-    if (extra.responseFormat) form.set('response_format', 'json')
+    if (adapter.request.responseFormat !== undefined) form.set('response_format', adapter.request.responseFormat)
     const bytes = Buffer.from(audio.base64, 'base64')
     form.set('file', new Blob([bytes], { type: audio.contentType }), audioFilename(audio.contentType))
-    response = await fetch(`${url.replace(/\/$/, '')}${path}`, {
+    response = await fetch(`${url.replace(/\/$/, '')}${adapter.request.path}`, {
       method: 'POST',
       headers: extra.auth ?? {},
       body: form,
@@ -287,30 +293,26 @@ const postTranscription = async (
     clearTimeout(timeout)
   }
   if (!response.ok) throw classifyHttpResponse(response.status, await response.text().catch(() => ''), ctx)
-  let json: { text?: unknown }
+  let json: unknown
   try {
-    json = (await response.json()) as { text?: unknown }
+    json = await response.json()
   } catch {
     throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the transcription endpoint' })
   }
-  // A transcriber that answers must return a `text` field; '' (silence) is valid, missing is not.
-  if (typeof json.text !== 'string') throw new InvokeError('bad-response', ctx, { serverMessage: 'no transcript text in response' })
-  return json.text
-}
-
-/** Call one http stt endpoint (OpenAI-compat `/v1/audio/transcriptions`, model + file). */
-const callSttHttp = (endpoint: HttpEndpoint, audio: SttAudio, opts: SttOptions): Promise<string> => {
-  const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
-  const extra: { model?: string; auth: Record<string, string> } = { auth }
-  if (endpoint.model !== undefined) extra.model = endpoint.model
-  return postTranscription(endpoint.url, '/v1/audio/transcriptions', audio, opts, extra, ctxOf(endpoint))
+  // A transcriber that answers must carry a `text` field; '' (silence) is valid, missing is not. The
+  // adapter maps a well-formed body and returns undefined when there is none — one honest bad-response.
+  const transcript = adapter.normalize(json)
+  if (transcript === undefined) throw new InvokeError('bad-response', ctx, { serverMessage: 'no transcript text in response' })
+  return transcript
 }
 
 /**
  * Invoke the `stt` slot: try endpoints in fabric order (order is fallback, first that answers wins),
- * mirroring invokeLlm. http/openai-compat endpoints POST the multipart transcription shape; `local`
- * is a stub (skipped, offline runtimes land with managed runtimes later) and `cloud` is out of
- * scope, exactly as invokeLlm handles them. An empty transcript ('' = silence) is a normal result.
+ * mirroring invokeLlm. Each endpoint's STT FLAVOR picks an adapter (http/openai-compat → the OpenAI
+ * transcription shape; local whisper.cpp → whisper-server `/inference`; local mlx → omlx transcription),
+ * and the adapter normalizes every flavor's body to the ONE canonical `TranscriptResult` — a new engine
+ * is a new adapter, never a branch here. `cloud` is out of scope, exactly as invokeLlm handles it. An
+ * empty transcript ('' = silence) is a normal result.
  */
 export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOptions = {}): Promise<SttResult> => {
   const endpoints = fabric.slots.stt
@@ -321,21 +323,33 @@ export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOption
       lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
+    const adapter = selectSttAdapter(endpoint)
+    if (adapter === undefined) {
+      lines.push(
+        endpoint.kind === 'http'
+          ? `${endpoint.name}: unsupported api "${endpoint.api}"`
+          : `${endpoint.name}: unsupported local runtime "${endpoint.runtime}" for stt`,
+      )
+      continue
+    }
     try {
-      let text: string
+      let transcript: TranscriptResult
       if (endpoint.kind === 'local') {
-        // The spawned whisper.cpp runtime serves /inference (response_format=json), not /v1.
-        const { http, transcribePath } = await resolveLocal(endpoint, opts.runtimeManager)
-        if (transcribePath === undefined) throw new Error('local runtime has no transcription path')
-        text = await postTranscription(http.url, transcribePath, audio, opts, { responseFormat: true }, ctxOf({ ...http, name: endpoint.name }))
+        // A local runtime is resolved to a localhost http server; the adapter (chosen from its runtime)
+        // decides the path/model-field. omlx REQUIRES the served model id and a bearer even on localhost;
+        // whisper.cpp's /inference takes neither. Both ride the SAME multipart POST via the adapter.
+        const { http } = await resolveLocal(endpoint, opts.runtimeManager)
+        const auth = authHeaders(http, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
+        const extra: { model?: string; auth: Record<string, string> } = { auth }
+        if (endpoint.model !== '') extra.model = endpoint.model
+        transcript = await postTranscription(http.url, adapter, audio, opts, extra, ctxOf({ ...http, name: endpoint.name }))
       } else {
-        if (endpoint.api !== 'openai-compat') {
-          lines.push(`${endpoint.name}: unsupported api "${endpoint.api}"`)
-          continue
-        }
-        text = await callSttHttp(endpoint, audio, opts)
+        const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
+        const extra: { model?: string; auth: Record<string, string> } = { auth }
+        if (endpoint.model !== undefined) extra.model = endpoint.model
+        transcript = await postTranscription(endpoint.url, adapter, audio, opts, extra, ctxOf(endpoint))
       }
-      const result: SttResult = { text, endpoint: endpoint.name, slot: 'stt' }
+      const result: SttResult = { ...transcript, endpoint: endpoint.name, slot: 'stt' }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       return result
     } catch (error) {
