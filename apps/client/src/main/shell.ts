@@ -1,10 +1,12 @@
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, desktopCapturer, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, desktopCapturer, utilityProcess, type UtilityProcess, type MenuItemConstructorOptions } from 'electron'
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
+import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl } from './engine-supervisor.js'
 import { hudWindowSpec } from './window-options.js'
 import { buildTrayMenu, trayTooltip, type TrayState } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
@@ -51,6 +53,10 @@ const contextHealth = new ContextHealthTracker()
 let hudWindow: BrowserWindow | undefined
 let captureWindow: BrowserWindow | undefined
 let tray: Tray | undefined
+// The engine child WE spawned (only when the configured URL answered nothing AND we shipped a bundled
+// engine). Undefined when we adopted an already-running engine — so we NEVER kill an engine we didn't
+// start; only this child is shut down, on quit. See engine-supervisor.ts + ensureEngine.
+let spawnedEngine: UtilityProcess | undefined
 let connected = false
 // Has the shell attempted the engine yet? Distinguishes first-boot "connecting…" from a genuine
 // "engine unreachable" leading state (set true once the first seed attempt resolves, success or fail).
@@ -625,6 +631,49 @@ const maybeOpenFirstRunSetup = (): void => {
   }
 }
 
+/**
+ * The engine-spawn seam — the one thing that keeps a double-clicked .app from being a dead shell. Decide,
+ * ONCE at startup: if the configured engine URL already answers /health, ADOPT it (the dev-rig case — the
+ * owner runs an engine on :8787 — spawn nothing, and never kill it). If nothing answers and we shipped a
+ * bundled engine, SPAWN it and wait for it to serve. If neither, do nothing — the tray's existing
+ * "engine unreachable" leading state is the honest fallback. Best-effort throughout: a failed spawn or a
+ * child that never answers degrades to that same unreachable state, never a crash. The decision logic +
+ * health polling are pure (engine-supervisor.ts, tested headless); this is only the electron plumbing.
+ */
+const ensureEngine = async (): Promise<void> => {
+  const reachable = await checkEngineReachable(cfg.engineUrl)
+  const entry = bundledEngineEntry(process.resourcesPath)
+  const bundledEnginePresent = existsSync(entry)
+  const disposition = decideEngineDisposition({ reachable, bundledEnginePresent })
+  console.log(`[shell] engine ${cfg.engineUrl}: reachable=${reachable} bundled=${bundledEnginePresent} → ${disposition}`)
+  if (disposition !== 'spawn') return // adopt (already answering) or unreachable (tray leads) — spawn nothing
+  const port = portFromEngineUrl(cfg.engineUrl)
+  try {
+    // Electron's utilityProcess runs the engine in a Node child on Electron's OWN bundled Node runtime — so
+    // there is NO second Node binary to ship, and the bundled better-sqlite3 need only match Electron's ABI
+    // (staged, rebuilt for it, by package.mjs). Data dir stays the engine's default (~/.openinfo/data); we
+    // pin only the PORT so the child answers the exact URL the client talks to. stdio piped so the engine's
+    // log rides ours.
+    const child = utilityProcess.fork(entry, [], {
+      env: { ...process.env, OPENINFO_PORT: String(port) },
+      stdio: 'pipe',
+      serviceName: 'openinfo-engine',
+    })
+    child.stdout?.on('data', (d: Buffer) => process.stdout.write(`[engine] ${d}`))
+    child.stderr?.on('data', (d: Buffer) => process.stderr.write(`[engine] ${d}`))
+    child.on('exit', (code) => {
+      console.log(`[shell] bundled engine exited (code ${code})`)
+      if (spawnedEngine === child) spawnedEngine = undefined
+    })
+    spawnedEngine = child
+    console.log(`[shell] spawned bundled engine (pid ${child.pid}) on :${port} — waiting for health…`)
+    const up = await waitForEngine(cfg.engineUrl)
+    console.log(up ? '[shell] bundled engine is serving' : '[shell] bundled engine did not answer in time — tray shows unreachable')
+  } catch (err) {
+    console.error('[shell] failed to spawn bundled engine:', err) // leave the unreachable state as the fallback
+  }
+}
+
 const seedSessionState = async (): Promise<void> => {
   try {
     liveState.seed(await session.liveSession(cfg.workspace))
@@ -660,7 +709,7 @@ if (!gotLock) app.quit()
 
 app.on('second-instance', () => showHud())
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!gotLock) return
   app.dock?.hide() // menu-bar-only agent (no dock icon), like a Glass-style companion
   // Grant only the media (mic) permission at the Chromium layer for our own windows; deny everything
@@ -677,6 +726,10 @@ app.whenReady().then(() => {
   createTray()
   setupCapture()
   setupFocus()
+  // Adopt-or-spawn the engine BEFORE seeding, so a fresh double-clicked app has its bundled engine serving
+  // by the time the tray reads session/fabric state. Awaited (best-effort) — the WS reconnect + re-seed
+  // still recover if the engine comes up later or the spawn is slow.
+  await ensureEngine()
   void seedSessionState()
   connectEvents()
   for (const { accelerator, command } of SHORTCUTS) {
@@ -693,5 +746,6 @@ app.on('before-quit', () => {
   systemController?.shutdown()
   screenController?.shutdown() // clears the desktopCapturer cadence loop
   focusPoller?.stop() // stop watching the foreground window
+  spawnedEngine?.kill() // shut down ONLY the engine we spawned; an adopted engine is left running
 })
 app.on('will-quit', () => globalShortcut.unregisterAll())
