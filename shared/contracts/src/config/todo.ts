@@ -38,7 +38,7 @@ export type TodoItem = Static<typeof TodoItem>
 /**
  * A session's accumulated to-do list — an EDITABLE, versioned document (the everything-is-a-document
  * rule, ARCHITECTURE §2), homed in the house documents store keyed by its session id so it gets the
- * read/write route + version history for free, like Surface/WorkflowSpec. This is the founder's
+ * read/write route + version history for free, like Surface/WorkflowSpec. This is the user's
  * constrain/unconstrain loop's state: the `task-extract` act CONSTRAINS the meeting into `items`
  * (deduped, provenance-stamped) across drains; a draft UN-CONSTRAINS them back into prose via the
  * `{{todo}}` template variable. A user can PUT an edited `items` array and the next draft reflects it.

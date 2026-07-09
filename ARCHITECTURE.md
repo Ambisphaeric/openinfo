@@ -278,7 +278,7 @@ combination is a document** (§2's rule, applied to the fabric) — named, versi
 ### Onboarding from first principles — discover, the capability lens, tier zero (design note — 2026-07-07)
 
 The fabric setup surface above is *forms over documents* — powerful, but it asks a new user to know ports,
-model-capability trivia, and OpenAI-compatibility conventions. The founder configuring his OWN product hit
+model-capability trivia, and OpenAI-compatibility conventions. A user configuring their OWN product hit
 exactly that: template fixes, port lookups, which model is an OCR model, two TCC permissions. Onboarding must
 be **simple for a new user in a standard flow**, designed from first principles. The substrate does not
 change — profiles/keyRefs/slots stay exactly as the note above defines them. This is a **lens** over the same
@@ -318,7 +318,7 @@ documents, plus one new read-only engine capability (discovery). Six principles 
 **Get Started lens** on `/setup` (the capability checklist + the one-button "Use this setup" → config-1).
 Deferred, each with its home named: (b) the say-something verification loop (client); (c) engine-managed
 `local` runtimes / tier zero (`fabric` `local` kind); future — with-permission **LAN sweep** discovery (the
-founder's own rig is cross-host: STT on one box, LLM on another, some over tailscale — a subnet sweep with
+user's own rig is cross-host: STT on one box, LLM on another, some over tailscale — a subnet sweep with
 explicit consent extends `fabric/discover.ts`) and `lmstudio://` launch deep links.
 
 **The suggestion heuristic (documented so it is inspectable, product principle 1).** Reachable servers only, in
@@ -330,7 +330,7 @@ produces `llm`, so non-llm membership is explicit by construction — this is wh
 over default" means). No quality ranking yet (param count, measured tok/s) — "best available" is deterministic
 first-match; a real rank is future, and the user always sees every found model and can pick via Advanced.
 
-**Platform note — macOS Local Network TCC (cost the founder a day).** On macOS, contacting a host on the local
+**Platform note — macOS Local Network TCC (cost the user a day).** On macOS, contacting a host on the local
 network (a bare LAN IP or `*.local`, and in some OS versions even loopback probes from certain contexts) can
 trip the **Local Network** privacy gate. A process running in a **GUI login session** can raise the system
 prompt and, once approved, reach LAN hosts; a process **orphaned from ssh** (a daemon started over a headless
@@ -354,7 +354,7 @@ weighed honestly:
 - **(a) A virtual audio device — BlackHole.** BlackHole exposes a virtual output *and* a matching virtual
   input; audio sent to the output is readable from the input via ordinary **`getUserMedia`** — the identical
   Chromium path the mic already uses, **zero compiled/native code**. It is common among meeting-recorders and
-  is already installed on the founder's machine (the spike enumerated `BlackHole 2ch`). The cost is **routing
+  is already installed on the user's machine (the spike enumerated `BlackHole 2ch`). The cost is **routing
   friction**: the user must send their system/meeting-app output *into* BlackHole, normally via a **Multi-Output
   Device** (Audio MIDI Setup) so they still hear the call while a copy flows to BlackHole — or simpler, wear
   headphones and point the meeting app's output at BlackHole. This friction is real but **detectable and

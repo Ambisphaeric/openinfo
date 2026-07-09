@@ -942,7 +942,7 @@ test('fabric profiles: seeded list, GET, PUT create, clone, activate, delete-act
   }
 })
 
-test('full-fabric round-trip: adding a tts endpoint to an llm+stt profile keeps every other slot (the founder repro), local endpoints preserved', async () => {
+test('full-fabric round-trip: adding a tts endpoint to an llm+stt profile keeps every other slot (the user repro), local endpoints preserved', async () => {
   // Mirrors what the setup page's saveEditor does — it re-PUTs the WHOLE fabric on every Save. The
   // page now edits all six slots, so this proves a slot edit never drops the others (and a `local`
   // endpoint round-trips untouched through an unrelated edit).
@@ -975,7 +975,7 @@ test('full-fabric round-trip: adding a tts endpoint to an llm+stt profile keeps 
     const got = (await (await fetch(`${base}/fabric/profiles/rig`)).json()) as FabricProfile
     assert.equal(got.fabric.slots.llm.length, 1) // llm intact
     assert.deepEqual(got.fabric.slots.stt[0], sttLocal) // the local stt endpoint survived every edit, byte-for-byte
-    assert.equal(got.fabric.slots.tts[0]!.name, 'kokoro') // the founder's added tts is present
+    assert.equal(got.fabric.slots.tts[0]!.name, 'kokoro') // the user's added tts is present
     assert.equal(got.fabric.slots.vlm[0]!.name, 'vlm') // and the vlm
   } finally {
     await app.close()
@@ -1270,7 +1270,7 @@ test('POST /fabric/test probe:generate — ping + REAL generation; llm success r
 test('POST /fabric/test probe:generate — a pings-200-but-model-load-400 server is caught HONESTLY', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })
-  // The founder's exact wall: the base GET answers (reachable), the completion 400s "failed to load", and
+  // The user's exact wall: the base GET answers (reachable), the completion 400s "failed to load", and
   // the server reports a smaller model it DOES have — so the hint gains the loaded-model suggestion.
   const up = await startFakeChat(
     { status: 400, body: JSON.stringify({ error: 'Model "qwen3.5-35b" failed to load. Error: failed to allocate buffer' }) },
@@ -2039,7 +2039,7 @@ test('e2e: PUT a surface edit → surface.updated on the WS with the changed lay
     const hud = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
     const sub = await openEvents(base)
     try {
-      // the founder scenario, via the editor's API path: collapse moments + drop relevant-now top to 2
+      // the user scenario, via the editor's API path: collapse moments + drop relevant-now top to 2
       const stack = hud.stack.map((b) =>
         b.block === 'moments' ? { ...b, collapsed: true } : b.block === 'relevant-now' ? { ...b, top: 2 } : b,
       )
@@ -2208,7 +2208,7 @@ test('scan → select → save round-trip: a scanned model id lands intact in th
     assert.ok(appAddr && typeof appAddr === 'object')
     const base = `http://127.0.0.1:${appAddr.port}`
 
-    // scan, pick the founder's model from the discovered list (what the dropdown does)…
+    // scan, pick the user's model from the discovered list (what the dropdown does)…
     const result = (await (await fetch(`${base}/fabric/scan`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: up.url }) })).json()) as {
       hosts: { url: string; models: { id: string }[] }[]
     }

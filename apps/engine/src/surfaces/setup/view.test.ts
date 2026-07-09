@@ -121,7 +121,7 @@ test('each slot carries an honest usage note — informational, never gating', (
   assert.doesNotMatch(html, /not wired/)
 })
 
-test('adding an endpoint to tts is possible (the founder repro): tts is an editable slot with add-row', () => {
+test('adding an endpoint to tts is possible (the user repro): tts is an editable slot with add-row', () => {
   // The tts slot renders as a full editable container (data-slot + add-endpoint), exactly like llm —
   // the browser clones #row-tpl into it, so kokoro can be added from the page (no raw API calls).
   const html = editorHtml(data())
@@ -338,7 +338,7 @@ test('momentResultHtml renders glyph, text, kind, provenance and elapsed seconds
   assert.match(html, /3\.1s<\/span>/) // elapsed, one decimal
 })
 
-// --- The Try-it card's THREE TRUTHS (the founder's mandate: three truths, three messages) ---
+// --- The Try-it card's THREE TRUTHS (the user's mandate: three truths, three messages) ---
 
 test('three truths #1 REAL FAILURE: a model-load on the current endpoint shows the real error + hint + link', () => {
   const d = tryItDiagnosis({
@@ -444,7 +444,7 @@ test('modelDropdownHtml escapes hostile model ids', () => {
   assert.match(html, /&lt;script&gt;/)
 })
 
-test('scanStatusLine ok: found-count + the capabilities summary (the founder\'s list)', () => {
+test('scanStatusLine ok: found-count + the capabilities summary (the user\'s list)', () => {
   const status = scanStatusLine(scannedHost({
     models: [m('a-7b', ['llm']), m('b-3b', ['llm']), m('glm-ocr', ['ocr']), m('whisper', ['stt'])],
   }))

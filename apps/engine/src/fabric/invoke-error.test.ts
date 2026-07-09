@@ -99,7 +99,7 @@ test('classify: auth — an unresolvable keyRef fails BEFORE any fetch, naming t
 })
 
 test("classify: model-load — LM Studio's verbatim 400 body is captured and classified", async () => {
-  // The exact shape LM Studio returns when a model fails to load (the founder's wall).
+  // The exact shape LM Studio returns when a model fails to load (the user's wall).
   const lmStudioBody = JSON.stringify({ error: 'Model "qwen3.5-35b" failed to load. Error: llama.cpp error: failed to allocate buffer' })
   const fake = await startFake(400, lmStudioBody)
   try {
@@ -144,7 +144,7 @@ test('classify: bad-response — non-JSON body on a 200', async () => {
 })
 
 test("classify: reasoning-exhausted — LM Studio's 200 with empty content + reasoning_content + finish_reason length", async () => {
-  // The founder's second confusing failure: qwen3.5-9b burns its whole budget thinking, returns content ''.
+  // The user's second confusing failure: qwen3.5-9b burns its whole budget thinking, returns content ''.
   const body = JSON.stringify({
     choices: [{ message: { role: 'assistant', content: '', reasoning_content: 'let me think about this…'.repeat(20) }, finish_reason: 'length' }],
   })

@@ -7,7 +7,7 @@ import { FEATURES_SCRIPT } from './sections/features.js'
  * layout and a unified control system: one type scale, one set of inputs/buttons/toggles with shared
  * hover/active/focus states, real cards, and a proper toggle switch. The design language follows
  * design/renderings/hud-v2.html (dark glass, orange accent, mono micro-labels). This must read as real
- * software, not a toy (founder acceptance criterion) — so the effort here is deliberate, not polish.
+ * software, not a toy (owner acceptance criterion) — so the effort here is deliberate, not polish.
  *
  * SETTINGS_SCRIPT composes the existing setup browser wiring (models/profiles/keys/starter/try-it,
  * SETUP_SCRIPT) with the Features toggle wiring (FEATURES_SCRIPT). The sidebar itself is plain

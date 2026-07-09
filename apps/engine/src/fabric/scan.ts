@@ -4,7 +4,7 @@ import { InvokeError, classifyFetchError, extractServerMessage, type InvokeCtx }
 import type { SecretResolver } from './secrets.js'
 
 /**
- * The host-scan (HOST-SCAN + MODEL-DROPDOWN slice) — the founder's mandate made mechanism: "pick host,
+ * The host-scan (HOST-SCAN + MODEL-DROPDOWN slice) — the user's mandate made mechanism: "pick host,
  * scan common ports, see if missing api key, see if model list returns, list models on the call — then
  * you get a 'capabilities' list." An exact `url` probes that base URL; a bare `host` tries the
  * probe-list DOCUMENT's ports against it (the "common ports" are the conventions discovery already
@@ -18,7 +18,7 @@ import type { SecretResolver } from './secrets.js'
  * POSTURE: the engine is localhost-only (auth is P7), and this is a USER-DIRECTED probe of a host the
  * user typed into their own settings — a handful of GETs to {url}/v1/models, not an unsolicited subnet
  * sweep (the consent-gated LAN sweep stays future, CODE_MAP §3). Timeouts are short and probes run in
- * PARALLEL, like discovery. No caching — every call probes fresh (the founder's explicit call: "don't
+ * PARALLEL, like discovery. No caching — every call probes fresh (the user's explicit call: "don't
  * even need to cache, it will be hit infrequently"). VALUE-FREE: a keyRef resolves server-side into a
  * bearer header; no key material ever appears in a ScanResult (hints name the ref only).
  */

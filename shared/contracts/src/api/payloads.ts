@@ -101,7 +101,7 @@ export type Ack = Static<typeof Ack>
  * spooled file because an invoke failed. It names WHICH endpoint, WHAT went wrong (the class the engine
  * detected: an unreachable server vs a timeout vs a rejected key vs a model that won't load vs a garbled
  * reply), the server's own message when it gave one, and a one-line troubleshoot `hint`. This is the
- * honest signal behind the founder's mandate — the drain no longer re-queues silently forever; GET /queue,
+ * honest signal behind the user's mandate — the drain no longer re-queues silently forever; GET /queue,
  * the Status section, and the Try-it card read this to say exactly why nothing arrived. Carries a keyRef,
  * NEVER a key value (the never-echo discipline).
  */
@@ -109,7 +109,7 @@ export const QueueFailure = Type.Object(
   {
     class: Type.Union(
       ['unreachable', 'timeout', 'auth', 'model-load', 'bad-response', 'reasoning-exhausted'].map((c) => Type.Literal(c)),
-      { description: 'the detected failure class — the difference the founder asked the system to tell apart' },
+      { description: 'the detected failure class — the difference the user asked the system to tell apart' },
     ),
     endpoint: Type.String({ description: 'the endpoint name the invoke failed on (never a secret value)' }),
     model: Type.Optional(Type.String({ description: 'the model that was asked for, when the endpoint names one' })),
@@ -370,7 +370,7 @@ export type SecretValue = Static<typeof SecretValue>
 /**
  * The result of a REAL-generation probe (INVOKE-RESILIENCE) — `POST /fabric/test` with `probe: 'generate'`
  * runs a minimal 1-token completion through the actual invoke path, so a server that pings 200 but can't
- * load its model (the founder's LM Studio 400) is caught HONESTLY. `ok` = a completion came back; on
+ * load its model (the user's LM Studio 400) is caught HONESTLY. `ok` = a completion came back; on
  * failure `class`/`error`/`hint` carry the classified reason (the same taxonomy the drain records). For an
  * stt endpoint it is `skipped` with a `note` (a generation probe needs audio — out of scope). Value-free re keys.
  */

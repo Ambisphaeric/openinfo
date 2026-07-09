@@ -10,7 +10,7 @@
   ],
   "properties": {
     "class": {
-      "description": "the detected failure class — the difference the founder asked the system to tell apart",
+      "description": "the detected failure class — the difference the user asked the system to tell apart",
       "anyOf": [
         {
           "const": "unreachable",
