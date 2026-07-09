@@ -52,7 +52,7 @@ export const SURFACE_EDITOR_SCRIPT = `
   }
   function slug(s){return s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-\$/g,'');}
   function el(tag,cls,txt){var e=document.createElement(tag); if(cls)e.className=cls; if(txt!=null)e.textContent=txt; return e;}
-  function futureNote(type){return {ledger:'ledger store lands in P4 \\u2014 renders empty-but-explainable until then.','pinned-doc':'pins store lands in P3 \\u2014 renders empty-but-explainable until then.',hint:'pins store lands in P3 \\u2014 renders empty-but-explainable until then.'}[type];}
+  function futureNote(type){return {ledger:'ledger store lands in P4 \\u2014 renders empty-but-explainable until then.'}[type];}
   function buildRow(type,def){
     var row=el('div','blockrow'); row.dataset.blockNew=type; row.dataset.block=type;
     var move=el('div','bmove');

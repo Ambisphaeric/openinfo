@@ -49,13 +49,11 @@ export const defaultBlockFor = (type: string): Block => {
 
 /**
  * Honest "the backing store lands later" note for block types whose source has no store yet (same
- * present-but-future copy style the fabric slots use). Keyed by block type: ledger (P4), pinned-doc /
- * hint (both source from the pins store, P3). Absent ⇒ no note (the type hydrates today).
+ * present-but-future copy style the fabric slots use). Keyed by block type: ledger (P4). The pins store
+ * has landed, so pinned-doc / hint now hydrate and carry no future-store note. Absent ⇒ no note.
  */
 const FUTURE_STORE_NOTE: Record<string, string> = {
   ledger: 'ledger store lands in P4 — renders empty-but-explainable until then.',
-  'pinned-doc': 'pins store lands in P3 — renders empty-but-explainable until then.',
-  hint: 'pins store lands in P3 — renders empty-but-explainable until then.',
 }
 
 /** A one-line summary of the fields the form does NOT expose but preserves verbatim on save. */

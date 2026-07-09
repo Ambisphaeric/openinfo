@@ -102,7 +102,7 @@ const FEATURE_META: Record<string, FeatureMeta> = {
   'surface.block.pinned-doc': {
     label: 'Pinned-doc HUD block',
     stage: 'Other',
-    note: 'An always-visible pinned-doc card with a copy bar on the HUD. Present-but-future — the pins store lands in P3.',
+    note: 'An always-visible pinned-doc card with a copy bar on the HUD. Renders the hydrated pin (title + ingest state) from the pins store, with the configured reference as its empty-state fallback.',
   },
   'voice.drift': {
     label: 'Voice register drift',

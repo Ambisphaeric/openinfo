@@ -58,7 +58,8 @@ test('blockRowHtml renders the per-block controls and reflects current values', 
 
 test('blockRowHtml notes future-store block types and chips preserved fields', () => {
   assert.match(blockRowHtml({ block: 'ledger', query: { source: 'ledger', params: {} } }, 0), /ledger store lands in P4/)
-  assert.match(blockRowHtml({ block: 'pinned-doc', query: { source: 'pins', params: {} } }, 0), /pins store lands in P3/)
+  // the pins store has landed (#8) → pinned-doc hydrates and carries no future-store note
+  assert.doesNotMatch(blockRowHtml({ block: 'pinned-doc', query: { source: 'pins', params: {} } }, 0), /lands in P/)
   // the preserved (form-invisible) fields are surfaced as chips so the user knows they survive
   const rel = blockRowHtml(richSurface.stack[1]!, 1)
   assert.match(rel, /source relevant-now/)
