@@ -48,6 +48,10 @@
         {
           "const": "distillates",
           "type": "string"
+        },
+        {
+          "const": "queue",
+          "type": "string"
         }
       ]
     },

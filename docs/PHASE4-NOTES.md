@@ -2136,3 +2136,58 @@ Persisting the raw pre-distill transcript so it could have its OWN stream distin
 stream (there is no persistence path today — a deliberate distill-hygiene decision; a `transcript` source
 would need one first). A speaker/me-them split on the row (distillates merge a window; the me/them channel
 split lives upstream on the audio chunks). The queue/status block (#13, stacked on this branch).
+
+## Slice: #13 — queue / status block (honest backlog + last failure on a panel)
+
+The work queue already served honest backlog telemetry over `GET /queue` (per-kind depth, ETA, overflow, and
+the classified last failure — the honest "why nothing arrived"), but none of it was renderable on a panel. A
+queue/status block lets a user put the real backlog and last failure in front of themselves — directly
+supporting the honest-failure-surfacing mandate. This is that block plus its query source.
+
+### Store-shape decision (the one documented exception to the store-read rule)
+Every other query source reads exclusively through `store/` (the DB-handle rule). The `queue` source cannot:
+queue status is OPERATIONAL ENGINE STATE — `lastFailure`, drain samples, and per-kind depth are ephemeral
+runtime facts the `CaptureQueue` holds in memory (spool.ts explicitly justifies them as NOT documents), so
+there is no store record to read. So `compileQuery` gains an optional `sources: QuerySources` parameter, and
+the `/query` route injects `ctx.queue.status()` for the `queue` source (awaited only when the source is
+`queue`). The arm returns ONE row — the whole `QueueStatus` snapshot. No status injected (a unit caller, or
+the queue unwired) ⇒ `[]`, explainable-empty, never an error. This is disclosed in the PR body as the honest
+deviation from the pure store-read precedent. Workspace/session params don't scope it (the spool is global).
+
+### Contract (append-only, schemas regenerated)
+`BlockTypeName` gains `queue`; `BlockQuery.source` and `QueryResult.source` each gain `queue`. Append-only
+unions. Ran `pnpm --filter @openinfo/contracts gen`; the 5 affected schemas regenerated, the 8 unrelated
+pre-existing-drift schemas reverted (as in #9–#12). The row shape (`queue→QueueStatus`, already a contract)
+is documented in the arm. A `surface.queue.json` example exercises the block.
+
+### The renderer (`client/surfaces/blocks/queue.ts` + registry)
+`renderQueue` reads `result.items[0]` as `QueueStatus` and renders the live telemetry: a status row (per-kind
+backlog depth · honest ETA · overflow policy) and — when present — a SEPARATE, marked failure row (`.rel.fail`)
+carrying the last failure as VISIBLE text: its class, endpoint, the server's own verbatim message, and the
+one-line fix hint. The ETA line is honest about `basis` — `none` reads "not enough data yet" and NEVER invents
+a number. The overflow line notes when a policy is declared-but-inert (`enforced: false`). A failure/backlog
+therefore can never render as an empty or silent block; an idle failure-free queue still renders its status
+(a status panel is never silent); a missing status row (queue unwired) renders an explainable "status
+unavailable" line rather than a blank card. Registered in `defaultBlockRegistry`; the surface-editor picker
+gains a `queue` default-block seed (`show: always` — status is always worth showing).
+
+### Tests + verification
+Contracts 66→67, engine 484→486, client 250→253 (all green in isolation).
+- `surfaces/query.test.ts` — the `queue` arm returns ONE row from an INJECTED `QueueStatus` (with a seeded
+  last failure), and reads `[]` when no status is injected; the unbuilt-store test also covers a no-status
+  `queue` read.
+- `api/http.test.ts` — a served e2e over the live server that drives a REAL model-load failure (fake chat
+  server returns "Model failed to load", the drain re-queues and records WHY), authors a surface with a
+  `queue` block, then GET + `POST /query` hydrate as the client does — asserting the idle queue still
+  hydrates one status row, and that after the failure the classified `lastFailure` (class `model-load`,
+  endpoint, the smaller-model hint) rides through the query pipeline VISIBLE, never hidden.
+- `client/surfaces/blocks/queue.test.ts` (OWN new file — `renderer.test.ts` untouched) — proves the
+  per-kind backlog / honest ETA / overflow render from `result.items[0]`; that a SEEDED FAILURE renders as
+  visible text (class · endpoint · verbatim server message · hint, in a marked `.rel.fail` row); that a
+  `none` ETA basis fabricates no number; and that a missing status stays explainable.
+
+### Out of scope (recorded, NOT built)
+A live-updating queue block driven by the `queue.updated` WS event (this slice renders on the same POST
+/query hydration path as the other blocks; the HUD controller's WS re-hydration already refreshes it). A
+`retry`/`flush-now` action verb on the block (the write path is the action-verbs slice). Per-kind ETA (the
+drain processes whole mixed-kind files, so the observed rate is mixed — recorded on `BacklogEta`).

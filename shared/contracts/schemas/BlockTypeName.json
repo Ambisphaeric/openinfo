@@ -46,6 +46,10 @@
       "type": "string"
     },
     {
+      "const": "queue",
+      "type": "string"
+    },
+    {
       "const": "custom",
       "type": "string"
     }

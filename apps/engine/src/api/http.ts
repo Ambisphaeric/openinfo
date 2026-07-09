@@ -1119,7 +1119,12 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
   const body = await readJson(req)
   const errors = validationErrors('BlockQuery', body)
   if (errors.length > 0) return send(res, 400, { error: 'invalid BlockQuery', details: errors })
-  send(res, 200, compileQuery(ctx.store, body as BlockQuery))
+  const query = body as BlockQuery
+  // The `queue` source is operational engine state (the live backlog/ETA/last-failure), not a store
+  // record, so inject the queue's status() snapshot for that source; every other source reads through
+  // store/ (see compileQuery / QuerySources). status() is async, so it is awaited only when needed.
+  const sources = query.source === 'queue' ? { queueStatus: await ctx.queue.status() } : {}
+  send(res, 200, compileQuery(ctx.store, query, new Date(), sources))
 }
 
 function readFlags(store: WorkspaceRegistry): Flag[] {

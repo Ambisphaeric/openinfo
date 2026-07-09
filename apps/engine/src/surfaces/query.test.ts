@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Distillate, Draft, Moment, Pin, RelevantEntity, Session, TeachSignal, TodoItem, TodoList } from '@openinfo/contracts'
+import type { Distillate, Draft, Moment, Pin, QueueStatus, RelevantEntity, Session, TeachSignal, TodoItem, TodoList } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { TodoDocuments } from '../act/index.js'
 import { TeachStore, type HintCandidate } from '../teach/index.js'
@@ -275,6 +275,35 @@ test('compileQuery derives the teach source through the store (SUGGESTED candida
 
     // a workspace with no recorded corrections derives [] (explainable-empty, not an error)
     const none = compileQuery(store, { source: 'teach', params: { workspace: 'ws-untaught' } })
+    assert.deepEqual(none.items, [])
+    assert.equal(none.truncated, false)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileQuery resolves the queue source from the INJECTED status snapshot (one row), else explainable-empty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-queue-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // the queue source is operational engine state, not a store record: the route injects status() via
+    // `sources`. A seeded status (with a last failure — the honest "why nothing arrived") returns ONE row.
+    const status: QueueStatus = {
+      pendingFiles: 2, pendingBytes: 4096, drainedFiles: 5, updatedAt: '2026-07-07T14:40:00Z',
+      byKind: { audio: { pendingChunks: 3, pendingBytes: 3000 }, screen: { pendingChunks: 0, pendingBytes: 0 }, 'llm-work': { pendingChunks: 1, pendingBytes: 1096 } },
+      eta: { basis: 'observed', etaMs: 12000, drainRateChunksPerSec: 0.3 },
+      overflow: { policy: 'queue-for-idle', enforced: true },
+      lastFailure: { class: 'model-load', endpoint: 'lm-studio', hint: 'try a smaller model', at: '2026-07-07T14:39:00Z' },
+    }
+    const resolved = compileQuery(store, { source: 'queue', params: {} }, new Date(), { queueStatus: status })
+    assert.equal(resolved.source, 'queue')
+    assert.equal(resolved.items.length, 1)
+    assert.deepEqual(resolved.items[0], status) // the whole snapshot round-trips as the single row
+    assert.equal(resolved.truncated, false)
+
+    // no status injected (the queue unwired / a unit caller) ⇒ [] explainable-empty, never an error
+    const none = compileQuery(store, { source: 'queue', params: {} })
     assert.deepEqual(none.items, [])
     assert.equal(none.truncated, false)
   } finally {

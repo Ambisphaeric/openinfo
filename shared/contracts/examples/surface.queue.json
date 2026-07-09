@@ -1,0 +1,5 @@
+{ "id": "surf-queue", "name": "Queue status surface", "context": "meeting", "version": 1,
+  "stack": [
+    { "block": "now" },
+    { "block": "queue", "id": "blk-queue", "show": "always", "top": 1,
+      "query": { "source": "queue", "params": {}, "top": 1 } } ] }
