@@ -160,6 +160,21 @@ test("classify: reasoning-exhausted — LM Studio's 200 with empty content + rea
   }
 })
 
+test('classify: reasoning-exhausted — a MISSING content field with finish_reason length (omlx omits the key)', async () => {
+  // omlx omits `message.content` entirely — instead of sending '' — when every generated token went to
+  // reasoning. Same exhaustion, different wire shape; it must classify the same, not as bad-response.
+  const body = JSON.stringify({ choices: [{ message: { role: 'assistant' }, finish_reason: 'length' }] })
+  const fake = await startFake(200, body)
+  try {
+    const agg = await failureOf(fabricWith(fake.url, 'omlx', 'lfm2.5-8b-a1b'))
+    const f = agg.failures[0]!
+    assert.equal(f.class, 'reasoning-exhausted')
+    assert.match(f.hint, /spent its entire token budget thinking/)
+  } finally {
+    await stop(fake)
+  }
+})
+
 test('reasoning-exhausted is NOT confused with bad-response: empty content WITHOUT the reasoning tells is bad-response-free', async () => {
   // finish_reason 'stop' + empty content + no reasoning_content ⇒ a legitimate empty completion, returned as ''.
   const body = JSON.stringify({ choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'stop' }] })

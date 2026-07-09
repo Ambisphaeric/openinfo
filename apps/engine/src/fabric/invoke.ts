@@ -138,7 +138,17 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
   }
   const choice = json.choices?.[0]
   const text = choice?.message?.content
-  if (typeof text !== 'string') throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in response' })
+  if (typeof text !== 'string') {
+    // Some servers (omlx) OMIT `content` entirely — instead of sending '' — when every generated
+    // token went to reasoning. That carries the same reasoning-exhausted tells, so classify it
+    // honestly rather than as a garbled bad-response.
+    if (isReasoningExhausted(choice)) {
+      throw new InvokeError('reasoning-exhausted', ctx, {
+        serverMessage: choice?.finish_reason === 'length' ? 'finish_reason: length, no content' : 'reasoning consumed the token budget, no content',
+      })
+    }
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in response' })
+  }
   // Empty output where the model spent its budget reasoning is its OWN class (not a garbled response) —
   // a distinct, user-actionable failure (raise the token budget, or use a non-reasoning instruct model).
   if (text.trim() === '' && isReasoningExhausted(choice)) {
