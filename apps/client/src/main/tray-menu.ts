@@ -1,4 +1,5 @@
 import type { ShellCommand } from './shortcuts.js'
+import type { SenseStatus, SenseLevel } from './capture-status.js'
 
 /**
  * The tray (menu-bar) state machine, pure so the whole thing — label flips, enabled state, the
@@ -69,6 +70,13 @@ export interface TrayState {
    * status line already leads with that) or before the handshake resolves. See engine-supervisor.ts.
    */
   engineInfoLine?: string | undefined
+  /**
+   * The per-sense capture-permission readout (mic / screen / system-audio) the user can reach to DEBUG
+   * capture — rendered as a "Capture status" submenu of honest state lines + one-click links to the
+   * System Settings panes the OS won't popup for. Assembled by captureStatuses (capture-status.ts) from
+   * state the main process already holds. Absent ⇒ no submenu (e.g. before the first paint).
+   */
+  captureStatus?: SenseStatus[]
 }
 
 export interface TrayMenuItem {
@@ -79,6 +87,8 @@ export interface TrayMenuItem {
   label?: string
   command?: ShellCommand
   enabled?: boolean
+  /** Nested items (a submenu) — used by the Capture-status readout. The shell maps this recursively. */
+  submenu?: TrayMenuItem[]
 }
 
 /**
@@ -145,6 +155,30 @@ export const trayTooltip = (state: TrayState): string => {
 export const setupItemLabel = (needsModelSetup: boolean | undefined): string =>
   needsModelSetup === true ? '⚠ Set up models…' : 'Set up models…'
 
+/** The status dot glyph for a sense's normalized level — granted lit, blocked warned, the rest quiet. */
+export const senseDot = (level: SenseLevel): string =>
+  level === 'granted' ? '●' : level === 'denied' ? '⚠' : level === 'unsupported' ? '·' : '○'
+
+/** The Settings-pane fix-it command's label for a sense (only mic/screen have a pane to open). */
+const senseFixLabel = (sense: SenseStatus['sense']): string =>
+  sense === 'mic' ? 'Open Microphone settings…' : sense === 'screen' ? 'Open Screen Recording settings…' : 'Open Settings…'
+
+/**
+ * The "Capture status" submenu children: per sense a disabled state line + a disabled honest detail line,
+ * and — when the OS needs a manual flip — an enabled item that opens the exact System Settings pane. This
+ * is the debuggable readout ("the user should be able to debug here"): mic/screen/system-audio each read
+ * plainly, and the flips macOS won't popup for (screen, a re-denied mic) are one click away.
+ */
+export const captureStatusItems = (statuses: SenseStatus[]): TrayMenuItem[] =>
+  statuses.flatMap((s) => {
+    const items: TrayMenuItem[] = [
+      { id: `cap-${s.sense}`, type: 'header', label: `${senseDot(s.level)} ${s.label} — ${s.state}`, enabled: false },
+      { id: `cap-${s.sense}-detail`, type: 'normal', label: `    ${s.detail}`, enabled: false },
+    ]
+    if (s.fixCommand) items.push({ id: `cap-${s.sense}-fix`, type: 'normal', label: `    ${senseFixLabel(s.sense)}`, command: s.fixCommand, enabled: true })
+    return items
+  })
+
 /**
  * Build the tray context menu as a declarative spec. One "toggle" item each for the window
  * (Show/Hide) and the session (Start/End); the session toggle is disabled until we've heard from
@@ -191,8 +225,12 @@ export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => {
     items.push({ id: 'sep-fixits', type: 'separator' }, ...fixits)
   }
 
+  items.push({ id: 'sep-2', type: 'separator' })
+  // The capture-status readout — a submenu the user opens to see, and debug, each sense's permission state.
+  if (state.captureStatus && state.captureStatus.length > 0) {
+    items.push({ id: 'capture-status', type: 'normal', label: 'Capture status', enabled: true, submenu: captureStatusItems(state.captureStatus) })
+  }
   items.push(
-    { id: 'sep-2', type: 'separator' },
     { id: 'open-setup', type: 'normal', label: setupItemLabel(state.needsModelSetup), command: 'open-setup', enabled: true },
     { id: 'sep-3', type: 'separator' },
     { id: 'quit', type: 'normal', label: 'Quit openinfo', command: 'quit', enabled: true },

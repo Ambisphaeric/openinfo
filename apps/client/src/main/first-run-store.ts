@@ -23,12 +23,19 @@ export const readFirstRunState = (userDataDir: string): FirstRunState => {
   }
 }
 
-/** Record that /setup was auto-opened, at `at`. Best-effort: IO errors are logged, not thrown. */
-export const markFirstRunShown = (userDataDir: string, at: string): void => {
+/** Persist a merged first-run state, best-effort (IO errors are logged, not thrown). */
+const writeMerged = (userDataDir: string, patch: FirstRunState): void => {
   try {
+    const next = { ...readFirstRunState(userDataDir), ...patch }
     mkdirSync(userDataDir, { recursive: true })
-    writeFileSync(firstRunStatePath(userDataDir), serializeFirstRunState({ firstRunShownAt: at }), 'utf8')
+    writeFileSync(firstRunStatePath(userDataDir), serializeFirstRunState(next), 'utf8')
   } catch (err) {
     console.error('[shell] could not persist first-run state:', err)
   }
 }
+
+/** Record that /setup was auto-opened, at `at` — merged so a prior micPromptedAt is preserved. */
+export const markFirstRunShown = (userDataDir: string, at: string): void => writeMerged(userDataDir, { firstRunShownAt: at })
+
+/** Record that the first-launch mic prompt fired, at `at` — merged so firstRunShownAt is preserved. */
+export const markMicPrompted = (userDataDir: string, at: string): void => writeMerged(userDataDir, { micPromptedAt: at })

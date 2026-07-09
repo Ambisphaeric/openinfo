@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   MIC_SETTINGS_URL,
   ACCESSIBILITY_SETTINGS_URL,
+  SCREEN_SETTINGS_URL,
   LOCAL_NETWORK_SETTINGS_URL,
   settingsUrlFor,
   isLanEngine,
@@ -11,12 +12,14 @@ import {
 test('the Settings deep links are the documented x-apple.systempreferences Privacy_* form', () => {
   assert.match(MIC_SETTINGS_URL, /^x-apple\.systempreferences:com\.apple\.preference\.security\?Privacy_Microphone$/)
   assert.match(ACCESSIBILITY_SETTINGS_URL, /^x-apple\.systempreferences:com\.apple\.preference\.security\?Privacy_Accessibility$/)
+  assert.match(SCREEN_SETTINGS_URL, /^x-apple\.systempreferences:com\.apple\.preference\.security\?Privacy_ScreenCapture$/)
   assert.match(LOCAL_NETWORK_SETTINGS_URL, /^x-apple\.systempreferences:com\.apple\.preference\.security\?Privacy_LocalNetwork$/)
 })
 
 test('settingsUrlFor maps each fix-it command to its pane', () => {
   assert.equal(settingsUrlFor('open-mic-settings'), MIC_SETTINGS_URL)
   assert.equal(settingsUrlFor('open-accessibility-settings'), ACCESSIBILITY_SETTINGS_URL)
+  assert.equal(settingsUrlFor('open-screen-settings'), SCREEN_SETTINGS_URL)
 })
 
 test('isLanEngine is false for loopback and true for a LAN / remote host', () => {

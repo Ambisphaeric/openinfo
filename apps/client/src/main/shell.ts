@@ -8,12 +8,13 @@ import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
 import { hudWindowSpec } from './window-options.js'
-import { buildTrayMenu, trayTooltip, type TrayState } from './tray-menu.js'
+import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
 import { settingsUrlFor, isLanEngine } from './permission-help.js'
 import { ContextHealthTracker } from './context-health.js'
-import { shouldOpenSetup } from './first-run.js'
-import { readFirstRunState, markFirstRunShown } from './first-run-store.js'
+import { shouldOpenSetup, shouldPromptMic } from './first-run.js'
+import { readFirstRunState, markFirstRunShown, markMicPrompted } from './first-run-store.js'
+import { captureStatuses, type MediaAccessStatus, type SysAudioPresence } from './capture-status.js'
 import { EngineSessionClient, SessionLiveState, needsModelSetup } from './engine-session.js'
 import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './tray-icon.js'
 import { grabOffset, draggedOrigin, resolveStartupPosition, type ScreenPoint } from './window-position.js'
@@ -100,6 +101,37 @@ let dragTimer: ReturnType<typeof setInterval> | undefined
 let dragOffset: ScreenPoint | undefined
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 
+// The capture-status readout's raw inputs, read live at each tray paint so the readout reflects the
+// current OS state (a user can flip a Settings toggle and see it update on the next open). macOS-only
+// TCC statuses; off macOS getMediaAccessStatus is not the gate, so we report 'unknown' (unsupported).
+const mediaStatus = (media: 'microphone' | 'screen'): MediaAccessStatus | undefined => {
+  if (process.platform !== 'darwin') return undefined
+  try {
+    return systemPreferences.getMediaAccessStatus(media) as MediaAccessStatus
+  } catch (err) {
+    console.error(`[shell] getMediaAccessStatus(${media}) failed:`, err)
+    return 'unknown'
+  }
+}
+// System-audio is device presence, not a TCC gate: the capture controller reports 'unavailable' when no
+// BlackHole-class loopback input exists, 'capturing'/'starting' once one is streaming; otherwise unknown
+// (presence is only learned once capture is attempted).
+const sysAudioPresence = (): SysAudioPresence =>
+  systemState === 'unavailable' ? 'missing-device' : systemState === 'capturing' || systemState === 'starting' ? 'present' : 'unknown'
+
+/** Assemble the capture-status inputs, omitting the macOS-only fields entirely when they're unavailable. */
+const captureStatusInput = () => {
+  const mic = mediaStatus('microphone')
+  const screenAccess = mediaStatus('screen')
+  return {
+    platform: process.platform,
+    ...(mic !== undefined ? { micAccess: mic } : {}),
+    ...(screenAccess !== undefined ? { screenAccess } : {}),
+    sysAudio: sysAudioPresence(),
+    screenEnabled: cfg.screenEnabled,
+  }
+}
+
 const trayState = (): TrayState => ({
   visible: hudWindow?.isVisible() ?? false,
   sessionLive: liveState.live,
@@ -124,20 +156,23 @@ const trayState = (): TrayState => ({
         ...(engineHealth.build !== undefined ? { build: engineHealth.build } : {}),
       })
     : undefined,
+  captureStatus: captureStatuses(captureStatusInput()),
 })
+
+const toMenuItem = (item: TrayMenuItem): MenuItemConstructorOptions => {
+  if (item.type === 'separator') return { type: 'separator' }
+  const spec: MenuItemConstructorOptions = { label: item.label ?? '', enabled: item.enabled ?? true }
+  if (item.command) {
+    const command = item.command
+    spec.click = () => dispatch(command)
+  }
+  if (item.submenu) spec.submenu = item.submenu.map(toMenuItem) // recursive — the Capture-status readout
+  return spec
+}
 
 const refreshTray = (): void => {
   if (!tray) return
-  const items: MenuItemConstructorOptions[] = buildTrayMenu(trayState()).map((item) => {
-    if (item.type === 'separator') return { type: 'separator' }
-    const spec: MenuItemConstructorOptions = { label: item.label ?? '', enabled: item.enabled ?? true }
-    if (item.command) {
-      const command = item.command
-      spec.click = () => dispatch(command)
-    }
-    return spec
-  })
-  tray.setContextMenu(Menu.buildFromTemplate(items))
+  tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenu(trayState()).map(toMenuItem)))
   tray.setToolTip(trayTooltip(trayState()))
 }
 
@@ -177,8 +212,10 @@ const dispatch = (command: ShellCommand): void => {
       return
     case 'open-mic-settings':
     case 'open-accessibility-settings':
-      // Denial must be actionable: an unsigned dev app can't re-fire a denied TCC prompt, so open the
-      // exact System Settings pane and let the user re-grant. See permission-help.ts.
+    case 'open-screen-settings':
+      // Denial must be actionable: an unsigned dev app can't re-fire a denied TCC prompt (and screen
+      // recording never had an in-app prompt), so open the exact System Settings pane and let the user
+      // grant it there. See permission-help.ts.
       void electronShell.openExternal(settingsUrlFor(command)).catch((err) => console.error(`[shell] open settings (${command}) failed:`, err))
       return
     case 'quit':
@@ -622,6 +659,31 @@ const connectEvents = (): void => {
 }
 
 /**
+ * The proactive first-LAUNCH microphone ask: on the very first open (a once-only persisted `micPromptedAt`
+ * gate), fire askForMediaAccess('microphone') so the user sees the mic TCC popup at first open like any
+ * capture app — NOT only when a session later starts (the old behaviour, gated behind session.started).
+ * Non-blocking and harmless: a denial doesn't break anything (the capture paths already degrade to a
+ * mic-off session). Independent of engine/model state so it fires even before onboarding; it runs in
+ * whenReady, so it precedes any /settings auto-open. macOS-only — off darwin askForMediaAccess resolves
+ * true with no popup, so we skip and don't burn the once-only marker.
+ */
+const maybeAskMicOnFirstLaunch = (): void => {
+  if (process.platform !== 'darwin') return
+  const userData = app.getPath('userData')
+  const alreadyPrompted = readFirstRunState(userData).micPromptedAt !== undefined
+  if (!shouldPromptMic({ alreadyPrompted })) return
+  markMicPrompted(userData, new Date().toISOString()) // once-only: mark before asking so a crash can't re-nag
+  console.log('[shell] first launch — proactively asking for microphone access (once), before any /settings open')
+  // Reuse the shared in-flight dedup so a session that starts mid-prompt awaits this same ask, not a second.
+  void sharedAudioPermission()
+    .then((granted) => {
+      console.log(`[shell] first-launch mic ask resolved: ${granted ? 'granted' : 'not granted — capture degrades, session/text unaffected'}`)
+      refreshTray() // the readout's mic line now reflects the user's choice
+    })
+    .catch((err) => console.error('[shell] first-launch mic ask failed:', err))
+}
+
+/**
  * First-run assembly: the FIRST time we reach the engine and find its llm slot empty (needsModelSetup),
  * open /setup in the browser so a brand-new user lands on onboarding without hunting the tray — but at
  * most ONCE per fresh state (a `firstRunShownAt` timestamp is persisted client-local; the ⚠ tray
@@ -749,6 +811,7 @@ app.whenReady().then(async () => {
   createTray()
   setupCapture()
   setupFocus()
+  maybeAskMicOnFirstLaunch() // fire the once-only mic TCC popup at first open, before any /settings auto-open
   // Adopt-or-spawn the engine BEFORE seeding, so a fresh double-clicked app has its bundled engine serving
   // by the time the tray reads session/fabric state. Awaited (best-effort) — the WS reconnect + re-seed
   // still recover if the engine comes up later or the spawn is slow.

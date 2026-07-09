@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTrayMenu, recSourcesLabel, setupItemLabel, trayStatusLabel, trayTooltip, type TrayState } from './tray-menu.js'
+import { buildTrayMenu, recSourcesLabel, senseDot, setupItemLabel, trayStatusLabel, trayTooltip, type TrayState } from './tray-menu.js'
 
 const state = (over: Partial<TrayState> = {}): TrayState => ({ visible: false, sessionLive: false, connected: true, ...over })
 
@@ -115,6 +115,38 @@ test('the Accessibility fix-it appears only when context detection is on-but-tit
   assert.equal(item(buildTrayMenu(state({ accessibilityHint: true })), 'fix-accessibility')?.command, 'open-accessibility-settings')
   assert.match(item(buildTrayMenu(state({ accessibilityHint: true })), 'fix-accessibility')?.label ?? '', /Accessibility/)
   assert.equal(item(buildTrayMenu(state()), 'fix-accessibility'), undefined) // hidden by default
+})
+
+test('the Capture-status submenu appears only when a readout is present, and carries per-sense lines + fix-its', () => {
+  // No readout ⇒ no submenu (e.g. before the first paint).
+  assert.equal(item(buildTrayMenu(state()), 'capture-status'), undefined)
+
+  const captureStatus = [
+    { sense: 'mic' as const, label: 'Microphone', level: 'denied' as const, state: 'denied', detail: 'Access was refused.', fixCommand: 'open-mic-settings' as const },
+    { sense: 'screen' as const, label: 'Screen recording', level: 'not-determined' as const, state: 'not granted', detail: 'No in-app prompt — RELAUNCH.', fixCommand: 'open-screen-settings' as const },
+    { sense: 'sys-audio' as const, label: 'System audio', level: 'missing-device' as const, state: 'no device', detail: 'No loopback device.' },
+  ]
+  const menu = buildTrayMenu(state({ captureStatus }))
+  const submenu = item(menu, 'capture-status')?.submenu
+  assert.ok(submenu, 'capture-status item has a submenu')
+  // Each sense contributes a disabled status line + a disabled detail line.
+  assert.match(submenu!.find((m) => m.id === 'cap-mic')?.label ?? '', /Microphone — denied/)
+  assert.equal(submenu!.find((m) => m.id === 'cap-mic')?.enabled, false)
+  assert.match(submenu!.find((m) => m.id === 'cap-mic-detail')?.label ?? '', /Access was refused/)
+  // The senses the OS won't popup for expose an enabled one-click Settings link with the right command.
+  assert.equal(submenu!.find((m) => m.id === 'cap-mic-fix')?.command, 'open-mic-settings')
+  assert.equal(submenu!.find((m) => m.id === 'cap-screen-fix')?.command, 'open-screen-settings')
+  // A missing loopback device has no OS pane to open — no fix-it, only the honest detail line.
+  assert.equal(submenu!.find((m) => m.id === 'cap-sys-audio-fix'), undefined)
+  assert.match(submenu!.find((m) => m.id === 'cap-sys-audio-detail')?.label ?? '', /loopback/)
+})
+
+test('senseDot maps levels to at-a-glance glyphs', () => {
+  assert.equal(senseDot('granted'), '●')
+  assert.equal(senseDot('denied'), '⚠')
+  assert.equal(senseDot('not-determined'), '○')
+  assert.equal(senseDot('missing-device'), '○')
+  assert.equal(senseDot('unsupported'), '·')
 })
 
 test('quit is always present and enabled', () => {

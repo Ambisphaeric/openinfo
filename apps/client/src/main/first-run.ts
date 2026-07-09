@@ -14,6 +14,13 @@
 export interface FirstRunState {
   /** ISO timestamp of when /setup was first auto-opened. Absent ⇒ never auto-opened. */
   firstRunShownAt?: string
+  /**
+   * ISO timestamp of when we FIRST proactively asked the OS for microphone access (the once-only
+   * first-launch TCC prompt — a capture app asks for the mic at first open, not only when a session
+   * starts). Absent ⇒ never proactively asked, so the next launch fires the prompt once. Independent of
+   * firstRunShownAt: the mic ask fires at first launch regardless of engine/model state (see shell.ts).
+   */
+  micPromptedAt?: string
 }
 
 /**
@@ -27,11 +34,22 @@ export const shouldOpenSetup = (opts: {
   alreadyShown: boolean
 }): boolean => opts.engineReachable && opts.needsModelSetup === true && !opts.alreadyShown
 
-/** Parse persisted first-run state — junk/missing ⇒ empty (never auto-opened). Pure, for a headless round-trip. */
+/**
+ * Should the shell PROACTIVELY ask for microphone access on this launch? True iff we have never asked
+ * before (once-only). Unlike shouldOpenSetup this does NOT depend on the engine or the model state — the
+ * mic popup should appear at first open like any capture app; a denial degrades harmlessly (the capture
+ * paths already handle it). The shell guards the platform (only macOS has a triggerable TCC prompt).
+ */
+export const shouldPromptMic = (opts: { alreadyPrompted: boolean }): boolean => !opts.alreadyPrompted
+
+/** Parse persisted first-run state — junk/missing ⇒ empty. Pure, for a headless round-trip. */
 export const parseFirstRunState = (raw: unknown): FirstRunState => {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {}
-  const at = (raw as Record<string, unknown>)['firstRunShownAt']
-  return typeof at === 'string' ? { firstRunShownAt: at } : {}
+  const obj = raw as Record<string, unknown>
+  const state: FirstRunState = {}
+  if (typeof obj['firstRunShownAt'] === 'string') state.firstRunShownAt = obj['firstRunShownAt']
+  if (typeof obj['micPromptedAt'] === 'string') state.micPromptedAt = obj['micPromptedAt']
+  return state
 }
 
 /** Serialize first-run state to the on-disk JSON shape. */

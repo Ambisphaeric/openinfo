@@ -24,6 +24,15 @@ export const MIC_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.
 export const ACCESSIBILITY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility'
 
 /**
+ * Screen-Recording privacy pane — where a user enables screen capture. Unlike the mic there is NO
+ * triggerable TCC popup for screen recording: the user must flip this toggle in System Settings and then
+ * RELAUNCH openinfo before capture can grab frames (macOS returns empty images until then). So the
+ * capture-status readout points here with honest "flip then relaunch" copy rather than pretending an
+ * in-app prompt exists (see capture-status.ts).
+ */
+export const SCREEN_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+
+/**
  * Local Network privacy pane — surfaced in DOCS (not the tray) for a LAN engine. We deliberately do NOT
  * ship a tray button that "fixes" Local Network: unlike mic/accessibility there is no reliable per-app
  * re-grant path from a denied state on all macOS versions, and we cannot QUERY Local Network TCC state to
@@ -32,11 +41,15 @@ export const ACCESSIBILITY_SETTINGS_URL = 'x-apple.systempreferences:com.apple.p
 export const LOCAL_NETWORK_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork'
 
 /** The tray fix-it commands that map to a Settings deep link. */
-export type SettingsLinkCommand = 'open-mic-settings' | 'open-accessibility-settings'
+export type SettingsLinkCommand = 'open-mic-settings' | 'open-accessibility-settings' | 'open-screen-settings'
 
 /** Map a tray fix-it command to the Settings URL the shell should open. */
 export const settingsUrlFor = (command: SettingsLinkCommand): string =>
-  command === 'open-mic-settings' ? MIC_SETTINGS_URL : ACCESSIBILITY_SETTINGS_URL
+  command === 'open-mic-settings'
+    ? MIC_SETTINGS_URL
+    : command === 'open-screen-settings'
+      ? SCREEN_SETTINGS_URL
+      : ACCESSIBILITY_SETTINGS_URL
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'])
 
