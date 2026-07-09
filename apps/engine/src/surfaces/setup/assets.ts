@@ -59,6 +59,7 @@ a:hover{text-decoration:underline}
 .rowbtns{display:flex;gap:5px}
 .probe{flex-basis:100%;font-family:var(--mono);font-size:11.5px;color:var(--muted);padding-left:2px;min-height:0}
 .probe.ok{color:var(--ok)}.probe.bad{color:var(--bad)}.probe.warn{color:var(--warn)}
+.save-error{font-size:12.5px;margin-top:8px;min-height:0}.save-error.bad{color:var(--bad)}
 .probe button.hostbtn{font-size:11px;padding:2px 8px;margin-left:6px;font-family:var(--mono);vertical-align:baseline}
 .row select.f-model{max-width:300px}
 .row .f-keyref.attn{border-color:rgba(217,161,59,.7);box-shadow:0 0 0 3px rgba(217,161,59,.15)}
@@ -330,24 +331,37 @@ export const SETUP_SCRIPT = `
     var live=row.__scanHosts||[];
     renderHostChoices(row,live,url);
   }
+  // The honesty net: a save failure is ALWAYS surfaced as text in the strip beside the button (never a
+  // silent no-op). errText covers both a thrown error (the base-fabric parse bug that broke Save) and a
+  // rejected fetch; the strip falls back to alert only if the markup predates it, so a reason is never lost.
+  function errText(err){return (err&&err.message)?err.message:String(err);}
+  function saveError(msg){var el=document.getElementById('save-error');
+    if(el){el.className='save-error bad';el.textContent=msg;}else{alert(msg);}}
+  function clearSaveError(){var el=document.getElementById('save-error'); if(el){el.className='save-error';el.textContent='';}}
   function saveEditor(){
-    var form=document.getElementById('editor');
-    var base=JSON.parse(document.getElementById('base-fabric').textContent);
-    var slots={};for(var k in base.slots)slots[k]=base.slots[k];
-    var slotEls=form.querySelectorAll('.slot[data-slot]');
-    for(var i=0;i<slotEls.length;i++){
-      var sl=slotEls[i];var rows=sl.querySelectorAll('.row');var eps=[];
-      for(var j=0;j<rows.length;j++){var ep=rowToEndpoint(rows[j]); if(ep&&(ep.kind!=='http'||ep.url))eps.push(ep);}
-      slots[sl.dataset.slot]=eps;
-    }
-    var fabric={slots:slots}; if(base.memoryBudgetMb!=null)fabric.memoryBudgetMb=base.memoryBudgetMb;
-    var targetId=form.dataset.targetId; var req;
-    if(targetId){var meta=JSON.parse(form.dataset.profile);
-      var profile={id:meta.id,name:meta.name,version:meta.version,fabric:fabric};
-      if(meta.description)profile.description=meta.description;
-      req=jf('PUT','/fabric/profiles/'+encodeURIComponent(targetId),profile);
-    } else { req=jf('PUT','/fabric',fabric); }
-    req.then(function(r){if(!r.ok){alert('Save failed ('+r.status+')');return;}location.reload();});
+    clearSaveError();
+    try{
+      var form=document.getElementById('editor');
+      var base=JSON.parse(document.getElementById('base-fabric').textContent);
+      var slots={};for(var k in base.slots)slots[k]=base.slots[k];
+      var slotEls=form.querySelectorAll('.slot[data-slot]');
+      for(var i=0;i<slotEls.length;i++){
+        var sl=slotEls[i];var rows=sl.querySelectorAll('.row');var eps=[];
+        for(var j=0;j<rows.length;j++){var ep=rowToEndpoint(rows[j]); if(ep&&(ep.kind!=='http'||ep.url))eps.push(ep);}
+        slots[sl.dataset.slot]=eps;
+      }
+      var fabric={slots:slots}; if(base.memoryBudgetMb!=null)fabric.memoryBudgetMb=base.memoryBudgetMb;
+      var targetId=form.dataset.targetId; var req;
+      if(targetId){var meta=JSON.parse(form.dataset.profile);
+        var profile={id:meta.id,name:meta.name,version:meta.version,fabric:fabric};
+        if(meta.description)profile.description=meta.description;
+        req=jf('PUT','/fabric/profiles/'+encodeURIComponent(targetId),profile);
+      } else { req=jf('PUT','/fabric',fabric); }
+      req.then(function(r){
+        if(!r.ok){saveError('save failed \\u2014 '+r.status+((r.json&&r.json.error)?': '+r.json.error:''));return;}
+        location.reload();
+      },function(err){saveError('save failed \\u2014 '+errText(err));});
+    }catch(err){saveError('save failed \\u2014 '+errText(err));}
   }
   function addRow(slotKey){
     var sl=document.querySelector('.slot[data-slot="'+slotKey+'"] .rows');

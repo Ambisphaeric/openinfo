@@ -383,14 +383,19 @@ export const editorHtml = (data: SetupData): string => {
   const meta = editing
     ? escapeHtml(JSON.stringify({ id: editing.id, name: editing.name, version: editing.version, description: editing.description }))
     : ''
-  const base = escapeHtml(JSON.stringify(fabric))
+  // base-fabric is JSON embedded in a RAW-text <script>, so it MUST be jsonForScript (verbatim, only `<`
+  // neutralized) — NOT escapeHtml. A script element does not decode HTML entities, so an html-escaped blob
+  // (`{&quot;slots&quot;…`) reaches the browser literally and JSON.parse(textContent) throws BEFORE the save
+  // fetch — the silent no-op that broke Save. (data-profile above is an ATTRIBUTE, where escapeHtml is right.)
+  const base = jsonForScript(fabric)
   const slots = ALL_SLOTS.map((k) => slotHtml(k, fabric.slots[k], refs)).join('')
   return (
     `<form id="editor" data-target-id="${editing ? escapeHtml(editing.id) : ''}" data-profile='${meta}'>` +
     `<div class="sub">Editing ${target}. Add/reorder endpoints, wire a key by reference, then Save.</div>` +
     `<script type="application/json" id="base-fabric">${base}</script>` +
     slots +
-    `<div style="margin-top:12px"><button type="button" class="primary" data-act="save">Save profile</button></div>` +
+    `<div style="margin-top:12px"><button type="button" class="primary" data-act="save">Save profile</button>` +
+    `<div class="save-error" id="save-error" role="alert"></div></div>` +
     `</form>`
   )
 }
