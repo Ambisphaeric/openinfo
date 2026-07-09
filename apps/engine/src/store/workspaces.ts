@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Draft, Entity, EntityProvenance, Moment, OcrResult, Pin, PinChunk, Session, Workspace } from '@openinfo/contracts'
+import type { Distillate, Draft, Entity, EntityProvenance, Moment, OcrResult, Pin, PinChunk, Session, TodoList, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { LayoutStore } from './layouts.js'
@@ -173,6 +173,21 @@ export class WorkspaceRegistry {
       ? (db.prepare('select body from drafts where session_id = ? order by created_at').all(sessionId) as { body: string }[])
       : (db.prepare('select body from drafts order by created_at').all() as { body: string }[])
     return rows.map((row) => JSON.parse(row.body) as Draft)
+  }
+
+  /**
+   * List a workspace's to-do LISTS (latest version of each session's document), narrowed to a session
+   * when `sessionId` is given. Unlike drafts/moments, to-do lists are DOCUMENTS: they live in the
+   * global _meta.db keyed by session id (workspace on the body — the store `TodoDocuments` writes,
+   * `act/todo.ts`), NOT in the per-workspace record DBs. So the read walks `layouts` and filters by the
+   * body's `workspaceId`/`sessionId`. Unknown workspace reads as [] (mirrors listPins) — never an error.
+   * The `'todo-list'` kind mirrors `TodoDocuments`' private constant; kept in sync by the contract shape.
+   */
+  listTodos(workspaceId: string, sessionId?: string): TodoList[] {
+    return this.layouts
+      .latestOfKind<TodoList>('todo-list')
+      .map((doc) => doc.body)
+      .filter((list) => list.workspaceId === workspaceId && (sessionId === undefined || list.sessionId === sessionId))
   }
 
   /**

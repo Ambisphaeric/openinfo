@@ -32,6 +32,10 @@
         {
           "const": "entities",
           "type": "string"
+        },
+        {
+          "const": "todos",
+          "type": "string"
         }
       ]
     },

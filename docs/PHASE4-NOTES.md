@@ -1894,3 +1894,64 @@ through the REAL `wireActions` (not just markup assertions):
 ### Out of scope (recorded, NOT built)
 A shared toast/affordance for the still-inert verbs (dismiss/mark-done/draft-with have no write path yet
 — PHASE2-NOTES); a `navigator.permissions` pre-check (the try/await-or-fallback already covers denial).
+
+## Slice: #9 — todos block + query source
+
+The pipeline already extracted follow-ups (`task-extract`, P4A) into versioned to-do documents and served
+them over `GET/PUT /todos[/:sessionId]`, and `{{todo}}` already un-constrained them into drafts — but no
+block rendered them, so a user could not put their running task list on a panel. This is the missing
+block plus its query source (the `add-a-block` "new built-in block type" recipe: contract union append +
+new `BlockQuery` source + `compileQuery` arm + renderer + registry entry).
+
+### Contract (append-only, schemas regenerated)
+`BlockTypeName` gains `todos`; `BlockQuery.source` and `QueryResult.source` each gain `todos`. All three
+are append-only unions (existing members untouched), so every prior document still validates. Ran
+`pnpm --filter @openinfo/contracts gen` — the language-neutral `schemas/*.json` artifacts for
+`BlockTypeName`/`BlockQuery`/`QueryResult`/`Block`/`Surface` regenerated with the new member (unrelated
+pre-existing schema drift left untouched). `QueryResult.items` stays `Type.Array(Unknown)`; the element
+shape for `todos→TodoItem` is documented in the arm, so no structural contract change beyond the source
+names. A `surface.todos.json` example exercises the block (validated by `contracts.test`).
+
+### The query source (`surfaces/query.ts` + `store/workspaces.ts`)
+New store read `listTodos(workspaceId, sessionId?)`: to-do lists are DOCUMENTS (global `_meta.db`, keyed
+by session id, workspace on the body — where `TodoDocuments` writes), so unlike the per-workspace record
+sources it walks `layouts.latestOfKind('todo-list')` and filters by the body's `workspaceId`/`sessionId`.
+The `compileQuery` `todos` arm flattens each resolved list to its ITEMS (one row per follow-up, in
+accumulation order — the same order `{{todo}}` reads) and caps/flags truncation through the shared `cap`.
+Deliberately NOT gated by the `known` (workspace-DB-exists) guard the record sources use: a to-do document
+exists without a workspace DB (`PUT /todos` writes the document, not a workspace), and `listTodos` already
+filters by the body's workspace — an unknown workspace / no extraction yet reads `[]`, explainable-empty,
+never an error. `session: current` binds to the live session exactly like the other arms.
+
+### The renderer (`client/surfaces/blocks/todos.ts` + registry)
+`renderTodos` reads `result.items` as `TodoItem[]` and renders one `.rel` row per item (mirroring the
+sibling list blocks): the text as `.ttl`, a STATUS marker (`✓` + struck `.ttl.done` for a checked item,
+`○` for open), and a why-line derived from the item's provenance — an item with a distillate/moment
+behind it reads `from the meeting`, a hand-added one `added by you` (TodoProvenance's two-authors note),
+a done item prefixes `done · `. `block.top` caps like the siblings. Empty is EXPLAINABLE, not silent: an
+always-visible block with no items renders a `No follow-ups yet` line rather than a blank card; an
+`on-match` block just stays hidden (`renderSurface` drops it first). Registered in `defaultBlockRegistry`;
+the settings surface-editor picker gains a `todos` default-block seed (`show: on-match`, `session:
+current`, `top: 20`) so choosing it splices a real todos block, not a `custom` fallback.
+
+### Tests + verification
+Contracts 62→63, engine 476→478, client 233→234 (all green in isolation).
+- `surfaces/query.test.ts` — a store seeded via `TodoDocuments` across two sessions in one workspace plus
+  a list in a DIFFERENT workspace: the arm flattens only the resolved workspace's items, narrows to one
+  session, `top` caps + flags truncation, and a known-but-todo-less workspace reads `[]`; the
+  unbuilt-store test also covers an unknown-workspace `todos` read (`[]`, never a throw).
+- `api/http.test.ts` — a served e2e over the live server: `PUT /todos/:sessionId` authors a list, a
+  surface carries a `todos` block (`PUT /layouts/surfaces/:id`), then GET + `POST /query` hydrate exactly
+  as the client does — text, `done` status and provenance round-trip; a todo-less workspace query returns
+  `items: []`.
+- `client/surfaces/blocks/todos.test.ts` (OWN new file — `renderer.test.ts` untouched, a parallel PR owns
+  it) — proves STORE-DERIVED content: seeded item text only reachable via `result.items`, the ✓/○ status
+  markers + struck done title, the three provenance why-lines, and the copy affordance carrying the item
+  text; plus the explainable-empty line on an always-block and the hidden on-match empty block.
+- Known parallel-load flakes confirmed (fail under `pnpm -r test`, pass in isolation): engine
+  `route.detect ON`; client engine-link seam `spools while engine is down` (TOCTOU).
+
+### Out of scope (recorded, NOT built)
+A `mark-done`/toggle affordance that writes back through `PUT /todos` (this slice renders status
+read-only; the action button is inert like the other non-copy verbs). Semantic dedupe of items (WART
+already recorded in `act/todo.ts`). The drafts block (#10, stacked on this branch).

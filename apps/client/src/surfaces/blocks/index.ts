@@ -6,6 +6,7 @@ import { renderLedger } from './ledger.js'
 import { renderHint } from './hint.js'
 import { renderPinnedDoc } from './pinned-doc.js'
 import { renderAsk } from './ask.js'
+import { renderTodos } from './todos.js'
 import { renderCustom } from './custom.js'
 
 export { momentGlyph, entityGlyph } from './glyphs.js'
@@ -25,5 +26,6 @@ export const defaultBlockRegistry: BlockRegistry = {
   hint: renderHint,
   'pinned-doc': renderPinnedDoc,
   ask: renderAsk,
+  todos: renderTodos,
   custom: renderCustom,
 }

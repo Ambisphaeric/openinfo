@@ -27,7 +27,7 @@ const blob = (html: string, id: string): unknown => {
 }
 
 test('blockTypeNames enumerates the append-only BlockTypeName union', () => {
-  assert.deepEqual(blockTypeNames(), ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'custom'])
+  assert.deepEqual(blockTypeNames(), ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'custom'])
 })
 
 test('defaultBlockFor gives sensible per-type seeds mirroring the shipped docs', () => {
@@ -40,6 +40,8 @@ test('defaultBlockFor gives sensible per-type seeds mirroring the shipped docs',
   assert.equal(defaultBlockFor('pinned-doc').query?.source, 'pins')
   assert.equal(defaultBlockFor('hint').query?.source, 'pins')
   assert.equal(defaultBlockFor('ask').query, undefined)
+  assert.equal(defaultBlockFor('todos').query?.source, 'todos')
+  assert.equal(defaultBlockFor('todos').show, 'on-match')
   assert.equal(defaultBlockFor('custom').custom?.htmlEndpoint, '/custom/example.html')
 })
 

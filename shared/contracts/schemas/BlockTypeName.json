@@ -30,6 +30,10 @@
       "type": "string"
     },
     {
+      "const": "todos",
+      "type": "string"
+    },
+    {
       "const": "custom",
       "type": "string"
     }

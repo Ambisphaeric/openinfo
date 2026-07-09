@@ -1,0 +1,7 @@
+{ "id": "surf-todos", "name": "To-do surface", "context": "meeting", "version": 1,
+  "stack": [
+    { "block": "now" },
+    { "block": "todos", "id": "blk-todos", "show": "on-match", "top": 20,
+      "query": { "source": "todos", "params": { "session": "current" }, "top": 20 },
+      "actions": [ { "id": "act-copy", "label": "Copy", "verb": "copy", "params": {} },
+                   { "id": "act-done", "label": "Done", "verb": "mark-done", "params": {} } ] } ] }

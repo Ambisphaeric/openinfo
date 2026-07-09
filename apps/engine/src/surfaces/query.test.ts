@@ -3,8 +3,9 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Moment, Pin, RelevantEntity, Session } from '@openinfo/contracts'
+import type { Moment, Pin, RelevantEntity, Session, TodoItem, TodoList } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
+import { TodoDocuments } from '../act/index.js'
 import { compileQuery } from './query.js'
 
 const moment = (id: string, sessionId: string, at: string, refs: string[] = []): Moment => ({
@@ -112,6 +113,49 @@ test('compileQuery resolves the pins source through the store (most-recent first
   }
 })
 
+test('compileQuery flattens the todos source through the store (per-session items, top caps + truncates)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-todos-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const todos = new TodoDocuments(store)
+    const item = (id: string, text: string, extra: Partial<TodoItem> = {}): TodoItem => ({
+      id, text, createdAt: '2026-07-07T14:40:00Z', ...extra,
+    })
+    // two sessions in ws-q each carry a to-do list; a third list belongs to a DIFFERENT workspace
+    const listFor = (sessionId: string, workspaceId: string, items: TodoItem[]): TodoList => ({
+      id: sessionId, name: `to-do ${sessionId}`, version: 1, sessionId, workspaceId, items,
+    })
+    todos.save(listFor('ses-a', 'ws-q', [item('a1', 'send the MSA', { provenance: { sessionId: 'ses-a', distillateId: 'd1' } }), item('a2', 'book walkthrough', { done: true })]))
+    todos.save(listFor('ses-b', 'ws-q', [item('b1', 'ping legal')]))
+    todos.save(listFor('ses-c', 'ws-other', [item('c1', 'not this workspace')]))
+
+    // workspace-scoped: items from ws-q's lists flatten together; the other workspace's item is excluded
+    const all = compileQuery(store, { source: 'todos', params: { workspace: 'ws-q' } })
+    assert.equal(all.source, 'todos')
+    assert.deepEqual((all.items as TodoItem[]).map((t) => t.id), ['a1', 'a2', 'b1'])
+    assert.equal(all.truncated, false)
+
+    // session-scoped: only that session's items
+    const scoped = compileQuery(store, { source: 'todos', params: { workspace: 'ws-q', session: 'ses-a' } })
+    assert.deepEqual((scoped.items as TodoItem[]).map((t) => t.id), ['a1', 'a2'])
+
+    // top caps the flattened rows and flags truncation (3 exist across ws-q, 2 returned)
+    const capped = compileQuery(store, { source: 'todos', params: { workspace: 'ws-q' }, top: 2 })
+    assert.deepEqual((capped.items as TodoItem[]).map((t) => t.id), ['a1', 'a2'])
+    assert.equal(capped.top, 2)
+    assert.equal(capped.truncated, true)
+
+    // a known workspace with no to-do documents reads as [] (explainable-empty, not an error)
+    store.upsertEntity({ workspaceId: 'ws-empty', kind: 'topic', name: 'x', seenAt: '2026-07-07T14:00:00Z' })
+    const none = compileQuery(store, { source: 'todos', params: { workspace: 'ws-empty' } })
+    assert.deepEqual(none.items, [])
+    assert.equal(none.truncated, false)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('compileQuery returns [] (not an error) for the unbuilt ledger store and unknown workspaces', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-empty-'))
   const store = new WorkspaceRegistry(dir)
@@ -127,6 +171,7 @@ test('compileQuery returns [] (not an error) for the unbuilt ledger store and un
     assert.deepEqual(compileQuery(store, { source: 'relevant-now', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'entities', params: { workspace: 'nowhere' } }).items, [])
     assert.deepEqual(compileQuery(store, { source: 'pins', params: { workspace: 'nowhere' } }).items, [])
+    assert.deepEqual(compileQuery(store, { source: 'todos', params: { workspace: 'nowhere' } }).items, [])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })

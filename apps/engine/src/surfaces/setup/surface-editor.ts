@@ -38,6 +38,8 @@ export const defaultBlockFor = (type: string): Block => {
       return { block: 'pinned-doc', show: 'on-match', query: { source: 'pins', params: {}, top: 1 } }
     case 'hint':
       return { block: 'hint', show: 'on-match', query: { source: 'pins', params: {}, top: 1 } }
+    case 'todos':
+      return { block: 'todos', show: 'on-match', query: { source: 'todos', params: { session: 'current' }, top: 20 } }
     case 'ask':
       return { block: 'ask' }
     case 'custom':

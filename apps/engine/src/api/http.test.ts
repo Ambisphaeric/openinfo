@@ -506,6 +506,70 @@ test('e2e: a pinned-doc surface hydrates its pins block from the store over POST
   }
 })
 
+test('e2e: a todos surface hydrates its todos block from the store over POST /query', async () => {
+  // The data path the HUD drives for the todos block (#9): author a to-do list over the real served
+  // write (PUT /todos/:sessionId), author a surface carrying a todos block whose query is
+  // `source: 'todos'`, then POST that block's query and assert the items hydrate — status + provenance
+  // round-trip. Mirrors the pins reconnect e2e: the whole path runs over the live server.
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-todos-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // author a session's to-do list over the real route (PUT /todos/:sessionId creates on first write)
+    const list: TodoList = {
+      id: 'ses-todo', name: 'to-do — ses-todo', version: 1, sessionId: 'ses-todo', workspaceId: 'ws-todo',
+      items: [
+        { id: 't1', text: 'Send Dana the signed MSA', createdAt: '2026-07-07T14:40:00Z', provenance: { sessionId: 'ses-todo', distillateId: 'dst-9' } },
+        { id: 't2', text: 'Book the SOC 2 walkthrough', done: true, createdAt: '2026-07-07T14:41:00Z' },
+      ],
+    }
+    assert.equal((await fetch(`${base}/todos/ses-todo`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(list),
+    })).status, 200)
+
+    // author a surface with a todos block bound to the todos source (saving a layout is not flagged)
+    const surface: Surface = {
+      id: 'surf-todos', name: 'To-do', context: 'meeting', version: 1,
+      stack: [
+        { block: 'now' },
+        { block: 'todos', show: 'on-match', query: { source: 'todos', params: { workspace: 'ws-todo' }, top: 20 } },
+      ],
+    }
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-todos`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface),
+    })).status, 200)
+
+    // hydrate exactly as the client will: GET the surface, POST /query for the todos block
+    const served = (await (await fetch(`${base}/layouts/surfaces/surf-todos`)).json()) as Surface
+    const todosBlock = served.stack.find((b) => b.block === 'todos')!
+    const result = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(todosBlock.query),
+    })).json()) as QueryResult
+    // THE PROOF: the todos block hydrates the stored items — text + done status + provenance round-trip
+    assert.equal(result.source, 'todos')
+    const items = result.items as { id: string; text: string; done?: boolean; provenance?: { distillateId?: string } }[]
+    assert.deepEqual(items.map((t) => t.id), ['t1', 't2'])
+    assert.equal(items[0]!.text, 'Send Dana the signed MSA')
+    assert.equal(items[0]!.provenance?.distillateId, 'dst-9') // extracted → why-line reads "from the meeting"
+    assert.equal(items[1]!.done, true) // status survives the round-trip
+
+    // an empty backing store renders explainable-empty (items: [], not an error) — a workspace with no todos
+    const empty = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'todos', params: { workspace: 'ws-none' }, top: 20 }),
+    })).json()) as QueryResult
+    assert.deepEqual(empty.items, [])
+    assert.equal(empty.truncated, false)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('e2e: fake llm + seeded HUD surface → data hydration round-trip through the API', async () => {
   const llm = await startFakeLlm()
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
