@@ -1,10 +1,21 @@
-import type { BlockQuery, QueryResult } from '@openinfo/contracts'
+import type { BlockQuery, QueryResult, QueueStatus } from '@openinfo/contracts'
 import { relevantNow } from '../index/index.js'
 import { TeachStore, deriveHintCandidates } from '../teach/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 
 /** BlockQuery.top has a schema max of 50; the same cap bounds the superset we fetch for truncation. */
 const MAX_ROWS = 50
+
+/**
+ * Non-store data a query arm needs, injected by the caller (POST /query). Most sources read exclusively
+ * through store/ (the DB-handle rule), but the `queue` source is OPERATIONAL ENGINE STATE — the live
+ * backlog/ETA/last-failure the CaptureQueue holds in memory (spool.ts), NOT a store record — so the route
+ * hands its `status()` snapshot in here rather than compileQuery reaching for the queue itself. Absent (a
+ * unit test, or a non-queue query) ⇒ the `queue` arm reads [], explainable-empty.
+ */
+export interface QuerySources {
+  queueStatus?: QueueStatus
+}
 
 /**
  * Resolve the workspace + session a query runs against from its `params`. A block layout is context-
@@ -31,9 +42,11 @@ const resolveScope = (store: WorkspaceRegistry, params: BlockQuery['params']): {
  * hydrate; `ledger`'s store lands later (P4) so it returns `[]` with documented semantics, NOT an
  * error — a HUD composing a ledger block before P4 shows an empty, explainable block. `top` bounds
  * the returned rows; `truncated` reports whether more existed (HUD shows top-K, workbench holds rest).
- * Reads exclusively through store/ (the DB-handle rule); an unknown workspace reads as [].
+ * Reads exclusively through store/ (the DB-handle rule), with ONE documented exception: the `queue`
+ * source is operational engine state (spool.ts), not a store record, so the route injects its snapshot
+ * via `sources` (see QuerySources). An unknown workspace reads as [].
  */
-export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: Date = new Date()): QueryResult => {
+export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: Date = new Date(), sources: QuerySources = {}): QueryResult => {
   const { workspaceId, sessionId } = resolveScope(store, query.params)
   const known = store.all().some((ws) => ws.id === workspaceId)
   const top = query.top
@@ -80,6 +93,17 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // `cap` takes top-K. Each row is a Draft — body + provenance/why-line — rendered client-side.
       const drafts = known ? store.listDrafts(workspaceId, sessionId) : []
       return cap([...drafts].reverse())
+    }
+    case 'queue': {
+      // Honest backlog telemetry (P4A queue): the per-kind depth, ETA, overflow state, and last drain
+      // failure the CaptureQueue serves over GET /queue. UNLIKE every other source, this is NOT a store
+      // record — it is operational engine state the queue holds in memory (spool.ts: lastFailure/samples
+      // are ephemeral runtime facts, deliberately not documents), so it is INJECTED via `sources` by the
+      // /query route (which awaits ctx.queue.status()) rather than read through store/. One row: the whole
+      // QueueStatus snapshot, rendered client-side as a status panel (per-kind backlog + ETA + overflow +
+      // the last-failure line, prominently). No status injected (a unit test, or the queue unwired) ⇒ [],
+      // explainable-empty — never an error. Workspace/session params don't scope it: the spool is global.
+      return cap(sources.queueStatus !== undefined ? [sources.queueStatus] : [])
     }
     case 'distillates': {
       // The distillate stream (Distill pass, P2): the merge-window summaries — one row per distilled

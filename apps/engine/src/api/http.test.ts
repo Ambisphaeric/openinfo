@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Moment, Pin, PinChunk, QueryResult, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Moment, Pin, PinChunk, QueryResult, QueueStatus, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
@@ -1733,6 +1733,81 @@ test('GET /queue: empty; then a model-load drain records the classified last fai
       assert.equal(q.lastFailure?.class, 'model-load')
       assert.equal(q.lastFailure?.endpoint, 'lm-studio')
       assert.match(q.lastFailure?.hint ?? '', /small/) // the loaded-model suggestion made it into the hint
+    })
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.server.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('e2e: a queue surface hydrates its queue-status block — a SEEDED FAILURE surfaces through POST /query', async () => {
+  // The data path the HUD drives for the queue/status block (#13). Queue status is OPERATIONAL engine
+  // state (backlog/ETA/last-failure), not a store record, so the /query route injects the live status()
+  // snapshot. This drives a REAL model-load failure (the drain re-queues and records WHY — the honest
+  // "why nothing arrived"), authors a surface carrying a queue block, then GET + POST /query hydrate
+  // exactly as the client does — and asserts the LAST-FAILURE text rides through the query pipeline
+  // (never hidden, per the issue's honest-failure mandate).
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-queue-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const up = await startFakeChat({ status: 400, body: JSON.stringify({ error: 'Model "big" failed to load' }) }, ['big', 'small'])
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // author a surface with a queue block bound to the queue source (saving a layout is not flagged)
+    const surface: Surface = {
+      id: 'surf-queue', name: 'Queue', context: 'meeting', version: 1,
+      stack: [
+        { block: 'now' },
+        { block: 'queue', show: 'always', query: { source: 'queue', params: {}, top: 1 } },
+      ],
+    }
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-queue`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface),
+    })).status, 200)
+
+    // an idle queue still hydrates ONE status row (a status panel is never silent), no failure yet
+    const idle = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface.stack[1]!.query),
+    })).json()) as QueryResult
+    assert.equal(idle.source, 'queue')
+    assert.equal(idle.items.length, 1)
+    assert.equal((idle.items[0] as QueueStatus).lastFailure, undefined)
+
+    // point llm at the broken server and turn on distill so the drain invokes it and fails (model-load)
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'lm-studio', url: up.url, api: 'openai-compat', model: 'big' }] } }),
+    })
+    for (const key of ['distill.enabled', 'distill.moments']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    await fetch(`${base}/capture/mic`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we will ship Thursday' }),
+    })
+
+    // THE PROOF: the queue block's POST /query now hydrates the classified last failure — VISIBLE, not hidden
+    await eventuallyHttp(async () => {
+      const result = (await (await fetch(`${base}/query`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(surface.stack[1]!.query),
+      })).json()) as QueryResult
+      assert.equal(result.source, 'queue')
+      assert.equal(result.items.length, 1)
+      const status = result.items[0] as QueueStatus
+      assert.equal(status.lastFailure?.class, 'model-load')
+      assert.equal(status.lastFailure?.endpoint, 'lm-studio')
+      assert.match(status.lastFailure?.hint ?? '', /small/) // the loaded-model suggestion rides through
     })
   } finally {
     await app.close()

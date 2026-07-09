@@ -54,6 +54,10 @@
           "type": "string"
         },
         {
+          "const": "queue",
+          "type": "string"
+        },
+        {
           "const": "custom",
           "type": "string"
         }
@@ -113,6 +117,10 @@
             },
             {
               "const": "distillates",
+              "type": "string"
+            },
+            {
+              "const": "queue",
               "type": "string"
             }
           ]
