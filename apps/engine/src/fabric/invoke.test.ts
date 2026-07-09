@@ -122,6 +122,78 @@ test('every endpoint unresolvable ⇒ throws with the REF name (never the secret
   )
 })
 
+test('callHttp includes chat_template_kwargs + response_format in the body when the endpoint sets them', async () => {
+  const fake = await startFakeLlm('ok')
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [{
+          kind: 'http', name: 'qwen', url: fake.url, api: 'openai-compat', model: 'qwen3.5-9b',
+          chatTemplateKwargs: { enable_thinking: false },
+          responseFormat: { type: 'json_object' },
+        }],
+      },
+    }
+    await invokeLlm(fabric, [{ role: 'user', content: 'distill this' }])
+    const body = fake.requests[0] as { chat_template_kwargs?: unknown; response_format?: unknown }
+    assert.deepEqual(body.chat_template_kwargs, { enable_thinking: false })
+    assert.deepEqual(body.response_format, { type: 'json_object' })
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('callHttp OMITS both extras when the endpoint sets neither (byte-for-byte the legacy body)', async () => {
+  const fake = await startFakeLlm('ok')
+  try {
+    const fabric: Fabric = {
+      slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'plain', url: fake.url, api: 'openai-compat', model: 'llama' }] },
+    }
+    await invokeLlm(fabric, [{ role: 'user', content: 'hi' }])
+    const body = fake.requests[0] as Record<string, unknown>
+    assert.equal('chat_template_kwargs' in body, false)
+    assert.equal('response_format' in body, false)
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('the qwen3.5-9b thinking-burn is addressable via chatTemplateKwargs {enable_thinking:false}', async () => {
+  // A fake that reproduces the rig: at its default it burns the whole budget reasoning (empty content,
+  // finish_reason length ⇒ classified reasoning-exhausted); told enable_thinking:false it answers in text.
+  const requests: unknown[] = []
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { chat_template_kwargs?: { enable_thinking?: boolean } }
+      requests.push(body)
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (body.chat_template_kwargs?.enable_thinking === false) {
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '{"summary":"done"}' } }] }))
+      } else {
+        res.end(JSON.stringify({ choices: [{ message: { content: '', reasoning_content: 'thinking…' }, finish_reason: 'length' }] }))
+      }
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  const url = `http://127.0.0.1:${address.port}`
+  try {
+    const burns: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'qwen', url, api: 'openai-compat', model: 'qwen3.5-9b' }] } }
+    // Default: the distill budget goes to reasoning, so the completion fails (the CONFIRMED rig failure).
+    await assert.rejects(() => invokeLlm(burns, [{ role: 'user', content: 'distill' }], { maxTokens: 700 }), /reasoning|no llm endpoint answered/)
+    // With enable_thinking:false the same model returns real content — the burn is addressed per-endpoint.
+    const fixed: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'qwen', url, api: 'openai-compat', model: 'qwen3.5-9b', chatTemplateKwargs: { enable_thinking: false } }] } }
+    const result = await invokeLlm(fixed, [{ role: 'user', content: 'distill' }], { maxTokens: 700 })
+    assert.equal(result.text, '{"summary":"done"}')
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
 test('invokeLlm throws when the slot is empty and skips local/cloud stubs', async () => {
   const fabric: Fabric = {
     slots: {

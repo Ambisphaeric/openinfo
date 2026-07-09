@@ -83,6 +83,13 @@ export interface InvokeOptions {
   resolveKey?: SecretResolver
   /** manages `local` endpoints' spawned runtimes (tier zero); absent ⇒ local endpoints are skipped. */
   runtimeManager?: LocalRuntimeManager
+  /**
+   * Request EXTRAS for the openai-compat completions body — a per-call override that, when unset, falls
+   * back to the endpoint's own `chatTemplateKwargs`/`responseFormat`. Either way the field is included
+   * ONLY when set (endpoint or opts); unset everywhere ⇒ the body is byte-for-byte the old shape.
+   */
+  chatTemplateKwargs?: Record<string, unknown>
+  responseFormat?: unknown
 }
 
 interface ChatChoice {
@@ -122,6 +129,12 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
     if (endpoint.model !== undefined) body['model'] = endpoint.model
     if (opts.maxTokens !== undefined) body['max_tokens'] = opts.maxTokens
     if (opts.temperature !== undefined) body['temperature'] = opts.temperature
+    // Per-endpoint request extras (opts override the endpoint's own). Included ONLY when set, so an
+    // endpoint that configures neither sends the exact legacy body — no enable_thinking is ever implied.
+    const chatTemplateKwargs = opts.chatTemplateKwargs ?? endpoint.chatTemplateKwargs
+    if (chatTemplateKwargs !== undefined) body['chat_template_kwargs'] = chatTemplateKwargs
+    const responseFormat = opts.responseFormat ?? endpoint.responseFormat
+    if (responseFormat !== undefined) body['response_format'] = responseFormat
     response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...auth },

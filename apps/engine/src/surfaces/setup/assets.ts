@@ -131,6 +131,15 @@ export const SETUP_SCRIPT = `
     var ep={kind:'http',name:(q('.f-name').value.trim()||'endpoint'),url:q('.f-url').value.trim(),api:(row.dataset.api||'openai-compat')};
     var model=q('.f-model').value.trim(); if(model)ep.model=model;
     var keyRef=q('.f-keyref').value; if(keyRef)ep.auth={keyRef:keyRef};
+    // Advanced request extras (optional): a JSON object with chatTemplateKwargs and/or responseFormat.
+    // Blank ⇒ nothing set (the common case). Invalid JSON is left off rather than blocking Save.
+    var extrasEl=q('.f-extras'); var extras=extrasEl?extrasEl.value.trim():'';
+    if(extras){try{var ex=JSON.parse(extras);
+      if(ex&&typeof ex==='object'){
+        if(ex.chatTemplateKwargs&&typeof ex.chatTemplateKwargs==='object')ep.chatTemplateKwargs=ex.chatTemplateKwargs;
+        if('responseFormat' in ex)ep.responseFormat=ex.responseFormat;
+      }
+    }catch(e){/* leave extras off on unparseable JSON */}}
     return ep;
   }
   function testRow(row){

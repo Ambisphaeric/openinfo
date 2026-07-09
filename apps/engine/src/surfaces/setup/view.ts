@@ -226,6 +226,19 @@ const keyrefOptions = (selected: string | undefined, refs: string[]): string =>
     .concat(refs.map((r) => `<option value="${escapeHtml(r)}"${r === selected ? ' selected' : ''}>${escapeHtml(r)}</option>`))
     .join('')
 
+/**
+ * Serialize an http endpoint's request extras (chatTemplateKwargs / responseFormat) to the JSON the
+ * advanced field shows — only the keys that are set, '' when neither. Round-trips through rowToEndpoint.
+ */
+const endpointExtrasValue = (ep: Extract<Endpoint, { kind: 'http' }>): string => {
+  const extras: Record<string, unknown> = {}
+  if (ep.chatTemplateKwargs !== undefined) extras['chatTemplateKwargs'] = ep.chatTemplateKwargs
+  if (ep.responseFormat !== undefined) extras['responseFormat'] = ep.responseFormat
+  return Object.keys(extras).length > 0 ? JSON.stringify(extras) : ''
+}
+
+const EXTRAS_PLACEHOLDER = 'advanced JSON — e.g. {"chatTemplateKwargs":{"enable_thinking":false}}'
+
 /** One editable endpoint row. http endpoints get fields; other kinds are read-only but round-trip. */
 const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
   if (ep.kind !== 'http') {
@@ -247,6 +260,9 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
     `<button type="button" disabled title="Benchmark measures real tok/s on this hardware — coming with the capability-benchmarking system (see Diagnostics → Benchmarks).">Benchmark</button>` +
     `<button type="button" data-act="up" title="up">↑</button>` +
     `<button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
+    // Advanced (optional): per-endpoint request extras threaded into the completions body. Blank ⇒ nothing
+    // sent (the common case); a reasoning model that burns the token budget gets {"enable_thinking":false}.
+    `<input class="f-extras" autocomplete="off" spellcheck="false" title="${escapeHtml(EXTRAS_PLACEHOLDER)}" value="${escapeHtml(endpointExtrasValue(ep))}" placeholder="${escapeHtml(EXTRAS_PLACEHOLDER)}" />` +
     `<div class="probe"></div></div>`
   )
 }
@@ -342,6 +358,7 @@ export const rowTemplateHtml = (refs: string[]): string =>
   `<button type="button" disabled title="Benchmark measures real tok/s on this hardware — coming with the capability-benchmarking system (see Diagnostics → Benchmarks).">Benchmark</button>` +
   `<button type="button" data-act="up" title="up">↑</button>` +
   `<button type="button" data-act="down" title="down">↓</button><button type="button" data-act="remove" title="remove">✕</button></div>` +
+  `<input class="f-extras" autocomplete="off" spellcheck="false" title="${escapeHtml(EXTRAS_PLACEHOLDER)}" placeholder="${escapeHtml(EXTRAS_PLACEHOLDER)}" />` +
   `<div class="probe"></div></div></template>`
 
 /**

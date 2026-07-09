@@ -59,6 +59,18 @@ export const Endpoint = Type.Union(
         model: Type.Optional(Type.String()),
         auth: EndpointAuth,
         measured: Measured,
+        // Per-endpoint request EXTRAS threaded verbatim into the openai-compat completions body when set,
+        // omitted entirely when unset (zero behavior change for existing endpoints). NEVER auto-derived —
+        // this is user config: some templates expose no thinking toggle (LFM2.5), others burn the token
+        // budget reasoning unless told not to (qwen3.5-9b distill: chatTemplateKwargs {enable_thinking:false}).
+        chatTemplateKwargs: Type.Optional(
+          Type.Record(Type.String(), Type.Unknown(), {
+            description: "passed as chat_template_kwargs on the completions request, e.g. {enable_thinking:false} to stop a reasoning model burning the token budget. Per-endpoint user config, never auto-set.",
+          }),
+        ),
+        responseFormat: Type.Optional(
+          Type.Unknown({ description: "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint." }),
+        ),
       },
       { additionalProperties: false },
     ),

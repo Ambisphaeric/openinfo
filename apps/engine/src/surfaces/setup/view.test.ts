@@ -488,3 +488,19 @@ test('every http endpoint row (and the template) carries the Scan button beside 
   assert.ok(urlAt < scanAt && scanAt < modelAt)
   assert.match(rowTemplateHtml([]), /data-act="scan"/)
 })
+
+test('http rows carry the advanced request-extras field, seeded from the endpoint (round-trips to save)', () => {
+  const editing = profile({
+    fabric: {
+      slots: {
+        ...emptyFabric().slots,
+        llm: [{ kind: 'http', name: 'qwen', url: 'http://localhost:1234', api: 'openai-compat', model: 'qwen3.5-9b', chatTemplateKwargs: { enable_thinking: false } }],
+      },
+    },
+  })
+  const html = editorHtml(data({ editing, profiles: [editing] }))
+  assert.match(html, /class="f-extras"/) // the advanced field exists
+  // its value is the endpoint's extras as JSON (escaped) — so the save path reads it back unchanged
+  assert.match(html, /class="f-extras"[^>]*value="[^"]*chatTemplateKwargs[^"]*enable_thinking/)
+  assert.match(rowTemplateHtml([]), /class="f-extras"/) // and a fresh add-row row has it too
+})
