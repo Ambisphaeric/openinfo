@@ -12,7 +12,7 @@ description: Close out finished work — verify what landed, log a retro entry, 
    subagent (does the seeded document exist? does the flag gate? does the API respond?). Note
    drift between spec and what shipped.
 3. Append a dated entry to `docs/RETRO.md`: **shipped** (commits, one line each), **deferred/cut**
-   (and why), **surprises/gotchas** worth remembering, **decisions needed from the founder**
+   (and why), **surprises/gotchas** worth remembering, **decisions needed from the owner**
    (these also get a line in NEXT.md's design-session/queue area).
 4. Update `docs/NEXT.md`: remove done items, reorder if the retro changed priorities, add
    follow-up slices discovered during the work.

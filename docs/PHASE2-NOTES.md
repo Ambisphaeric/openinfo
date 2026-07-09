@@ -546,7 +546,7 @@ convergence-time or separately-scoped, none constructional blockers):
 This is convergence work *after* the Phase-2 code was complete: Phase 1 added no Electron code and the
 HUD mounted only via a browser dev-entry (see "Where the HUD mounts today" above). This slice gives the
 thin client its actual shell — the CODE_MAP `client/main/` home — closing that follow-up. No new blocks,
-no new engine routes, no capture. Scope was deliberately tight (the founder asked for tight).
+no new engine routes, no capture. Scope was deliberately tight (the user asked for tight).
 
 ### What landed
 A macOS menu-bar app (`apps/client/src/main/`): one frameless, transparent, always-on-top HUD window
@@ -568,7 +568,7 @@ to float, so `.stage`/`body` background is forced transparent with `!important`)
 
 ### Tray menu + live-session state — WS push, not polling
 Menu: a disabled **status header** (● session live / ○ no session / ○ connecting…), **Show/Hide HUD**,
-**Start Session / End Session** (the founder's on/off toggle — one item whose label + verb flip with the
+**Start Session / End Session** (the user's on/off toggle — one item whose label + verb flip with the
 live state), and **Quit**. The tooltip mirrors the status. Live state is tracked from the engine **WS
 stream** (`session.started`/`session.ended`) via `SessionLiveState`, seeded by one initial
 `GET /sessions?live` on connect (+ on reconnect). **WS over polling** because it is push: zero idle cost,
@@ -764,7 +764,7 @@ capture-side concern independent of distill, which contradicts the gating decisi
 
 ## Slice: The HUD window moves + remembers where you put it (drag · position persistence)
 
-A tight follow-up to the client shell slice above. The founder hit it immediately: the frameless HUD
+A tight follow-up to the client shell slice above. The user hit it immediately: the frameless HUD
 was **static — it couldn't be dragged**. This slice makes the header strip a grab handle, moves the
 window with the cursor, and remembers the spot across restarts. No engine/contracts change (client-only,
 `apps/client`), no resizing, no multi-display UI — deliberately tight.
@@ -1022,7 +1022,7 @@ per the docs above — confirming route (a)/(b) is required).
 
 ## Slice: Fabric profiles + secrets (the dial-able rig — save/clone/switch model setups)
 
-The founder's frame: a first model setup ("config 1") is a *named* configuration that is by no means
+The user's frame: a first model setup ("config 1") is a *named* configuration that is by no means
 the last — 8B in LM Studio today, a 27B on another host + a 4B OCR box + parakeet STT here / TTS there
 tomorrow, some of it over tailscale. Any slot→endpoint composition across hosts must be composable,
 saveable, cloneable, switchable; hosts + keys are remembered. This is the repo philosophy applied to
@@ -1117,7 +1117,7 @@ timing flake in the new activation e2e under concurrent `-r test` load was harde
 
 ## Slice: The first-run setup surface + tray entry (+ the rec-indicator honesty fix)
 
-Slice (b) after fabric profiles+secrets (a). The founder's frame: onboarding is minimal — a *first*
+Slice (b) after fabric profiles+secrets (a). The user's frame: onboarding is minimal — a *first*
 setting, not the user's last. "Config 1" (an 8B in LM Studio) is named, then cloned/switched to a
 27B on another host, parakeet STT on a third, any combination. The page is a thin form over the
 profile documents slice (a) shipped — forms over documents, **no new engine capability**.
@@ -1236,7 +1236,7 @@ Full round-trip driven over the API exactly as the page's JS does, plus the page
 
 ## Slice: Onboarding from first principles — discovery + the Get-Started lens
 
-The founder configuring his OWN product hit the wall: template fixes, port lookups, model-capability
+A user configuring their OWN product hit the wall: template fixes, port lookups, model-capability
 trivia, two TCC permissions. Onboarding must be simple for a new user in a standard flow. Design note
 landed FIRST (ARCHITECTURE §8, per CODE_MAP rule 5) covering all six principles + scoping + the macOS
 Local-Network TCC platform note. This slice = **discovery + the Get-Started lens**; the say-something
@@ -1374,9 +1374,9 @@ moment appearing live — and where it breaks, the honest error shows with the f
 
 ### Decision: the loop lives on `/setup` (engine-served, browser), NOT the Electron client
 The slice-a design note (ARCHITECTURE §8, principle 5) tentatively homed this in `apps/client/`. **Revised
-here (founder-agreed):** it is a card on the engine-served `/setup` page instead. Why: (1) the browser owns
+here (owner-agreed):** it is a card on the engine-served `/setup` page instead. Why: (1) the browser owns
 the mic-permission UX (`getUserMedia`) — the simplest possible TCC story, no Electron entitlement dance;
-(2) it works for the founder's **remote-engine** workflow (any browser pointed at the engine, incl. a
+(2) it works for the user's **remote-engine** workflow (any browser pointed at the engine, incl. a
 machine not running the client at all — the §6 "engine speaks HTTP" property); (3) it composes only
 existing routes, so it inherits the setup surface's pure-view.ts + thin-assets.ts discipline with zero new
 engine capability. The client HUD/tray stay exactly as they are. CODE_MAP row for (b) updated accordingly.
@@ -1705,7 +1705,7 @@ Engine on **:8910** (scratch `OPENINFO_DATA`); processes killed after; **:8787 /
 
 This revisits the **setup-surface slice** above (the `LIVE_SLOTS`/`INERT_SLOTS` split). That slice drew a
 deliberate v0 scope line: an endpoint editor for **llm + stt** only, with `tts/vlm/ocr/embed` shown
-**present-but-inert** ("not wired yet") because only llm/stt have engine invoke paths today. The founder hit
+**present-but-inert** ("not wired yet") because only llm/stt have engine invoke paths today. The user hit
 the wall it created — he could not add a **kokoro tts** or a **vlm** from the page and had to configure them
 through raw API calls. The line has outgrown its use: a profile is a **document** that legitimately holds
 endpoints in all six slots, and the page shouldn't gate DOCUMENT editing on whether the engine invokes a slot
@@ -1745,19 +1745,19 @@ so a tts/vlm URL probes exactly like an llm one (kokoro/LM Studio answer the GET
 ### Tests + status (contracts 40 · client 84 · engine 173 — all green; `pnpm -r build`/`-r test`)
 - engine `surfaces/setup/view.test.ts`: the old "llm+stt editable, tts/vlm/ocr/embed inert" assertion is
   **replaced** by all-six-editable reality — all-slot container + add-row rendering, per-slot usage notes
-  (informational, "not wired" gone), the founder's exact tts add-row repro, full-fabric all-slot rendering, and
+  (informational, "not wired" gone), the user's exact tts add-row repro, full-fabric all-slot rendering, and
   local-endpoint `data-json` preservation.
-- engine `api/http.test.ts`: +1 full-fabric API round-trip (the founder repro at the route level).
+- engine `api/http.test.ts`: +1 full-fabric API round-trip (the user repro at the route level).
 
 ### Live verification (darwin, engine on :8911; :8787/:1234/:11434 left alone; process killed after)
-Drove the founder's exact scenario over the API as the page's JS does: PUT a `rig` profile (llm http + a
+Drove the user's exact scenario over the API as the page's JS does: PUT a `rig` profile (llm http + a
 **local** stt starter) → re-PUT adding **kokoro tts** (`http://192.168.1.105:8880`, model `kokoro`) → re-PUT
 adding a **vlm** → activate → `GET /fabric/profiles/rig`: **llm intact, the local stt endpoint preserved
 byte-for-byte through both edits, tts=kokoro, vlm present** (version 3). `GET /setup?edit=rig`: the **tts slot
 renders as a full editable container** — `data-slot="tts"`, the honest P5 note, the kokoro row (name/url/model/
 keyRef + Test/↑/↓/✕), and **"+ add endpoint"** — identical to llm/stt; the local stt row is a read-only
 `data-kind="local"` row; **no "not wired" copy anywhere**. `POST /fabric/test` on the kokoro shape returned an
-honest `{ ok:false, error:"fetch failed" }` (that host isn't reachable from this machine — on the founder's rig
+honest `{ ok:false, error:"fetch failed" }` (that host isn't reachable from this machine — on the user's rig
 it answers). Page opened in the default browser. Ceiling (as prior slices): a pixel screenshot isn't automated;
 the served markup + every API link the page drives are exercised above.
 
