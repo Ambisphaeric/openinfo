@@ -593,7 +593,10 @@ async function runGenerateProbe(endpoint: Endpoint, slot: string | undefined, ct
   try {
     await invokeLlm(genFabric, [{ role: 'user', content: 'ping' }], {
       maxTokens: 1,
-      timeoutMs: 8_000,
+      // A cold 12B load (~6.3s) plus generation exceeded the old 8s budget, so the first Test press on a
+      // cold model timed out; 30s covers a cold load + the 1-token completion. The reachability ping
+      // (checkEndpoint above) stays snappy — it only proves the socket answers, not that a model loaded.
+      timeoutMs: 30_000,
       resolveKey: (ref) => ctx.secrets.resolve(ref),
       runtimeManager: ctx.runtime,
     })

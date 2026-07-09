@@ -1199,3 +1199,8 @@ STORED fabric + secret returns a clean completion from `dev-mac-omlx`.
   kind covers it. A spec entry is additive when engine-owned mlx lifecycle is wanted (CONTRIBUTING recipe).
 - **Probe wording in the setup surface** — the browser script already renders `generate.note`-less ✓ rows;
   showing the note ("budget went to thinking") beside the ✓ is a surfaces touch, not this fix.
+
+### Addendum — generate-probe timeout raised 8s → 30s (`api/http.ts`)
+A cold 12B load (~6.3s) plus the 1-token completion exceeded the old 8s generate-probe budget, so the first
+Test press on a cold model timed out. Raised to 30s; the reachability ping (`checkEndpoint`, 4s) stays
+snappy since it only proves the socket answers, not that a model loaded.
