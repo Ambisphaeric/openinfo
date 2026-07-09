@@ -221,6 +221,60 @@ export const bareHostOf = (value: string): string | undefined => {
   return host || undefined
 }
 
+// --- Endpoint URL ⇄ host/port (ENDPOINT-HOST-PORT slice) -------------------------------------------
+// The editor exposes an endpoint's URL as SEPARATE scheme/host/port fields so the owner's real workflow
+// works cleanly: testing an "upgrade" from LM Studio to omlx on the SAME host is a PORT swap under the same
+// reference name, host unchanged. The stored Endpoint shape is UNCHANGED — `url` stays a single string;
+// this is purely a UI affordance, so it needs a lossless parse (url → fields, for rendering) and compose
+// (fields → url, mirrored by the browser on save). Pure and exported so the round-trip is asserted headless.
+
+export interface EndpointUrlParts {
+  /** 'http' | 'https' (endpoints match ^https?://); default 'http' for a schemeless value. */
+  scheme: string
+  /** the hostname — IPv6 keeps its brackets ("[::1]"). '' when unreadable. */
+  host: string
+  /** the port as text, '' when none (a default-port URL like https://host). */
+  port: string
+  /** any trailing path/query/hash, preserved verbatim so a URL with a path round-trips losslessly ('' normally). */
+  rest: string
+}
+
+/** Split a `host[:port]` authority (IPv6-aware: "[::1]:8000" → host "[::1]", port "8000"). */
+const splitAuthority = (authority: string): { host: string; port: string } => {
+  if (authority.startsWith('[')) {
+    const close = authority.indexOf(']')
+    if (close !== -1) {
+      const after = authority.slice(close + 1)
+      return { host: authority.slice(0, close + 1), port: after.startsWith(':') ? after.slice(1) : '' }
+    }
+  }
+  const colon = authority.lastIndexOf(':')
+  return colon === -1 ? { host: authority, port: '' } : { host: authority.slice(0, colon), port: authority.slice(colon + 1) }
+}
+
+/** Parse an endpoint URL into scheme/host/port/rest. A schemeless value defaults to http. Lossless with composeEndpointUrl. Pure. */
+export const parseEndpointUrl = (url: string): EndpointUrlParts => {
+  const trimmed = (url ?? '').trim()
+  const m = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([/?#].*)?$/i.exec(trimmed)
+  if (m) {
+    const { host, port } = splitAuthority(m[2]!)
+    return { scheme: m[1]!.toLowerCase(), host, port, rest: m[3] ?? '' }
+  }
+  const slash = trimmed.indexOf('/')
+  const authority = slash === -1 ? trimmed : trimmed.slice(0, slash)
+  const { host, port } = splitAuthority(authority)
+  return { scheme: 'http', host, port, rest: slash === -1 ? '' : trimmed.slice(slash) }
+}
+
+/** Compose scheme/host/port(/rest) back into the stored URL string. Empty host ⇒ '' (an unfilled row). Pure. */
+export const composeEndpointUrl = (parts: { scheme?: string; host: string; port?: string; rest?: string }): string => {
+  const host = (parts.host ?? '').trim()
+  if (host === '') return ''
+  const scheme = (parts.scheme ?? '').trim() || 'http'
+  const port = (parts.port ?? '').trim()
+  return `${scheme}://${host}${port ? `:${port}` : ''}${parts.rest ?? ''}`
+}
+
 const keyrefOptions = (selected: string | undefined, refs: string[]): string =>
   ['<option value="">(no key)</option>']
     .concat(refs.map((r) => `<option value="${escapeHtml(r)}"${r === selected ? ' selected' : ''}>${escapeHtml(r)}</option>`))
@@ -239,6 +293,18 @@ const endpointExtrasValue = (ep: Extract<Endpoint, { kind: 'http' }>): string =>
 
 const EXTRAS_PLACEHOLDER = 'advanced JSON — e.g. {"chatTemplateKwargs":{"enable_thinking":false}}'
 
+/**
+ * The scheme + host + port fields that COMPOSE the endpoint URL (the stored `url` shape is unchanged; the
+ * browser recomposes on save). Scheme defaults to http with an inline advanced override; host + port are
+ * separate so a same-host port swap (LM Studio → omlx) is a one-field edit. Shared by the row + add-row template.
+ */
+const hostPortFieldsHtml = (parts: EndpointUrlParts): string =>
+  `<select class="f-scheme" title="scheme (advanced — default http)">` +
+  `<option value="http"${parts.scheme === 'https' ? '' : ' selected'}>http</option>` +
+  `<option value="https"${parts.scheme === 'https' ? ' selected' : ''}>https</option></select>` +
+  `<input class="f-host" autocomplete="off" value="${escapeHtml(parts.host)}" placeholder="host (or a bare host to scan)" />` +
+  `<input class="f-port" autocomplete="off" value="${escapeHtml(parts.port)}" placeholder="port" />`
+
 /** One editable endpoint row. http endpoints get fields; other kinds are read-only but round-trip. */
 const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
   if (ep.kind !== 'http') {
@@ -249,10 +315,13 @@ const endpointRowHtml = (ep: Endpoint, refs: string[]): string => {
       `</div>`
     )
   }
+  // Split the stored url into scheme/host/port for the fields; `rest` (any path/query) rides a data attribute
+  // so the browser can recompose the exact url losslessly on save.
+  const parts = parseEndpointUrl(ep.url)
   return (
-    `<div class="row" data-kind="http" data-api="${escapeHtml(ep.api)}">` +
+    `<div class="row" data-kind="http" data-api="${escapeHtml(ep.api)}" data-urlrest="${escapeHtml(parts.rest)}">` +
     `<input class="f-name" autocomplete="off" value="${escapeHtml(ep.name)}" placeholder="name" />` +
-    `<input class="f-url" autocomplete="off" value="${escapeHtml(ep.url)}" placeholder="http://host:port (or a bare host to scan)" />` +
+    hostPortFieldsHtml(parts) +
     `<button type="button" data-act="scan" title="Scan this server: list its models and see what it can do — no typing model names">Scan</button>` +
     `<input class="f-model" autocomplete="off" value="${escapeHtml(ep.model ?? '')}" placeholder="model (optional — Scan fills a dropdown)" />` +
     `<select class="f-keyref" title="key reference">${keyrefOptions(ep.auth?.keyRef, refs)}</select>` +
@@ -349,8 +418,9 @@ export const secretsHtml = (refs: string[]): string => {
 /** The hidden <template> the browser clones for a fresh endpoint row (keyRef options current). */
 export const rowTemplateHtml = (refs: string[]): string =>
   `<template id="row-tpl">` +
-  `<div class="row" data-kind="http" data-api="openai-compat">` +
-  `<input class="f-name" autocomplete="off" placeholder="name" /><input class="f-url" autocomplete="off" placeholder="http://host:port (or a bare host to scan)" />` +
+  `<div class="row" data-kind="http" data-api="openai-compat" data-urlrest="">` +
+  `<input class="f-name" autocomplete="off" placeholder="name" />` +
+  hostPortFieldsHtml(parseEndpointUrl('')) +
   `<button type="button" data-act="scan" title="Scan this server: list its models and see what it can do — no typing model names">Scan</button>` +
   `<input class="f-model" autocomplete="off" placeholder="model (optional — Scan fills a dropdown)" />` +
   `<select class="f-keyref" title="key reference">${keyrefOptions(undefined, refs)}</select>` +

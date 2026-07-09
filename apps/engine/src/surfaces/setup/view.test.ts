@@ -12,6 +12,8 @@ import {
   localRuntimesHtml,
   runtimeModelsBySlot,
   runtimeStateChip,
+  parseEndpointUrl,
+  composeEndpointUrl,
   type DiscoveredRuntime,
   jsonForScript,
   modelDropdownHtml,
@@ -146,9 +148,11 @@ test('a full fabric (endpoints in EVERY slot) renders each slot as editable rows
     },
   }
   const html = editorHtml(data({ editing: profile({ fabric: full }) }))
-  // each slot's own URL field is present (the row the save path reads back)
-  for (const url of ['http://h1:1234', 'http://h2:9000', 'http://h3:8880', 'http://h4:1235', 'http://h5:1236', 'http://h6:1237'])
-    assert.match(html, new RegExp(`value="${url.replace(/[.]/g, '\\.')}"`))
+  // each slot's own url renders as host + port fields (the rows the save path recomposes + reads back)
+  for (const [host, port] of [['h1', '1234'], ['h2', '9000'], ['h3', '8880'], ['h4', '1235'], ['h5', '1236'], ['h6', '1237']]) {
+    assert.match(html, new RegExp(`class="f-host" autocomplete="off" value="${host}"`))
+    assert.match(html, new RegExp(`class="f-port" autocomplete="off" value="${port}"`))
+  }
   // the base-fabric blob carries the whole map (memoryBudgetMb + any slot the DOM might not rewrite);
   // it is html-escaped (attr-safe), so unescape before parsing
   const blob = extractBlob(html, 'base-fabric').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
@@ -169,10 +173,13 @@ test('a non-http (local) endpoint renders as a read-only row that round-trips vi
   assert.deepEqual(roundTripped, local)
 })
 
-test('keyRef dropdown offers the stored refs; the editable http row carries the endpoint fields', () => {
+test('keyRef dropdown offers the stored refs; the editable http row splits the url into host + port fields', () => {
   const html = editorHtml(data({ secretRefs: ['remote-llm-key'] }))
   assert.match(html, /<option value="remote-llm-key"/)
-  assert.match(html, /class="f-url" autocomplete="off" value="http:\/\/localhost:1234"/)
+  // The stored url http://localhost:1234 renders as separate host + port fields (a same-host port swap is one edit).
+  assert.match(html, /class="f-host" autocomplete="off" value="localhost"/)
+  assert.match(html, /class="f-port" autocomplete="off" value="1234"/)
+  assert.match(html, /class="f-scheme"/) // scheme select, http default
 })
 
 test('secrets section lists refs (names only) and never a value; empty shows the write-only note', () => {
@@ -482,14 +489,15 @@ test('bareHostOf: full URLs yield the hostname; bare values yield the host; junk
   assert.equal(bareHostOf('http://'), undefined)
 })
 
-test('every http endpoint row (and the template) carries the Scan button beside the URL field', () => {
+test('every http endpoint row (and the template) carries the Scan button beside the host/port fields', () => {
   const html = editorHtml(data())
   const scanAt = html.indexOf('data-act="scan"')
   assert.ok(scanAt >= 0, 'the editor row must offer Scan')
-  // beside the URL field: Scan sits between f-url and f-model in the row
-  const urlAt = html.indexOf('class="f-url"')
+  // Scan sits between the host/port fields and the model field in the row.
+  const hostAt = html.indexOf('class="f-host"')
+  const portAt = html.indexOf('class="f-port"')
   const modelAt = html.indexOf('class="f-model"')
-  assert.ok(urlAt < scanAt && scanAt < modelAt)
+  assert.ok(hostAt < portAt && portAt < scanAt && scanAt < modelAt)
   assert.match(rowTemplateHtml([]), /data-act="scan"/)
 })
 
@@ -559,4 +567,37 @@ test('localRuntimesHtml shows an authRequired server (present, wants a key) and 
 test('localRuntimesHtml is empty when nothing answered — the caller then leads with the download catalog', () => {
   assert.equal(localRuntimesHtml([{ name: 'ollama', url: 'http://localhost:11434', reachable: false, models: [], error: 'x' }]), '')
   assert.equal(localRuntimesHtml([]), '')
+})
+
+// --- Endpoint URL ⇄ host/port fields (ENDPOINT-HOST-PORT slice) ------------------------------------
+
+test('parseEndpointUrl splits scheme/host/port; composeEndpointUrl is its lossless inverse', () => {
+  const cases = [
+    'http://localhost:1234',
+    'https://api.example.com', // no port
+    'http://192.168.1.5:8000',
+    'https://studio.local:8917/v1', // trailing path preserved via rest
+    'http://[::1]:8787', // IPv6 keeps its brackets
+  ]
+  for (const url of cases) {
+    assert.equal(composeEndpointUrl(parseEndpointUrl(url)), url, url) // round-trips losslessly
+  }
+  const p = parseEndpointUrl('http://localhost:1234')
+  assert.deepEqual(p, { scheme: 'http', host: 'localhost', port: '1234', rest: '' })
+  assert.equal(parseEndpointUrl('https://api.example.com').port, '') // default-port URL ⇒ empty port field
+  assert.deepEqual(parseEndpointUrl('http://[::1]:8787'), { scheme: 'http', host: '[::1]', port: '8787', rest: '' })
+})
+
+test('composeEndpointUrl defaults scheme to http, omits an empty port, and yields "" for an unfilled host', () => {
+  assert.equal(composeEndpointUrl({ host: 'localhost', port: '1234' }), 'http://localhost:1234') // default http
+  assert.equal(composeEndpointUrl({ scheme: 'https', host: 'h', port: '' }), 'https://h') // no port ⇒ no colon
+  assert.equal(composeEndpointUrl({ host: '' }), '') // an empty row composes to nothing (skipped on save)
+  assert.equal(composeEndpointUrl({ host: '   ' }), '')
+})
+
+test('the port-swap workflow: same host + reference name, only the port field changes', () => {
+  // LM Studio → omlx on the same host is a port swap: parse the old url, change only port, recompose.
+  const before = parseEndpointUrl('http://studio.local:1234')
+  const after = composeEndpointUrl({ ...before, port: '8000' })
+  assert.equal(after, 'http://studio.local:8000') // host + scheme unchanged, port swapped
 })

@@ -51,7 +51,9 @@ a:hover{text-decoration:underline}
 .row:first-child{border-top:0}
 .row input,.row select{background:#0c0e13;color:var(--ink);border:1px solid var(--line);
   border-radius:6px;padding:5px 8px;font-size:12.5px}
-.row .f-name{width:120px}.row .f-url{flex:1;min-width:170px;font-family:var(--mono)}
+.row .f-name{width:120px}
+.row .f-scheme{width:74px}
+.row .f-host{flex:1;min-width:130px;font-family:var(--mono)}.row .f-port{width:74px;font-family:var(--mono)}
 .row .f-model{width:150px}.row .f-keyref{width:150px}
 .row .ro{flex:1;color:var(--muted);font-size:12.5px;font-family:var(--mono)}
 .rowbtns{display:flex;gap:5px}
@@ -139,7 +141,7 @@ export const SETUP_SCRIPT = `
   function rowToEndpoint(row){
     if(row.dataset.kind!=='http'){try{return JSON.parse(row.dataset.json);}catch(e){return null;}}
     var q=function(s){return row.querySelector(s);};
-    var ep={kind:'http',name:(q('.f-name').value.trim()||'endpoint'),url:q('.f-url').value.trim(),api:(row.dataset.api||'openai-compat')};
+    var ep={kind:'http',name:(q('.f-name').value.trim()||'endpoint'),url:composeUrl(row),api:(row.dataset.api||'openai-compat')};
     var model=q('.f-model').value.trim(); if(model)ep.model=model;
     var keyRef=q('.f-keyref').value; if(keyRef)ep.auth={keyRef:keyRef};
     // Advanced request extras (optional): a JSON object with chatTemplateKwargs and/or responseFormat.
@@ -157,7 +159,7 @@ export const SETUP_SCRIPT = `
     var probe=row.querySelector('.probe'); probe.className='probe'; probe.textContent='testing\\u2026';
     var ep=rowToEndpoint(row);
     if(!ep){probe.className='probe bad';probe.textContent='could not read this endpoint';return;}
-    if(ep.kind==='http'&&!ep.url){probe.className='probe bad';probe.textContent='enter a URL first';return;}
+    if(ep.kind==='http'&&!ep.url){probe.className='probe bad';probe.textContent='enter a host first';return;}
     // llm rows run ping THEN a real 1-token generation (the ping-lies fix) — a server that answers a GET
     // but can’t load its model is caught. Other slots keep the cheap ping (generation needs their I/O).
     var slotEl=row.closest('.slot'); var slot=slotEl?slotEl.dataset.slot:'';
@@ -224,6 +226,31 @@ export const SETUP_SCRIPT = `
     if(/^https?:\\/\\//i.test(v)){try{return (new URL(v)).hostname||null;}catch(e){return null;}}
     var h=v.split('/')[0].split(':')[0]; return h||null;
   }
+  // --- scheme/host/port fields ⇄ the stored url. MIRROR the pure parseEndpointUrl/composeEndpointUrl in
+  // view.ts (same discipline as the other view mirrors). The stored Endpoint shape keeps a single url; the
+  // fields are a UI affordance, so compose builds the url on save/test/scan and split repopulates the fields
+  // when a scan chooses a host. data-urlrest carries any path/query so a url round-trips losslessly.
+  function schemeOfRow(row){var s=row.querySelector('.f-scheme'); return (s&&s.value)||'http';}
+  function fieldVal(row,sel){var el=row.querySelector(sel); return el?(el.value||'').trim():'';}
+  function composeUrl(row){
+    var host=fieldVal(row,'.f-host'); if(!host)return '';
+    var port=fieldVal(row,'.f-port'); var rest=row.dataset.urlrest||'';
+    return schemeOfRow(row)+'://'+host+(port?':'+port:'')+rest;
+  }
+  function splitUrl(row,url){
+    url=(url||'').trim();
+    var m=/^([a-z][a-z0-9+.-]*):\\/\\/([^/?#]*)([/?#].*)?$/i.exec(url);
+    var scheme='http',authority='',rest='';
+    if(m){scheme=m[1].toLowerCase();authority=m[2];rest=m[3]||'';}
+    else{var sl=url.indexOf('/');authority=sl===-1?url:url.slice(0,sl);rest=sl===-1?'':url.slice(sl);}
+    var host=authority,port='';
+    if(authority.charAt(0)==='['){var c=authority.indexOf(']');if(c!==-1){host=authority.slice(0,c+1);var a=authority.slice(c+1);port=a.charAt(0)===':'?a.slice(1):'';}}
+    else{var ci=authority.lastIndexOf(':');if(ci!==-1){host=authority.slice(0,ci);port=authority.slice(ci+1);}}
+    var hEl=row.querySelector('.f-host'); if(hEl)hEl.value=host;
+    var pEl=row.querySelector('.f-port'); if(pEl)pEl.value=port;
+    var sEl=row.querySelector('.f-scheme'); if(sEl)sEl.value=(scheme==='https')?'https':'http';
+    row.dataset.urlrest=rest;
+  }
   function renderScanResult(row,h){
     var probe=row.querySelector('.probe'); var kr=row.querySelector('.f-keyref');
     if(h.reachable&&!h.authRequired){
@@ -252,7 +279,7 @@ export const SETUP_SCRIPT = `
     var chosen=null; for(var i=0;i<live.length;i++){if(live[i].url===chosenUrl){chosen=live[i];break;}}
     if(!chosen)chosen=live[0];
     row.__scanHosts=live;
-    row.querySelector('.f-url').value=chosen.url;
+    splitUrl(row,chosen.url); // fill scheme/host/port from the chosen server (a port swap is one field)
     renderScanResult(row,chosen);
     var probe=row.querySelector('.probe');
     live.forEach(function(h){
@@ -277,19 +304,23 @@ export const SETUP_SCRIPT = `
   }
   function scanRow(row){
     var probe=row.querySelector('.probe'); probe.className='probe'; probe.textContent='scanning\\u2026';
-    var url=row.querySelector('.f-url').value.trim();
-    if(!url){probe.className='probe bad'; probe.textContent='enter a URL (or a bare host) first'; return;}
-    if(!/^https?:\\/\\//i.test(url)){
-      var h=bareHost(url);
-      if(!h){probe.className='probe bad'; probe.textContent='could not read a host from that \\u2014 use http://host:port or a bare host'; return;}
-      scanHostPorts(row,h); return;
+    var host=fieldVal(row,'.f-host');
+    if(!host){probe.className='probe bad'; probe.textContent='enter a host first (leave port blank to scan common ports)'; return;}
+    // A full URL pasted into the host field: split it into the fields first, then read them back.
+    if(/^https?:\\/\\//i.test(host)){splitUrl(row,host); host=fieldVal(row,'.f-host');}
+    // No port ⇒ scan the probe-list common ports on this bare host; a port ⇒ scan the exact composed url.
+    if(!fieldVal(row,'.f-port')){
+      var bh=bareHost(host);
+      if(!bh){probe.className='probe bad'; probe.textContent='could not read a host from that'; return;}
+      scanHostPorts(row,bh); return;
     }
+    var url=composeUrl(row);
     jf('POST','/fabric/scan',scanBody(row,{url:url})).then(function(r){
       if(!r.ok){probe.className='probe bad'; probe.textContent='scan failed ('+r.status+((r.json&&r.json.error)?': '+r.json.error:'')+')'; return;}
-      var host=(r.json&&r.json.hosts&&r.json.hosts[0]);
-      if(!host){probe.className='probe bad'; probe.textContent='scan returned nothing'; return;}
-      renderScanResult(row,host);
-      if(!host.reachable&&!host.authRequired){
+      var h0=(r.json&&r.json.hosts&&r.json.hosts[0]);
+      if(!h0){probe.className='probe bad'; probe.textContent='scan returned nothing'; return;}
+      renderScanResult(row,h0);
+      if(!h0.reachable&&!h0.authRequired){
         var bh=bareHost(url);
         if(bh)hostBtn(row.querySelector('.probe'),'scan-host',{host:bh},'scan common ports on '+bh);
       }
