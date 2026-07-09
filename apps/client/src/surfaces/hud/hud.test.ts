@@ -154,3 +154,40 @@ test('irrelevant events do not trigger a refresh; a burst coalesces', async () =
   assert.ok(renders >= 2 && renders <= 4)
   hud.stop()
 })
+
+test("'ws.open' (a transport (re)connect) re-hydrates data missed while disconnected", async () => {
+  const transport = new FakeTransport()
+  let renders = 0
+  const hud = new Hud({ transport, onRender: () => { renders += 1 }, workspace: 'acme' })
+  await hud.start()
+  assert.equal(renders, 1)
+
+  // the engine restarted: events were missed; the fresh socket synthesizes ws.open → one catch-up refresh
+  transport.live = [session()]
+  transport.fire('ws.open')
+  await tick()
+  assert.equal(renders, 2)
+  hud.stop()
+})
+
+test('an event-driven refresh failure routes to onError — never an unhandled rejection', async () => {
+  const transport = new FakeTransport()
+  const errors: unknown[] = []
+  const hud = new Hud({ transport, onRender: () => undefined, workspace: 'acme', onError: (e) => errors.push(e) })
+  await hud.start()
+
+  // the engine vanishes: sessions() rejects during a WS-triggered refresh
+  transport.sessions = () => Promise.reject(new Error('engine gone'))
+  transport.fire('moment.created')
+  await tick()
+  assert.equal(errors.length, 1)
+  assert.match(String(errors[0]), /engine gone/)
+
+  // a surface reload failure routes the same way
+  transport.surface = () => Promise.reject(new Error('surface gone'))
+  transport.fire('surface.updated', { id: 'surf-openinfo-hud' })
+  await tick()
+  assert.equal(errors.length, 2)
+  assert.match(String(errors[1]), /surface gone/)
+  hud.stop()
+})

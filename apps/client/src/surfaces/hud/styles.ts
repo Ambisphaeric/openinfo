@@ -88,4 +88,25 @@ body{margin:0;background:var(--page-bg);
 .copybar .txt{flex:1;font-family:var(--s-mono);font-size:10px;color:#b7bcc6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 @media (prefers-reduced-motion: reduce){.livedot{animation:none}}
+
+/* Boot/runtime status chip (boot.ts): a transparent window must never fail invisibly — while the
+   engine is unreachable this is the ONLY painted pixel. Empty (healthy) ⇒ hidden entirely. */
+.hud-boot-status{position:fixed;top:14px;left:50%;transform:translateX(-50%);max-width:88%;
+  font-family:var(--s-mono);font-size:11px;line-height:1.5;color:#e8b26a;text-align:center;
+  background:rgba(12,14,19,.92);border:1px solid rgba(217,161,59,.45);border-radius:8px;
+  padding:6px 12px;pointer-events:none;z-index:9}
+.hud-boot-status:empty{display:none}
+`
+
+/**
+ * Debug outlines (?outline=1 — OPENINFO_HUD_OUTLINE / client.json `hudOutline`): the HUD window is
+ * frameless and transparent, so when nothing paints there is nothing to SEE. Cyan = the window's full
+ * bounds (the box macOS positions), orange = the .hud panel actually painted inside it. Appended after
+ * hudStyles so it wins ties; inset outline on html so the window edge is visible on every display.
+ */
+export const hudOutlineStyles = `
+html{outline:2px dashed #37b6d9;outline-offset:-2px}
+.stage{outline:1px dashed rgba(55,182,217,.5);outline-offset:-1px}
+.hud{outline:2px solid #e06a3c}
+.hud-boot-status{pointer-events:none}
 `

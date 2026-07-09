@@ -239,12 +239,28 @@ const createHudWindow = (): void => {
   })
   console.log(`[shell] HUD window created — content-protection: ${spec.hardening.contentProtection ? 'ON' : 'off'}`)
 
+  // Renderer observability: this window is TRANSPARENT, so a dead/blank renderer is otherwise
+  // indistinguishable from "hidden". Surface load failures, renderer death, and error-level console
+  // lines on the main-process stdout (visible when the .app is launched from a terminal).
+  hudWindow.webContents.on('did-fail-load', (_event, code, description) =>
+    console.error(`[shell] HUD page failed to load: ${code} ${description}`))
+  hudWindow.webContents.on('render-process-gone', (_event, details) =>
+    console.error(`[shell] HUD renderer gone: ${details.reason} (exitCode ${details.exitCode})`))
+  hudWindow.webContents.on('console-message', (details) => {
+    if (details.level === 'error') console.error(`[hud] ${details.message} (${details.sourceId}:${details.lineNumber})`)
+  })
+
   restoreHudPosition()
   // Pass BOTH the engine URL and the configured surface id (ShellConfig.surfaceId, resolved env >
   // client.json > default surf-openinfo-hud) so the HUD renders the chosen layout — the minimal honest
-  // switch for "point a HUD at a different surface" (PHASE3-NOTES).
+  // switch for "point a HUD at a different surface" (PHASE3-NOTES). `outline=1` (ShellConfig.hudOutline,
+  // OPENINFO_HUD_OUTLINE / client.json hudOutline) draws the debug bounds — see surfaces/hud/styles.ts.
   void hudWindow.loadFile(HUD_HTML, {
-    search: new URLSearchParams({ engine: cfg.engineUrl, surface: cfg.surfaceId }).toString(),
+    search: new URLSearchParams({
+      engine: cfg.engineUrl,
+      surface: cfg.surfaceId,
+      ...(cfg.hudOutline ? { outline: '1' } : {}),
+    }).toString(),
   })
   hudWindow.on('moved', scheduleSavePosition) // OS-level moves; the custom drag also persists on drag-end
   hudWindow.on('closed', () => (hudWindow = undefined))

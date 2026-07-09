@@ -5,8 +5,13 @@ import type { HudTransport } from './transport.js'
 
 const DEFAULT_SURFACE_ID = 'surf-openinfo-hud'
 
-/** Live-update strategy: which events invalidate the hydrated data (see PHASE2-NOTES — re-query). */
-const REFRESH_EVENTS = new Set(['moment.created', 'entity.updated', 'distillate.updated', 'session.started', 'session.ended'])
+/**
+ * Live-update strategy: which events invalidate the hydrated data (see PHASE2-NOTES — re-query).
+ * 'ws.open' is synthesized by the transport whenever its event socket (re)connects — events during an
+ * engine restart are missed, so a fresh socket re-hydrates once to catch up (coalesced; harmless on the
+ * very first open, which lands right after start()'s own refresh).
+ */
+const REFRESH_EVENTS = new Set(['moment.created', 'entity.updated', 'distillate.updated', 'session.started', 'session.ended', 'ws.open'])
 
 export interface HudOptions {
   transport: HudTransport
@@ -16,6 +21,12 @@ export interface HudOptions {
   registry?: BlockRegistry
   /** injectable clock so the Now-line elapsed is testable */
   now?: () => Date
+  /**
+   * Called when an event-driven async operation (a WS-triggered refresh or surface reload) rejects.
+   * Without it those rejections were unhandled and INVISIBLE — in a transparent window that reads as
+   * "the HUD disappeared". The dev entry routes this into the boot controller's restart loop.
+   */
+  onError?: (error: unknown) => void
 }
 
 /**
@@ -35,6 +46,8 @@ export class Hud {
   private readonly registry: BlockRegistry
   private readonly clock: () => Date
 
+  private readonly onError: ((error: unknown) => void) | undefined
+
   private surface: Surface | undefined
   private results: (QueryResult | undefined)[] = []
   private session: Session | undefined
@@ -49,6 +62,7 @@ export class Hud {
     this.workspace = options.workspace ?? 'default'
     this.registry = options.registry ?? defaultBlockRegistry
     this.clock = options.now ?? (() => new Date())
+    this.onError = options.onError
   }
 
   /** Load the surface document, hydrate + render once, then start listening for live updates. */
@@ -61,10 +75,12 @@ export class Hud {
       // Events for OTHER surfaces are ignored (the HUD renders exactly one).
       if (event.name === 'surface.updated') {
         const payload = event.payload as { id?: unknown } | null
-        if (payload && payload.id === this.surfaceId) void this.reloadSurface()
+        // A rejection here (or below) used to be an UNHANDLED promise — silent in a transparent window.
+        // Route it to onError so the shell can show it and re-enter the boot loop (see boot.ts).
+        if (payload && payload.id === this.surfaceId) this.reloadSurface().catch((err: unknown) => this.onError?.(err))
         return
       }
-      if (REFRESH_EVENTS.has(event.name)) void this.scheduleRefresh()
+      if (REFRESH_EVENTS.has(event.name)) this.scheduleRefresh().catch((err: unknown) => this.onError?.(err))
     })
   }
 

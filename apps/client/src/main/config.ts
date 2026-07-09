@@ -74,6 +74,15 @@ export interface ShellConfig {
    * OPENINFO_SCREEN_INTERVAL_MS or `"screenIntervalMs"`; a non-positive/garbage value falls back to the default.
    */
   screenIntervalMs: number
+  /**
+   * Debug: draw visible outlines around the HUD window's bounds and its painted panel. The HUD window
+   * is frameless and TRANSPARENT — when nothing paints (engine unreachable, empty layout) there is
+   * nothing to see, which reads as "the HUD disappeared". Opt-IN (default OFF — it is debug chrome):
+   * OPENINFO_HUD_OUTLINE=1/true/on/yes or `"hudOutline": true`. CONFIG, not a flag document, like every
+   * other shell-window behaviour (this is how the client paints its own window; it must work precisely
+   * when the engine — where flag documents live — is unreachable).
+   */
+  hudOutline: boolean
 }
 
 /**
@@ -91,6 +100,7 @@ export interface ClientConfigFile {
   focus?: boolean
   screen?: boolean
   screenIntervalMs?: number
+  hudOutline?: boolean
 }
 
 const DEFAULTS = {
@@ -172,6 +182,8 @@ export const parseClientConfigFile = (raw: unknown): ClientConfigFile | undefine
   if (screen !== undefined) out.screen = screen
   const screenIntervalMs = asNumber(r['screenIntervalMs'])
   if (screenIntervalMs !== undefined) out.screenIntervalMs = screenIntervalMs
+  const hudOutline = asBool(r['hudOutline'])
+  if (hudOutline !== undefined) out.hudOutline = hudOutline
   return out
 }
 
@@ -223,5 +235,6 @@ export const resolveShellConfig = (
     focusEnabled: resolveEnabled(env['OPENINFO_FOCUS'], file?.focus),
     screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen),
     screenIntervalMs: resolveIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),
+    hudOutline: resolveOptIn(env['OPENINFO_HUD_OUTLINE'], file?.hudOutline),
   }
 }

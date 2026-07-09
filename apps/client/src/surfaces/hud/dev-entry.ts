@@ -1,8 +1,9 @@
 import type { BlockQuery, QueryResult, Session, Surface } from '@openinfo/contracts'
 import { mountSurface, renderInto, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
+import { createBootController } from './boot.js'
 import type { HudTransport } from './transport.js'
-import { hudStyles } from './styles.js'
+import { hudStyles, hudOutlineStyles } from './styles.js'
 import { installWindowDrag, type DragBridge } from './window-drag.js'
 
 /**
@@ -41,16 +42,38 @@ class BrowserTransport implements HudTransport {
   }
 
   subscribe(handler: (event: { name: string; payload: unknown }) => void): () => void {
-    const socket = new WebSocket(`${this.baseUrl.replace(/^http/, 'ws')}/events`)
-    socket.addEventListener('message', (event) => {
-      try {
-        const parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
-        if (typeof parsed.name === 'string') handler({ name: parsed.name, payload: parsed.payload })
-      } catch {
-        /* ignore malformed frames */
-      }
-    })
-    return () => socket.close()
+    // RECONNECTING socket: the engine may not be up yet (boot race) or may restart mid-session; a
+    // one-shot socket left the HUD deaf forever. On every (re)open we synthesize 'ws.open' so the Hud
+    // re-hydrates data missed while disconnected (hud.ts REFRESH_EVENTS). Unsubscribe stops the loop.
+    let socket: WebSocket | undefined
+    let closed = false
+    let retryMs = 1_000
+    const connect = (): void => {
+      if (closed) return
+      socket = new WebSocket(`${this.baseUrl.replace(/^http/, 'ws')}/events`)
+      socket.addEventListener('open', () => {
+        retryMs = 1_000
+        handler({ name: 'ws.open', payload: undefined })
+      })
+      socket.addEventListener('message', (event) => {
+        try {
+          const parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
+          if (typeof parsed.name === 'string') handler({ name: parsed.name, payload: parsed.payload })
+        } catch {
+          /* ignore malformed frames */
+        }
+      })
+      socket.addEventListener('close', () => {
+        if (closed) return
+        setTimeout(connect, retryMs)
+        retryMs = Math.min(retryMs * 2, 10_000)
+      })
+    }
+    connect()
+    return () => {
+      closed = true
+      socket?.close()
+    }
   }
 
   private async getJson(path: string): Promise<unknown> {
@@ -99,10 +122,19 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
 
   const style = doc.createElement('style')
   style.textContent = hudStyles
+  // Debug outline (?outline=1, from OPENINFO_HUD_OUTLINE / client.json hudOutline): the window is
+  // frameless + transparent, so when nothing paints there is NOTHING to see. The outline draws the
+  // window bounds + the panel bounds so "where does the HUD render" is answerable by looking.
+  if (params.get('outline')) style.textContent += hudOutlineStyles
   doc.head.appendChild(style)
   const stage = doc.createElement('div')
   stage.className = 'stage'
+  // The boot-status chip: every boot/runtime failure paints here as text (a transparent window must
+  // never fail invisibly — the same honesty rule the settings save strip follows). Empty when healthy.
+  const status = doc.createElement('div')
+  status.className = 'hud-boot-status'
   const panel = doc.createElement('div')
+  stage.appendChild(status)
   stage.appendChild(panel)
   doc.body.appendChild(stage)
 
@@ -111,6 +143,8 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
 
   const copy = clipboardCopy(g.navigator)
   let mounted = false
+  // Event-driven refresh failures re-enter the boot loop — visible, never an unhandled rejection.
+  let onHudError: (error: unknown) => void = () => {}
   const hud = new Hud({
     transport: new BrowserTransport(baseUrl),
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
@@ -123,8 +157,22 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
         renderInto(panel, node)
       }
     },
+    onError: (error) => onHudError(error),
   })
-  void hud.start()
+  // Boot through the retry controller, NOT `void hud.start()`: the packaged shell creates this window
+  // BEFORE its bundled engine finishes spawning, so the first fetch typically loses that race. The old
+  // one-shot swallowed the rejection — a permanently blank transparent window (the invisible-HUD bug).
+  // The controller retries with capped backoff forever and paints its state into the status chip.
+  const boot = createBootController({
+    start: () => hud.start(),
+    stop: () => hud.stop(),
+    onStatus: (text) => {
+      status.textContent = text ?? ''
+    },
+    engineLabel: baseUrl,
+  })
+  onHudError = (error) => boot.restart(error)
+  boot.boot()
 }
 
 // Auto-start when loaded as a module in a browser document.

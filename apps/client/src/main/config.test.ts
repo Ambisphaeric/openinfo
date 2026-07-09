@@ -155,3 +155,14 @@ test('loadClientConfigFile round-trips a real file and swallows a missing/malfor
 test('clientConfigPath is ~/.openinfo/client.json under the given home', () => {
   assert.equal(clientConfigPath('/Users/x'), path.join('/Users/x', '.openinfo', 'client.json'))
 })
+
+test('hudOutline is opt-IN debug chrome: default OFF, env token or file boolean enables, env wins', () => {
+  assert.equal(resolveShellConfig({}).hudOutline, false) // debug chrome → OFF unless explicitly asked
+  assert.equal(resolveShellConfig({ OPENINFO_HUD_OUTLINE: '1' }).hudOutline, true)
+  assert.equal(resolveShellConfig({ OPENINFO_HUD_OUTLINE: 'yes' }).hudOutline, true)
+  assert.equal(resolveShellConfig({ OPENINFO_HUD_OUTLINE: '0' }).hudOutline, false)
+  assert.equal(resolveShellConfig({}, { hudOutline: true }).hudOutline, true) // client.json can enable it
+  assert.equal(resolveShellConfig({ OPENINFO_HUD_OUTLINE: '0' }, { hudOutline: true }).hudOutline, false) // env wins
+  assert.deepEqual(parseClientConfigFile({ hudOutline: true }), { hudOutline: true })
+  assert.deepEqual(parseClientConfigFile({ hudOutline: 'yes' }), {}) // wrong type dropped
+})
