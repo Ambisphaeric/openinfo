@@ -73,6 +73,15 @@ export const OcrResult = Type.Object(
     ),
     schemaVersion: Type.Integer({ minimum: 1 }),
     createdAt: IsoTime,
+    /**
+     * The TRUE capture instant of the recognized frame (#102 "keep time") — threaded from the source
+     * `CaptureChunk.capturedAt`, so the record itself carries when the screen was seen, distinct from
+     * `createdAt` (when recognition finished). Until now only the mirror Distillate's windowStart/End
+     * preserved it, so a direct OcrResult consumer saw processing time and could present delayed OCR as
+     * real-time. Append-only/optional: pre-existing records without it still validate (their capture time
+     * is simply unknown on the record — the mirror Distillate remains the fallback).
+     */
+    capturedAt: Type.Optional(IsoTime),
   },
   { $id: 'OcrResult', additionalProperties: false },
 )
