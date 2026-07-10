@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import type { Session, TeachSignal } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { TeachStore, captureReroute, deriveHintCandidates } from './signals.js'
+import { TeachStore, captureReroute, captureEntityCorrection, deriveHintCandidates } from './signals.js'
 import { wireTeach } from './index.js'
 
 const reroutedSession = (over: Partial<Session> = {}): Session => ({
@@ -36,7 +36,7 @@ test('captureReroute turns a rerouted session into a labeled teach signal', () =
   assert.equal(signal.sessionId, 'ses-1')
   assert.equal(signal.correctedAt, '2026-07-07T16:00:00Z')
   assert.equal(signal.id, 'teach-reroute-ses-1') // deterministic in session id
-  assert.equal(signal.evidence.length, 3) // the full router trail, verbatim
+  assert.equal(signal.evidence?.length, 3) // the full router trail, verbatim
 })
 
 test('captureReroute ignores a non-rerouted session (no reroutedFrom)', () => {
@@ -121,4 +121,40 @@ test('deriveHintCandidates never suggests a pattern for a field the detector can
     '2026-07-07T16:00:00Z',
   )!
   assert.deepEqual(deriveHintCandidates([signal]), []) // no repoPath/windowTitle evidence ⇒ no candidates
+})
+
+test('captureEntityCorrection turns a #75 clarify verdict into a labeled entity-correction signal (pure)', () => {
+  const signal = captureEntityCorrection({
+    kind: 'alias-confirm', workspaceId: 'ws-eng', entityId: 'ent-polaris', heard: 'Polaris',
+    rivalId: 'ent-polaris-pub', rivalName: 'Polaris (public)', pinnedEntityId: 'ent-polaris', at: '2026-07-10T12:00:00Z',
+  })
+  assert.equal(signal.kind, 'alias-confirm')
+  assert.equal(signal.correctedAt, '2026-07-10T12:00:00Z')
+  assert.equal(signal.id, 'teach-alias-confirm-ent-polaris-polaris') // deterministic in (kind, entity, heard)
+  assert.equal(signal.entity?.workspaceId, 'ws-eng')
+  assert.equal(signal.entity?.entityId, 'ent-polaris')
+  assert.equal(signal.entity?.heard, 'Polaris')
+  assert.equal(signal.entity?.rivalId, 'ent-polaris-pub')
+  assert.equal(signal.entity?.pinnedEntityId, 'ent-polaris')
+  assert.equal(signal.fromWorkspaceId, undefined) // no reroute semantics
+})
+
+test('TeachStore files an entity-correction signal under its entity workspace and reads it back (idempotent)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-teach-ent-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const store = new TeachStore(registry)
+    const signal = captureEntityCorrection({ kind: 'disambiguate', workspaceId: 'ws-eng', entityId: 'ent-x', heard: 'Orion', rivalId: 'ent-y', pinnedEntityId: 'ent-y', at: '2026-07-10T12:00:00Z' })
+    store.record(signal)
+    store.record(signal) // replay — same id ⇒ dedup, not double-counted
+    const listed = store.list('ws-eng')
+    assert.equal(listed.length, 1)
+    assert.equal(listed[0]!.kind, 'disambiguate')
+    assert.equal(listed[0]!.entity?.entityId, 'ent-x')
+    // it does NOT leak into the attribution-hint derivation (only reroutes produce candidates)
+    assert.deepEqual(deriveHintCandidates(listed), [])
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

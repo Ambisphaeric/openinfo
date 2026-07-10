@@ -87,6 +87,17 @@ body{margin:0;background:var(--page-bg);
 .gverb.copied{border-color:rgba(77,164,122,.55);color:#7cc4a0;background:rgba(77,164,122,.14)}
 .gverb.copyfail{border-color:rgba(224,106,60,.6);color:#e0865c;background:rgba(224,106,60,.14)}
 
+/* #75 clarify affordance: the ≟ rides the .go glyph strip (a .gverb); when expanded, ONE inline ask line
+   under the why. Never a modal — a single dismissible row. The choices are .mini-scale ✓-class buttons. */
+.clarify-open{font-weight:700}
+.clarify-ask{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:5px}
+.clarify-ask .clarify-q{font-size:11px;color:var(--s-muted);margin-right:2px}
+.clarify-choice{padding:2px 9px;border-radius:6px;font-size:10.5px;font-weight:600;border:1px solid var(--s-line);color:var(--s-ink);background:rgba(27,31,40,.9);white-space:nowrap;cursor:pointer}
+.clarify-choice.ok{border-color:rgba(77,164,122,.45);color:#7cc4a0}
+.clarify-choice.copied{border-color:rgba(77,164,122,.55);color:#7cc4a0;background:rgba(77,164,122,.14)}
+.clarify-choice.copyfail{border-color:rgba(224,106,60,.6);color:#e0865c;background:rgba(224,106,60,.14)}
+.clarify-dismiss{width:auto;padding:0 7px}
+
 .mk.a{color:var(--m-artifact)} .mk.c{color:var(--m-commit)} .mk.q{color:var(--m-quest)}
 .mk.d{color:var(--m-decide)} .mk.p{color:var(--s-muted)}
 

@@ -1,0 +1,40 @@
+{
+  "$id": "EntityCorrectionSignal",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "entityId",
+    "heard"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "entityId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "heard": {
+      "minLength": 1,
+      "description": "the heard surface form the verdict settles",
+      "type": "string"
+    },
+    "rivalId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "rivalName": {
+      "type": "string"
+    },
+    "pinnedEntityId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    }
+  }
+}

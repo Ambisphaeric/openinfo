@@ -417,3 +417,69 @@ test('upsertEntity: repeat cross-source corroboration is idempotent — no dupli
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// A wide ambiguityMargin + low provisionalBand forces a rival within Δ, so the linked record is stamped
+// with an `ambiguity` marker deterministically — the #75 clarify affordance's precondition. Seeding the
+// rival with a high provisionalBand keeps it a DISTINCT record (it does not link into the first).
+const AMBIGUOUS = { autoBand: 0.85, provisionalBand: 0.3, ambiguityMargin: 0.6, establishmentBoost: 0.1, establishmentSaturation: 32, halfLifeHours: 168 }
+const seedCollision = (registry: WorkspaceRegistry, ws: string) => {
+  const primary = registry.upsertEntity({ workspaceId: ws, kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T09:00:00Z' })
+  const rival = registry.upsertEntity({
+    workspaceId: ws, kind: 'artifact', name: 'Mercury Bank', seenAt: '2026-07-08T09:01:00Z',
+    resolverConfig: { ...AMBIGUOUS, provisionalBand: 0.95 }, // forces 'new' so the rival stays distinct
+  })
+  const linked = registry.upsertEntity({ workspaceId: ws, kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T09:02:00Z', resolverConfig: AMBIGUOUS })
+  return { primaryId: primary.id, rivalId: rival.id, linked }
+}
+
+test('an ambiguous resolution stamps the reviewable ambiguity marker the #75 clarify affordance keys off', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ambig-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const { primaryId, rivalId, linked } = seedCollision(registry, 'ws-am')
+    assert.equal(linked.id, primaryId) // linked to the exact-name winner, not the rival
+    assert.equal(linked.state, 'provisional') // a rival within Δ downgrades the auto-link to reviewable
+    assert.equal(linked.ambiguity?.rivalId, rivalId)
+    assert.equal(linked.ambiguity?.rivalName, 'Mercury Bank')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('overrideEntity SETTLES the ambiguity — the marker is cleared so the #75 ask does not re-appear', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ambig-ov-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const { primaryId, rivalId } = seedCollision(registry, 'ws-amo')
+    const confirmed = registry.overrideEntity('ws-amo', primaryId, {
+      at: '2026-07-08T10:00:00Z', by: 'the user', pinnedName: 'Mercury', rejectedRivalId: rivalId, rejectedRivalName: 'Mercury Bank',
+    })
+    assert.equal(confirmed?.state, 'confirmed')
+    assert.equal(confirmed?.ambiguity, undefined) // the reviewable marker is gone once the user settled it
+    // and a later mention of the settled form resolves to the confirmed entity, never re-scored (no ambiguity)
+    const later = registry.upsertEntity({ workspaceId: 'ws-amo', kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T11:00:00Z' })
+    assert.equal(later.id, primaryId)
+    assert.equal(later.state, 'confirmed')
+    assert.equal(later.ambiguity, undefined) // the same collision never asks again
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('clearEntityAmbiguity settles the LOSING side of a disambiguate without confirming it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ambig-cl-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const { primaryId } = seedCollision(registry, 'ws-amc')
+    const settled = registry.clearEntityAmbiguity('ws-amc', primaryId)
+    assert.equal(settled?.ambiguity, undefined) // marker dropped
+    assert.notEqual(settled?.state, 'confirmed') // NOT confirmed — the mention simply was not it
+    assert.equal(registry.clearEntityAmbiguity('ws-amc', primaryId)?.ambiguity, undefined) // idempotent
+    assert.equal(registry.clearEntityAmbiguity('ws-amc', 'ent-nowhere'), undefined) // unknown id
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

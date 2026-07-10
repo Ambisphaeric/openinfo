@@ -3986,3 +3986,60 @@ real distiller, default bands). Suites at the PR: contracts 79 / client 354 / en
 **Process note (rule 7).** These two rows landed in a follow-up docs commit, not in PRs
 #120/#119 themselves — recorded in RETRO entry 26; the contribution standard requires docs in
 the same change, and the miss was caught by the fresh-eyes verify.
+
+## Slice: ≟ clarify affordance + entity-correction teach kinds  *(#75, branch feat/75-clarify-affordance, 2026-07-10)*
+
+**Problem.** The #72 resolver flags an AMBIGUOUS mention (a plausible rival within Δ) and #73
+stamps the reviewable `ambiguity` marker, but nothing surfaced the ask or wrote the answer:
+`overrideEntity` was a store primitive with no route/UI, and the teach contract only knew
+`reroute`. A costly-if-wrong collision (an internal repo sharing a name with a public project)
+had no way to be corrected once and stay corrected.
+
+**Design (two halves).**
+- **The ≟ affordance** (client, `surfaces/blocks/clarify.ts`): an ambiguity-gated dot-scale ask
+  in the SAME idiom as the #66 glyph verbs. `clarifyGlyph` renders the ≟ on a row only when the
+  entity carries a named rival, is not yet `confirmed`, and is not in the Hud's session
+  `suppressed` set; `clarifyAsk` expands ONE inline dismissible line (never a modal) offering the
+  linked candidate vs the rival, with a dismiss ✗. Copy is HUMAN (#117): the heard form + two
+  entity NAMES, never a model/endpoint/template id. Threaded through a new optional
+  `BlockRenderArgs.clarify` (`{suppressed, expanded}`) the `Hud` owns as session-ephemeral state
+  (mirrors the #96 mute bit) — `openClarify`/`dismissClarify`/`settleClarify` flip it and re-paint
+  (no re-query). `mount.ts` gains `clarify`/`clarifyOpen`/`clarifyDismiss` handlers: the answer
+  paints the honest ✓/! outcome on the clicked choice (never a silent swallow); open/dismiss are
+  client-local (no write, teaches nothing). **Ask-once**: once answered or dismissed the entity id
+  enters `suppressed`, so no ≟ re-renders this session; a confirmed answer also clears the record's
+  ambiguity server-side, so it does not re-appear across reloads either.
+- **The teach write path** (engine + contracts): `TeachSignalKind` gains `alias-confirm`,
+  `alias-reject`, `rename`, `disambiguate`, `dismiss` (append-only union). `TeachSignal`'s
+  reroute fields become optional and an optional `entity` (EntityCorrectionSignal) variant is
+  added — one signal type, one TeachStore ("the same teach loop"); entity corrections file under
+  their entity's workspace. New `POST /teach/entity` (`EntityCorrection` request, `Entity`
+  response) turns the user's verdict into TWO engine-stamped writes: a sovereign `EntityOverride`
+  (pins the heard form, records `rejectedRivalId` so the wrong rival is never re-offered) AND a
+  labeled `TeachSignal`. `confirm` pins to the linked candidate; `disambiguate` pins to the RIVAL
+  and settles the once-linked row. `overrideEntity` now CLEARS `ambiguity` on settle (per the
+  EntityAmbiguity contract), and `clearEntityAmbiguity` settles the losing side of a disambiguate
+  without confirming it. Suggest-never-auto-apply holds: nothing writes without the explicit user
+  action; provenance (`at`, signal id, `by:'the user'`) is engine-stamped, never model-trusted.
+
+**Tests.** `blocks/clarify.test.ts` (7: gating, human-copy/no-robot-ids, expand-only-when-open,
+rival-less confirm+dismiss, heardForm, and the integration render — ≟ grows/expands/goes quiet
+through the real relevant-now renderer). `hud/action-verbs.test.ts` +3 DRIVEN (clarify verdict
+payload + ✓/! paint; a served e2e writing the correction over a live throwaway engine; a 500
+surfaces as visible failure — the #66 dismiss e2e precedent). `api/http.test.ts` +2 served over
+the REAL engine (collision → one ask → confirm writes override+signal → the same collision never
+asks again; disambiguate pins the rival + settles the once-linked row; 400 rival-less, 404
+unknown). `store/workspaces.test.ts` +3 (ambiguity marker stamped; overrideEntity clears it;
+clearEntityAmbiguity idempotent, non-confirming). `teach/signals.test.ts` +2 (captureEntityCorrection
+deterministic id; files under the entity workspace, does not leak into hint derivation). Contracts
++2 examples (`teachSignal.entity-correction`, `entityCorrection.confirm`); `pnpm gen` re-ran (2 new
+schema JSONs + TeachSignal/TeachSignalKind updated). Suites at the PR: contracts 81 / client 363 /
+engine 667.
+
+**Deferred / disclosed.** `alias-reject` ("new" — the mention is NEITHER candidate) and `rename`
+are DECLARED union members not yet emitted: `alias-reject`'s durable write needs a
+resolution-bypassing create-a-fresh-entity path (no such store surface this slice), and `rename`
+awaits a rename surface. The affordance therefore offers confirm vs the-rival vs dismiss — the two
+verdicts the override substrate honors durably on existing records. `dismiss` gains its union entry
+for the #66 dismiss surface (no emitter yet). Correlation-id stamping on teach actions rides #116
+(not merged) — deferred, not faked.

@@ -5,10 +5,6 @@
   "required": [
     "id",
     "kind",
-    "fromWorkspaceId",
-    "toWorkspaceId",
-    "sessionId",
-    "evidence",
     "correctedAt"
   ],
   "properties": {
@@ -18,8 +14,32 @@
       "type": "string"
     },
     "kind": {
-      "const": "reroute",
-      "type": "string"
+      "anyOf": [
+        {
+          "const": "reroute",
+          "type": "string"
+        },
+        {
+          "const": "alias-confirm",
+          "type": "string"
+        },
+        {
+          "const": "alias-reject",
+          "type": "string"
+        },
+        {
+          "const": "rename",
+          "type": "string"
+        },
+        {
+          "const": "disambiguate",
+          "type": "string"
+        },
+        {
+          "const": "dismiss",
+          "type": "string"
+        }
+      ]
     },
     "fromWorkspaceId": {
       "minLength": 1,
@@ -37,7 +57,7 @@
       "type": "string"
     },
     "evidence": {
-      "description": "the router's original attribution trail at correction time (window/repo/calendar + the manual reroute marker)",
+      "description": "reroute only: the router's original attribution trail at correction time (window/repo/calendar + the manual reroute marker)",
       "type": "array",
       "items": {
         "additionalProperties": false,
@@ -80,6 +100,46 @@
             "maximum": 1,
             "type": "number"
           }
+        }
+      }
+    },
+    "entity": {
+      "$id": "EntityCorrectionSignal",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "workspaceId",
+        "entityId",
+        "heard"
+      ],
+      "properties": {
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "entityId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "heard": {
+          "minLength": 1,
+          "description": "the heard surface form the verdict settles",
+          "type": "string"
+        },
+        "rivalId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "rivalName": {
+          "type": "string"
+        },
+        "pinnedEntityId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
         }
       }
     },

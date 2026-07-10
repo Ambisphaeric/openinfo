@@ -3512,3 +3512,102 @@ test('e2e flywheel: a correction derives a candidate → PUT /hints applies it �
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('POST /teach/entity: a clarify answer writes an override + teach signal, and the same collision never asks again (#75)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-clarify-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${(address as { port: number }).port}`
+
+    // Seed a COLLISION: a well-known public project and an internal repo sharing a name (issue scenario).
+    // A wide ambiguityMargin forces the linked mention to be flagged ambiguous; the rival is seeded with a
+    // high provisionalBand so it stays a DISTINCT record instead of linking into the first.
+    const AMBIGUOUS = { autoBand: 0.85, provisionalBand: 0.3, ambiguityMargin: 0.6, establishmentBoost: 0.1, establishmentSaturation: 32, halfLifeHours: 168 }
+    const primary = app.store.upsertEntity({ workspaceId: 'ws-c', kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T09:00:00Z' })
+    const rival = app.store.upsertEntity({ workspaceId: 'ws-c', kind: 'artifact', name: 'Mercury Bank', seenAt: '2026-07-08T09:01:00Z', resolverConfig: { ...AMBIGUOUS, provisionalBand: 0.95 } })
+    const linked = app.store.upsertEntity({ workspaceId: 'ws-c', kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T09:02:00Z', resolverConfig: AMBIGUOUS })
+    assert.equal(linked.id, primary.id)
+    assert.equal(linked.ambiguity?.rivalName, 'Mercury Bank') // ONE ask surfaced on the linked row
+
+    // The user answers: it IS the linked candidate (confirm) — reject the rival.
+    const answer = await fetch(`${base}/teach/entity`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-c', entityId: primary.id, heard: 'Mercury', verdict: 'confirm', rivalId: rival.id, rivalName: 'Mercury Bank' }),
+    })
+    assert.equal(answer.status, 200)
+    const settled = (await answer.json()) as Entity
+    assert.equal(settled.state, 'confirmed') // the override stamped confirmed
+    assert.equal(settled.ambiguity, undefined) // …and cleared the reviewable marker (the ask is gone)
+    assert.equal(settled.overrides?.length, 1)
+    assert.equal(settled.overrides?.[0]!.rejectedRivalId, rival.id) // the wrong rival is recorded rejected
+
+    // The labeled TeachSignal was persisted (audit + teach loop), filed under the entity's workspace.
+    const signals = new TeachStore(app.store).list('ws-c')
+    assert.equal(signals.length, 1)
+    assert.equal(signals[0]!.kind, 'alias-confirm')
+    assert.equal(signals[0]!.entity?.entityId, primary.id)
+
+    // GET /entities reflects the settled state (no ambiguity ⇒ no ≟ on reload).
+    const entities = (await (await fetch(`${base}/entities?workspace=ws-c`)).json()) as Entity[]
+    assert.equal(entities.find((e) => e.id === primary.id)?.ambiguity, undefined)
+
+    // The SAME collision never asks again: a fresh "Mercury" mention resolves to the confirmed entity via
+    // the sovereign override short-circuit — no re-score against the rejected rival, no new ambiguity.
+    const again = app.store.upsertEntity({ workspaceId: 'ws-c', kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T12:00:00Z' })
+    assert.equal(again.id, primary.id)
+    assert.equal(again.state, 'confirmed')
+    assert.equal(again.ambiguity, undefined)
+
+    // A disambiguate with no rival is a 400 (the verdict is unresolvable without the entity it names).
+    const bad = await fetch(`${base}/teach/entity`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-c', entityId: primary.id, heard: 'Mercury', verdict: 'disambiguate' }),
+    })
+    assert.equal(bad.status, 400)
+
+    // An unknown entity is a 404, never a silent no-op.
+    const missing = await fetch(`${base}/teach/entity`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-c', entityId: 'ent-nowhere', heard: 'x', verdict: 'confirm' }),
+    })
+    assert.equal(missing.status, 404)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /teach/entity: a disambiguate verdict pins the rival and settles the once-linked row (#75)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-clarify-dis-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${(address as { port: number }).port}`
+    const AMBIGUOUS = { autoBand: 0.85, provisionalBand: 0.3, ambiguityMargin: 0.6, establishmentBoost: 0.1, establishmentSaturation: 32, halfLifeHours: 168 }
+    const primary = app.store.upsertEntity({ workspaceId: 'ws-d', kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T09:00:00Z' })
+    const rival = app.store.upsertEntity({ workspaceId: 'ws-d', kind: 'artifact', name: 'Mercury Bank', seenAt: '2026-07-08T09:01:00Z', resolverConfig: { ...AMBIGUOUS, provisionalBand: 0.95 } })
+    app.store.upsertEntity({ workspaceId: 'ws-d', kind: 'artifact', name: 'Mercury', seenAt: '2026-07-08T09:02:00Z', resolverConfig: AMBIGUOUS })
+
+    // The user says the mention actually meant the RIVAL.
+    const answer = await fetch(`${base}/teach/entity`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-d', entityId: primary.id, heard: 'Mercury', verdict: 'disambiguate', rivalId: rival.id, rivalName: 'Mercury Bank' }),
+    })
+    assert.equal(answer.status, 200)
+    const settledRival = (await answer.json()) as Entity
+    assert.equal(settledRival.id, rival.id) // the override is written on the RIVAL — the truth
+    assert.equal(settledRival.state, 'confirmed')
+    assert.equal(settledRival.overrides?.[0]!.rejectedRivalId, primary.id) // rejects the once-linked entity
+
+    const entities = (await (await fetch(`${base}/entities?workspace=ws-d`)).json()) as Entity[]
+    assert.equal(entities.find((e) => e.id === primary.id)?.ambiguity, undefined) // the once-linked row is settled too
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

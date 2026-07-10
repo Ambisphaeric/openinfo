@@ -14,10 +14,22 @@ export interface NowContext {
   live: boolean
 }
 
+/**
+ * The #75 clarify session context — which ambiguous-entity asks the user has already settled/dismissed
+ * this session (no ≟), and which single ask is currently expanded. Session-ephemeral, owned by the Hud
+ * (mirrors the #96 system-mute bit); a block renderer that surfaces entities (relevant-now) consults it so
+ * an answered/dismissed row goes quiet. Optional so a query-less/entity-less block ignores it.
+ */
+export interface ClarifyRenderContext {
+  suppressed: ReadonlySet<string>
+  expanded?: string
+}
+
 export interface BlockRenderArgs {
   block: Block
   result?: QueryResult
   now: NowContext
+  clarify?: ClarifyRenderContext
 }
 
 /** A block renderer: pure `(config + hydrated data) → VNode(s)`. Returns null to render nothing. */
@@ -31,6 +43,8 @@ export interface SurfaceRenderInput {
   now: NowContext
   /** hydrated query results, parallel to surface.stack (undefined for query-less blocks like `now`) */
   results: readonly (QueryResult | undefined)[]
+  /** #75 clarify session context, threaded to every block renderer (entity blocks consult it). */
+  clarify?: ClarifyRenderContext
 }
 
 /**
@@ -50,7 +64,7 @@ export const renderSurface = (input: SurfaceRenderInput, registry: BlockRegistry
     if (show === 'on-match' && (!result || result.items.length === 0)) return
     const renderer = registry[block.block] ?? registry.custom
     if (!renderer) return
-    const node = renderer({ block, now: input.now, ...(result !== undefined ? { result } : {}) })
+    const node = renderer({ block, now: input.now, ...(result !== undefined ? { result } : {}), ...(input.clarify !== undefined ? { clarify: input.clarify } : {}) })
     if (Array.isArray(node)) children.push(...node)
     else if (node) children.push(node)
   })

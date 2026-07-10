@@ -49,6 +49,30 @@ export interface ActionHandlers {
   /** dismiss an item → POST /item-signals (a suppression record; queries then exclude it) — #66. */
   dismiss?: (payload: { workspaceId: string; source: string; itemId: string }) => Promise<void>
   /**
+   * Answer the #75 clarify ask → POST /teach/entity (writes a labeled TeachSignal AND a sovereign
+   * EntityOverride). The verdict is `confirm` (the mention is the linked candidate) or `disambiguate`
+   * (it is the rival). Its promise outcome paints the SAME honest success/failure flip on the clicked
+   * choice; a failed write surfaces as visible text, never a silent no-op.
+   */
+  clarify?: (payload: {
+    workspaceId: string
+    entityId: string
+    heard: string
+    verdict: 'confirm' | 'disambiguate'
+    rivalId?: string
+    rivalName?: string
+  }) => Promise<void>
+  /**
+   * Open the #75 clarify ask for an entity — a client-local expand (NOT a write, so NOT through
+   * paintFeedback): the Hud flips its session `expanded` id and re-renders, exactly like the #96 mute.
+   */
+  clarifyOpen?: (entityId: string) => void
+  /**
+   * Dismiss the #75 clarify ask ("ask me later") — client-local, teaches NOTHING: the Hud adds the entity
+   * to its session `suppressed` set and re-renders, so it stays quiet this session (no write, no override).
+   */
+  clarifyDismiss?: (entityId: string) => void
+  /**
    * Toggle the live strip's system-audio mute (#96) — a client-local DISPLAY filter, not a write path,
    * so it does NOT go through paintFeedback (there is no success/failure outcome to report): it flips a
    * bit of client state and the ensuing re-render reflects the new state on the button itself.
@@ -137,6 +161,40 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
       const itemId = el.getAttribute('data-item')
       if (workspaceId === null || source === null || itemId === null) return // inert glyph — no addressable item
       paintFeedback(el, handlers.dismiss({ workspaceId, source, itemId }), { ok: '✓', fail: '!' })
+      return
+    }
+    if ((verb === 'clarify-confirm' || verb === 'clarify-rival') && handlers.clarify) {
+      const workspaceId = el.getAttribute('data-workspace')
+      const entityId = el.getAttribute('data-entity')
+      const heard = el.getAttribute('data-heard')
+      if (workspaceId === null || entityId === null || heard === null) return // inert — nothing addressable
+      const rivalId = el.getAttribute('data-rival-id')
+      const rivalName = el.getAttribute('data-rival-name')
+      const verdict = verb === 'clarify-confirm' ? 'confirm' : 'disambiguate'
+      paintFeedback(
+        el,
+        handlers.clarify({
+          workspaceId,
+          entityId,
+          heard,
+          verdict,
+          ...(rivalId !== null ? { rivalId } : {}),
+          ...(rivalName !== null ? { rivalName } : {}),
+        }),
+        { ok: '✓', fail: '!' },
+      )
+      return
+    }
+    if (verb === 'clarify-open' && handlers.clarifyOpen) {
+      // A client-local expand (no write) — the Hud flips its session `expanded` id and re-renders.
+      const entityId = el.getAttribute('data-entity')
+      if (entityId !== null) handlers.clarifyOpen(entityId)
+      return
+    }
+    if (verb === 'clarify-dismiss' && handlers.clarifyDismiss) {
+      // "Ask me later" — client-local, teaches nothing. The Hud suppresses the entity this session.
+      const entityId = el.getAttribute('data-entity')
+      if (entityId !== null) handlers.clarifyDismiss(entityId)
       return
     }
     if (verb === 'mute-system-stream' && handlers.muteSystemStream) {

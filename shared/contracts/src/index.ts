@@ -43,7 +43,7 @@ import { Session } from './records/session.js'
 import { Workspace } from './records/workspace.js'
 import { Pin } from './records/pin.js'
 import { PinChunk } from './records/pinChunk.js'
-import { TeachSignal, TeachSignalKind } from './records/teach.js'
+import { TeachSignal, TeachSignalKind, EntityCorrectionSignal } from './records/teach.js'
 import { Commitment, Watcher } from './records/commitment.js'
 import { ItemSignal, ItemSignalKind } from './records/signal.js'
 import { FieldValue, FieldValueProvenance, JudgeReview } from './records/fieldValue.js'
@@ -61,12 +61,12 @@ import { AttributionPattern, WorkspaceHints } from './config/hints.js'
 import { WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate } from './config/workflow.js'
 import { OcrInvokeParams, VlmInvokeParams } from './config/invoke.js'
 import { TodoList, TodoItem, TodoProvenance } from './config/todo.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
   InvokeUsage,
-  Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview,
+  Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, EntityCorrectionSignal, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, FastFieldBinding, EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
@@ -74,5 +74,5 @@ export const AllSchemas = {
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   TodoList, TodoItem, TodoProvenance,
   Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest,
-  CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
+  CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
 } as const

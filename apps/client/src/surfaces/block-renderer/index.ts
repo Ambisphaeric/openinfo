@@ -1,5 +1,5 @@
 export { h, renderToHtml, type VNode, type VElement } from './vnode.js'
-export { renderSurface, type BlockRenderer, type BlockRegistry, type NowContext, type SurfaceRenderInput, type BlockRenderArgs } from './registry.js'
+export { renderSurface, type BlockRenderer, type BlockRegistry, type NowContext, type SurfaceRenderInput, type BlockRenderArgs, type ClarifyRenderContext } from './registry.js'
 export { mountSurface, renderInto, wireActions, type MountTarget, type CopyFn, type ActionHandlers } from './mount.js'
 export { clockLabel, elapsedLabel } from './format.js'
 export { stateDot, resolveStateVocab, DEFAULT_STATE_VOCAB, type StateVocab } from './micro-state.js'

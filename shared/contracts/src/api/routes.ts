@@ -65,6 +65,7 @@ export const Routes: readonly RouteDef[] = [
   { method: 'POST', path: '/pins/:id/ingest', response: 'Pin', phase: 4 },
   { method: 'GET', path: '/pins/:id/chunks', response: 'PinChunk[]', phase: 4 },
   { method: 'GET', path: '/teach/candidates', response: 'HintCandidate[]', phase: 4 },
+  { method: 'POST', path: '/teach/entity', request: 'EntityCorrection', response: 'Entity', phase: 4 },
   { method: 'GET', path: '/hints', response: 'WorkspaceHints[]', phase: 4 },
   { method: 'GET', path: '/hints/:workspaceId', response: 'WorkspaceHints', phase: 4 },
   { method: 'PUT', path: '/hints/:workspaceId', request: 'WorkspaceHints', response: 'WorkspaceHints', phase: 4 },

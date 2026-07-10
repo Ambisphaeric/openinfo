@@ -224,6 +224,32 @@ export const dismissItem =
     if (!res.ok) throw new Error(`dismiss: write failed (HTTP ${res.status})`)
   }
 
+/**
+ * The `clarify` write path (#75) — the answer to an ambiguous-entity ask. POSTs the user's verdict to
+ * `POST /teach/entity`, which writes BOTH a labeled TeachSignal AND a sovereign EntityOverride server-side
+ * (the durable resolver short-circuit; a rejection records rejectedRivalId so the same wrong rival is never
+ * re-offered). The body carries only the human verdict + surface form + ids; `correctedAt`, the signal id,
+ * and the override provenance are ALL engine-stamped. Honest outcome: a non-ok POST REJECTS with the HTTP
+ * status, so the clicked choice paints visible failure rather than a silent no-op (#43).
+ */
+export const submitEntityCorrection =
+  (baseUrl: string, fetchFn: FetchLike = fetch) =>
+  async (payload: {
+    workspaceId: string
+    entityId: string
+    heard: string
+    verdict: 'confirm' | 'disambiguate'
+    rivalId?: string
+    rivalName?: string
+  }): Promise<void> => {
+    const res = await fetchFn(`${baseUrl}/teach/entity`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw new Error(`clarify: write failed (HTTP ${res.status})`)
+  }
+
 export const startHud = (options: { baseUrl?: string; workspace?: string; surfaceId?: string } = {}): void => {
   const g = globalThis as unknown as DevGlobal
   const doc = g.document
@@ -264,6 +290,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const markDone = markTodoDone(baseUrl)
   const accept = acceptHintCandidate(baseUrl)
   const dismiss = dismissItem(baseUrl)
+  const submitCorrection = submitEntityCorrection(baseUrl)
   let mounted = false
   // Event-driven refresh failures re-enter the boot loop — visible, never an unhandled rejection.
   let onHudError: (error: unknown) => void = () => {}
@@ -275,7 +302,23 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
       if (!mounted) {
         // #96: the system-stream mute is a client-local display toggle — flips Hud state + re-paints,
         // no network. The delegated listener lives on the container, so it survives every re-render.
-        mountSurface(panel, node, { copy, markDone, accept, dismiss, muteSystemStream: () => hud.toggleSystemStream() })
+        // #75: clarify-open/dismiss are client-local (Hud session state); the `clarify` answer writes over
+        // the wire, then settles the ask (suppress this session) and refreshes so the confirmed row's ≟ is
+        // gone. The server override is what makes the answer durable — the settle is the in-session gate.
+        mountSurface(panel, node, {
+          copy,
+          markDone,
+          accept,
+          dismiss,
+          muteSystemStream: () => hud.toggleSystemStream(),
+          clarifyOpen: (entityId) => hud.openClarify(entityId),
+          clarifyDismiss: (entityId) => hud.dismissClarify(entityId),
+          clarify: async (payload) => {
+            await submitCorrection(payload)
+            hud.settleClarify(payload.entityId)
+            await hud.refresh()
+          },
+        })
         mounted = true
       } else {
         renderInto(panel, node)

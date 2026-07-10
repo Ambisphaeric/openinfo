@@ -1,0 +1,49 @@
+{
+  "$id": "EntityCorrection",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "entityId",
+    "heard",
+    "verdict"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "entityId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "heard": {
+      "minLength": 1,
+      "description": "the heard surface form the verdict settles",
+      "type": "string"
+    },
+    "verdict": {
+      "description": "confirm = it is the linked candidate (alias-confirm) · disambiguate = it is the rival instead",
+      "anyOf": [
+        {
+          "const": "confirm",
+          "type": "string"
+        },
+        {
+          "const": "disambiguate",
+          "type": "string"
+        }
+      ]
+    },
+    "rivalId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "rivalName": {
+      "type": "string"
+    }
+  }
+}
