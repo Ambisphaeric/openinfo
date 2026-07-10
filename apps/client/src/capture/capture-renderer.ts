@@ -1,5 +1,5 @@
 import { matchSystemAudioDevice, type AudioDevice } from './device-match.js'
-import type { CaptureBridge, CaptureSourceKind } from './protocol.js'
+import type { CaptureBridge, CaptureSourceKind, CaptureStartOptions } from './protocol.js'
 
 /**
  * The hidden capture window's renderer — the one place getUserMedia can run (it needs a Chromium
@@ -31,12 +31,20 @@ import type { CaptureBridge, CaptureSourceKind } from './protocol.js'
  * stream; only the first fragment carries the container header, so later fragments are not independently
  * decodable. Stopping and immediately restarting the recorder yields a COMPLETE, self-contained webm file
  * per segment (a header + its data), which is exactly what `/v1/audio/transcriptions` needs.
+ *
+ * Segment length is CONFIGURABLE (issue #57): the main process resolves ShellConfig.segmentMs (env > file
+ * > 1000ms) and sends it with each `capture:start` as CaptureStartOptions. The segment length is the
+ * dominant capture latency — a spoken word waits up to one segment before its audio leaves the client —
+ * so the default dropped from 8s to ~1s. The per-segment stop/restart is synchronous here (stop the old
+ * recorder, immediately `new MediaRecorder`), so no audio is dropped between segments beyond the sub-
+ * frame gap inherent to closing one webm and opening the next; a smaller segment just makes that boundary
+ * more frequent. The engine merges chunks into larger windows downstream.
  */
 
-/** Segment length: 8s — within the 5–10s band. Long enough to amortize per-request + stop/restart */
-/** overhead and keep boundaries rare; short enough that audio reaches the engine promptly and the */
-/** flushed final segment on session-end is small. The engine merges chunks into larger windows. */
-const SEGMENT_MS = 8_000
+/** Fallback segment length when a `capture:start` arrives without options (older/partial message). The */
+/** real value comes from ShellConfig.segmentMs (config.ts); this mirrors its default so the renderer is */
+/** never left recording an 8s segment. A non-positive/garbage passed value clamps to this too. */
+const DEFAULT_SEGMENT_MS = 1_000
 
 /** Peak-amplitude floor below which a system-audio segment counts as silence (digital silence = 0). */
 const SILENCE_PEAK = 1e-3
@@ -135,6 +143,8 @@ interface Capturer {
   stream?: MediaStreamLike | undefined
   recorder?: MediaRecorderLike | undefined
   running: boolean
+  /** Segment length (ms) for this source's current run — set from CaptureStartOptions on start (#57). */
+  segmentMs: number
   /** Silence probe (system-audio only): the AudioContext tap + the peak seen since the current segment began. */
   audioContext?: AudioContextLike | undefined
   analyser?: AnalyserLike | undefined
@@ -147,11 +157,15 @@ const capturers = new Map<CaptureSourceKind, Capturer>()
 const capturerFor = (source: CaptureSourceKind): Capturer => {
   let c = capturers.get(source)
   if (!c) {
-    c = { source, running: false, peakThisSegment: 0 }
+    c = { source, running: false, peakThisSegment: 0, segmentMs: DEFAULT_SEGMENT_MS }
     capturers.set(source, c)
   }
   return c
 }
+
+/** Clamp a passed segment length to a sane positive number, mirroring config.ts's resolveIntervalMs. */
+const resolveSegmentMs = (segmentMs: number | undefined): number =>
+  typeof segmentMs === 'number' && Number.isFinite(segmentMs) && segmentMs > 0 ? segmentMs : DEFAULT_SEGMENT_MS
 
 /** Tear down a capturer's stream + silence probe (idempotent). */
 const stopStream = (c: Capturer): void => {
@@ -229,7 +243,7 @@ const cycle = (c: Capturer, bridge: CaptureBridge): void => {
           bytes,
           mimeType: rec.mimeType,
           capturedAt,
-          durationMs: SEGMENT_MS,
+          durationMs: c.segmentMs,
           ...(measuresSilence ? { silent: c.peakThisSegment < SILENCE_PEAK } : {}),
         })
       }
@@ -246,7 +260,7 @@ const cycle = (c: Capturer, bridge: CaptureBridge): void => {
   rec.start()
   setTimeout(() => {
     if (rec.state !== 'inactive') rec.stop()
-  }, SEGMENT_MS)
+  }, c.segmentMs)
 }
 
 /** Resolve the input deviceId for a source: mic uses the default (undefined); system-audio matches by name. */
@@ -257,9 +271,10 @@ const resolveDeviceId = async (source: CaptureSourceKind): Promise<{ ok: true; d
   return match ? { ok: true, deviceId: match.deviceId } : { ok: false }
 }
 
-const start = (source: CaptureSourceKind, bridge: CaptureBridge): void => {
+const start = (source: CaptureSourceKind, bridge: CaptureBridge, options?: CaptureStartOptions): void => {
   const c = capturerFor(source)
   if (c.running) return
+  c.segmentMs = resolveSegmentMs(options?.segmentMs) // config-resolved cadence for this run (#57)
   void (async (): Promise<void> => {
     const resolved = await resolveDeviceId(source)
     if (!resolved.ok) {
@@ -306,9 +321,9 @@ if (bridge) {
   // Ack a start the MOMENT the command is received (before getUserMedia), so the main process knows the
   // send landed and stops retrying — a dropped start is detected instead of wedging the controller. Then
   // run the real start. The old `state: 'ready'` (post-getUserMedia) stays as the capturing signal.
-  bridge.onStart((source) => {
+  bridge.onStart((source, options) => {
     bridge.sendStartAck(source)
-    start(source, bridge)
+    start(source, bridge, options)
   })
   bridge.onStop((source) => stop(source, bridge))
   // Readiness ping: listeners are now registered, so it is safe for the main process to send `start`.

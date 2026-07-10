@@ -22,8 +22,9 @@ Both sources share one window / renderer / preload, keyed by `source`:
   permission → capturing → end + final-segment flush → idle; denial; `no-device` → `unavailable`;
   system-audio silence honesty; auto-end→restart serialization; clean shutdown).
 - `capture-renderer.ts` — the hidden window's renderer: per-source getUserMedia + MediaRecorder,
-  segmenting by stop/restart (8s complete webm files), system-audio device match + an AnalyserNode
-  silence probe. Browser globals, not CI-tested (like shell.ts).
+  segmenting by stop/restart (complete webm files, configurable cadence — `ShellConfig.segmentMs`,
+  default ~1s, sent with each `capture:start`; #57), system-audio device match + an AnalyserNode
+  silence probe. Browser globals; the #57 cadence-honouring path is unit-tested (`capture-renderer.test.ts`).
 - `capture-preload.cts` (→ `.cjs`) — the `window.openinfoCapture` contextBridge (contextIsolation on).
 - `sim.ts` (P1) — the headless capture simulator; still used by the seam test.
 
