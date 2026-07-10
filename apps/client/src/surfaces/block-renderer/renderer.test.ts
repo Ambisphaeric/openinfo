@@ -168,6 +168,28 @@ test('relevant-now why line: recorded provenance is preferred, else the mention/
   assert.equal((html.match(/class="rel"/g) ?? []).length, 2)
 })
 
+test('relevant-now #66 state dot (#73): renders ONLY for an entity carrying a resolution `state`, none otherwise', () => {
+  const surface: Surface = {
+    id: 's', name: 's', context: 'meeting', version: 1,
+    stack: [{ block: 'relevant-now', show: 'always', query: { source: 'relevant-now', params: {} } }],
+  }
+  // A user-confirmed entity carries state:'confirmed' → a real dot lights up (no new renderer work — the
+  // field threads through the query source into the existing #66 micro-state carrier).
+  const confirmed: RelevantEntity = rel(
+    { ...entity('person', 'Sam Rivera', 4), state: 'confirmed', confidence: 1 },
+    [moment('question', 'can Sam ship by Friday?', '2026-07-07T14:43:00Z')],
+  )
+  // An unresolved entity (plain extraction, no resolver) carries NO state → NO dot (nothing pretends resolved).
+  const unresolved = rel(entity('artifact', 'SOC 2 report', 3), [moment('artifact', 'SOC 2 referenced again', '2026-07-07T14:41:00Z')])
+
+  const html = renderToHtml(renderSurface(
+    { surface, now, results: [result('relevant-now', [confirmed, unresolved])] },
+    defaultBlockRegistry,
+  ))
+  assert.match(html, /class="dot confirmed" title="confirmed"/) // the confirmed row lights its dot
+  assert.equal((html.match(/class="dot/g) ?? []).length, 1) // and ONLY that row — the unresolved row has none
+})
+
 test('an unknown/future block type degrades via the custom fallback instead of breaking the render', () => {
   const surface: Surface = {
     id: 's', name: 's', context: 'any', version: 1,

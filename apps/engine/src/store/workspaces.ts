@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Draft, Entity, EntityProvenance, Moment, OcrResult, Pin, PinChunk, Session, TodoList, Workspace } from '@openinfo/contracts'
+import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { LayoutStore } from './layouts.js'
@@ -29,6 +29,14 @@ export interface EntityUpsert {
   seenAt: string
   provenance?: EntityProvenance
   momentRefs?: string[]
+  /**
+   * Contract v2 (#73) evidence for this mention. `sighting` is one typed evidence entry (heard/seen/
+   * calendar) appended to the trail; `heardAs` is the ASR surface form that resolved here (accumulated,
+   * deduped). Both are OPTIONAL — a caller with no evidence signal simply omits them and the record's
+   * trails stay as-is. Ids/state/confidence remain store-/resolver-owned; the model never controls them.
+   */
+  sighting?: Sighting
+  heardAs?: HeardAs
 }
 
 /**
@@ -298,6 +306,10 @@ export class WorkspaceRegistry {
           outboundCount: 0,
           mentions: 1,
           ...(input.provenance !== undefined ? { provenance: [input.provenance] } : {}),
+          // Contract v2 (#73): seed the evidence trails from this mention. state/confidence are LEFT
+          // ABSENT — no resolver scores them yet (#72); only a user override (overrideEntity) stamps them.
+          ...(input.sighting !== undefined ? { sightings: [input.sighting] } : {}),
+          ...(input.heardAs !== undefined ? { heardAs: [input.heardAs] } : {}),
           firstSeen: input.seenAt,
           lastSeen: input.seenAt,
         }
@@ -330,6 +342,45 @@ export class WorkspaceRegistry {
     const db = this.openWorkspace(workspaceId)
     const rows = db.prepare('select body from entities order by last_seen desc, name_key').all() as { body: string }[]
     return rows.map((row) => JSON.parse(row.body) as Entity)
+  }
+
+  /**
+   * Record a SOVEREIGN user correction on an entity (#73) — the durable, append-only override the
+   * resolver (#72) must never re-ask about or re-score away. It appends the `EntityOverride`, and
+   * because a user override outranks any machine score it stamps the record `state: 'confirmed'` and
+   * `confidence: 1`. When the override pins a surface form (`pinnedName`), that form is unioned into the
+   * entity's aliases so future mentions of it resolve HERE — and `findEntity` prefers this pinned
+   * mapping over any rival, making the mapping durable across subsequent upserts (reads honor it). The
+   * merged record is contract-validated before write (last line of defense, mirroring upsertEntity).
+   * Only this path writes overrides. Returns the updated entity, or undefined for an unknown id.
+   */
+  overrideEntity(workspaceId: string, entityId: string, override: EntityOverride): Entity | undefined {
+    const db = this.openWorkspace(workspaceId)
+    const row = db.prepare('select body from entities where id = ?').get(entityId) as { body: string } | undefined
+    if (!row) return undefined
+    const current = JSON.parse(row.body) as Entity
+    const aliases = [...current.aliases]
+    if (override.pinnedName !== undefined) {
+      const pin = override.pinnedName.trim()
+      const known = new Set([normalizeEntityName(current.name), ...aliases.map(normalizeEntityName)])
+      if (pin.length > 0 && !known.has(normalizeEntityName(pin))) aliases.push(pin)
+    }
+    const entity: Entity = {
+      ...current,
+      aliases,
+      overrides: [...(current.overrides ?? []), override],
+      state: 'confirmed',
+      confidence: 1,
+    }
+    if (!Value.Check(EntitySchema, entity)) throw new Error(`overridden entity failed contract validation: ${entityId}`)
+    db.prepare('insert or replace into entities (id, kind, name_key, last_seen, body) values (?, ?, ?, ?, ?)').run(
+      entity.id,
+      entity.kind,
+      normalizeEntityName(entity.name),
+      entity.lastSeen,
+      JSON.stringify(entity),
+    )
+    return entity
   }
 
   /**
@@ -599,10 +650,20 @@ export class WorkspaceRegistry {
 
   /** Match by kind + any normalized key against a stored record's normalized name OR aliases. */
   private findEntity(db: Database.Database, kind: Entity['kind'], keys: readonly string[]): Entity | undefined {
-    const rows = db.prepare('select body from entities where kind = ?').all(kind) as { body: string }[]
+    const rows = (db.prepare('select body from entities where kind = ?').all(kind) as { body: string }[]).map(
+      (row) => JSON.parse(row.body) as Entity,
+    )
     const wanted = new Set(keys)
-    for (const row of rows) {
-      const entity = JSON.parse(row.body) as Entity
+    // Override short-circuit (#73): a user override that PINS one of the wanted surface forms outranks any
+    // score-based match — resolution is sovereign and deterministic, never re-decided against a rival the
+    // user already settled. So an entity whose `overrides[].pinnedName` normalizes into `wanted` wins first,
+    // before the ordinary name/alias scan (whose row order is otherwise arbitrary). This is the store-level
+    // half of the resolver short-circuit #72 will build on (it will additionally honor rejectedRivalId).
+    const pinned = rows.find((entity) =>
+      (entity.overrides ?? []).some((o) => o.pinnedName !== undefined && wanted.has(normalizeEntityName(o.pinnedName))),
+    )
+    if (pinned) return pinned
+    for (const entity of rows) {
       const known = [normalizeEntityName(entity.name), ...entity.aliases.map(normalizeEntityName)]
       if (known.some((key) => wanted.has(key))) return entity
     }
@@ -621,15 +682,45 @@ export class WorkspaceRegistry {
       }
     }
     const provenance = [...(existing.provenance ?? []), ...(input.provenance !== undefined ? [input.provenance] : [])]
+    // Contract v2 (#73): append this mention's evidence to the append-only trails. Sightings dedup by
+    // (via, at, distillateId) so a re-run adds nothing already recorded; heardAs dedups by (normalized
+    // text, source) so the same surface form heard again is not re-listed. `...existing` carries every
+    // v2 field forward untouched — crucially state/confidence/overrides/external/ambiguity, so a
+    // user-confirmed record STAYS confirmed through subsequent mentions (reads honor the override).
+    const sightings = this.mergeSightings(existing.sightings, input.sighting)
+    const heardAs = this.mergeHeardAs(existing.heardAs, input.heardAs)
     return {
       ...existing,
       aliases: mergedAliases,
       momentRefs: [...new Set([...existing.momentRefs, ...(input.momentRefs ?? [])])],
       mentions: (existing.mentions ?? 0) + 1,
       ...(provenance.length > 0 ? { provenance } : {}),
+      ...(sightings.length > 0 ? { sightings } : {}),
+      ...(heardAs.length > 0 ? { heardAs } : {}),
       lastSeen: input.seenAt > existing.lastSeen ? input.seenAt : existing.lastSeen,
       firstSeen: input.seenAt < existing.firstSeen ? input.seenAt : existing.firstSeen,
     }
+  }
+
+  /** Append a sighting to the trail, deduped by (via, at, distillateId) so re-runs add nothing already there. */
+  private mergeSightings(existing: readonly Sighting[] | undefined, added: Sighting | undefined): Sighting[] {
+    const trail = [...(existing ?? [])]
+    if (added === undefined) return trail
+    const key = (s: Sighting): string => `${s.via}|${s.at}|${s.distillateId ?? ''}`
+    const seen = new Set(trail.map(key))
+    if (!seen.has(key(added))) trail.push(added)
+    return trail
+  }
+
+  /** Union a heard-as variant, deduped by (normalized text, source); keeps the freshest `at`/confidence. */
+  private mergeHeardAs(existing: readonly HeardAs[] | undefined, added: HeardAs | undefined): HeardAs[] {
+    const trail = [...(existing ?? [])]
+    if (added === undefined) return trail
+    const key = (h: HeardAs): string => `${normalizeEntityName(h.text)}|${h.source ?? ''}`
+    const idx = trail.findIndex((h) => key(h) === key(added))
+    if (idx === -1) trail.push(added)
+    else trail[idx] = { ...trail[idx], ...added } // refresh at/confidence if the new mention carries them
+    return trail
   }
 
   close(): void {

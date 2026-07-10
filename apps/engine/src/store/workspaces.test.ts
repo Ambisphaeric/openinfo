@@ -118,6 +118,98 @@ test('addEntityMomentRefs appends refs; unknown entity is undefined', async () =
   }
 })
 
+test('upsertEntity populates v2 sightings + heardAs; both are append-only and idempotent on re-run (#73)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-entities-v2-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // window 1: creates the record (canonical "Sam Rivera", alias "Sam") with one sighting + one heard-as
+    const first = registry.upsertEntity({
+      workspaceId: 'ws-v2', kind: 'person', name: 'Sam Rivera', aliases: ['Sam'], seenAt: '2026-07-08T09:00:00Z',
+      sighting: { via: 'heard', at: '2026-07-08T09:00:00Z', distillateId: 'dst-1' },
+      heardAs: { text: 'Sam Rivera', source: 'stt', at: '2026-07-08T09:00:00Z' },
+    })
+    assert.deepEqual(first.sightings?.map((s) => s.distillateId), ['dst-1'])
+    assert.deepEqual(first.heardAs?.map((h) => h.text), ['Sam Rivera'])
+    // state/confidence are NOT stamped by plain extraction (no resolver scores them yet)
+    assert.equal(first.state, undefined)
+    assert.equal(first.confidence, undefined)
+
+    // window 2: heard as the KNOWN alias "Sam" (resolves to the same record) in a new window ⇒ both trails grow
+    const second = registry.upsertEntity({
+      workspaceId: 'ws-v2', kind: 'person', name: 'Sam', seenAt: '2026-07-08T09:05:00Z',
+      sighting: { via: 'heard', at: '2026-07-08T09:05:00Z', distillateId: 'dst-2' },
+      heardAs: { text: 'Sam', source: 'stt', at: '2026-07-08T09:05:00Z' },
+    })
+    assert.equal(second.id, first.id)
+    assert.deepEqual(second.sightings?.map((s) => s.distillateId), ['dst-1', 'dst-2'])
+    assert.deepEqual(second.heardAs?.map((h) => h.text), ['Sam Rivera', 'Sam'])
+
+    // re-run of window 2 (same sighting + same surface form) adds NOTHING — idempotent dedup
+    const again = registry.upsertEntity({
+      workspaceId: 'ws-v2', kind: 'person', name: 'Sam', seenAt: '2026-07-08T09:05:00Z',
+      sighting: { via: 'heard', at: '2026-07-08T09:05:00Z', distillateId: 'dst-2' },
+      heardAs: { text: 'Sam', source: 'stt', at: '2026-07-08T09:05:00Z' },
+    })
+    assert.equal(again.sightings?.length, 2)
+    assert.equal(again.heardAs?.length, 2)
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('overrideEntity is sovereign: pins the mapping, stamps confirmed, and outranks a rival in findEntity (#73)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-entities-override-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // two rival people, BOTH plausibly "Sam"
+    const rivera = registry.upsertEntity({ workspaceId: 'ws-ov', kind: 'person', name: 'Sam Rivera', seenAt: '2026-07-08T09:00:00Z' })
+    const lee = registry.upsertEntity({ workspaceId: 'ws-ov', kind: 'person', name: 'Sam Lee', seenAt: '2026-07-08T09:01:00Z' })
+    assert.notEqual(rivera.id, lee.id)
+
+    // the user pins "Sam" → Sam Rivera, rejecting Sam Lee
+    const confirmed = registry.overrideEntity('ws-ov', rivera.id, {
+      at: '2026-07-08T10:00:00Z', by: 'the user', pinnedName: 'Sam', rejectedRivalId: lee.id, rejectedRivalName: 'Sam Lee',
+      note: 'Sam here is Sam Rivera',
+    })
+    assert.equal(confirmed?.state, 'confirmed')
+    assert.equal(confirmed?.confidence, 1)
+    assert.equal(confirmed?.overrides?.length, 1)
+    assert.ok(confirmed?.aliases.includes('Sam')) // pinned surface form is now an alias
+
+    // a later mention of "Sam" resolves to the PINNED entity, never re-scored against the rejected rival
+    const laterMention = registry.upsertEntity({ workspaceId: 'ws-ov', kind: 'person', name: 'Sam', seenAt: '2026-07-08T11:00:00Z' })
+    assert.equal(laterMention.id, rivera.id)
+    assert.equal(laterMention.state, 'confirmed') // the confirmed state survives subsequent mentions (reads honor it)
+    assert.equal(laterMention.confidence, 1)
+
+    assert.equal(registry.overrideEntity('ws-ov', 'ent-nowhere', { at: '2026-07-08T10:00:00Z' }), undefined)
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('migration-safe: a v1 entity row with no v2 fields loads, re-upserts, and can be overridden (#73)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-entities-migrate-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // a v1-shaped mention carries NO sighting/heardAs — the record has neither trail (no fabrication)
+    const v1 = registry.upsertEntity({ workspaceId: 'ws-mig', kind: 'topic', name: 'renewal', seenAt: '2026-07-08T09:00:00Z' })
+    assert.equal(v1.sightings, undefined)
+    assert.equal(v1.heardAs, undefined)
+    assert.equal(v1.state, undefined)
+    // it still loads and merges on a later mention, and remains overridable
+    const merged = registry.upsertEntity({ workspaceId: 'ws-mig', kind: 'topic', name: 'renewal', seenAt: '2026-07-08T09:05:00Z' })
+    assert.equal(merged.mentions, 2)
+    const ov = registry.overrideEntity('ws-mig', v1.id, { at: '2026-07-08T10:00:00Z', by: 'the user', note: 'a real topic' })
+    assert.equal(ov?.state, 'confirmed')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('pins + page-anchored chunks persist per workspace; unknown workspace reads empty', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-pins-'))
   try {
