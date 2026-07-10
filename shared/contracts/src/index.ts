@@ -19,6 +19,7 @@ export * from './config/surface.js'
 export * from './config/mode.js'
 export * from './config/promptTemplate.js'
 export * from './config/egress.js'
+export * from './config/guard.js'
 export * from './config/fabric.js'
 export * from './config/discovery.js'
 export * from './config/local.js'
@@ -51,6 +52,7 @@ import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surf
 import { Mode } from './config/mode.js'
 import { PromptTemplate, FastFieldBinding } from './config/promptTemplate.js'
 import { EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision } from './config/egress.js'
+import { GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold } from './config/guard.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
 import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult } from './config/discovery.js'
 import { StarterModel, StarterModels } from './config/local.js'
@@ -67,7 +69,7 @@ export const AllSchemas = {
   Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
-  Mode, PromptTemplate, FastFieldBinding, EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision, Fabric, Endpoint, LocalRuntime, FabricProfile,
+  Mode, PromptTemplate, FastFieldBinding, EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   TodoList, TodoItem, TodoProvenance,

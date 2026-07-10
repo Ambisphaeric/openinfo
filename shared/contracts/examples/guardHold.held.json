@@ -1,0 +1,17 @@
+{
+  "id": "hold-3f2a",
+  "workspaceId": "default",
+  "sessionId": "ses-guard",
+  "stage": "distill",
+  "verdict": {
+    "behavior": "hold-and-surface",
+    "outcome": "held",
+    "guarded": true,
+    "maskedSpanCount": 1,
+    "spans": [{ "kind": "card-number", "start": 7, "length": 16 }],
+    "guardEndpoint": "guard-local",
+    "reason": "the egress guard flagged 1 span(s); strict mode suspended the hop for review"
+  },
+  "status": "held",
+  "createdAt": "2026-07-10T10:05:00.000Z"
+}

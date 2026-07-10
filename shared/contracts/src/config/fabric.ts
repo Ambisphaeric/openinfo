@@ -100,6 +100,13 @@ export const Fabric = Type.Object(
         vlm: Type.Array(Endpoint),
         ocr: Type.Array(Endpoint),
         embed: Type.Array(Endpoint),
+        // The GUARD slot (#63) — the content/PII classifier invoked on every EGRESS-marked hop (a
+        // llama-guard / gpt-oss-guard class model, or any OpenAI-compat classifier endpoint). A FIRST-CLASS
+        // slot KIND, not an `llm.judge`-style naming convention (#88). OPTIONAL and append-only: a fabric
+        // document predating #63 (and one that never egresses) validates without it. An empty/absent guard
+        // slot on an egress hop is the fail-closed edge the GuardPolicy governs (strict ⇒ hold; default ⇒
+        // acknowledge-or-hold). Not part of onboarding discovery classification in v0 — configured manually.
+        guard: Type.Optional(Type.Array(Endpoint, { description: 'egress content/PII classifier (#63); order is fallback, first that answers wins' })),
       },
       { additionalProperties: false },
     ),

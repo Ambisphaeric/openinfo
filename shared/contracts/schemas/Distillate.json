@@ -280,6 +280,104 @@
               "type": "string"
             }
           }
+        },
+        "guard": {
+          "$id": "GuardVerdict",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "outcome",
+            "behavior",
+            "guarded",
+            "maskedSpanCount",
+            "reason"
+          ],
+          "properties": {
+            "outcome": {
+              "description": "clean = guard ran, nothing flagged; redacted = flagged spans masked, hop proceeded; held = hop suspended (strict, or fail-closed empty slot); unguarded = no guard active, proceeded under explicit acknowledgment",
+              "anyOf": [
+                {
+                  "const": "clean",
+                  "type": "string"
+                },
+                {
+                  "const": "redacted",
+                  "type": "string"
+                },
+                {
+                  "const": "held",
+                  "type": "string"
+                },
+                {
+                  "const": "unguarded",
+                  "type": "string"
+                }
+              ]
+            },
+            "behavior": {
+              "$id": "GuardBehavior",
+              "description": "redact-and-continue (default, mask spans + proceed) | hold-and-surface (strict, suspend the hop)",
+              "anyOf": [
+                {
+                  "const": "redact-and-continue",
+                  "type": "string"
+                },
+                {
+                  "const": "hold-and-surface",
+                  "type": "string"
+                }
+              ]
+            },
+            "guarded": {
+              "description": "true ⇒ a guard endpoint classified the content; false ⇒ no guard ran (acknowledged-unguarded or fail-closed-empty)",
+              "type": "boolean"
+            },
+            "maskedSpanCount": {
+              "minimum": 0,
+              "description": "how many spans were masked (0 for clean/held/unguarded)",
+              "type": "integer"
+            },
+            "spans": {
+              "description": "span descriptors (kind/start/length) — never the raw value; present when spans were flagged",
+              "type": "array",
+              "items": {
+                "$id": "GuardSpan",
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "kind",
+                  "start",
+                  "length"
+                ],
+                "properties": {
+                  "kind": {
+                    "minLength": 1,
+                    "description": "the classifier label for this span (e.g. card-number) — a category, never the value",
+                    "type": "string"
+                  },
+                  "start": {
+                    "minimum": 0,
+                    "description": "character offset of the span in the outbound text",
+                    "type": "integer"
+                  },
+                  "length": {
+                    "minimum": 1,
+                    "description": "character length of the masked span (extent only — never the value)",
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            "guardEndpoint": {
+              "description": "the guard endpoint NAME that classified — never a url/secret; absent when no guard ran",
+              "type": "string"
+            },
+            "reason": {
+              "minLength": 1,
+              "description": "one-line, human-readable why — safe to surface (no raw value)",
+              "type": "string"
+            }
+          }
         }
       }
     },

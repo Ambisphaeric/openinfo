@@ -1,0 +1,9 @@
+{
+  "behavior": "redact-and-continue",
+  "outcome": "redacted",
+  "guarded": true,
+  "maskedSpanCount": 1,
+  "spans": [{ "kind": "card-number", "start": 7, "length": 16 }],
+  "guardEndpoint": "guard-local",
+  "reason": "the egress guard masked 1 flagged span(s) before the content left the machine"
+}
