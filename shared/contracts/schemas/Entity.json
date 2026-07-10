@@ -193,6 +193,104 @@
         }
       }
     },
+    "resolutions": {
+      "description": "append-only per-mention resolution trail (#72): the scored resolver stamps score+band+components (+rival, if any) for every mention that resolved to (or created) this entity. Absent on records that predate the resolver.",
+      "type": "array",
+      "items": {
+        "$id": "EntityResolution",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "at",
+          "heard",
+          "score",
+          "band",
+          "phoneticFuzzy",
+          "corpusPrior",
+          "crossSourceCorroboration",
+          "personAffinity"
+        ],
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          },
+          "heard": {
+            "minLength": 1,
+            "description": "the surface form (heard/extracted mention) this decision resolved",
+            "type": "string"
+          },
+          "score": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          "band": {
+            "description": "auto (≥ auto threshold, silent link) · provisional (reviewable link) · new (created a fresh provisional entity)",
+            "anyOf": [
+              {
+                "const": "auto",
+                "type": "string"
+              },
+              {
+                "const": "provisional",
+                "type": "string"
+              },
+              {
+                "const": "new",
+                "type": "string"
+              }
+            ]
+          },
+          "phoneticFuzzy": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          "corpusPrior": {
+            "minimum": 0,
+            "description": "establishment multiplier (sighting count × recency); neutral 1.0 for a fresh entity, only boosts",
+            "type": "number"
+          },
+          "crossSourceCorroboration": {
+            "minimum": 0,
+            "description": "INPUT multiplier (#74 correlator) — defaults to neutral 1.0; no producer feeds it yet",
+            "type": "number"
+          },
+          "personAffinity": {
+            "minimum": 0,
+            "description": "INPUT multiplier (speaker/participant adjacency in the entity graph) — defaults to neutral 1.0; no producer yet",
+            "type": "number"
+          },
+          "rivalId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "rivalName": {
+            "type": "string"
+          },
+          "rivalScore": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
+          "margin": {
+            "description": "winner score minus rival score — small ⇒ ambiguous",
+            "type": "number"
+          },
+          "ambiguous": {
+            "description": "true ⇒ a plausible rival scored within Δ; a silent auto-link was downgraded to reviewable",
+            "type": "boolean"
+          },
+          "override": {
+            "description": "true ⇒ resolved by a sovereign user override (pinned surface form), bypassing the score",
+            "type": "boolean"
+          }
+        }
+      }
+    },
     "heardAs": {
       "description": "source-/confidence-typed ASR variants that resolved to this entity (accumulates as evidence)",
       "type": "array",

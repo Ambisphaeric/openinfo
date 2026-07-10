@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
+import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
+import { resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
 import { LayoutStore } from './layouts.js'
 import { resolveDataDir } from './paths.js'
 
@@ -37,6 +38,13 @@ export interface EntityUpsert {
    */
   sighting?: Sighting
   heardAs?: HeardAs
+  /**
+   * Resolver (#72) inputs. `signals` carries the cross-source / person-affinity INPUT MULTIPLIERS (both
+   * default to the neutral 1.0 — no producer feeds them yet, honestly disclosed); `resolverConfig`
+   * overrides the band/margin thresholds for tests. Omitted ⇒ the deterministic defaults.
+   */
+  signals?: ResolutionSignals
+  resolverConfig?: ResolverConfig
 }
 
 /**
@@ -279,13 +287,25 @@ export class WorkspaceRegistry {
   }
 
   /**
-   * Resolve-and-merge an entity mention into ONE canonical record per (kind, normalized name) —
-   * upsert, not append (Index v0). Match policy: same kind AND the normalized mention name equals
-   * the record's normalized name or one of its normalized aliases. On match: bump `mentions`,
-   * advance `lastSeen`, union new aliases, append the provenance entry and moment refs. On miss:
-   * create the record (id + firstSeen are store-stamped). The full merged record is contract-
-   * validated before it is written — the last line of defense, mirroring saveMoment's policy.
-   * Only this path writes entities (DB-handle hard rule).
+   * Resolve-and-merge an entity mention into ONE canonical record per entity — upsert, not append. The
+   * MATCH STEP is the scored resolver (#72, `index/resolve.ts`): exact normalized equality is no longer
+   * required — an ASR-mangled mention ("pie dev" for `pi.dev`) can find its record by phonetic/fuzzy score
+   * over the record's name, aliases, AND stored heardAs variants. Resolution order:
+   *
+   *   1. SOVEREIGN OVERRIDE SHORT-CIRCUIT (preserved from #73, tested): if a record's `overrides[]` PINS a
+   *      surface form the mention carries, that record wins DETERMINISTICALLY, before any scoring — an
+   *      overridden mapping is never re-asked or re-scored against the rejected rival. Overrides outrank
+   *      scores, period.
+   *   2. Otherwise the resolver scores same-kind candidates. `auto`/`provisional` band ⇒ LINK to the
+   *      winner; `new` band ⇒ CREATE a fresh record for the mention.
+   *
+   * On a LINK: bump `mentions`, advance `lastSeen`, union model-declared aliases, append provenance/moment
+   * refs, grow the sighting + heardAs trails. On CREATE: store-stamp id + firstSeen. EVERY resolution (link
+   * or create) appends an `EntityResolution` (score + band + components + rival, if any) to the record —
+   * the inspectable "why did this land here" trail. A provisional/ambiguous resolution stamps `state:
+   * 'provisional'` + `confidence` + `ambiguity` (the #66 micro-state); a clean auto-link and a first-of-its-
+   * kind create stay SILENT (state absent), matching pre-resolver behavior. A user-confirmed record is
+   * never downgraded. The merged record is contract-validated before write. Only this path writes entities.
    */
   upsertEntity(input: EntityUpsert): Entity {
     this.ensureWorkspace({ id: input.workspaceId, name: input.workspaceId })
@@ -293,9 +313,16 @@ export class WorkspaceRegistry {
     const nameKey = normalizeEntityName(input.name)
     const aliases = (input.aliases ?? []).map((alias) => alias.trim()).filter((alias) => alias.length > 0)
 
-    const existing = this.findEntity(db, input.kind, [nameKey, ...aliases.map(normalizeEntityName)])
-    const entity: Entity = existing
-      ? this.mergeEntity(existing, input, aliases)
+    const { existing, resolution, hadCandidates, overridePinned } = this.resolveMention(db, input, nameKey, aliases)
+    // Exact when the mention's normalized name is already a known key of the matched record — governs
+    // whether the heard name becomes an alias (below). A FUZZY link keeps the corrupted heard form out of
+    // aliases (it lands in heardAs instead, via the caller's input.heardAs — the write-back on a match).
+    const matchedExactly =
+      existing !== undefined &&
+      new Set([normalizeEntityName(existing.name), ...existing.aliases.map(normalizeEntityName)]).has(nameKey)
+
+    const base: Entity = existing
+      ? this.mergeEntity(existing, input, aliases, matchedExactly)
       : {
           id: randomUUID(),
           workspaceId: input.workspaceId,
@@ -306,13 +333,13 @@ export class WorkspaceRegistry {
           outboundCount: 0,
           mentions: 1,
           ...(input.provenance !== undefined ? { provenance: [input.provenance] } : {}),
-          // Contract v2 (#73): seed the evidence trails from this mention. state/confidence are LEFT
-          // ABSENT — no resolver scores them yet (#72); only a user override (overrideEntity) stamps them.
           ...(input.sighting !== undefined ? { sightings: [input.sighting] } : {}),
           ...(input.heardAs !== undefined ? { heardAs: [input.heardAs] } : {}),
           firstSeen: input.seenAt,
           lastSeen: input.seenAt,
         }
+
+    const entity = this.stampResolution(base, resolution, input, existing !== undefined, hadCandidates, overridePinned)
 
     if (!Value.Check(EntitySchema, entity)) {
       throw new Error(`entity failed contract validation: ${input.kind} "${input.name}"`)
@@ -648,6 +675,102 @@ export class WorkspaceRegistry {
     )
   }
 
+  /**
+   * The #72 match step: decide where a mention lands. Loads the same-kind records once, applies the
+   * sovereign override short-circuit (a pinned surface form outranks any score — #73, tested), else runs
+   * the scored resolver. Returns the record to LINK to (undefined ⇒ create), the resolution decision to
+   * stamp, and whether any same-kind candidates existed (governs whether a `new` create is provisional).
+   */
+  private resolveMention(
+    db: Database.Database,
+    input: EntityUpsert,
+    nameKey: string,
+    aliases: readonly string[],
+  ): { existing: Entity | undefined; resolution: Resolution; hadCandidates: boolean; overridePinned: boolean } {
+    const rows = (db.prepare('select body from entities where kind = ?').all(input.kind) as { body: string }[]).map(
+      (row) => JSON.parse(row.body) as Entity,
+    )
+    const wanted = new Set([nameKey, ...aliases.map(normalizeEntityName)])
+
+    // 1) Sovereign override short-circuit — a pinned surface form wins deterministically, before scoring.
+    const pinned = rows.find((entity) =>
+      (entity.overrides ?? []).some((o) => o.pinnedName !== undefined && wanted.has(normalizeEntityName(o.pinnedName))),
+    )
+    if (pinned) {
+      const resolution: Resolution = {
+        match: pinned,
+        score: 1,
+        band: 'auto',
+        ambiguous: false,
+        components: { phoneticFuzzy: 1, corpusPrior: 1, crossSourceCorroboration: 1, personAffinity: 1 },
+      }
+      return { existing: pinned, resolution, hadCandidates: rows.length > 0, overridePinned: true }
+    }
+
+    // 2) Scored resolver over same-kind candidates.
+    const resolution = resolveEntity({
+      heard: { name: input.name, aliases },
+      candidates: rows,
+      now: new Date(input.seenAt),
+      ...(input.signals !== undefined ? { signals: input.signals } : {}),
+      ...(input.resolverConfig !== undefined ? { config: input.resolverConfig } : {}),
+    })
+    return { existing: resolution.band === 'new' ? undefined : resolution.match, resolution, hadCandidates: rows.length > 0, overridePinned: false }
+  }
+
+  /**
+   * Append the resolution provenance and stamp the resolution micro-state. EVERY resolution records
+   * score + band + components (+ rival, if any) — the DoD's inspectable trail. State stamping:
+   *  - a clean AUTO link → SILENT (no state/confidence — pre-resolver behavior, keeps exact matches identical);
+   *  - a PROVISIONAL link, or an AUTO link a rival made AMBIGUOUS → `state:'provisional'` + `confidence` +
+   *    `ambiguity` (the reviewable #66 micro-state the clarify affordance #75 keys off);
+   *  - a NEW entity created while a same-kind corpus existed → `state:'provisional'` (a near-namesake was
+   *    present); a first-of-its-kind create stays silent.
+   * A record already `confirmed` (a sovereign user override) is NEVER downgraded, and an override-pinned
+   * resolution never re-stamps state (the override already settled it).
+   */
+  private stampResolution(entity: Entity, resolution: Resolution, input: EntityUpsert, linked: boolean, hadCandidates: boolean, overridePinned: boolean): Entity {
+    const record: EntityResolution = {
+      at: input.seenAt,
+      heard: input.name.trim(),
+      score: resolution.score,
+      band: resolution.band,
+      phoneticFuzzy: resolution.components.phoneticFuzzy,
+      corpusPrior: resolution.components.corpusPrior,
+      crossSourceCorroboration: resolution.components.crossSourceCorroboration,
+      personAffinity: resolution.components.personAffinity,
+      ...(resolution.rival !== undefined
+        ? { rivalId: resolution.rival.entity.id, rivalName: resolution.rival.entity.name, rivalScore: resolution.rival.score }
+        : {}),
+      ...(resolution.margin !== undefined ? { margin: resolution.margin } : {}),
+      ...(resolution.ambiguous ? { ambiguous: true } : {}),
+      ...(overridePinned ? { override: true } : {}),
+    }
+    const resolutions = [...(entity.resolutions ?? []), record]
+    const next: Entity = { ...entity, resolutions }
+
+    // Never touch state on an override-pinned resolution (the override owns it), and never downgrade a
+    // confirmed record.
+    if (overridePinned || next.state === 'confirmed') return next
+
+    const reviewable = resolution.band === 'provisional' || (resolution.band === 'auto' && resolution.ambiguous)
+    if (linked && reviewable) {
+      next.state = 'provisional'
+      next.confidence = resolution.score
+      if (resolution.rival !== undefined) {
+        next.ambiguity = {
+          ...(resolution.rival.entity.id !== undefined ? { rivalId: resolution.rival.entity.id } : {}),
+          rivalName: resolution.rival.entity.name,
+          ...(resolution.margin !== undefined ? { margin: resolution.margin } : {}),
+        }
+      }
+    } else if (!linked && hadCandidates) {
+      // A fresh entity spawned amid a same-kind corpus is provisional (a near-namesake existed).
+      next.state = 'provisional'
+    }
+    return next
+  }
+
   /** Match by kind + any normalized key against a stored record's normalized name OR aliases. */
   private findEntity(db: Database.Database, kind: Entity['kind'], keys: readonly string[]): Entity | undefined {
     const rows = (db.prepare('select body from entities where kind = ?').all(kind) as { body: string }[]).map(
@@ -670,11 +793,16 @@ export class WorkspaceRegistry {
     return undefined
   }
 
-  private mergeEntity(existing: Entity, input: EntityUpsert, aliases: readonly string[]): Entity {
+  private mergeEntity(existing: Entity, input: EntityUpsert, aliases: readonly string[], matchedExactly: boolean): Entity {
     const knownKeys = new Set([normalizeEntityName(existing.name), ...existing.aliases.map(normalizeEntityName)])
     const mergedAliases = [...existing.aliases]
-    // a mention under a different surface name becomes an alias of the canonical record
-    for (const candidate of [input.name.trim(), ...aliases]) {
+    // A mention under a different EXACT surface name becomes an alias of the canonical record (unchanged
+    // #73 behavior). But on a FUZZY resolver link the heard name is (by definition) not a known key — it is
+    // an ASR corruption, so it must NOT be promoted to a first-class alias (that would make the corruption
+    // an exact-match key and pollute canon). It lands in the heardAs trail instead (input.heardAs, the
+    // resolver's write-back). Model-declared aliases are always unioned regardless.
+    const candidateNames = matchedExactly ? [input.name.trim(), ...aliases] : [...aliases]
+    for (const candidate of candidateNames) {
       const key = normalizeEntityName(candidate)
       if (!knownKeys.has(key)) {
         mergedAliases.push(candidate)

@@ -3408,3 +3408,80 @@ hops never invoke it (no egress ⇒ no filter — enforced upstream by the #64 g
 - **The held block's release/deny buttons** post via an inline section script (the Settings surface is
   server-rendered per request, so it executes on load); if section navigation becomes client-side that
   handler needs rebinding. The route it calls is fully tested.
+
+## Slice: Entity resolver — scored phonetic/fuzzy match over names, aliases, heard-as  *(M5, #72, branch feat/72-entity-resolver, 2026-07-10)*
+
+The seam the whole ambient-entity story was blocked on: the match step is no longer exact normalized-string
+equality. A mention heard through imperfect ASR ("pie dev" for a repo named `pi.dev`) now finds its record
+by a blended score. Deterministic engine code — models extract candidate strings, the resolver decides.
+
+    score = phoneticFuzzy(heard, record) × corpusPrior × crossSourceCorroboration × personAffinity   (clamped [0,1])
+
+### 1 — pure primitives (`apps/engine/src/index/phonetic.ts`, zero new deps)
+- `levenshtein` / `editSimilarity` (normalized edit distance), `doubleMetaphone` (compact primary+secondary
+  Double-Metaphone: silent leading clusters KN/GN/PN/WR/PS, PH/GH→F, soft/hard C·G, TH→'0', vowels-only-at-
+  start, …), `phoneticEqual`, `normalizeForm`, and `nameSimilarity` — the per-surface-form blend. The blend
+  leads with a token soft-Jaccard (order-independent, penalizes unmatched tokens) so two DISTINCT names that
+  merely share a first name ("Sam Lee"/"Sam Rivera") stay below the link floor; the spaces-removed whole-
+  string edit similarity is consulted ONLY when token counts differ (the split/joined case "git hub"/"github").
+  Repo policy honored: no runtime deps added — both algorithms are small pure functions, validated against a
+  homophone table rather than a byte-for-byte reference port (what matters is that homophones collapse).
+
+### 2 — the resolver (`apps/engine/src/index/resolve.ts`, pure, fixture-driven)
+- `resolveEntity({ heard, candidates, now, signals?, config? })` scores same-kind candidates and returns
+  `{ match?, score, band, ambiguous, components, rival?, margin? }`.
+- **phoneticFuzzy** = MAX of `nameSimilarity` over (heard name/aliases) × (record name/aliases/**heardAs**) —
+  the stored heardAs variants ARE the match corpus, so a once-noisy form gets easier to hit again.
+- **corpusPrior** ∈ [1, 1+establishmentBoost] — sighting/mention count (log-damped, saturating) softened by
+  recency on `lastSeen`. ONLY boosts (never penalizes) and bounded small, so it can neither drag an exact
+  match below auto nor shove a weak partial across a band boundary.
+- **crossSourceCorroboration** (#74) and **personAffinity** (entity graph) are INPUT MULTIPLIERS defaulting
+  to the neutral 1.0 — NO producer feeds them yet (honestly disclosed, never fabricated); the typed seam is
+  in place so wiring a producer later is a one-line pass-through.
+- **Bands** (on the clamped score): `≥0.85` auto (silent link) · `0.5–0.85` provisional (reviewable) ·
+  `<0.5` new provisional entity. A plausible rival (itself ≥0.5) within `ambiguityMargin` (0.05) of the
+  winner marks the resolution `ambiguous` — a silent auto-link is downgraded to reviewable and the rival is
+  named (what the clarify affordance #75 will key off).
+
+### 3 — extraction path uses it (`apps/engine/src/store/workspaces.ts`)
+- `upsertEntity`'s match step is now `resolveMention` → `resolveEntity`. **The sovereign override short-
+  circuit is preserved and runs FIRST**: a record whose `overrides[].pinnedName` matches the mention wins
+  deterministically, before any scoring (overrides outrank scores, period — #73's tested invariant). The
+  resolver additionally honors `rejectedRivalId` (a candidate a matching override already rejected never wins).
+- On a FUZZY link the corrupted heard form lands in `heardAs` (the write-back), NOT in `aliases` (an ASR
+  corruption must not become an exact-match key / pollute canon). Exact links keep the #73 alias behavior.
+- **Provenance**: every resolution (link OR create) appends an `EntityResolution` (score + band + the four
+  components + rival, if any) — the inspectable "why did this land here" trail. State: a clean auto-link and
+  a first-of-its-kind create stay SILENT (state absent — exact matches resolve byte-identically to before); a
+  provisional/ambiguous link stamps `state:'provisional'` + `confidence` + `ambiguity` (the #66 dot); a new
+  entity spawned amid a same-kind corpus is `provisional`. A `confirmed` record is never downgraded.
+- `moveSession` still uses exact `findEntity` (moving canonical records is deterministic; fuzzy there could
+  mis-merge) — left untouched.
+
+### Contracts (append-only, `pnpm gen` re-ran)
+- `shared/contracts/src/records/entity.ts`: new sub-schema `EntityResolution` (registered in `AllSchemas` +
+  index) and an optional `resolutions[]` on `Entity`. All optional ⇒ pre-resolver rows still validate. New
+  example `entity.resolved-fuzzy.json`; regenerated `EntityResolution.json`/`Entity.json`/`RelevantEntity.json`.
+
+### Rule-7 check (definition of done)
+- Resolver module with score + band logic — DONE (`resolve.ts` + `phonetic.ts`).
+- Unit-tested against a mangled-names fixture set (homophones, dropped punctuation, split/joined tokens,
+  dropped vowels) AND a regression fixture (exact → same record, score 1, band auto) — DONE
+  (`phonetic.test.ts` +8, `resolve.test.ts` +11, `workspaces.test.ts` +3).
+- Extraction path uses it in place of exact matching; existing exact matches resolve identically — DONE.
+- Every resolution records score + band + rival in provenance — DONE (`EntityResolution`).
+
+### Tests + verification (all green in isolation and under `pnpm -r`)
+- **Contracts 77** (+1 example). **Engine 631** (from 609): phonetic (8) + resolve (11) + store resolver
+  slices (3). **Client 299** unchanged. Full `pnpm -r build` clean; `pnpm -r test` green except the known
+  `client engine-link/seam` wall-clock flake, which passes in isolation (untouched by this engine-only slice).
+
+### Deferred / disclosed (never fabricated)
+- `crossSourceCorroboration` and `personAffinity` have NO producer — both default to 1.0; #74's correlator
+  and a real entity graph feed them later. The parameter seam is typed + documented.
+- The resolver is not yet wired to publish a "provisional/ambiguous" surfacing beyond the record state/
+  provenance it stamps; the clarify affordance (#75) and any correction UI are separate. `overrideEntity`
+  remains the sovereign correction primitive (no HTTP route yet — #73's disclosure stands).
+- The distiller passes no `signals` yet (defaults neutral); the seam is on `EntityUpsert` for #74 to fill.
+- Double-Metaphone is a compact in-repo implementation tuned + tested for ASR-homophone collapse, not a
+  line-for-line reference port; a fuller port is a cheap future change if a case demands it.

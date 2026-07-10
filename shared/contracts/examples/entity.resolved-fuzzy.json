@@ -1,0 +1,24 @@
+{ "id": "ent-pidev",
+  "workspaceId": "ws-eng",
+  "kind": "artifact",
+  "name": "pi.dev",
+  "aliases": ["pi dev repo"],
+  "momentRefs": ["mom-3"],
+  "outboundCount": 0,
+  "mentions": 3,
+  "firstSeen": "2026-07-08T09:00:00Z",
+  "lastSeen": "2026-07-10T14:20:00Z",
+  "state": "provisional",
+  "confidence": 0.71,
+  "ambiguity": { "rivalId": "ent-pied-dev", "rivalName": "pied.dev", "margin": 0.04 },
+  "heardAs": [
+    { "text": "pi.dev", "source": "stt", "at": "2026-07-08T09:00:00Z" },
+    { "text": "pie dev", "source": "stt", "at": "2026-07-10T14:20:00Z" }
+  ],
+  "resolutions": [
+    { "at": "2026-07-08T09:00:00Z", "heard": "pi.dev", "score": 0, "band": "new", "phoneticFuzzy": 0, "corpusPrior": 1, "crossSourceCorroboration": 1, "personAffinity": 1 },
+    { "at": "2026-07-09T11:00:00Z", "heard": "pi dev", "score": 1, "band": "auto", "phoneticFuzzy": 1, "corpusPrior": 1.01, "crossSourceCorroboration": 1, "personAffinity": 1 },
+    { "at": "2026-07-10T14:20:00Z", "heard": "pie dev", "score": 0.71, "band": "provisional", "phoneticFuzzy": 0.7, "corpusPrior": 1.02, "crossSourceCorroboration": 1, "personAffinity": 1,
+      "rivalId": "ent-pied-dev", "rivalName": "pied.dev", "rivalScore": 0.67, "margin": 0.04, "ambiguous": true }
+  ]
+}

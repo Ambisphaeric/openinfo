@@ -131,6 +131,46 @@ export const EntityProvenance = Type.Object(
 )
 export type EntityProvenance = Static<typeof EntityProvenance>
 
+/**
+ * One append-only resolution decision (#72) — the scored resolver's inspectable stamp for a single heard
+ * mention that resolved (or failed to resolve) to this entity. It is the "why did this mention land here,
+ * and how sure were we" trail the ambient-entity story needs: `score` is the final blended score, `band`
+ * the decision it fell into (`auto` ≥ the auto threshold ⇒ silent link · `provisional` ⇒ a reviewable
+ * provisional link · `new` ⇒ nothing crossed the link floor, so this record was CREATED for the mention),
+ * and the four multiplicands are recorded verbatim so the score is reproducible: `phoneticFuzzy` (double-
+ * metaphone + edit + token/substring similarity over name/aliases/heardAs), `corpusPrior` (how established
+ * this entity is — sighting count × recency), `crossSourceCorroboration` and `personAffinity` (INPUT
+ * multipliers — #74's correlator and a real entity graph will feed them; both default to the neutral 1.0
+ * today, honestly disclosed, never fabricated). When a plausible RIVAL scored within a small Δ of the
+ * winner the resolution is `ambiguous` (a silent auto-link is downgraded to reviewable): `rivalId`/
+ * `rivalName`/`rivalScore` name it and `margin` is the gap over it — this is what the clarify affordance
+ * (#75) keys off. `override:true` marks a resolution that bypassed scoring because a SOVEREIGN user
+ * override pinned the surface form (overrides outrank scores, always). `heard` is the surface form
+ * resolved. Append-only: a record accretes one entry per mention, never rewritten.
+ */
+export const EntityResolution = Type.Object(
+  {
+    at: IsoTime,
+    heard: Type.String({ minLength: 1, description: 'the surface form (heard/extracted mention) this decision resolved' }),
+    score: Confidence,
+    band: Type.Union(['auto', 'provisional', 'new'].map((b) => Type.Literal(b)), {
+      description: 'auto (≥ auto threshold, silent link) · provisional (reviewable link) · new (created a fresh provisional entity)',
+    }),
+    phoneticFuzzy: Confidence,
+    corpusPrior: Type.Number({ minimum: 0, description: 'establishment multiplier (sighting count × recency); neutral 1.0 for a fresh entity, only boosts' }),
+    crossSourceCorroboration: Type.Number({ minimum: 0, description: 'INPUT multiplier (#74 correlator) — defaults to neutral 1.0; no producer feeds it yet' }),
+    personAffinity: Type.Number({ minimum: 0, description: 'INPUT multiplier (speaker/participant adjacency in the entity graph) — defaults to neutral 1.0; no producer yet' }),
+    rivalId: Type.Optional(Id),
+    rivalName: Type.Optional(Type.String()),
+    rivalScore: Type.Optional(Confidence),
+    margin: Type.Optional(Type.Number({ description: 'winner score minus rival score — small ⇒ ambiguous' })),
+    ambiguous: Type.Optional(Type.Boolean({ description: 'true ⇒ a plausible rival scored within Δ; a silent auto-link was downgraded to reviewable' })),
+    override: Type.Optional(Type.Boolean({ description: 'true ⇒ resolved by a sovereign user override (pinned surface form), bypassing the score' })),
+  },
+  { $id: 'EntityResolution', additionalProperties: false },
+)
+export type EntityResolution = Static<typeof EntityResolution>
+
 export const Entity = Type.Object(
   {
     id: Id,
@@ -170,6 +210,12 @@ export const Entity = Type.Object(
       }),
     ),
     ambiguity: Type.Optional(EntityAmbiguity),
+    resolutions: Type.Optional(
+      Type.Array(EntityResolution, {
+        description:
+          'append-only per-mention resolution trail (#72): the scored resolver stamps score+band+components (+rival, if any) for every mention that resolved to (or created) this entity. Absent on records that predate the resolver.',
+      }),
+    ),
     heardAs: Type.Optional(
       Type.Array(HeardAs, { description: 'source-/confidence-typed ASR variants that resolved to this entity (accumulates as evidence)' }),
     ),
