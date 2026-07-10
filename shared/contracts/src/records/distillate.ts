@@ -1,5 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Id, IsoTime, SlotName } from '../common.js'
+import { Id, IsoTime, SlotName, InvokeUsage } from '../common.js'
 import { Dials } from '../config/voice.js'
 
 /**
@@ -34,6 +34,7 @@ export const Distillate = Type.Object(
         slot: SlotName,
         endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this' }),
         model: Type.Optional(Type.String()),
+        usage: Type.Optional(InvokeUsage),
       },
       { additionalProperties: false },
     ),
