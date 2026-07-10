@@ -2757,3 +2757,67 @@ No engine route, flag, or CONTRIBUTING-recipe surface changed (client-local slic
 true there. CODE_MAP: the `capture/` screen row + the `main/` config row updated (new screen-source.ts module,
 the 3–6s clamp, SENSE_DEFAULTS). No contracts touched (no schema regen — the deliberate client-local call).
 capture-consent.ts untouched (consent boundary intact).
+
+## Slice: #23 — GET/PUT routes for prompt templates, registers, and modes
+
+The prompt layer was the least user-reachable primitive: the `PromptTemplate` contract was real and defaults
+were seeded, but there was NO `/templates` route at all, and registers/modes were read-only (`GET` list only).
+This slice makes all three readable AND writable over the API exactly like `/workflows` already is — the
+prerequisite for the fast-fields prompt-document layer (#61) and user-editable prompt storage. ZERO pipeline
+change: the distiller/actor already read their templates/modes/registers fresh per pass, so a stored edit
+takes effect with no restart (the same read-fresh hot-edit seam `/workflows` proved).
+
+### What landed (follows the `/workflows` route pattern exactly)
+- **`/templates` — a whole new resource.** `GET /templates` lists every prompt-template document (the WHOLE
+  store — the distill/extract/entities trio DistillDocuments seeds PLUS the follow-up/task-extract templates
+  the actor seeds). `GET /templates/:id` resolves a stored template or the shipped default of that id, else
+  404. `PUT /templates/:id` validates the body as `PromptTemplate` (400 + `details` on mismatch), enforces
+  id==route (400), and CREATES on an unknown id (mirroring PUT /workflows /todos /hints).
+- **Registers + modes — write + by-id read (fixed the read-only drift).** Added `GET`/`PUT /registers/:id`
+  and `GET /modes/:id`, and wired `PUT /modes/:id` — which the route table (`shared/contracts/api/routes.ts`)
+  had DECLARED since P2 but no handler ever satisfied. `PUT /registers/:id` exposes the pre-existing
+  `VoiceDocuments.saveRegister` (unknown id appends to the register index); `PUT /modes/:id` runs the new
+  `DistillDocuments.saveMode`. Both validate against their contract (400) and create-on-unknown-id.
+
+### Store seams added (mirroring `WorkflowDocuments`)
+- `DistillDocuments.templates()` (list, defensively includes the seeded defaults like `modes()` does),
+  `templateById(id)` (stored → default-of-that-id → undefined, so the route can 404), `saveTemplate` and
+  `saveMode` (both contract-validate with `Value.Check` BEFORE write — the belt-and-suspenders Tier-A gate
+  `WorkflowDocuments.save` established, so a malformed body throws even if a caller bypasses the route),
+  `modeById(id)`.
+- `VoiceDocuments.registerById(id)` (stored → builtin-of-that-id → undefined). `saveRegister` already existed.
+- NB the guard references the id captured into a local BEFORE `Value.Check`, because `Value.Check`'s type
+  guard narrows the checked variable to `never` in the throw branch (WorkflowDocuments sidesteps this the
+  same way, by interpolating `spec.id` not the checked `next`).
+
+### Contracts (append-only, NO schema regen)
+`routes.ts` gained the six new `RouteDef` rows (templates ×3, registers/:id ×2, modes/:id GET ×1; PUT
+/modes/:id already present). `PromptTemplate`, `Mode`, `Register` schemas already exist and are UNCHANGED, so
+the generator was not run — none of the 8 known-drift schemas was touched.
+
+### Tests + verification (all green)
+- `apps/engine/src/api/http.test.ts` +2 route tests, mirroring the `/workflows` route test: (1) `/templates`
+  — list carries the seeded defaults, GET default → PUT → GET returns the edit (round-trip), garbage body 400,
+  empty-`body` (minLength) 400, id/route mismatch 400, unknown id CREATES and then enumerates+resolves; (2)
+  `/registers` + `/modes` — by-id GET resolves the seeded builtin/meeting mode, unknown 404, invalid 400,
+  mismatch 400, valid edit round-trips, unknown id CREATES and enumerates. A malformed body returns 400 and
+  never persists (the explicit DoD guarantee).
+- Suites (isolated, then full): contracts 68/68, engine 527/527 (+2), client 284/284 (untouched by this
+  slice), workbench (no tests). `pnpm -r test` green; no flake surfaced this run.
+
+### Judgment calls (disclosed)
+- **`/templates` lists the whole prompt-template store, not just the distill trio.** The act templates
+  (follow-up, task-extract) are the SAME `prompt-template` kind seeded by the actor; a single list over the
+  kind is the honest "every editable template" view and matches how `latestOfKind` already backs the other
+  document lists. The test asserts containment of the distill trio rather than an exact set.
+- **Create-on-unknown-id for all three**, mirroring every other document write (PUT /workflows /todos /hints).
+  A newly authored named template/register/mode is inert until a future "which one is active" selector wires
+  it in — a harmless, forward-compatible document write; refusing it would make the resource write-once for
+  the defaults alone, out of step with the rest of the API.
+- **No bus republish.** Checked `/workflows` first (the parent's steer): its PUT does NOT publish — hot-edit
+  there is the read-fresh seam, not an event. Templates/modes/registers are read fresh the same way, so no
+  `*.changed` event was added (only fabric/surface, which have live WS subscribers, publish).
+- **CODE_MAP untouched** — no row became false (the `distill/` and `voice/` rows describe those modules
+  accurately; they simply don't enumerate the new routes, which is not an error).
+- Scope honored: did not touch `apps/client/*` or `surfaces/blocks` rendering (sibling agent's territory);
+  no suppression store.
