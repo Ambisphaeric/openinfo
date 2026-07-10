@@ -1,6 +1,7 @@
 import { escapeHtml, getStartedHtml, editorHtml, hudLayoutSection, localRuntimesHtml, profilesHtml, secretsHtml, starterOfferHtml, tryItHtml, type SetupData } from '../setup/view.js'
 import { renderBenchmarks } from './sections/benchmarks.js'
 import { renderFeatures } from './sections/features.js'
+import { renderLedger } from './sections/ledger.js'
 import { renderPrivacy } from './sections/privacy.js'
 import { renderStatus } from './sections/status.js'
 
@@ -116,8 +117,10 @@ export const SECTIONS: readonly SettingsSection[] = [
   { id: 'local-runtimes', group: 'models', label: 'Local runtimes', render: localRuntimesBody },
   { id: 'features', group: 'pipeline', label: 'Features', render: renderFeatures, liveDot: (d) => ({ on: flagsOn(d) > 0, suffix: String(flagsOn(d)) }) },
   { id: 'hud-layout', group: 'surfaces', label: 'HUD layout', render: hudLayoutBody },
-  // DIAGNOSTICS: Status ships now; Benchmarks reserves the home for the coming capability-benchmarking
-  // system (hardware envelope → measured tok/s per endpoint → queue policies). Its own later slice.
+  // DIAGNOSTICS: Status ships now; the Audit ledger (#65) renders each pass's hop trail + token accounting
+  // from provenance; Benchmarks reserves the home for the coming capability-benchmarking system (hardware
+  // envelope → measured tok/s per endpoint → queue policies). Its own later slice.
+  { id: 'ledger', group: 'diagnostics', label: 'Audit ledger', render: renderLedger, liveDot: (d) => ({ on: (d.ledger?.length ?? 0) > 0, suffix: String(d.ledger?.length ?? 0) }) },
   { id: 'benchmarks', group: 'diagnostics', label: 'Benchmarks', render: renderBenchmarks },
   { id: 'try-it', group: 'bottom', label: 'Try it', render: tryItBody },
   { id: 'privacy', group: 'bottom', label: 'Privacy', render: renderPrivacy },

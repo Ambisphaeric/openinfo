@@ -14,7 +14,7 @@ import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
-import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, type SetupData } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
@@ -654,6 +654,13 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
     data.discovery = await discoverFabric(ctx.discovery.probeList(), ctx.discovery.capabilityMap(), {
       resolveKey: (ref) => ctx.secrets.resolve(ref),
     })
+  }
+
+  // The Audit ledger (#65) is assembled ONLY when its section is active — two cheap in-process reads of the
+  // default workspace's recorded passes (distillates + ocr results), turned into hop trails. Every other
+  // section stays free of the read, mirroring the discovery-only-when-relevant discipline above.
+  if (active.id === 'ledger') {
+    data.ledger = buildLedger(ctx.store.listDistillates('default'), ctx.store.listOcrResults('default'))
   }
 
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })

@@ -74,6 +74,12 @@ export interface SetupData {
   queue?: QueueStatus
   /** A short label for the engine host (e.g. ":8920") shown in the sidebar brand. */
   engineLabel?: string
+  /**
+   * The audit-ledger passes (#65) — the default workspace's recorded pipeline passes (distill + screen),
+   * newest first, each a hop trail with token accounting. Assembled by the settings route (buildLedger over
+   * the store); read only by the Audit-ledger section. Absent ⇒ that section renders its empty state.
+   */
+  ledger?: import('../settings/sections/ledger.js').LedgerPass[]
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */
