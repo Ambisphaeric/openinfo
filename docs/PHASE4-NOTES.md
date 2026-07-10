@@ -3536,6 +3536,54 @@ is design-session territory).
   requirements-ledger / design-session territory. Shipped: the metric + the record field + one honest line.
 - The lag is OVERALL (oldest pending work chunk), not per-kind — matching the overall (mixed-kind) ETA.
 
+## Slice: App instances — Surface.workspaceId binding + instantiate-from-template  *(#99, extends #17, branch feat/99-app-instances, 2026-07-10)*
+
+### The arc — one template, N siloed instances
+An app INSTANCE = a surface document + a bound workspace (its own sqlite silo). The frame: "run the same
+app template for 5 GitHub repos where all the data is siloed." Surfaces already carried the layout; workspaces
+already isolate per-DB and lazy-create — the missing pieces were (1) a surface naming its workspace and (2) a
+one-call clone-from-template. This slice adds both, minimally.
+
+### What shipped
+- **Contract (append-only):** `Surface.workspaceId?` (`shared/contracts/src/config/surface.ts`) + regenerated
+  `schemas/Surface.json` via `pnpm gen`. Existing surfaces (no binding) validate and behave exactly as before.
+- **Query resolution (`apps/engine/src/surfaces/query.ts`):** `compileQuery` gains an optional trailing
+  `defaultWorkspaceId`; `resolveScope` falls back to it when a block names no `params.workspace`. Precedence:
+  explicit `params.workspace` > instance binding > `'default'`. One context-agnostic block document, instantiated
+  for N repos, reads each instance's OWN silo without editing the block.
+- **`/query` seam (`apps/engine/src/api/http.ts`):** `POST /query?surface=<id>` resolves that surface's
+  `workspaceId` binding server-side and passes it as the default. Unknown/unbound id is ignored (falls back to
+  `'default'`) — the binding is an optional convenience, never a hard dependency; a plain block query is unchanged.
+  This is the smallest honest seam: the surface doc is NOT in the POST body (the client fetches layout + POSTs
+  per block), so the route resolves the binding from the named surface at query time.
+- **Instantiate primitive:** `POST /layouts/surfaces/:id/instantiate` with `{newId?, workspaceId?, title?}` →
+  server-side `structuredClone` of the template's blocks into a fresh surface (`surf-<uuid>` if no `newId`),
+  bound workspace (`ws-<slug(title)>` if no `workspaceId`, `ensureWorkspace`'d so the silo is concrete), title
+  `"<name> (copy)"` by default, `version: 1`. Contract-validated before write; **404** unknown source; **409**
+  id collision (never clobber). Publishes `surface.updated`. New instances appear in `GET /layouts/surfaces`
+  automatically (each carries its `workspaceId`), so the tray Apps folder (#98) lists them with **no client change**.
+
+### Verification (all green in isolation and under `pnpm -r`)
+- **Unit (`query.test.ts` +1):** binding used as default; explicit `params.workspace` overrides it; a different
+  binding reads a different silo; no-binding-no-param falls back to `'default'`.
+- **Driven e2e (`http.test.ts` +1, over the LIVE server via `createEngineApp` + `fetch`):** author a template
+  whose moments block names NO workspace → instantiate it TWICE (`ws-repo-a`/`ws-repo-b`) → seed a DIFFERENT
+  moment into each silo → `POST /query?surface=<id>` for each with the SAME block query → **each returns ONLY its
+  silo's moment.** Plus: both instances listed with their bindings; 404 unknown source; 409 collision; empty-body
+  defaults (generated id, slugged workspace, "(copy)" title).
+- `pnpm -r build` clean; `pnpm -r test` green (**contracts 79 · client 324 · engine 636**).
+
+### Disclosed limitations (honest subset — never fabricated)
+- **v0 gives siloed READS + explicit workspace binding.** Session/capture WRITE-side routing (a session started
+  "from an app" writing INTO that app's workspace) is NOT built — sessions are tray-global today. This is
+  DESIGN-SESSION territory (the detection/classification interplay, #99 DoD line 3): write-side routing composes
+  with that story later. No session-per-app mechanism was fabricated.
+- **The binding is a query-time default, not a lock.** An explicit `params.workspace` on a block still wins
+  (intentional: a cross-silo/aggregate block stays possible). Full rename/delete instance UX is #17's scope, not
+  built here.
+- **`?surface=` is opt-in.** A client that POSTs a block query without `?surface=` gets unchanged `'default'`
+  behavior — nothing forces the binding through, so pre-existing callers are untouched.
+
 ## Slice: Multi-window app registry + per-app window options + tray Apps folder  *(M3, #19 #20 #98, branch feat/19-multiwindow-apps, 2026-07-10)*
 
 ### The arc — mini apps in a folder

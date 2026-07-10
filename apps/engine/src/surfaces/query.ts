@@ -23,11 +23,21 @@ export interface QuerySources {
  * Resolve the workspace + session a query runs against from its `params`. A block layout is context-
  * agnostic — it says `session: "current"` (design/renderings/hud-v2.html) and the engine binds that
  * to the workspace's live session at query time, so the SAME document works across sessions. An
- * explicit session id passes through; no session param ⇒ the whole workspace. `workspace` defaults
- * to `default` (single-workspace v0).
+ * explicit session id passes through; no session param ⇒ the whole workspace.
+ *
+ * WORKSPACE RESOLUTION (#99): an explicit per-block `params.workspace` ALWAYS wins. Absent, the workspace
+ * falls back to `defaultWorkspaceId` — the binding of the app INSTANCE this query runs under (the surface's
+ * `workspaceId`, resolved by the /query route from `?surface=<id>`). Absent that too, it is `default`
+ * (single-workspace v0). So one context-agnostic block document, instantiated for N repos, reads each
+ * instance's own silo without editing the block — the per-instance workspace is named on the surface, not
+ * baked into every block's params.
  */
-const resolveScope = (store: WorkspaceRegistry, params: BlockQuery['params']): { workspaceId: string; sessionId?: string } => {
-  const workspaceId = typeof params['workspace'] === 'string' ? params['workspace'] : 'default'
+const resolveScope = (
+  store: WorkspaceRegistry,
+  params: BlockQuery['params'],
+  defaultWorkspaceId?: string,
+): { workspaceId: string; sessionId?: string } => {
+  const workspaceId = typeof params['workspace'] === 'string' ? params['workspace'] : (defaultWorkspaceId ?? 'default')
   const sessionParam = params['session']
   if (sessionParam === 'current') {
     const live = store.liveSession(workspaceId)
@@ -48,8 +58,14 @@ const resolveScope = (store: WorkspaceRegistry, params: BlockQuery['params']): {
  * source is operational engine state (spool.ts), not a store record, so the route injects its snapshot
  * via `sources` (see QuerySources). An unknown workspace reads as [].
  */
-export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: Date = new Date(), sources: QuerySources = {}): QueryResult => {
-  const { workspaceId, sessionId } = resolveScope(store, query.params)
+export const compileQuery = (
+  store: WorkspaceRegistry,
+  query: BlockQuery,
+  now: Date = new Date(),
+  sources: QuerySources = {},
+  defaultWorkspaceId?: string,
+): QueryResult => {
+  const { workspaceId, sessionId } = resolveScope(store, query.params, defaultWorkspaceId)
   const known = store.all().some((ws) => ws.id === workspaceId)
   const top = query.top
 

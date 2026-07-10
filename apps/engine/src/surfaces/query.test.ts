@@ -312,6 +312,35 @@ test('compileQuery resolves the queue source from the INJECTED status snapshot (
   }
 })
 
+test('compileQuery uses the app-instance workspace binding as the default, but an explicit param still wins (#99)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-bind-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // two silos, different data — the instance binding must scope reads to its OWN workspace
+    store.saveMoment(moment('m-a', 'ses-a', '2026-07-07T14:00:00Z'))
+    store.saveMoment({ ...moment('m-b', 'ses-b', '2026-07-07T14:10:00Z'), workspaceId: 'ws-b' })
+
+    // no params.workspace + a bound default ⇒ reads the bound silo (ws-q holds m-a)
+    const bound = compileQuery(store, { source: 'moments', params: {} }, undefined, {}, 'ws-q')
+    assert.deepEqual((bound.items as Moment[]).map((m) => m.id), ['m-a'])
+
+    // a DIFFERENT binding reads the other silo — one context-agnostic block, two instances, two silos
+    const boundB = compileQuery(store, { source: 'moments', params: {} }, undefined, {}, 'ws-b')
+    assert.deepEqual((boundB.items as Moment[]).map((m) => m.id), ['m-b'])
+
+    // an explicit params.workspace OVERRIDES the binding (per-block wins)
+    const explicit = compileQuery(store, { source: 'moments', params: { workspace: 'ws-b' } }, undefined, {}, 'ws-q')
+    assert.deepEqual((explicit.items as Moment[]).map((m) => m.id), ['m-b'])
+
+    // no binding + no param ⇒ 'default' (unchanged single-workspace v0 behavior), which is empty here
+    const fallback = compileQuery(store, { source: 'moments', params: {} })
+    assert.deepEqual(fallback.items, [])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('compileQuery returns [] (not an error) for the unbuilt ledger store and unknown workspaces', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-empty-'))
   const store = new WorkspaceRegistry(dir)

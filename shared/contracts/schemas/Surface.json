@@ -1,6 +1,7 @@
 {
   "$id": "Surface",
   "additionalProperties": false,
+  "description": "workspaceId (#99, append-only, optional): an APP INSTANCE is this surface bound to a workspace silo. When present it becomes the DEFAULT workspace for this surface’s block queries (POST /query?surface=<id>) — an explicit per-block params.workspace still wins. Absent ⇒ unchanged behavior (queries default to ‘default’). Same template instantiated for N repos = N surfaces, each naming its own workspace.",
   "type": "object",
   "required": [
     "id",
@@ -336,6 +337,11 @@
     "version": {
       "minimum": 1,
       "type": "integer"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
     }
   }
 }

@@ -86,7 +86,13 @@ export const Surface = Type.Object(
     context: Type.String({ minLength: 1, description: 'meeting | deep-work | idle | any | user-defined' }),
     stack: Type.Array(Block, { minItems: 1 }),
     version: Type.Integer({ minimum: 1 }),
+    workspaceId: Type.Optional(Id),
   },
-  { $id: 'Surface', additionalProperties: false },
+  {
+    $id: 'Surface',
+    additionalProperties: false,
+    description:
+      'workspaceId (#99, append-only, optional): an APP INSTANCE is this surface bound to a workspace silo. When present it becomes the DEFAULT workspace for this surface’s block queries (POST /query?surface=<id>) — an explicit per-block params.workspace still wins. Absent ⇒ unchanged behavior (queries default to ‘default’). Same template instantiated for N repos = N surfaces, each naming its own workspace.',
+  },
 )
 export type Surface = Static<typeof Surface>
