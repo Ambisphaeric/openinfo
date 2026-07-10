@@ -1,0 +1,18 @@
+{
+  "id": "oa:default:sess-9f2",
+  "workspaceId": "default",
+  "sessionId": "sess-9f2",
+  "nature": "meeting",
+  "direction": "learn",
+  "topics": ["Q3 GTM launch sequencing", "vendor security review"],
+  "provenance": {
+    "templateId": "tpl-judge-orientation",
+    "endpoint": "llm.judge",
+    "model": "big-32b",
+    "windowStart": "2026-07-10T12:00:00.000Z",
+    "windowEnd": "2026-07-10T12:01:00.000Z",
+    "classifiedAt": "2026-07-10T12:01:02.000Z"
+  },
+  "updatedAt": "2026-07-10T12:01:02.000Z",
+  "schemaVersion": 1
+}

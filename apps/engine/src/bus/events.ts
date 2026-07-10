@@ -1,4 +1,4 @@
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, Session, Surface, TranscriptUpdate } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, Session, SessionAnnotation, Surface, TranscriptUpdate } from '@openinfo/contracts'
 
 export interface EngineEvents {
   'capture.received': CaptureChunk
@@ -18,6 +18,9 @@ export interface EngineEvents {
   // Fast-field fan-out (#61): a field's latest value landed. Published immediately (mirrors
   // transcript.updated) AND persisted as a FieldValue — the ephemeral-then-durable substrate.
   'field.updated': FieldValue
+  // Judge-tier orientation pass (#131): the session's nature/direction/topics were (re)classified. Published
+  // when a SessionAnnotation lands (annotate-and-correct) AND persisted — the trigger source #134 subscribes to.
+  'orientation.updated': SessionAnnotation
   'session.started': Session
   'session.ended': Session
   'session.switched': Session

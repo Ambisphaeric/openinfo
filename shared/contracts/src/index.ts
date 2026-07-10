@@ -14,6 +14,7 @@ export * from './records/teach.js'
 export * from './records/commitment.js'
 export * from './records/signal.js'
 export * from './records/fieldValue.js'
+export * from './records/sessionAnnotation.js'
 export * from './config/voice.js'
 export * from './config/surface.js'
 export * from './config/mode.js'
@@ -47,6 +48,7 @@ import { TeachSignal, TeachSignalKind, EntityCorrectionSignal } from './records/
 import { Commitment, Watcher } from './records/commitment.js'
 import { ItemSignal, ItemSignalKind } from './records/signal.js'
 import { FieldValue, FieldValueProvenance, JudgeReview } from './records/fieldValue.js'
+import { SessionAnnotation, OrientationProvenance } from './records/sessionAnnotation.js'
 import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './config/voice.js'
 import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surface.js'
 import { Mode } from './config/mode.js'
@@ -66,7 +68,7 @@ import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarS
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
   InvokeUsage,
-  Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, EntityCorrectionSignal, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview,
+  Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, EntityCorrectionSignal, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview, SessionAnnotation, OrientationProvenance,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, FastFieldBinding, EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,

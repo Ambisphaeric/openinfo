@@ -2,7 +2,7 @@ import type { Mode, PromptTemplate } from '@openinfo/contracts'
 import { Mode as ModeSchema, PromptTemplate as PromptTemplateSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { PREVIOUS_BUILTIN_BODIES, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode } from './defaults.js'
+import { PREVIOUS_BUILTIN_BODIES, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode, defaultOrientationTemplate } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 const MODE_KIND = 'mode'
@@ -11,7 +11,7 @@ const MODE_KIND = 'mode'
  * unseeded store, mirroring WorkflowDocuments' loadDefaultWorkflow fallback for `workflow-default`. The
  * three fast-field prompt documents (#61) are seeded alongside the distill/extract trio — they are the
  * SAME `prompt-template` kind, discriminated by `kind: 'field'` + a `field` binding. */
-const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate, ...defaultFieldTemplates, defaultJudgeTemplate]
+const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate, ...defaultFieldTemplates, defaultJudgeTemplate, defaultOrientationTemplate]
 
 /**
  * Store-backed distill config docs (prompt templates + modes), consistent with FabricDocuments
@@ -38,6 +38,12 @@ export class DistillDocuments {
     // tier-gated on a judge-capable endpoint (see distill/judge.ts).
     if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultJudgeTemplate.id)) {
       this.store.layouts.put(TEMPLATE_KIND, defaultJudgeTemplate.id, defaultJudgeTemplate)
+    }
+    // The orientation judge document (#131) — the same seed-if-absent as the verdict judge; it too is
+    // tier-gated on a judge-capable endpoint and edits over the same GET/PUT /templates routes. judgeTemplates()
+    // returns it (tier: 'judge'); the scheduler routes it by `produces: 'orientation'`.
+    if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultOrientationTemplate.id)) {
+      this.store.layouts.put(TEMPLATE_KIND, defaultOrientationTemplate.id, defaultOrientationTemplate)
     }
     if (!this.store.layouts.getLatest<Mode>(MODE_KIND, defaultMeetingMode.id)) {
       this.store.layouts.put(MODE_KIND, defaultMeetingMode.id, defaultMeetingMode)

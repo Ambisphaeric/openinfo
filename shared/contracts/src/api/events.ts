@@ -12,6 +12,9 @@ export const Events = {
   // A fast field's latest value changed (#61) — published immediately when a fan-out result lands,
   // mirroring transcript.updated; the value is ALSO persisted (FieldValue), unlike the ephemeral feed.
   'field.updated': 'FieldValue',
+  // The judge-tier orientation pass (#131) re-classified the session's nature/direction/topics — the
+  // trigger source a contextual sidebar (#134) subscribes to. Payload is the engine-stamped SessionAnnotation.
+  'orientation.updated': 'SessionAnnotation',
   'draft.created': 'Draft',
   'fabric.changed': 'Fabric',
   'surface.updated': 'Surface',

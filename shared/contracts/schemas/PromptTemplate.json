@@ -153,6 +153,19 @@
           "minimum": 0,
           "description": "judge tier only (#62): minimum re-review interval, decoupled from the fast fan-out; absent ⇒ engine default",
           "type": "integer"
+        },
+        "produces": {
+          "description": "judge tier only (#131): output shape — 'verdict' (default, #62 per-field review) or 'orientation' (session-nature classification landed as a SessionAnnotation)",
+          "anyOf": [
+            {
+              "const": "verdict",
+              "type": "string"
+            },
+            {
+              "const": "orientation",
+              "type": "string"
+            }
+          ]
         }
       }
     },

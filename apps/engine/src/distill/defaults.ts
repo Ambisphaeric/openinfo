@@ -215,6 +215,41 @@ export const defaultJudgeTemplate: PromptTemplate = {
 }
 
 /**
+ * The shipped judge-tier ORIENTATION prompt document (#131) — the occasional, global classification of
+ * the session's nature that the fast per-window prompts should NOT each re-derive. It is a `field`-kind
+ * PromptTemplate with a `judge`-tier binding whose `produces: 'orientation'` routes it to the orientation
+ * path (not the #62 per-field verdict path), so it seeds and edits over the SAME GET/PUT /templates routes
+ * and rides the SAME judge cadence + tier-gate as the verdict judge (no judge endpoint ⇒ logged no-op).
+ *
+ * The body is NEUTRAL (#130): a factual classification job over the single `{{source}}` input (the same
+ * transcript window the tiers see), emitting ONE strict JSON object — nature (meeting/call/solo-work),
+ * direction (teach/learn per the learn/teach canon), topics (the taxonomy). No persona, no dials. The
+ * engine stamps the SessionAnnotation ids/session/provenance/timestamps; the model controls only the
+ * classification text, and "unclear" is the honest answer when the source is too thin — invent nothing.
+ */
+export const defaultOrientationTemplate: PromptTemplate = {
+  id: 'tpl-judge-orientation',
+  name: 'judge-orientation',
+  kind: 'field',
+  slot: 'llm',
+  builtin: true,
+  description: 'judge (#131): occasional global classification of the session orientation — nature/direction/topics — landed as a SessionAnnotation',
+  field: { fieldId: 'orientation', tier: 'judge', trigger: { kind: 'transcript', minChars: 80 }, scope: 'session', cadenceMs: 60_000, produces: 'orientation' },
+  body:
+    'You classify the current orientation of a work session from the recent transcript window below. ' +
+    'Return ONLY a JSON object, no prose, no code fences. Fields:\n' +
+    '{"nature": one of "meeting"|"call"|"solo-work"|"unclear", ' +
+    '"direction": one of "teach"|"learn"|"mixed"|"unclear", ' +
+    '"topics": string[] (up to 5 short subject phrases, most salient first)}.\n' +
+    '- nature: the shape of the session — a multi-party meeting, a one-to-one call, or solo work.\n' +
+    '- direction: whether the user is mainly explaining to others (teach) or being informed (learn); "mixed" if both, "unclear" if neither is evident.\n' +
+    '- topics: the subjects under discussion, as short phrases.\n' +
+    'Classify only what the source supports; if it is too thin to tell, use "unclear" and an empty topics array. Invent nothing.\n\n' +
+    'SOURCE (transcript window {{windowStart}} -> {{windowEnd}}):\n{{source}}\n\n' +
+    'JSON object:',
+}
+
+/**
  * The default meeting mode — window config lives here (mode document owns merge windows, per
  * ARCHITECTURE §7). Mirrors shared/contracts/examples/mode.meeting.json; the distiller reads only
  * distill.mergeWindow + distill.tokenBudget from it in this slice.

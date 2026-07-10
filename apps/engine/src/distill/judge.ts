@@ -1,4 +1,5 @@
-import type { CaptureChunk, Endpoint, Fabric, FieldValue, JudgeReview, PromptTemplate } from '@openinfo/contracts'
+import type { CaptureChunk, Endpoint, Fabric, FieldValue, JudgeReview, PromptTemplate, SessionAnnotation } from '@openinfo/contracts'
+import { SESSION_ANNOTATION_SCHEMA_VERSION } from '@openinfo/contracts'
 import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { interpolateTemplate } from '../voice/index.js'
@@ -27,6 +28,26 @@ const JUDGE_CONTEXT_CHARS = 8000
 
 /** Default judge maxTokens — a review of several fields with corrections needs more room than a fast field. */
 const JUDGE_MAX_TOKENS = 600
+
+/** LayoutStore kind for the per-session orientation annotation (#131) — a config-shaped doc, like field-value. */
+const SESSION_ANNOTATION_KIND = 'session-annotation'
+
+/** Engine cap on the topic taxonomy — the model never controls counts (#131); a long list is truncated, never trusted. */
+const MAX_ORIENTATION_TOPICS = 5
+
+/**
+ * How the orientation classification is APPLIED to the pipeline (#131) — the gate-ready seam. Production
+ * (classify the source) is decoupled from APPLICATION (this switch), funneled through the single
+ * `applyAnnotation` method:
+ *   - `annotate` (default, shipped): persist the SessionAnnotation + emit `orientation.updated`; the
+ *     pipeline's records are NOT held — the classification rides alongside them (annotate-and-correct).
+ *   - `gate` (future config flip, NOT enforced yet): the SAME classification would HOLD downstream writes
+ *     until a session is classified. The seam is that only this application step changes — production,
+ *     the record shape, and the event are all unchanged — so flipping requires no re-architecture. Today
+ *     the `gate` branch annotates + logs that the hold is not yet enforced (honest: no half-built gate).
+ * See PHASE4-NOTES for the full seam note.
+ */
+export type OrientationDisposition = 'annotate' | 'gate'
 
 /** The verdicts a judge may return — the dual-input review outcomes (#62). */
 type Verdict = 'confirm' | 'correct' | 'flag'
@@ -64,6 +85,10 @@ export interface JudgeSchedulerDeps {
   values: FieldValueStore
   /** publish the overruled field value (field.updated) so the transition reaches WS clients; optional in tests. */
   publish?: (value: FieldValue) => void | Promise<void>
+  /** publish the orientation annotation (orientation.updated) so the classification reaches WS clients (#131); optional in tests. */
+  publishAnnotation?: (annotation: SessionAnnotation) => void | Promise<void>
+  /** how the orientation classification is applied — the gate-ready seam (#131). Defaults to 'annotate'. */
+  orientationDisposition?: OrientationDisposition
   /** injectable for tests; defaults to invoking the judge-designated llm endpoint (a sub-fabric of one endpoint). */
   invoke?: LlmInvoke
   resolveKey?: SecretResolver
@@ -99,6 +124,8 @@ export class JudgeScheduler {
   private readonly docs: DistillDocuments
   private readonly values: FieldValueStore
   private readonly publish: ((v: FieldValue) => void | Promise<void>) | undefined
+  private readonly publishAnnotation: ((a: SessionAnnotation) => void | Promise<void>) | undefined
+  private readonly orientationDisposition: OrientationDisposition
   private readonly invoke: LlmInvoke
   private readonly endpointName: string
   private readonly now: () => Date
@@ -110,6 +137,8 @@ export class JudgeScheduler {
     this.docs = deps.docs
     this.values = deps.values
     this.publish = deps.publish
+    this.publishAnnotation = deps.publishAnnotation
+    this.orientationDisposition = deps.orientationDisposition ?? 'annotate'
     this.endpointName = deps.endpointName ?? process.env['OPENINFO_JUDGE_ENDPOINT'] ?? JUDGE_ENDPOINT_NAME
     this.now = deps.now ?? (() => new Date())
     this.log = deps.log ?? (() => undefined)
@@ -146,6 +175,10 @@ export class JudgeScheduler {
    * Review the fast-field result set for every session with material in this batch. Returns every
    * FieldValue the judge overruled (persisted + published). Explainable-empty — [] — when there is no
    * judge document, no judge endpoint (logged degradation), no text, or nothing to review; never an error.
+   *
+   * A judge document whose binding `produces: 'orientation'` (#131) is routed to the orientation path
+   * instead: it classifies the session and lands a SessionAnnotation (persisted + `orientation.updated`),
+   * which is NOT part of the returned FieldValue set — read it via `latestAnnotation`.
    */
   async runJudge(chunks: readonly CaptureChunk[]): Promise<FieldValue[]> {
     const judges = this.docs.judgeTemplates()
@@ -179,6 +212,12 @@ export class JudgeScheduler {
       const sessionValues = this.values.list(workspaceId, sessionId)
 
       for (const judge of judges) {
+        // #131: an orientation judge document classifies the session (nature/direction/topics) and lands a
+        // SessionAnnotation — a DIFFERENT output than the #62 per-field verdict path. Routed by `produces`.
+        if (judge.field?.produces === 'orientation') {
+          await this.runOrientation(judge, { workspaceId, sessionId, source, windowStart, windowEnd })
+          continue
+        }
         const overruled = await this.runOne(judge, {
           workspaceId,
           sessionId,
@@ -269,6 +308,108 @@ export class JudgeScheduler {
       overruled.push(next)
     }
     return overruled
+  }
+
+  /**
+   * Run one ORIENTATION judge document (#131) over a session's source window: classify the session's
+   * nature/direction/topics, stamp a SessionAnnotation (engine owns ids/session/provenance/timestamps; the
+   * model controls only the classification text — never ids or counts), then APPLY it through the gate-ready
+   * seam. Honest degradation: an invoke failure or an unparseable response is skipped-with-log — no
+   * fabricated classification, and any earlier annotation is left in place (annotate-and-correct).
+   */
+  private async runOrientation(
+    template: PromptTemplate,
+    ctx: { workspaceId: string; sessionId: string; source: string; windowStart: string; windowEnd: string },
+  ): Promise<SessionAnnotation | undefined> {
+    // Orientation is a SINGLE-input classification: it takes only {{source}} (the same window the tiers saw)
+    // plus the window bounds — no {{results}} set (that is the #62 verdict contract, not this one).
+    const prompt = interpolateTemplate(template.body, {
+      source: ctx.source,
+      windowStart: ctx.windowStart,
+      windowEnd: ctx.windowEnd,
+    })
+    let result: LlmResult
+    try {
+      result = await this.invoke([{ role: 'user', content: prompt }], { maxTokens: JUDGE_MAX_TOKENS })
+    } catch (error) {
+      this.log(`orientation ${template.id} failed: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+    const parsed = this.parseOrientation(result.text)
+    if (parsed === undefined) {
+      this.log(`orientation ${template.id}: no parseable classification in session ${ctx.sessionId} — left unchanged`)
+      return undefined
+    }
+    const classifiedAt = this.now().toISOString()
+    // Engine STAMPS everything but the classification text (the model output is never trusted for ids/counts).
+    // The id is deterministic per session ⇒ annotate-and-correct: a later pass persists a new version in place.
+    const annotation: SessionAnnotation = {
+      id: JudgeScheduler.annotationId(ctx.workspaceId, ctx.sessionId),
+      workspaceId: ctx.workspaceId,
+      sessionId: ctx.sessionId,
+      nature: parsed.nature,
+      direction: parsed.direction,
+      topics: parsed.topics,
+      provenance: {
+        templateId: template.id,
+        endpoint: result.endpoint,
+        ...(result.model !== undefined ? { model: result.model } : {}),
+        windowStart: ctx.windowStart,
+        windowEnd: ctx.windowEnd,
+        classifiedAt,
+      },
+      updatedAt: classifiedAt,
+      schemaVersion: SESSION_ANNOTATION_SCHEMA_VERSION,
+    }
+    return this.applyAnnotation(annotation)
+  }
+
+  /**
+   * Apply an orientation classification — the GATE-READY SEAM (#131). Production (classify) is already done;
+   * this is the SINGLE point that decides what to DO with the reading, switched on `orientationDisposition`.
+   * Flipping annotate→gate later changes ONLY this method (plus the drain's hold/release) — production, the
+   * SessionAnnotation shape, and the `orientation.updated` event are all untouched, so no re-architecture is
+   * needed. See PHASE4-NOTES. Returns the applied annotation.
+   */
+  private async applyAnnotation(annotation: SessionAnnotation): Promise<SessionAnnotation> {
+    if (this.orientationDisposition === 'gate') {
+      // FUTURE FLIP: hold the session's pending records until it is classified, then release. NOT enforced
+      // yet — we annotate honestly so there is no half-built gate. The hold/release lands here + in the drain.
+      this.log(`orientation: 'gate' disposition set but not yet enforced — annotating session ${annotation.sessionId}`)
+    }
+    this.store.layouts.put<SessionAnnotation>(SESSION_ANNOTATION_KIND, annotation.id, annotation)
+    await this.publishAnnotation?.(annotation)
+    this.log(`orientation: session ${annotation.sessionId} → ${annotation.nature}/${annotation.direction} (${annotation.topics.length} topic(s))`)
+    return annotation
+  }
+
+  /** The deterministic annotation-document id for a session (#131) — the id IS the SessionAnnotation.id. */
+  static annotationId(workspaceId: string, sessionId: string): string {
+    return `oa:${workspaceId}:${sessionId}`
+  }
+
+  /** The current orientation annotation for a session (latest version), or undefined if never classified (#131). */
+  latestAnnotation(workspaceId: string, sessionId: string): SessionAnnotation | undefined {
+    return this.store.layouts.getLatest<SessionAnnotation>(SESSION_ANNOTATION_KIND, JudgeScheduler.annotationId(workspaceId, sessionId))?.body
+  }
+
+  /**
+   * Parse the orientation model output into a well-formed classification (#131); defensive, never throws.
+   * Takes the first object-shaped candidate; a blank/absent nature or direction defaults to the honest
+   * "unclear" (never an invented value), and topics are trimmed, de-blanked, and engine-capped (never
+   * count-inflated). Returns undefined only when nothing object-shaped could be recovered at all.
+   */
+  private parseOrientation(raw: string): { nature: string; direction: string; topics: string[] } | undefined {
+    const { candidates } = parseJsonCandidates(raw)
+    const obj = candidates.find((c): c is Record<string, unknown> => c !== null && typeof c === 'object' && !Array.isArray(c))
+    if (obj === undefined) return undefined
+    const str = (v: unknown, fallback: string): string => (typeof v === 'string' && v.trim() !== '' ? v.trim() : fallback)
+    const rawTopics = Array.isArray(obj['topics']) ? obj['topics'] : []
+    const topics = rawTopics
+      .filter((t): t is string => typeof t === 'string' && t.trim() !== '')
+      .map((t) => t.trim())
+      .slice(0, MAX_ORIENTATION_TOPICS)
+    return { nature: str(obj['nature'], 'unclear'), direction: str(obj['direction'], 'unclear'), topics }
   }
 
   /** Render the fast-result set into the `{{results}}` block the judge reviews — labeled, fieldId-keyed. */
