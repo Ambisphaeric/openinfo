@@ -3741,10 +3741,14 @@ The second real app in the Apps folder: `surf-openinfo-fields`, the fast-fields 
 visible as its own mini app instead of rows riding the default HUD.
 
 ### What shipped
-- **Seeded surface** (`surfaces/defaults.ts` + `templates/openinfo-fields/surface.json`): three
-  always-visible fields blocks bound to the seeded fast-field prompts (topic / entities-mentioned
-  / work-items) + the live-transcript strip, seeded by `ensureDefaults` (seeds-if-absent — user
-  edits never clobbered; proven in documents tests).
+- **Seeded surface** (`surfaces/defaults.ts` + `templates/openinfo-fields/surface.json`): the stack is
+  `now` · ONE always-visible `fields` block (top 8 — all three seeded fast-field prompts render as its
+  rows: topic / entities-mentioned / work-items) · the `distillates` stream (the durable transcript the
+  fields are distilled FROM, so the provenance chain is on one surface). The EPHEMERAL live-transcript
+  strip (#58) is not a stack block — it is the HUD controller's event-fed layer, inherited because the
+  app takes Glass chrome (below). Seeding is the new `SEEDED_SURFACES` list walked by `ensureDefaults`
+  (seeds-if-absent — user edits never clobbered) and defensively unshifted by `list()`, so the app rides
+  GET /layouts/surfaces → the tray Apps folder with zero client work.
 - **Window px** (`main/window-options.ts`): `surf-openinfo-fields` takes the GLASS chrome at
   width 480 — deliberately NOT the framed `app` chrome: it carries the same sensitive meeting
   content as the HUD (live fields, distillate stream), so it inherits frameless/transparent/
@@ -3760,12 +3764,27 @@ visible as its own mini app instead of rows riding the default HUD.
   empty. The renderer is pure (cannot read runtime flags), so the line names the enablement path
   in every non-suppressed empty rather than falsely asserting off vs on.
 
+### Tests + verification (all green under `pnpm -r`)
+- Contracts 79 · Engine 637 (from 636: documents test — the fields app seeds once, serves its canon
+  stack, and a re-seed after a user edit does NOT clobber; the two /layouts/surfaces list assertions
+  extended for the second seeded default) · Client 337 (from 334: window-options — fields app takes
+  Glass chrome at 480 and unknown ids still fall to `app`; fields empty-state names the flag; NEW
+  `fields-app.test.ts` — the SHIPPED document loaded from templates/openinfo-fields/surface.json and
+  DRIVEN through the real `renderSurface` + `defaultBlockRegistry` with FieldValues shaped as the #61
+  fan-out lands them: all three fields render with why-lines + provisional dots, dismiss glyph LIVE
+  with the fields-source suppression payload, pin/follow-up honestly inert, distillate stream beneath,
+  and the flag-naming empty state when hydration is empty).
+
 ### Disclosed
 - The app shares the default workspace until the user instantiates it with a binding (#99's
   route makes `POST /layouts/surfaces/surf-openinfo-fields/instantiate` a one-call per-repo
   clone — that flow is the intended power-user path, not pre-built instances).
+- The empty-state line names the enablement path unconditionally: the renderer is pure and cannot
+  read the runtime flag, so it cannot distinguish "flag off" from "flag on, nothing produced yet" —
+  the copy is written to be accurate in both cases rather than fabricating a flag readout.
 - Slice finished inline after the implementing agent hit the org spend limit mid-slice 3
-  (committed: seeding; finished inline: window px, block affordances, empty-state + test).
+  (committed: seeding; finished inline: window px, block affordances, empty-state + test), then the
+  agent resumed and completed the driven-render tests + docs.
 
 ## Slice: the diagnostics app — transcription inspector + gate chains on a seeded surface  *(M5→apps+qa, #101, branch feat/101-diagnostics-app, 2026-07-10)*
 
