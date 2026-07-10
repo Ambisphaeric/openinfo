@@ -2240,7 +2240,7 @@ test('GET /fabric/local/models returns the seeded catalog with runtime availabil
     const base = `http://127.0.0.1:${address.port}`
     const models = (await (await fetch(`${base}/fabric/local/models`)).json()) as { model: { id: string }; runtimeAvailable: boolean; state: string }[]
     assert.ok(models.length >= 2)
-    assert.ok(models.some((m) => m.model.id === 'qwen2.5-1.5b-instruct-q4'))
+    assert.ok(models.some((m) => m.model.id === 'qwen3-1.7b-q4'))
     for (const m of models) assert.equal(typeof m.runtimeAvailable, 'boolean')
     const notFound = await fetch(`${base}/fabric/local/download`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ modelId: 'ghost' }),

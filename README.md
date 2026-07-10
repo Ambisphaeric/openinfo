@@ -172,6 +172,16 @@ has loaded (`GET /v1/models`), classifies models by name, and offers one button 
 `config-1` profile. If nothing is found it offers a small vetted starter model, or prints the exact
 `brew install` line when a runtime is missing.
 
+**What to run.** For the real-time loop, serve a current-generation ~8B-class chat model for the fast
+`llm` slot and a parakeet-class model for `stt` (order-of-milliseconds per chunk; whisper is a slower
+CPU fallback). The starter-model downloads are a tier-zero warm-up — enough for a first moment on CPU,
+not the sustained cadence. The loop needs a serving runtime with model residency, concurrency, and
+current throughput optimizations (speculative-decoding-class features): **mlx/omlx** on Apple silicon,
+a current **CUDA** equivalent on Windows/Linux. Runtimes without those will not keep up. Adding a
+27B / 35B-A3B-class model on any OpenAI-compatible endpoint lights up the judging layer. The full
+BASIC → JUDGE tier ladder — tied to the feature flags' `minTier` gates — is in
+[docs/model-support-matrix.md](docs/model-support-matrix.md).
+
 ```bash
 open http://localhost:8787/settings   # or visit it in any browser (/setup 301s here)
 curl localhost:8787/fabric/discover   # the same detection, as JSON (servers + a config-1 suggestion)
