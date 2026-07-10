@@ -22,6 +22,14 @@ export interface TranscriptSegment {
   text: string
   startSec?: number
   endSec?: number
+  /**
+   * Whisper-class no-speech probability for this segment (0..1): the model's confidence that the window
+   * held NO speech. Present only for flavors that offer it — openai/omlx verbose_json carry a per-segment
+   * `no_speech_prob`; whisper.cpp `/inference` and parakeet-class engines do not. Consumed by
+   * `dropSilentSegments` to drop hallucinated stock phrases from near-silent windows before they reach the
+   * distill accumulator (#69). Append-only + optional: a consumer that does not care never sees it.
+   */
+  noSpeechProb?: number
 }
 
 /**
@@ -34,6 +42,59 @@ export interface TranscriptResult {
   language?: string
   durationSec?: number
   segments?: TranscriptSegment[]
+}
+
+/**
+ * Default no-speech probability at or above which a whisper-class segment is treated as silence and
+ * dropped before it can enter the distill accumulator (#69). Whisper's own decoder defaults its
+ * `no_speech_threshold` to 0.6 but only acts on it in combination with `avg_logprob`; using
+ * `no_speech_prob` as the SOLE gate we set the bar higher (0.8) so only high-confidence silence is
+ * dropped and genuinely quiet speech is spared. The target failure mode — plausible stock phrases from
+ * an empty room — sits well above 0.9 in practice, comfortably above 0.8.
+ */
+export const DEFAULT_NO_SPEECH_THRESHOLD = 0.8
+
+/** The outcome of `dropSilentSegments`: the surviving transcript plus how many segments were dropped. */
+export interface SilenceFilterResult {
+  /** transcript rebuilt from the surviving (speech) segments, trimmed; '' when every segment was silence */
+  text: string
+  /** segments dropped as no-speech / hallucination */
+  dropped: number
+  /** total segments the flavor offered (0 when it offered none — no per-segment signal to filter on) */
+  total: number
+}
+
+/**
+ * Drop no-speech / hallucinated segments from a normalized transcript BEFORE it reaches the distill
+ * accumulator (#69) and rebuild the transcript from what survives.
+ *
+ * - whisper-class (openai/omlx verbose_json): a segment whose `noSpeechProb` is at/above `threshold` is
+ *   silence — the known failure mode where a near-silent window decodes as a confident stock phrase.
+ * - parakeet-class (no `noSpeechProb`): there is no confidence signal, so the only HONEST per-segment
+ *   test is empty/whitespace text — that is all this drops for those flavors. Disclosed weakness: a
+ *   parakeet hallucination with non-empty text is NOT caught here; the real defense there is the optional
+ *   client-side energy gate (out of scope for this slice), which stops the window ever being shipped.
+ *
+ * A flavor that offered no segments at all (plain `{text}`, e.g. whisper.cpp `/inference?json`) has no
+ * per-segment signal, so its whole transcript passes through unchanged (`dropped:0, total:0`) — pure ''
+ * silence is still handled by the caller's existing empty-text check.
+ */
+export const dropSilentSegments = (
+  result: TranscriptResult,
+  threshold: number = DEFAULT_NO_SPEECH_THRESHOLD,
+): SilenceFilterResult => {
+  const segments = result.segments
+  if (segments === undefined || segments.length === 0) return { text: result.text.trim(), dropped: 0, total: 0 }
+  const kept: string[] = []
+  let dropped = 0
+  for (const seg of segments) {
+    const silent = seg.noSpeechProb !== undefined ? seg.noSpeechProb >= threshold : seg.text.trim().length === 0
+    if (silent) dropped += 1
+    else kept.push(seg.text)
+  }
+  // Segment texts carry whisper's leading-space convention, so join with '' and trim once at the end —
+  // this reconstructs the same string the flavor's own `text` field would have, minus the dropped spans.
+  return { text: kept.join('').trim(), dropped, total: segments.length }
 }
 
 /** The STT wire dialects the engine speaks. A new engine adds a member + an adapter, nothing else. */
@@ -80,8 +141,10 @@ const openAiSegments = (raw: unknown): TranscriptSegment[] | undefined => {
     const segment: TranscriptSegment = { text }
     const start = asNumber((seg as { start?: unknown }).start)
     const end = asNumber((seg as { end?: unknown }).end)
+    const noSpeechProb = asNumber((seg as { no_speech_prob?: unknown }).no_speech_prob)
     if (start !== undefined) segment.startSec = start
     if (end !== undefined) segment.endSec = end
+    if (noSpeechProb !== undefined) segment.noSpeechProb = noSpeechProb
     out.push(segment)
   }
   return out.length > 0 ? out : undefined
@@ -146,12 +209,15 @@ const normalizeWhisperServer = (body: unknown): TranscriptResult | undefined => 
 export const STT_ADAPTERS: Record<SttFlavor, SttAdapter> = {
   openai: {
     flavor: 'openai',
-    request: { sendModel: true, responseFormat: 'json', path: '/v1/audio/transcriptions' },
+    // verbose_json (not plain json) so the response carries per-segment `no_speech_prob` — the signal the
+    // silence filter (#69) needs to drop hallucinated stock phrases from near-silent windows. The
+    // normalizer already tolerates the plain `{text}` shape, so a host that ignores the field still works.
+    request: { sendModel: true, responseFormat: 'verbose_json', path: '/v1/audio/transcriptions' },
     normalize: normalizeOpenAi,
   },
   omlx: {
     flavor: 'omlx',
-    request: { sendModel: true, responseFormat: 'json', path: '/v1/audio/transcriptions' },
+    request: { sendModel: true, responseFormat: 'verbose_json', path: '/v1/audio/transcriptions' },
     normalize: normalizeOpenAi,
   },
   'whisper-server': {

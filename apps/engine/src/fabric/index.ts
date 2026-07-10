@@ -13,10 +13,13 @@ export { invokeStt, type SttAudio, type SttResult, type SttOptions } from './inv
 export {
   selectSttAdapter,
   STT_ADAPTERS,
+  dropSilentSegments,
+  DEFAULT_NO_SPEECH_THRESHOLD,
   type SttAdapter,
   type SttFlavor,
   type TranscriptResult,
   type TranscriptSegment,
+  type SilenceFilterResult,
 } from './stt-adapters.js'
 export { invokeVlm, invokeOcr, type ScreenTextResult, type ScreenBlock, type ScreenInvokeOptions } from './invoke.js'
 export {
