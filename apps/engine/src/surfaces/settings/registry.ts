@@ -79,7 +79,9 @@ const localRuntimesBody = (data: SetupData): string => {
   return (
     '<div class="sub">Runtimes openinfo can use locally: servers already running on this machine (adopted over ' +
     'HTTP), and starter models openinfo can fetch and run for you (llama.cpp for chat, whisper.cpp for audio — ' +
-    'downloaded models become <span class="mono">local</span> endpoints).</div>' +
+    'downloaded models become <span class="mono">local</span> endpoints). The starter path is a CPU-friendly ' +
+    'tier-zero warm-up; the real-time loop needs a serving runtime with model residency, concurrency, and current ' +
+    'throughput optimizations (mlx/omlx on Apple silicon, a CUDA equivalent elsewhere) — see the model support matrix.</div>' +
     detected +
     (offer || (detected ? '' : '<div class="card"><div class="note">No runtimes detected and no starter models are catalogued.</div></div>'))
   )

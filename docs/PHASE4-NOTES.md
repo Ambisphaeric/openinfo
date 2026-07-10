@@ -2896,3 +2896,57 @@ Contracts changed append-only (touched schemas regenerated, drift reverted). ONE
 (POST /item-signals) — self-contained over the store seam; did NOT touch templates/registers/modes routes or
 distill/queue. CODE_MAP: engine `surfaces/` row (query.ts suppression + new signals.ts) and client `surfaces/`
 row (micro-state.ts, glyph strip, wired dismiss verb, todos dot/disclosure) updated.
+
+## Slice: #68 — current model recommendations + tiered support matrix
+
+The get-started/Try-it copy and the starter catalog steered new users toward models that cannot sustain the
+real-time loop (small previous-generation Qwen2.5 LLM, whisper-only STT). This slice replaces the stale
+recommendations with current ones and documents the support ladder — COPY + defaults content only, no
+detection-logic or contract-shape changes.
+
+### 1 — starter catalog modernized, honestly re-framed as tier zero
+`fabric/local-defaults.ts` + its validated mirror `shared/contracts/examples/starterModels.default.json`:
+llm `qwen2.5-1.5b/3b-instruct` → `qwen3-1.7b/4b` (current-generation, Apache-2.0, ungated; URLs verified live,
+sizes from real Content-Length). STT stays whisper.cpp base/small — the CPU tier-zero fallback (whisper.cpp
+cannot serve parakeet; adding an MLX runtime here would be detection-logic surgery, out of scope). Every
+description + the catalog doc-comment now says plainly: this is a CPU warm-up for a first moment, NOT the
+real-time fast tier. Two example fixtures that referenced the old id (`localModelStatus.absent.json`,
+`localDownloadRequest.example.json`) updated to match.
+
+### 2 — recommendations + runtime floor in the served copy
+`surfaces/setup/view.ts`: the Get-started capability rows now name the recommended class (Thinking → a
+current-generation ~8B-class model; Hearing → parakeet-class STT keeps up, whisper is the slower fallback);
+the starter-offer note and a new `gs-rec` line state the runtime floor factually (model residency +
+concurrency + speculative-decoding-class throughput; mlx/omlx on Apple silicon, a CUDA equivalent elsewhere;
+runtimes without these will not hold the cadence) and the JUDGE-tier add-on (a 27B/35B-A3B-class endpoint
+lights up the judging layer). `settings/registry.ts` Local-runtimes body gained the same runtime-floor note;
+`settings/sections/features.ts` renders a tier legend tying the existing `minTier` chips (T0/T1/T2/T3) to the
+BASIC → JUDGE ladder. Vendor-neutral tone throughout; specific open-model names used only as class examples.
+
+### 3 — the committed tier matrix
+New `docs/model-support-matrix.md`: the runtime floor, STT (parakeet-class first, whisper-large as an explicit
+slower fallback), the fast LLM tier, and a BASIC(T1)/JUDGE(T2)/beyond(T3) table tied to the flag `minTier`
+gates, with per-platform (MLX / CUDA) pointers. README "Configure models" gained a "What to run" paragraph
+that summarizes and links it. This is the committed home the self-hoster doc (#34) can absorb/link when it
+lands; the issue's "cite the real-scenario benchmark once it lands" is noted as a forward hook.
+
+### Judgment calls (disclosed)
+- Did NOT put parakeet in the downloadable starter catalog — whisper.cpp can't run it and a new local runtime
+  is detection-logic scope (sibling agent owns distill/query/store tonight; the territory brief forbids it).
+- Created a standalone `docs/model-support-matrix.md` rather than editing the not-yet-committed self-hoster
+  doc (#34); README links it. System-only, vendor-neutral, no planning content (docs policy).
+- Left `discover.test.ts`'s `modelSizeRank('qwen2.5-1.5b-instruct')` case as-is: it unit-tests the size-token
+  parser, the string is arbitrary input, not a product recommendation.
+
+### Tests + verification (all green in isolation; full suites green)
+- Engine 532 → 533 (+1): local-documents.test.ts — new assertion on the seeded catalog ordering (llm leads
+  with the warms-fast `qwen3-1.7b-q4` then `qwen3-4b-q4`; stt base-before-small; no stale `qwen2.5` ids; the
+  catalog description declares itself tier zero). http.test.ts starter-catalog id assertion updated to the new
+  id. The tier-zero download e2e over the live /setup still drives + asserts the starter offer (green).
+- Full `pnpm -r test`: contracts 68, client 294 (untouched — confirms no client breakage), engine 533,
+  workbench (no tests) — 895 pass, 0 fail. No flake observed this run.
+
+### Rule-7 check (definition of done)
+No contract schema shapes changed (only example fixtures + a defaults document's content). No routes touched.
+Did NOT touch distill/queue/api routes/surfaces/query.ts/contracts schemas or any client file. CODE_MAP needs
+no change (no new module/route; edits are content within existing files + one new committed doc under docs/).

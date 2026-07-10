@@ -180,9 +180,18 @@ export const renderFeatures = (data: SetupData): string => {
       )
     })
     .join('')
+  const tiersUsed = flags.some((f) => f.minTier)
+  const tierLegend = tiersUsed
+    ? '<div class="sub tier-legend">A feature’s tier chip is the fabric it honestly needs: ' +
+      '<span class="tier-chip">T0</span> runs at tier zero (a starter model, no server); ' +
+      '<span class="tier-chip">T1</span> BASIC — a served fast tier (~8B-class chat + parakeet-class STT on a ' +
+      'residency/concurrency runtime); <span class="tier-chip">T2</span> JUDGE — add a 27B / 35B-A3B-class ' +
+      'endpoint to light up the judging layer; <span class="tier-chip">T3</span> beyond. See the model support matrix.</div>'
+    : ''
   return (
     '<div class="sub">Compose what openinfo does. Every capability is a document — off by default, flip ' +
     'any combination. Changes take effect without a restart (each flag is read per drain).</div>' +
+    tierLegend +
     `<div class="feat-count">${onCount} of ${flags.length} feature${flags.length === 1 ? '' : 's'} on</div>` +
     `<script type="application/json" id="flags-data">${jsonForScript(flags)}</script>` +
     stageBlocks
