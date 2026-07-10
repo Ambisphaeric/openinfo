@@ -174,6 +174,88 @@ test("'ws.open' (a transport (re)connect) re-hydrates data missed while disconne
   hud.stop()
 })
 
+// --- #58: the event-fed live-transcript feed ---------------------------------------------------
+const iso = (ms: number): string => new Date(ms).toISOString()
+
+test('the HUD renders live-transcript lines from injected transcript.updated events (raw feed, me/them split)', async () => {
+  const transport = new FakeTransport()
+  transport.live = [session()]
+  let panel: VElement | undefined
+  const t0 = Date.parse('2026-07-07T14:47:00Z')
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme', now: () => new Date(t0) })
+  await hud.start()
+
+  // a transcript.updated (payload-fed, NOT a query refresh) renders a line immediately — no re-query
+  transport.fire('transcript.updated', { sessionId: 'ses-live', source: 'mic', text: 'we should ship Thursday', capturedAtRange: { start: iso(t0 - 2000), end: iso(t0 - 1000) } })
+  transport.fire('transcript.updated', { sessionId: 'ses-live', source: 'system-audio', text: 'agreed', capturedAtRange: { start: iso(t0 - 500), end: iso(t0) } })
+
+  const html = renderToHtml(panel!)
+  assert.match(html, /data-live-transcript/)
+  assert.match(html, /Live transcript · raw, not saved/) // honestly labeled as raw/live, distinct from distilled
+  assert.match(html, /class="lt-line me"/) // mic → me
+  assert.match(html, /class="lt-line them"/) // system-audio → them
+  assert.match(html, /we should ship Thursday/)
+  assert.match(html, /agreed/)
+  // payload feed did NOT trigger the query path (the coalescing discipline): surface fetched once
+  assert.equal(transport.surfaceCalls, 1)
+  hud.stop()
+})
+
+test('the live feed expires lines older than the ~45s window', async () => {
+  const transport = new FakeTransport()
+  transport.live = [session()]
+  let panel: VElement | undefined
+  let nowMs = Date.parse('2026-07-07T14:47:00Z')
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme', now: () => new Date(nowMs) })
+  await hud.start()
+
+  transport.fire('transcript.updated', { sessionId: 'ses-live', source: 'mic', text: 'old line', capturedAtRange: { start: iso(nowMs - 1000), end: iso(nowMs) } })
+  assert.match(renderToHtml(panel!), /old line/)
+
+  // advance the clock past the window, then a new line arrives → the stale line is pruned on repaint
+  nowMs += 50_000
+  transport.fire('transcript.updated', { sessionId: 'ses-live', source: 'mic', text: 'fresh line', capturedAtRange: { start: iso(nowMs - 1000), end: iso(nowMs) } })
+  const html = renderToHtml(panel!)
+  assert.doesNotMatch(html, /old line/) // dropped: older than ~45s
+  assert.match(html, /fresh line/)
+  hud.stop()
+})
+
+test('a live session with no words shows an explainable empty state; idle-with-no-lines shows no feed', async () => {
+  const transport = new FakeTransport()
+  let panel: VElement | undefined
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme' })
+
+  // no live session and no transcript → no dead chrome
+  await hud.start()
+  assert.doesNotMatch(renderToHtml(panel!), /data-live-transcript/)
+
+  // a live session with no words yet → the feed explains itself rather than looking broken
+  transport.live = [session()]
+  transport.fire('session.started')
+  await tick()
+  const html = renderToHtml(panel!)
+  assert.match(html, /data-live-transcript/)
+  assert.match(html, /listening/)
+  hud.stop()
+})
+
+test('starting/ending a session resets the live transcript buffer', async () => {
+  const transport = new FakeTransport()
+  transport.live = [session()]
+  let panel: VElement | undefined
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme', now: () => new Date('2026-07-07T14:47:00Z') })
+  await hud.start()
+
+  transport.fire('transcript.updated', { sessionId: 'ses-live', source: 'mic', text: 'from the old session', capturedAtRange: { start: '2026-07-07T14:46:59Z', end: '2026-07-07T14:47:00Z' } })
+  assert.match(renderToHtml(panel!), /from the old session/)
+
+  transport.fire('session.ended')
+  await tick()
+  assert.doesNotMatch(renderToHtml(panel!), /from the old session/) // the feed cleared on the boundary
+  hud.stop()
+})
+
 test('an event-driven refresh failure routes to onError — never an unhandled rejection', async () => {
   const transport = new FakeTransport()
   const errors: unknown[] = []

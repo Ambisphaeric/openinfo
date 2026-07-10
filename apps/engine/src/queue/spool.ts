@@ -135,44 +135,57 @@ export class CaptureQueue {
 
   private async drain(logger: (line: string) => void): Promise<void> {
     await mkdir(this.queueDir, { recursive: true })
-    const files = (await readdir(this.queueDir)).filter((file) => file.endsWith('.jsonl')).sort()
-    for (const file of files) {
-      const pending = join(this.queueDir, file)
-      const draining = join(this.queueDir, `${file}.draining`)
-      try {
-        await rename(pending, draining)
-      } catch {
-        continue
-      }
-      if (this.processor) {
-        const startedAt = performance.now()
-        let workChunks = 0
+    // Drain until the spool is EMPTY, not just one pass. Chunks appended DURING a drain (a later capture
+    // segment, or the second half of a burst) would otherwise sit undrained until the next external
+    // trigger — and the distill cadence throttle (#58) now depends on spooled material ACCUMULATING across
+    // drains before it releases a distill, so a stranded tail would delay distill indefinitely. Re-reading
+    // after each pass lets that accumulation complete inside one idle window. A pass that hit a FAILURE
+    // stops the loop: the failed file is re-queued for retry-at-idle, so re-looping would spin on a
+    // persistent failure (the original single-pass semantics, preserved for the failing case).
+    for (;;) {
+      const files = (await readdir(this.queueDir)).filter((file) => file.endsWith('.jsonl')).sort()
+      if (files.length === 0) return
+      let sawFailure = false
+      for (const file of files) {
+        const pending = join(this.queueDir, file)
+        const draining = join(this.queueDir, `${file}.draining`)
         try {
-          const parsed = await this.parse(draining)
-          workChunks = countWork(parsed)
-          await this.processor(parsed)
-        } catch (error) {
-          // The drain no longer re-queues SILENTLY (the user's wall): classify why it failed and record
-          // it so GET /queue / Status / the Try-it card can surface the real reason. A non-invoke error
-          // (undescribable) is still logged and re-queued, just without a class — no false diagnosis.
-          const at = new Date().toISOString()
-          const failure = this.describeFailure ? await this.describeFailure(error, at) : undefined
-          if (failure) this.lastFailure = failure
-          logger(
-            `queue drain processor failed on ${file}, re-queued: ${failure ? `[${failure.class}] ${failure.hint}` : error instanceof Error ? error.message : String(error)}`,
-          )
-          await rename(draining, pending).catch(() => undefined)
+          await rename(pending, draining)
+        } catch {
           continue
         }
-        // A successful drain is one honest rate sample (work-chunks over processor ms) for the ETA.
-        this.drainSamples.push({ chunks: workChunks, ms: performance.now() - startedAt })
-        if (this.drainSamples.length > DRAIN_SAMPLE_WINDOW) this.drainSamples.shift()
-      } else {
-        logger(`queue drain no-op processed ${file}`)
+        if (this.processor) {
+          const startedAt = performance.now()
+          let workChunks = 0
+          try {
+            const parsed = await this.parse(draining)
+            workChunks = countWork(parsed)
+            await this.processor(parsed)
+          } catch (error) {
+            // The drain no longer re-queues SILENTLY (the user's wall): classify why it failed and record
+            // it so GET /queue / Status / the Try-it card can surface the real reason. A non-invoke error
+            // (undescribable) is still logged and re-queued, just without a class — no false diagnosis.
+            const at = new Date().toISOString()
+            const failure = this.describeFailure ? await this.describeFailure(error, at) : undefined
+            if (failure) this.lastFailure = failure
+            logger(
+              `queue drain processor failed on ${file}, re-queued: ${failure ? `[${failure.class}] ${failure.hint}` : error instanceof Error ? error.message : String(error)}`,
+            )
+            await rename(draining, pending).catch(() => undefined)
+            sawFailure = true
+            continue
+          }
+          // A successful drain is one honest rate sample (work-chunks over processor ms) for the ETA.
+          this.drainSamples.push({ chunks: workChunks, ms: performance.now() - startedAt })
+          if (this.drainSamples.length > DRAIN_SAMPLE_WINDOW) this.drainSamples.shift()
+        } else {
+          logger(`queue drain no-op processed ${file}`)
+        }
+        await rm(draining, { force: true })
+        this.drainedFiles += 1
+        this.lastSuccessAt = new Date().toISOString()
       }
-      await rm(draining, { force: true })
-      this.drainedFiles += 1
-      this.lastSuccessAt = new Date().toISOString()
+      if (sawFailure) return
     }
   }
 

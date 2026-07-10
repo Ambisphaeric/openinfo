@@ -52,7 +52,7 @@ import { AttributionPattern, WorkspaceHints } from './config/hints.js'
 import { WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate } from './config/workflow.js'
 import { OcrInvokeParams, VlmInvokeParams } from './config/invoke.js'
 import { TodoList, TodoItem, TodoProvenance } from './config/todo.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -63,6 +63,6 @@ export const AllSchemas = {
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   TodoList, TodoItem, TodoProvenance,
-  Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest,
+  Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest,
   CloneProfileRequest, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
 } as const

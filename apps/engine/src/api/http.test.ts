@@ -925,12 +925,14 @@ test('act.enabled OFF: ending a session prepares no draft', async () => {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
     })).json()) as Session
-    await fetch(`${base}/capture/mic`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 1, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we should ship Thursday' }),
-    })
-    // wait for the drain to distill (a summary exists) — so the ONLY reason there is no draft is
-    // that act.enabled is off, not that there was nothing to draft
+    // Two chunks spanning >15s so the distill cadence throttle (#58) releases a distill ON the drain — the
+    // summary must exist so the ONLY reason there is no draft is that act.enabled is off, not empty input.
+    for (const c of [
+      { id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 1, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we should ship Thursday' },
+      { id: 'c-2', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 2, capturedAt: '2026-07-07T14:00:20Z', contentType: 'text/plain', encoding: 'utf8', data: 'agreed, Thursday it is' },
+    ]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
     await eventuallyHttp(async () => assert.ok(app.store.listDistillates('default', started.id).length >= 1))
     await fetch(`${base}/sessions/${encodeURIComponent(started.id)}/end`, { method: 'POST' })
 
@@ -1722,10 +1724,14 @@ test('GET /queue: empty; then a model-load drain records the classified last fai
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
     })).json()) as Session
-    await fetch(`${base}/capture/mic`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we will ship Thursday' }),
-    })
+    // Two chunks spanning >15s so the distill cadence throttle (#58) releases the distill ON the drain — the
+    // invoke then fails (model-load), and the queue records the classified failure exactly as before.
+    for (const c of [
+      { id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we will ship Thursday' },
+      { id: 'c-2', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 1, capturedAt: '2026-07-07T14:00:20Z', contentType: 'text/plain', encoding: 'utf8', data: 'ship it Thursday' },
+    ]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
 
     // the drain re-queues (file safe) but now records WHY — classified, with the loaded-model suggestion
     await eventuallyHttp(async () => {
@@ -1792,10 +1798,14 @@ test('e2e: a queue surface hydrates its queue-status block — a SEEDED FAILURE 
     const started = (await (await fetch(`${base}/sessions`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
     })).json()) as Session
-    await fetch(`${base}/capture/mic`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we will ship Thursday' }),
-    })
+    // Two chunks spanning >15s so the distill cadence throttle (#58) releases the distill ON the drain — the
+    // invoke then fails (model-load), and the queue records the classified failure exactly as before.
+    for (const c of [
+      { id: 'c-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0, capturedAt: '2026-07-07T14:00:00Z', contentType: 'text/plain', encoding: 'utf8', data: 'we will ship Thursday' },
+      { id: 'c-2', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 1, capturedAt: '2026-07-07T14:00:20Z', contentType: 'text/plain', encoding: 'utf8', data: 'ship it Thursday' },
+    ]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
 
     // THE PROOF: the queue block's POST /query now hydrates the classified last failure — VISIBLE, not hidden
     await eventuallyHttp(async () => {
@@ -1988,12 +1998,18 @@ test('e2e (Try-it TYPE path): flags flip → onboarding session → text chunk �
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting', title: 'onboarding try-it' }),
       })).json()) as Session
-      const chunk: CaptureChunk = {
-        id: 'try-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0,
-        capturedAt: new Date().toISOString(), contentType: 'text/plain', encoding: 'utf8', data: 'we should ship Thursday',
+      // Two chunks spanning >15s: the distill cadence throttle (#58) releases a distill once the accumulated
+      // capture span crosses the threshold, so the moment lands on the drain (mid-session) as this card expects.
+      const base0 = new Date('2026-07-07T14:00:00Z').getTime()
+      const mkChunk = (seq: number, sec: number, data: string): CaptureChunk => ({
+        id: `try-${seq}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: seq,
+        capturedAt: new Date(base0 + sec * 1000).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+      })
+      let ack: Response | undefined
+      for (const c of [mkChunk(0, 0, 'we should ship Thursday'), mkChunk(1, 20, 'agreed, Thursday it is')]) {
+        ack = await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
       }
-      const ack = await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(chunk) })
-      assert.equal(ack.status, 200)
+      assert.equal(ack!.status, 200)
 
       // the payoff: moment.created for THIS session arrives on the WS (the card renders it live)
       await eventuallyHttp(async () => {
@@ -2049,13 +2065,17 @@ test('e2e (Try-it VOICE path): a canned base64 webm chunk rides the stt slot →
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting', title: 'onboarding try-it' }),
       })).json()) as Session
-      // the same base64 audio/webm CaptureChunk shape the browser MediaRecorder + Electron client emit
-      const chunk: CaptureChunk = {
-        id: 'try-voice-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0,
-        capturedAt: new Date().toISOString(), contentType: 'audio/webm', encoding: 'base64',
+      // the same base64 audio/webm CaptureChunk shape the browser MediaRecorder + Electron client emit —
+      // two spanning >15s so the distill cadence throttle (#58) releases a distill on the drain (mid-session).
+      const base0 = new Date('2026-07-07T14:00:00Z').getTime()
+      const mkChunk = (seq: number, sec: number): CaptureChunk => ({
+        id: `try-voice-${seq}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: seq,
+        capturedAt: new Date(base0 + sec * 1000).toISOString(), contentType: 'audio/webm', encoding: 'base64',
         data: Buffer.from('fake-webm-bytes').toString('base64'),
+      })
+      for (const c of [mkChunk(0, 0), mkChunk(1, 20)]) {
+        await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
       }
-      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(chunk) })
 
       // audio → stt slot → utf8 text → distill → moment.created for this session on the WS
       await eventuallyHttp(async () => {
@@ -2233,11 +2253,15 @@ test('e2e (tier zero): nothing found → download a starter model → local endp
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting', title: 'tier-zero try-it' }),
       })).json()) as Session
-      const chunk: CaptureChunk = {
-        id: 'tz-1', sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: 0,
-        capturedAt: new Date().toISOString(), contentType: 'text/plain', encoding: 'utf8', data: 'we should ship Thursday',
+      // Two chunks spanning >15s so the distill cadence throttle (#58) releases the distill on the drain.
+      const base0 = new Date('2026-07-07T14:00:00Z').getTime()
+      const mkChunk = (seq: number, sec: number, data: string): CaptureChunk => ({
+        id: `tz-${seq}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence: seq,
+        capturedAt: new Date(base0 + sec * 1000).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+      })
+      for (const c of [mkChunk(0, 0, 'we should ship Thursday'), mkChunk(1, 20, 'agreed, Thursday it is')]) {
+        await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
       }
-      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(chunk) })
       await eventuallyHttp(async () => {
         assert.ok(sub.events.some((e) => e.name === 'moment.created' && e.payload.sessionId === started.id))
       }, 8000)

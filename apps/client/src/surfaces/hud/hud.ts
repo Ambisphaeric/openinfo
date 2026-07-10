@@ -1,6 +1,7 @@
-import type { Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
+import type { CaptureSource, Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
 import { renderSurface, clockLabel, elapsedLabel, type BlockRegistry, type NowContext, type VElement } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
+import { pruneTranscript, renderLiveTranscript, type TranscriptLine } from './live-transcript.js'
 import type { HudTransport } from './transport.js'
 
 const DEFAULT_SURFACE_ID = 'surf-openinfo-hud'
@@ -12,6 +13,11 @@ const DEFAULT_SURFACE_ID = 'surf-openinfo-hud'
  * very first open, which lands right after start()'s own refresh).
  */
 const REFRESH_EVENTS = new Set(['moment.created', 'entity.updated', 'distillate.updated', 'session.started', 'session.ended', 'ws.open'])
+
+/** The ephemeral live-transcript fast-path event (#58) — PAYLOAD-fed, not a query-refresh trigger. */
+const TRANSCRIPT_EVENT = 'transcript.updated'
+/** Session boundaries reset the live feed — a new/ended session starts a fresh transcript. */
+const TRANSCRIPT_RESET_EVENTS = new Set(['session.started', 'session.ended'])
 
 export interface HudOptions {
   transport: HudTransport
@@ -51,6 +57,10 @@ export class Hud {
   private surface: Surface | undefined
   private results: (QueryResult | undefined)[] = []
   private session: Session | undefined
+  // The live-transcript rolling buffer (#58) — EVENT-fed, not query-fed (see live-transcript.ts). Held
+  // client-side; the engine never persists it. Pruned on every repaint and reset on session boundaries.
+  private transcriptLines: TranscriptLine[] = []
+  private transcriptSeq = 0
   private unsubscribe: (() => void) | undefined
   private refreshing = false
   private dirty = false
@@ -80,6 +90,15 @@ export class Hud {
         if (payload && payload.id === this.surfaceId) this.reloadSurface().catch((err: unknown) => this.onError?.(err))
         return
       }
+      // The transcript fast-path (#58) carries its payload to render DIRECTLY — it is NOT a query-refresh
+      // trigger (that is the coalescing discipline: payload events re-paint, they do not re-hydrate). It
+      // is handled before REFRESH_EVENTS and returns so it never triggers the expensive query path.
+      if (event.name === TRANSCRIPT_EVENT) {
+        this.ingestTranscript(event.payload)
+        return
+      }
+      // A session boundary starts a fresh live feed; fall through to the normal refresh below.
+      if (TRANSCRIPT_RESET_EVENTS.has(event.name)) this.transcriptLines = []
       if (REFRESH_EVENTS.has(event.name)) this.scheduleRefresh().catch((err: unknown) => this.onError?.(err))
     })
   }
@@ -126,7 +145,40 @@ export class Hud {
 
   private render(): void {
     if (!this.surface) return
-    this.onRender(renderSurface({ surface: this.surface, now: this.buildNow(), results: this.results }, this.registry))
+    const now = this.buildNow()
+    const panel = renderSurface({ surface: this.surface, now, results: this.results }, this.registry)
+    // Compose the event-fed live-transcript feed onto the query-rendered panel (#58). Pruned here so the
+    // feed self-expires on every repaint; appended LAST so the distilled blocks keep primacy and the raw
+    // live strip reads as a distinct layer beneath them. Absent (idle, nothing to say) ⇒ panel unchanged.
+    const nowMs = this.clock().getTime()
+    this.transcriptLines = pruneTranscript(this.transcriptLines, nowMs)
+    const feed = renderLiveTranscript(this.transcriptLines, { live: now.live, nowMs })
+    this.onRender(feed ? { ...panel, children: [...panel.children, feed] } : panel)
+  }
+
+  /**
+   * Ingest one transcript.updated payload into the rolling buffer and re-paint (#58). Defensive about
+   * the payload shape (a malformed frame is ignored, never a throw into the WS handler). Re-paints
+   * synchronously: each WS frame is its own event-loop turn, so this is already one paint per event —
+   * no query, no re-hydrate (the coalescing discipline). A paint before the first surface load is a
+   * no-op (render guards on surface), but the line is still buffered for the next paint.
+   */
+  private ingestTranscript(payload: unknown): void {
+    const line = this.toTranscriptLine(payload)
+    if (!line) return
+    this.transcriptLines.push(line)
+    this.render()
+  }
+
+  private toTranscriptLine(payload: unknown): TranscriptLine | undefined {
+    if (typeof payload !== 'object' || payload === null) return undefined
+    const p = payload as { source?: unknown; text?: unknown; capturedAtRange?: { end?: unknown } | null }
+    if (typeof p.source !== 'string' || typeof p.text !== 'string' || p.text.length === 0) return undefined
+    const endRaw = p.capturedAtRange && typeof p.capturedAtRange === 'object' ? p.capturedAtRange.end : undefined
+    const parsed = typeof endRaw === 'string' ? Date.parse(endRaw) : Number.NaN
+    const at = Number.isNaN(parsed) ? this.clock().getTime() : parsed
+    this.transcriptSeq += 1
+    return { seq: this.transcriptSeq, source: p.source as CaptureSource, text: p.text, at }
   }
 
   /**
