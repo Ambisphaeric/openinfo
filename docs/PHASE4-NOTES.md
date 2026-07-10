@@ -3102,12 +3102,18 @@ the cadence so a short session's tail is still judged). Reuses the existing `fie
 ### Tests + verification (green in isolation)
 - **Contracts 70 → 72 (+2):** `fieldValue.corrected.json` (a judged/corrected value validates, incl. the
   `provenance.judge` block) + `promptTemplate.judge.json` (a judge-tier binding validates).
-- **Engine 540 → 548 (+8):** NEW `distill/judge.test.ts` — tier-gate no-op leaves fields provisional (no
+- **Engine 540 → 549 (+9):** NEW `distill/judge.test.ts` (8) — tier-gate no-op leaves fields provisional (no
   invoke); confirm→`confirmed` with the judge stamp and fast lineage preserved; correct→value overruled in
   place with `priorValue` recorded; flag→`flagged` with the note; the DUAL-INPUT proof (the prompt carries
   both the source transcript and the fast result set); no-fabrication (a valueless correct + an unknown-field
-  verdict are ignored); invoke-failure isolation; explainable-empty when there is nothing to review.
-- **Full `pnpm -r test`:** contracts 72, engine 548, client 298 — green. KNOWN FLAKE CLASS: under one
+  verdict are ignored); invoke-failure isolation; explainable-empty when there is nothing to review. NEW
+  served e2e in `api/http.test.ts` (+1, DRIVEN per the QA rule): boot the real engine, configure BOTH an
+  `llm.fast` and an `llm.judge` endpoint (separate fake servers), flip distill.enabled/fields/judge with
+  OPENINFO_JUDGE_CADENCE_MS=0, stream two mic chunks spanning >15s → assert `field-topic` hydrates as
+  `corrected` with the judge correction value, `provenance.judge.endpoint === 'llm.judge'` (routed to the
+  judge lane, not the fast one), `priorValue` recorded, the fast lineage preserved, AND a corrected
+  `field.updated` fired on the bus (the WS broadcast seam).
+- **Full `pnpm -r test`:** contracts 72, engine 549, client 298 — green. KNOWN FLAKE CLASS: under one
   parallel run the client's `seam streams, spools while engine is down, then flushes exactly once in order`
   failed once (the EngineLink/spool wall-clock timing flake, untouched by this engine-only slice); 298/298
   green when the client suite is re-run in isolation.
