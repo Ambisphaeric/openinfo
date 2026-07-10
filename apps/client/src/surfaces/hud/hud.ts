@@ -65,6 +65,12 @@ export class Hud {
   // session-ephemeral (a reload starts unmuted) — a display filter over the strip, never a capture change.
   // The two streams stay separate here and are only ATTRIBUTED/FILTERED, never merged (see live-transcript.ts).
   private systemStreamMuted = false
+  // #75 clarify affordance session state (client-local, session-ephemeral like systemStreamMuted): the
+  // entities the user already answered/dismissed this session (no ≟ re-asks), and the single ambiguous
+  // entity whose inline ask is currently expanded. A reload starts empty — the SERVER-side override is what
+  // makes a confirmed answer durable across sessions; this set is only the at-most-once-per-session gate.
+  private clarifySuppressed = new Set<string>()
+  private clarifyExpanded: string | undefined
   private unsubscribe: (() => void) | undefined
   private refreshing = false
   private dirty = false
@@ -129,6 +135,37 @@ export class Hud {
     this.render()
   }
 
+  /**
+   * Expand the #75 clarify ask for one ambiguous entity (the ≟ was clicked). Only one ask is open at a
+   * time; a no-op re-paint otherwise. Client-local — no query, no re-hydrate (the live-feed discipline).
+   */
+  openClarify(entityId: string): void {
+    if (this.clarifySuppressed.has(entityId)) return // already settled this session — the ≟ is gone
+    this.clarifyExpanded = entityId
+    this.render()
+  }
+
+  /**
+   * Dismiss the #75 clarify ask ("ask me later") — teaches NOTHING. The entity enters the session
+   * suppressed set so no ≟ renders for it again this session, and the open ask collapses. Client-local.
+   */
+  dismissClarify(entityId: string): void {
+    this.clarifySuppressed.add(entityId)
+    if (this.clarifyExpanded === entityId) this.clarifyExpanded = undefined
+    this.render()
+  }
+
+  /**
+   * Mark a clarify ask SETTLED after its answer wrote a sovereign override server-side (see dev-entry's
+   * clarify orchestrator). Suppresses the entity this session and collapses the ask; the follow-on refresh
+   * re-hydrates the now-confirmed row (whose ambiguity the override cleared), so the ≟ is gone for good.
+   */
+  settleClarify(entityId: string): void {
+    this.clarifySuppressed.add(entityId)
+    if (this.clarifyExpanded === entityId) this.clarifyExpanded = undefined
+    this.render()
+  }
+
   /** Re-derive the live session and re-hydrate every block query, then render. */
   async refresh(): Promise<void> {
     if (!this.surface) return
@@ -161,7 +198,8 @@ export class Hud {
   private render(): void {
     if (!this.surface) return
     const now = this.buildNow()
-    const panel = renderSurface({ surface: this.surface, now, results: this.results }, this.registry)
+    const clarify = { suppressed: this.clarifySuppressed, ...(this.clarifyExpanded !== undefined ? { expanded: this.clarifyExpanded } : {}) }
+    const panel = renderSurface({ surface: this.surface, now, results: this.results, clarify }, this.registry)
     // Compose the event-fed live-transcript feed onto the query-rendered panel (#58). Pruned here so the
     // feed self-expires on every repaint; appended LAST so the distilled blocks keep primacy and the raw
     // live strip reads as a distinct layer beneath them. Absent (idle, nothing to say) ⇒ panel unchanged.

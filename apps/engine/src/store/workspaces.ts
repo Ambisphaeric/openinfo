@@ -406,6 +406,10 @@ export class WorkspaceRegistry {
    * mapping over any rival, making the mapping durable across subsequent upserts (reads honor it). The
    * merged record is contract-validated before write (last line of defense, mirroring upsertEntity).
    * Only this path writes overrides. Returns the updated entity, or undefined for an unknown id.
+   *
+   * The override SETTLES the question: the record's `ambiguity` (the plausible-rival marker the #75 clarify
+   * affordance keys off) is CLEARED, per the EntityAmbiguity contract ("cleared once a user override settles
+   * the question") — so the ≟ ask does not re-appear on a subsequent load once the user answered.
    */
   overrideEntity(workspaceId: string, entityId: string, override: EntityOverride): Entity | undefined {
     const db = this.openWorkspace(workspaceId)
@@ -418,14 +422,42 @@ export class WorkspaceRegistry {
       const known = new Set([normalizeEntityName(current.name), ...aliases.map(normalizeEntityName)])
       if (pin.length > 0 && !known.has(normalizeEntityName(pin))) aliases.push(pin)
     }
+    const { ambiguity: _settled, ...rest } = current
     const entity: Entity = {
-      ...current,
+      ...rest,
       aliases,
       overrides: [...(current.overrides ?? []), override],
       state: 'confirmed',
       confidence: 1,
     }
     if (!Value.Check(EntitySchema, entity)) throw new Error(`overridden entity failed contract validation: ${entityId}`)
+    db.prepare('insert or replace into entities (id, kind, name_key, last_seen, body) values (?, ?, ?, ?, ?)').run(
+      entity.id,
+      entity.kind,
+      normalizeEntityName(entity.name),
+      entity.lastSeen,
+      JSON.stringify(entity),
+    )
+    return entity
+  }
+
+  /**
+   * SETTLE an entity's ambiguity WITHOUT confirming it — the #75 companion to `overrideEntity` for the
+   * losing side of a `disambiguate` verdict. When the user says the ambiguous mention actually meant the
+   * RIVAL, the override is written on the rival (the truth), and THIS clears the once-linked entity's
+   * `ambiguity` marker so its ≟ ask does not re-appear either. It leaves `state`/`confidence` untouched
+   * (the record is not confirmed — the mention simply was not it), only dropping the reviewable marker.
+   * Returns the updated entity, or undefined for an unknown id (mirrors overrideEntity).
+   */
+  clearEntityAmbiguity(workspaceId: string, entityId: string): Entity | undefined {
+    const db = this.openWorkspace(workspaceId)
+    const row = db.prepare('select body from entities where id = ?').get(entityId) as { body: string } | undefined
+    if (!row) return undefined
+    const current = JSON.parse(row.body) as Entity
+    if (current.ambiguity === undefined) return current // already settled — idempotent no-op
+    const { ambiguity: _cleared, ...rest } = current
+    const entity = rest as Entity
+    if (!Value.Check(EntitySchema, entity)) throw new Error(`entity failed contract validation clearing ambiguity: ${entityId}`)
     db.prepare('insert or replace into entities (id, kind, name_key, last_seen, body) values (?, ?, ?, ?, ?)').run(
       entity.id,
       entity.kind,

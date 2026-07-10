@@ -473,6 +473,34 @@ export const CloneProfileRequest = Type.Object(
 export type CloneProfileRequest = Static<typeof CloneProfileRequest>
 
 /**
+ * The body of `POST /teach/entity` — the #75 clarify affordance's answer. When the resolver flagged a
+ * mention AMBIGUOUS (a rival within the margin), the user's verdict on the affected row lands here and the
+ * engine turns it into BOTH a labeled `TeachSignal` (audit + teach loop) AND a sovereign `EntityOverride`
+ * (the durable resolver short-circuit) — never model-trusted, always the user's explicit action.
+ *
+ * `verdict` names the choice: `confirm` (the mention IS the linked candidate `entityId` — an `alias-confirm`
+ * that pins `heard` to it and REJECTS the rival) or `disambiguate` (it is the rival `rivalId` instead — pins
+ * `heard` to the rival and rejects the linked candidate). `heard` is the surface form being settled;
+ * `rivalId`/`rivalName` name the resolver's flagged rival. A rejection always records `rejectedRivalId`
+ * server-side so the same wrong rival is never re-offered. `correctedAt`/the signal id/the override
+ * provenance are ALL engine-stamped — the caller invents no ids or timestamps (mirrors RerouteRequest).
+ */
+export const EntityCorrection = Type.Object(
+  {
+    workspaceId: Id,
+    entityId: Id,
+    heard: Type.String({ minLength: 1, description: 'the heard surface form the verdict settles' }),
+    verdict: Type.Union(['confirm', 'disambiguate'].map((v) => Type.Literal(v)), {
+      description: 'confirm = it is the linked candidate (alias-confirm) · disambiguate = it is the rival instead',
+    }),
+    rivalId: Type.Optional(Id),
+    rivalName: Type.Optional(Type.String()),
+  },
+  { $id: 'EntityCorrection', additionalProperties: false },
+)
+export type EntityCorrection = Static<typeof EntityCorrection>
+
+/**
  * A secret REFERENCE — the ONLY secret-shaped thing that ever leaves the engine. `GET /fabric/secrets`
  * returns these (the refs that have a stored value), and write/delete echo back the ref they touched.
  * It carries NO value field, by design: no route, event, GET response, document, or export ever

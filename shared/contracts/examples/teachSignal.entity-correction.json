@@ -1,0 +1,11 @@
+{ "id": "teach-alias-confirm-ent-polaris-polaris",
+  "kind": "alias-confirm",
+  "entity": {
+    "workspaceId": "ws-eng",
+    "entityId": "ent-polaris",
+    "heard": "Polaris",
+    "rivalId": "ent-polaris-public",
+    "rivalName": "Polaris (public project)",
+    "pinnedEntityId": "ent-polaris"
+  },
+  "correctedAt": "2026-07-10T16:20:00Z" }

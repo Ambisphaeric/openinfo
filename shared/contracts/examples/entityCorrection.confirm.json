@@ -1,0 +1,6 @@
+{ "workspaceId": "ws-eng",
+  "entityId": "ent-polaris",
+  "heard": "Polaris",
+  "verdict": "confirm",
+  "rivalId": "ent-polaris-public",
+  "rivalName": "Polaris (public project)" }

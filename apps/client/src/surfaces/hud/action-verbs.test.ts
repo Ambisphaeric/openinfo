@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { TodoList, WorkspaceHints } from '@openinfo/contracts'
 import { wireActions, type ActionHandlers, type MountTarget } from '../block-renderer/index.js'
-import { markTodoDone, acceptHintCandidate, dismissItem } from './dev-entry.js'
+import { markTodoDone, acceptHintCandidate, dismissItem, submitEntityCorrection } from './dev-entry.js'
 
 /**
  * The FIRST driven coverage over the wired action verbs (#15): mark-done and accept. Two layers —
@@ -134,11 +134,13 @@ test('dismiss click calls its handler with the item payload, and a rejected writ
 
 // ---- served e2e: a live throwaway engine implementing the write routes over real fetch ----
 interface StoredSignal { workspaceId: string; source: string; itemId: string; kind: string; at: string }
+interface StoredCorrection { workspaceId: string; entityId: string; heard: string; verdict: string; rivalId?: string; rivalName?: string }
 interface FakeEngine {
   baseUrl: string
   todos: Map<string, TodoList>
   hints: Map<string, WorkspaceHints>
   signals: StoredSignal[]
+  corrections: StoredCorrection[]
   putStatus: number // the status the PUT/POST write routes return (200 = success; set to 500 to force failure)
   close: () => Promise<void>
 }
@@ -148,7 +150,7 @@ const readBody = async (req: IncomingMessage): Promise<string> => {
   return body
 }
 const startFakeEngine = async (): Promise<FakeEngine> => {
-  const engine: Partial<FakeEngine> = { todos: new Map(), hints: new Map(), signals: [], putStatus: 200 }
+  const engine: Partial<FakeEngine> = { todos: new Map(), hints: new Map(), signals: [], corrections: [], putStatus: 200 }
   const send = (res: ServerResponse, status: number, payload: unknown): void => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(payload))
@@ -184,6 +186,13 @@ const startFakeEngine = async (): Promise<FakeEngine> => {
         const stamped: StoredSignal = { ...body, at: new Date().toISOString() } // engine stamps `at`
         engine.signals!.push(stamped)
         return send(res, 200, stamped)
+      }
+      if (req.method === 'POST' && url.pathname === '/teach/entity') {
+        if (engine.putStatus !== 200) return send(res, engine.putStatus!, { error: 'forced failure' })
+        const body = JSON.parse(await readBody(req)) as StoredCorrection
+        engine.corrections!.push(body)
+        // the real engine responds with the settled entity; the client only needs a 200 for the paint
+        return send(res, 200, { id: body.entityId, workspaceId: body.workspaceId, kind: 'artifact', name: body.heard, aliases: [], momentRefs: [], outboundCount: 0, firstSeen: '2026-07-10T00:00:00Z', lastSeen: '2026-07-10T00:00:00Z', state: 'confirmed' })
       }
       send(res, 404, { error: 'not found' })
     })()
@@ -296,6 +305,92 @@ test('served e2e: a failed write (HTTP 500) surfaces as visible "Failed" text �
     clickButton(button)
     await eventually(() => assert.equal(button.textContent, 'Failed'))
     assert.match(button.className, /\bcopyfail\b/)
+  } finally {
+    await engine.close()
+  }
+})
+
+test('clarify-confirm/rival click posts the verdict payload and paints ✓; a rejected write paints failure (#75)', async () => {
+  const calls: Array<{ workspaceId: string; entityId: string; heard: string; verdict: string; rivalId?: string; rivalName?: string }> = []
+  const { target, clickButton } = makeStage()
+  const opened: string[] = []
+  const dismissed: string[] = []
+  wireActions(target, {
+    copy: () => undefined,
+    clarify: async (payload) => void calls.push(payload),
+    clarifyOpen: (id) => void opened.push(id),
+    clarifyDismiss: (id) => void dismissed.push(id),
+  })
+
+  // opening the ask is client-local (no write) — the injected callback fires, nothing is posted
+  clickButton(makeButton({ 'data-verb': 'clarify-open', 'data-entity': 'ent-1' }, '≟', 'gverb'))
+  await flush()
+  assert.deepEqual(opened, ['ent-1'])
+  assert.equal(calls.length, 0)
+
+  // confirm posts verdict=confirm with the payload read off the button, and paints ✓
+  const ok = makeButton(
+    { 'data-verb': 'clarify-confirm', 'data-workspace': 'ws', 'data-entity': 'ent-1', 'data-heard': 'Mercury', 'data-rival-id': 'ent-2', 'data-rival-name': 'Mercury Bank' },
+    'Mercury', 'clarify-choice ok',
+  )
+  clickButton(ok)
+  await flush()
+  assert.deepEqual(calls, [{ workspaceId: 'ws', entityId: 'ent-1', heard: 'Mercury', verdict: 'confirm', rivalId: 'ent-2', rivalName: 'Mercury Bank' }])
+  assert.equal(ok.textContent, '✓')
+
+  // the rival choice posts verdict=disambiguate
+  clickButton(makeButton(
+    { 'data-verb': 'clarify-rival', 'data-workspace': 'ws', 'data-entity': 'ent-1', 'data-heard': 'Mercury', 'data-rival-id': 'ent-2', 'data-rival-name': 'Mercury Bank' },
+    'Mercury Bank', 'clarify-choice',
+  ))
+  await flush()
+  assert.equal(calls[1]!.verdict, 'disambiguate')
+
+  // dismiss is client-local too (ask me later) — the callback fires, nothing is posted
+  clickButton(makeButton({ 'data-verb': 'clarify-dismiss', 'data-entity': 'ent-1' }, '✕', 'gverb'))
+  await flush()
+  assert.deepEqual(dismissed, ['ent-1'])
+  assert.equal(calls.length, 2) // unchanged
+
+  // a rejected write paints visible failure, never a silent no-op
+  const failStage = makeStage()
+  wireActions(failStage.target, { copy: () => undefined, clarify: async () => Promise.reject(new Error('boom')) })
+  const bad = makeButton({ 'data-verb': 'clarify-confirm', 'data-workspace': 'ws', 'data-entity': 'ent-1', 'data-heard': 'Mercury' }, 'Mercury', 'clarify-choice ok')
+  failStage.clickButton(bad)
+  await flush()
+  assert.equal(bad.textContent, '!')
+  assert.match(bad.className, /\bcopyfail\b/)
+})
+
+test('served e2e: a clarify confirm writes the correction over the live server and paints ✓ (#75)', async () => {
+  const engine = await startFakeEngine()
+  try {
+    const { target, clickButton } = makeStage()
+    wireActions(target, { copy: () => undefined, clarify: submitEntityCorrection(engine.baseUrl) })
+    const button = makeButton(
+      { 'data-verb': 'clarify-confirm', 'data-workspace': 'ws', 'data-entity': 'ent-1', 'data-heard': 'Mercury', 'data-rival-id': 'ent-2', 'data-rival-name': 'Mercury Bank' },
+      'Mercury', 'clarify-choice ok',
+    )
+    clickButton(button)
+    await eventually(() => assert.equal(button.textContent, '✓')) // real round-trip resolved → success paint
+    assert.equal(engine.corrections.length, 1)
+    assert.deepEqual(engine.corrections[0], { workspaceId: 'ws', entityId: 'ent-1', heard: 'Mercury', verdict: 'confirm', rivalId: 'ent-2', rivalName: 'Mercury Bank' })
+  } finally {
+    await engine.close()
+  }
+})
+
+test('served e2e: a failed clarify write (HTTP 500) surfaces as visible failure — never a silent swallow (#75)', async () => {
+  const engine = await startFakeEngine()
+  try {
+    engine.putStatus = 500
+    const { target, clickButton } = makeStage()
+    wireActions(target, { copy: () => undefined, clarify: submitEntityCorrection(engine.baseUrl) })
+    const button = makeButton({ 'data-verb': 'clarify-confirm', 'data-workspace': 'ws', 'data-entity': 'ent-1', 'data-heard': 'Mercury' }, 'Mercury', 'clarify-choice ok')
+    clickButton(button)
+    await eventually(() => assert.equal(button.textContent, '!'))
+    assert.match(button.className, /\bcopyfail\b/)
+    assert.equal(engine.corrections.length, 0) // nothing persisted on a failed write
   } finally {
     await engine.close()
   }

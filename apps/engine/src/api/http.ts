@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
-import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
+import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
@@ -696,6 +696,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   const pinChunks = url.pathname.match(/^\/pins\/([^/]+)\/chunks$/)
   if (req.method === 'GET' && pinChunks?.[1]) return getPinChunks(res, ctx, decodeURIComponent(pinChunks[1]), url)
   if (req.method === 'GET' && url.pathname === '/teach/candidates') return send(res, 200, readTeachCandidates(ctx.store, url))
+  // #75 clarify affordance answer: the user's verdict on an AMBIGUOUS resolution writes BOTH a labeled
+  // entity-correction TeachSignal AND a sovereign EntityOverride (the durable resolver short-circuit).
+  if (req.method === 'POST' && url.pathname === '/teach/entity') return postEntityCorrection(req, res, ctx)
   // P4-T3b: the APPLY-with-review half of the teach loop — GET/PUT the workspace's attribution-hints
   // document. /teach/candidates SUGGESTS a pattern; the user reviews it and PUTs an updated hints doc
   // here, and the detector then attributes on it. No auto-apply: "apply a candidate" is just this plain
@@ -1484,6 +1487,74 @@ function getPinChunks(res: ServerResponse, ctx: HandlerContext, id: string, url:
 function readTeachCandidates(store: WorkspaceRegistry, url: URL): HintCandidate[] {
   const workspaceId = url.searchParams.get('workspace') ?? 'default'
   return deriveHintCandidates(new TeachStore(store).list(workspaceId))
+}
+
+/**
+ * POST /teach/entity — the #75 clarify affordance's answer. The user resolved an AMBIGUOUS entity mention
+ * (a rival within the resolver's margin) by picking the linked candidate (`confirm`) or the rival
+ * (`disambiguate`). We turn that ONE explicit action into two ENGINE-STAMPED writes over the store seam:
+ *  1. a sovereign `EntityOverride` — the durable resolver short-circuit. On `confirm` it pins `heard` to the
+ *     linked entity and rejects the rival; on `disambiguate` it pins `heard` to the RIVAL and rejects the
+ *     once-linked entity (whose stale ambiguity is then cleared so its ask cannot re-appear). Recording
+ *     `rejectedRivalId` is what stops the same wrong rival being re-offered.
+ *  2. a labeled `TeachSignal` (kind alias-confirm / disambiguate) into the TeachStore — the audit + teach
+ *     loop entry, keyed by the entity's workspace.
+ * Provenance is engine-stamped (`at`, the signal id, `by:'the user'`) — never client-trusted; SUGGEST-NEVER-
+ * AUTO-APPLY holds because nothing writes without this explicit user action. Publishing `entity.updated`
+ * re-hydrates the HUD, so the now-settled row drops its ≟. Unknown entity/rival ⇒ 404; a `disambiguate`
+ * with no rival ⇒ 400. Responds with the overridden (settled) entity.
+ */
+async function postEntityCorrection(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('EntityCorrection', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid EntityCorrection', details: errors })
+  const correction = body as EntityCorrection
+  const { workspaceId, entityId, heard, verdict, rivalId, rivalName } = correction
+  const at = new Date().toISOString()
+
+  if (verdict === 'disambiguate' && (rivalId === undefined || rivalId.length === 0)) {
+    return send(res, 400, { error: 'disambiguate verdict requires a rivalId (the entity the mention really meant)' })
+  }
+
+  // The linked entity (the row the affordance rendered on) — needed for its name on a disambiguate reject.
+  const linked = ctx.store.listEntities(workspaceId).find((e) => e.id === entityId)
+  if (!linked) return send(res, 404, { error: `no entity ${entityId} in workspace ${workspaceId}` })
+
+  const kind = verdict === 'confirm' ? 'alias-confirm' : 'disambiguate'
+  // The host of the override is the entity the heard form is pinned TO: the linked candidate on a confirm,
+  // the rival on a disambiguate. The rejectedRivalId is the OTHER one — never re-scored for this form again.
+  const hostId = verdict === 'confirm' ? entityId : rivalId!
+  const rejectedRivalId = verdict === 'confirm' ? rivalId : entityId
+  const rejectedRivalName = verdict === 'confirm' ? rivalName : linked.name
+  const override: EntityOverride = {
+    at,
+    by: 'the user',
+    pinnedName: heard,
+    ...(rejectedRivalId !== undefined ? { rejectedRivalId } : {}),
+    ...(rejectedRivalName !== undefined ? { rejectedRivalName } : {}),
+  }
+
+  const settled = ctx.store.overrideEntity(workspaceId, hostId, override)
+  if (!settled) return send(res, 404, { error: `no entity ${hostId} in workspace ${workspaceId}` })
+  // On a disambiguate the ONCE-LINKED entity keeps a stale ambiguity marker — clear it so its ≟ is gone too.
+  if (verdict === 'disambiguate') ctx.store.clearEntityAmbiguity(workspaceId, entityId)
+
+  new TeachStore(ctx.store).record(
+    captureEntityCorrection({
+      kind,
+      workspaceId,
+      entityId,
+      heard,
+      ...(rivalId !== undefined ? { rivalId } : {}),
+      ...(rivalName !== undefined ? { rivalName } : {}),
+      pinnedEntityId: hostId,
+      at,
+    }),
+  )
+
+  await ctx.bus.publish('entity.updated', settled)
+  ctx.log(`teach: entity correction ${kind} in ${workspaceId} — "${heard}" pinned to ${hostId} (rejected ${rejectedRivalId ?? 'none'})`)
+  send(res, 200, settled)
 }
 
 /**

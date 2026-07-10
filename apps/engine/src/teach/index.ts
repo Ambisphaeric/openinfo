@@ -3,7 +3,7 @@ import type { EventBus } from '../bus/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { TeachStore, captureReroute } from './signals.js'
 
-export { TeachStore, captureReroute, deriveHintCandidates, type HintCandidate } from './signals.js'
+export { TeachStore, captureReroute, captureEntityCorrection, deriveHintCandidates, type HintCandidate } from './signals.js'
 
 /** The engine surface wireTeach needs — EngineApp is structurally compatible ({ bus, store, … }). */
 export interface TeachWiringApp {

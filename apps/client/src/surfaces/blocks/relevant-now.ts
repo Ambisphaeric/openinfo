@@ -5,6 +5,7 @@ import { clockLabel } from '../block-renderer/format.js'
 import { stateDot, resolveStateVocab, type StateVocab } from '../block-renderer/micro-state.js'
 import { entityGlyph } from './glyphs.js'
 import { rowAffordances, type ActionPayload } from './actions.js'
+import { clarifyGlyph, clarifyAsk, type ClarifyContext } from './clarify.js'
 
 /**
  * The `relevant-now` block — the live join, the heart of the HUD (design/renderings/hud-v2.html state
@@ -69,6 +70,7 @@ const renderRow = (
   actions: NonNullable<Block['actions']>,
   dismissBase: DismissBase,
   vocab: StateVocab,
+  clarify: ClarifyContext | undefined,
 ): VNode | undefined => {
   const line = whyLine(row)
   if (!line) return undefined // no why sentence → no card (display rule #1)
@@ -80,21 +82,26 @@ const renderRow = (
   // inert this slice). The #66 micro-state dot now renders the entity's resolution `state` (#73) — absent
   // ⇒ no dot (nothing pretends to be resolved), present (a user override stamps `confirmed`) ⇒ a real dot.
   const dismiss: ActionPayload['dismiss'] = { ...dismissBase, itemId: row.entity.id }
+  // clarify (#75): an AMBIGUOUS mention (resolver flagged a rival within Δ) grows a ≟ in the `.go` strip;
+  // when expanded, its ONE inline ask line rides in the body under the why. Both go quiet once the user
+  // answered/dismissed this session (the Hud's session set), so a row asks at most once.
+  const glyph = clarifyGlyph(row.entity, clarify)
+  const ask = clarifyAsk(row.entity, dismissBase.workspaceId, clarify)
+  const body: VNode[] = [
+    h('span', { class: 'ttl' }, stateDot(row.entity.state, vocab), row.entity.name, ' ', h('span', { class: 'ext' }, ext)),
+    h('span', { class: 'why' }, why),
+  ]
+  if (ask) body.push(ask)
   return h(
     'div',
     { class: 'rel' },
     h('span', { class: `mk ${mark.cls}` }, mark.glyph),
-    h(
-      'span',
-      { class: 'body' },
-      h('span', { class: 'ttl' }, stateDot(row.entity.state, vocab), row.entity.name, ' ', h('span', { class: 'ext' }, ext)),
-      h('span', { class: 'why' }, why),
-    ),
-    h('span', { class: 'go' }, ...rowAffordances(actions, `${row.entity.name} — ${text}`, { dismiss })),
+    h('span', { class: 'body' }, ...body),
+    h('span', { class: 'go' }, ...(glyph ? [glyph] : []), ...rowAffordances(actions, `${row.entity.name} — ${text}`, { dismiss })),
   )
 }
 
-export const renderRelevantNow: BlockRenderer = ({ block, result }) => {
+export const renderRelevantNow: BlockRenderer = ({ block, result, clarify }) => {
   if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, 'Relevant now'))
   const source = block.query?.source ?? 'relevant-now'
   const workspaceParam = block.query?.params?.['workspace']
@@ -104,7 +111,7 @@ export const renderRelevantNow: BlockRenderer = ({ block, result }) => {
   const all = (result?.items ?? []) as RelevantEntity[]
   const rows = block.top !== undefined ? all.slice(0, block.top) : all
   const cards = rows
-    .map((row) => renderRow(row, block.actions ?? [], dismissBase, vocab))
+    .map((row) => renderRow(row, block.actions ?? [], dismissBase, vocab, clarify))
     .filter((card): card is VNode => card !== undefined)
   return h(
     'div',

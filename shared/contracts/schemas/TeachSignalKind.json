@@ -1,4 +1,28 @@
 {
-  "const": "reroute",
-  "type": "string"
+  "anyOf": [
+    {
+      "const": "reroute",
+      "type": "string"
+    },
+    {
+      "const": "alias-confirm",
+      "type": "string"
+    },
+    {
+      "const": "alias-reject",
+      "type": "string"
+    },
+    {
+      "const": "rename",
+      "type": "string"
+    },
+    {
+      "const": "disambiguate",
+      "type": "string"
+    },
+    {
+      "const": "dismiss",
+      "type": "string"
+    }
+  ]
 }
