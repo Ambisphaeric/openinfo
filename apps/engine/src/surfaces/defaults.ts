@@ -57,6 +57,62 @@ export const defaultHudSurface: Surface = {
 }
 
 /**
+ * The shipped fields-panel app (#100) — the FIRST genuinely different app surface, a companion panel meant
+ * to run side-by-side with the HUD. It is the fast-fields canon (#61) made visible as a dedicated surface:
+ * everything shipped this week — the fan-out fields, the #62 judge state, the #66 micro-state dots and glyph
+ * verb strip — rides only as blocks on the default HUD today; this surface is the demo of the mini-app frame.
+ *
+ * The stack, top→bottom: `now` (this window's own context line — workspace/topic/elapsed), the `fields`
+ * block SHOWN ALWAYS (not on-match like the HUD's — a fields APP that vanished when empty would be a broken
+ * app, so it renders an EXPLAINABLE empty naming the distill.fields flag + its fix instead), and the
+ * `distillates` block — "Transcript · distillate stream", the durable, queryable transcript the fields are
+ * distilled FROM (raw pre-distill words are transient; the distillate stream is the persisted substance,
+ * #12), so the provenance chain transcript→field is visible on one surface. The EPHEMERAL live-transcript
+ * strip (#58) is NOT a stack block — by its own design it is the HUD controller's event-fed layer, composed
+ * onto every surface this controller renders (hud.ts), so this app inherits it for free (see window-options).
+ *
+ * The `fields` block carries the full #66 glyph verb strip — copy (a wired text verb: the app prepares, it
+ * never sends) plus dismiss/pin/mark-for-follow-up as glyphs (dismiss is a real suppression write; pin /
+ * follow-up render honestly-inert per #15). `top` caps each list. Mirrors templates/openinfo-fields/surface.json.
+ */
+export const defaultFieldsSurface: Surface = {
+  id: 'surf-openinfo-fields',
+  name: 'Fields',
+  context: 'meeting',
+  version: 1,
+  stack: [
+    { block: 'now' },
+    {
+      block: 'fields',
+      show: 'always',
+      top: 8,
+      query: { source: 'fields', params: { session: 'current' }, top: 8 },
+      actions: [
+        { id: 'act-copy-field', label: 'Copy', verb: 'copy', params: {} },
+        { id: 'act-dismiss-field', label: 'Dismiss', verb: 'dismiss', params: {} },
+        { id: 'act-pin-field', label: 'Pin', verb: 'pin', params: {} },
+        { id: 'act-followup-field', label: 'Follow up', verb: 'mark-for-follow-up', params: {} },
+      ],
+    },
+    {
+      block: 'distillates',
+      show: 'always',
+      top: 6,
+      query: { source: 'distillates', params: { session: 'current' }, top: 6 },
+      actions: [{ id: 'act-copy-distillate', label: 'Copy', verb: 'copy', params: {} }],
+    },
+  ],
+}
+
+/**
+ * The surfaces SEEDED into a workspace's _meta.db on boot (ensureDefaults) and always enumerated by list()
+ * — the shipped apps the tray Apps folder shows out of the box. Append a const here to ship a new default
+ * surface (one line); each is seeded ONLY when absent, so a user's edits are never clobbered. Glass Minimal
+ * is deliberately NOT here — it is a cloneable TEMPLATE (templates/glass-minimal), not a seeded default.
+ */
+export const SEEDED_SURFACES: readonly Surface[] = [defaultHudSurface, defaultFieldsSurface]
+
+/**
  * Template #3 — "Glass Minimal", the floor (design/renderings/hud-v2.html: the two-line whisper, not
  * a meeting's density). Same primitive as the HUD, a different document → a different layout, which is
  * the whole proof that rendering is document-driven. A pure readout: the Now line plus a collapsed

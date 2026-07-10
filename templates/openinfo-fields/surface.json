@@ -1,0 +1,28 @@
+{
+  "id": "surf-openinfo-fields",
+  "name": "Fields",
+  "context": "meeting",
+  "version": 1,
+  "stack": [
+    { "block": "now" },
+    {
+      "block": "fields",
+      "show": "always",
+      "top": 8,
+      "query": { "source": "fields", "params": { "session": "current" }, "top": 8 },
+      "actions": [
+        { "id": "act-copy-field", "label": "Copy", "verb": "copy", "params": {} },
+        { "id": "act-dismiss-field", "label": "Dismiss", "verb": "dismiss", "params": {} },
+        { "id": "act-pin-field", "label": "Pin", "verb": "pin", "params": {} },
+        { "id": "act-followup-field", "label": "Follow up", "verb": "mark-for-follow-up", "params": {} }
+      ]
+    },
+    {
+      "block": "distillates",
+      "show": "always",
+      "top": 6,
+      "query": { "source": "distillates", "params": { "session": "current" }, "top": 6 },
+      "actions": [{ "id": "act-copy-distillate", "label": "Copy", "verb": "copy", "params": {} }]
+    }
+  ]
+}

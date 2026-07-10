@@ -3,6 +3,7 @@ Each template = surface.json + mode.json + registers.json + chains (in mode) + f
 | dir | ships | proves |
 |---|---|---|
 | openinfo-hud | P2 | the live join (launch anchor) |
+| openinfo-fields | P4 (#100) | the fast-fields canon as a companion app |
 | glass-minimal | P2 | the floor: two-button pill |
 | meeting-companion | P3 | meetily-shaped standalone pipeline |
 | interview | P5 | voice binding + diarization flag |

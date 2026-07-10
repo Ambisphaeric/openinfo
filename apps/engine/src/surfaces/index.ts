@@ -1,5 +1,5 @@
 export { SurfaceDocuments } from './documents.js'
-export { defaultHudSurface, defaultGlassMinimalSurface } from './defaults.js'
+export { defaultHudSurface, defaultGlassMinimalSurface, defaultFieldsSurface, SEEDED_SURFACES } from './defaults.js'
 export { compileQuery } from './query.js'
 export { ItemSignalStore } from './signals.js'
 export { firstRunNotice, type SetupData } from './setup/view.js'

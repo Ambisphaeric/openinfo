@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hudWindowSpec } from './window-options.js'
+import { hudWindowSpec, configForSurface } from './window-options.js'
 
 test('the HUD window carries the inherited-Glass signature', () => {
   const spec = hudWindowSpec()
@@ -35,4 +35,12 @@ test('opens hidden by default (Glass reveals with ⌘\\ / the tray); startVisibl
 
 test('window width wraps the 660px hud-v2 panel', () => {
   assert.ok(hudWindowSpec().browserWindow.width >= 660)
+})
+
+test('the #100 fields app takes Glass chrome (content-protected companion) at its own narrower width', () => {
+  const cfg = configForSurface('surf-openinfo-fields')
+  assert.equal(cfg.chrome, 'hud', 'a sensitive-content companion beside the HUD, not a framed app window')
+  assert.equal(cfg.width, 480, 'narrower than the HUD panel so the two sit side-by-side')
+  // an unknown surface still falls through to the framed `app` default (disclosed)
+  assert.equal(configForSurface('surf-unknown').chrome, 'app')
 })
