@@ -2,8 +2,11 @@ import type { Mode, PromptTemplate } from '@openinfo/contracts'
 
 /**
  * The shipped distill prompt template — a document, not a hardcoded preset (glass mistake left
- * behind). Interpolates the resolved voice vector ({{tone}}…{{voice.rules}}) plus the merge
- * window's {{transcript}} before the local model runs. Mirrors
+ * behind). The FACTORY default is neutral (#130): a short, factual rolling-merge summary that keeps
+ * only the load-bearing parts (output grammar, invent-nothing rule, {{transcript}}/{{windowStart}}/
+ * {{windowEnd}} window interpolation) and bakes NO persona/voice dials. The voice-vector machinery
+ * (compileVoiceVars → {{tone}}…{{voice.rules}}) is still live for a user-authored/edited template —
+ * it is simply not pre-tweaked into the shipped body. Mirrors
  * shared/contracts/examples/promptTemplate.distill.json.
  */
 export const defaultDistillTemplate: PromptTemplate = {
@@ -12,12 +15,9 @@ export const defaultDistillTemplate: PromptTemplate = {
   kind: 'distill',
   slot: 'llm',
   builtin: true,
-  description: 'rolling-merge summary; interpolates the resolved voice vector before the local model runs',
+  description: 'rolling-merge summary; neutral factual default (no baked voice vector — dials remain available to edited templates)',
   body:
     'You are distilling a live meeting into a tight, factual summary of what just happened.\n' +
-    'Voice: tone {{tone}}/10, warmth {{warmth}}/10, wit {{wit}}/10, charm {{charm}}/10, ' +
-    'specificity {{specificity}}/10, brevity {{brevity}}/10.\n' +
-    '{{voice.rules}}\n' +
     'Summarize only what the transcript supports. Do not invent commitments or names.\n\n' +
     'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nSummary:',
 }
@@ -25,9 +25,10 @@ export const defaultDistillTemplate: PromptTemplate = {
 /**
  * The shipped typed-moment extraction template — a document, seeded like the distill template.
  * Extraction is a SECOND, tighter call per window (see PHASE2-NOTES: one tight job per call beats
- * one call doing summary + JSON on 3–8B local models). The body demands a strict JSON array and
- * interpolates the resolved voice vector plus the window {{transcript}} and {{summary}} (the
- * just-produced distillate text). Mirrors shared/contracts/examples/promptTemplate.extract.json.
+ * one call doing summary + JSON on 3–8B local models). The FACTORY default is neutral (#130): it
+ * keeps the load-bearing output grammar (strict JSON array, the typed-moment schema, invent-nothing)
+ * and the window {{transcript}}/{{summary}} interpolation, and bakes NO voice dials. Mirrors
+ * shared/contracts/examples/promptTemplate.extract.json.
  */
 export const defaultExtractTemplate: PromptTemplate = {
   id: 'tpl-extract-default',
@@ -44,8 +45,7 @@ export const defaultExtractTemplate: PromptTemplate = {
     '- question (◆): a question directed at the user awaiting an answer.\n' +
     '- decision (▲): a choice the group settled on.\n' +
     '- artifact (✱): a document, link, or file referenced or to produce.\n' +
-    'Extract only what the transcript supports; invent nothing. If there are no moments, return [].\n' +
-    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
+    'Extract only what the transcript supports; invent nothing. If there are no moments, return [].\n\n' +
     'Summary of the window: {{summary}}\n\n' +
     'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array:',
 }
@@ -54,8 +54,9 @@ export const defaultExtractTemplate: PromptTemplate = {
  * The shipped entity-extraction template — a document, seeded like the distill/extract templates.
  * Entity extraction is a THIRD tight call per window (see PHASE2-NOTES: one job / one output grammar
  * per call beats a compound moments+entities response on 3–8B local models). The body demands a
- * strict JSON array of {name, kind, aliases} and interpolates the resolved voice vector plus the
- * window {{transcript}} and {{summary}}. Mirrors shared/contracts/examples/promptTemplate.entities.json.
+ * strict JSON array of {name, kind, aliases}, keeps the window {{transcript}}/{{summary}}
+ * interpolation, and — as the neutral factory default (#130) — bakes NO voice dials. Mirrors
+ * shared/contracts/examples/promptTemplate.entities.json.
  */
 export const defaultEntitiesTemplate: PromptTemplate = {
   id: 'tpl-entities-default',
@@ -65,6 +66,49 @@ export const defaultEntitiesTemplate: PromptTemplate = {
   builtin: true,
   description: 'entity extraction; one tight job per call, emits a strict JSON array of named entities',
   body:
+    'You extract the named entities discussed in a meeting transcript — the people, artifacts, and topics that matter.\n' +
+    'Return ONLY a JSON array of entities, no prose, no code fences.\n' +
+    'Each element: {"name": string, "kind": one of "person"|"artifact"|"topic", "aliases": string[] (optional other names for the same thing)}.\n' +
+    '- person: a human named or clearly referred to.\n' +
+    '- artifact (✱): a document, file, link, system, or deliverable.\n' +
+    '- topic: a subject, project, or theme under discussion.\n' +
+    'Extract only entities the transcript supports; invent nothing. Merge obvious aliases of one thing into a single entity. If there are none, return [].\n\n' +
+    'Summary of the window: {{summary}}\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array of entities:',
+}
+
+/**
+ * The PREVIOUS shipped bodies of the three window templates — the voice-baked bodies that shipped
+ * before #130 made the factory defaults neutral. The one-time builtin-body refresh
+ * (DistillDocuments.ensureDefaults) uses these to detect an UNEDITED builtin on an existing install:
+ * seeds are seed-if-absent, so an upgrader keeps its old baked body forever otherwise. A stored
+ * builtin is treated as unedited — and refreshed to the new neutral body — ONLY when it is still at
+ * version 1 AND its body is byte-for-byte one of these previous bodies. Any user edit bumps the
+ * version off 1 (LayoutStore.put) and/or diverges the body, so an edited document is NEVER clobbered.
+ * Keyed by template id. Keep in lockstep with the bodies above: a refresh compares against these,
+ * never against the current body.
+ */
+export const PREVIOUS_BUILTIN_BODIES: Readonly<Record<string, string>> = {
+  [defaultDistillTemplate.id]:
+    'You are distilling a live meeting into a tight, factual summary of what just happened.\n' +
+    'Voice: tone {{tone}}/10, warmth {{warmth}}/10, wit {{wit}}/10, charm {{charm}}/10, ' +
+    'specificity {{specificity}}/10, brevity {{brevity}}/10.\n' +
+    '{{voice.rules}}\n' +
+    'Summarize only what the transcript supports. Do not invent commitments or names.\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nSummary:',
+  [defaultExtractTemplate.id]:
+    'You extract typed moments from a meeting transcript. Return ONLY a JSON array, no prose, no code fences.\n' +
+    'Each element: {"kind": one of "commitment"|"question"|"decision"|"artifact", "text": string, ' +
+    '"speaker": string (optional), "confidence": number 0..1 (optional), "answered": boolean (only for kind "question")}.\n' +
+    '- commitment (●): someone promised to do something.\n' +
+    '- question (◆): a question directed at the user awaiting an answer.\n' +
+    '- decision (▲): a choice the group settled on.\n' +
+    '- artifact (✱): a document, link, or file referenced or to produce.\n' +
+    'Extract only what the transcript supports; invent nothing. If there are no moments, return [].\n' +
+    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
+    'Summary of the window: {{summary}}\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array:',
+  [defaultEntitiesTemplate.id]:
     'You extract the named entities discussed in a meeting transcript — the people, artifacts, and topics that matter.\n' +
     'Return ONLY a JSON array of entities, no prose, no code fences.\n' +
     'Each element: {"name": string, "kind": one of "person"|"artifact"|"topic", "aliases": string[] (optional other names for the same thing)}.\n' +

@@ -2,7 +2,7 @@ import type { Mode, PromptTemplate } from '@openinfo/contracts'
 import { Mode as ModeSchema, PromptTemplate as PromptTemplateSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode } from './defaults.js'
+import { PREVIOUS_BUILTIN_BODIES, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 const MODE_KIND = 'mode'
@@ -22,15 +22,11 @@ export class DistillDocuments {
   constructor(private readonly store: WorkspaceRegistry) {}
 
   ensureDefaults(): void {
-    if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultDistillTemplate.id)) {
-      this.store.layouts.put(TEMPLATE_KIND, defaultDistillTemplate.id, defaultDistillTemplate)
-    }
-    if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultExtractTemplate.id)) {
-      this.store.layouts.put(TEMPLATE_KIND, defaultExtractTemplate.id, defaultExtractTemplate)
-    }
-    if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultEntitiesTemplate.id)) {
-      this.store.layouts.put(TEMPLATE_KIND, defaultEntitiesTemplate.id, defaultEntitiesTemplate)
-    }
+    // The three window templates (#130): seed-if-absent, then a one-time neutral-body refresh for an
+    // UNEDITED builtin left on an existing install. seedOrRefreshBuiltin never clobbers a user edit.
+    this.seedOrRefreshBuiltin(defaultDistillTemplate)
+    this.seedOrRefreshBuiltin(defaultExtractTemplate)
+    this.seedOrRefreshBuiltin(defaultEntitiesTemplate)
     // Fast-field prompt documents (#61) — seeded like the distill trio; a user's edit is never clobbered.
     for (const field of defaultFieldTemplates) {
       if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, field.id)) {
@@ -45,6 +41,27 @@ export class DistillDocuments {
     }
     if (!this.store.layouts.getLatest<Mode>(MODE_KIND, defaultMeetingMode.id)) {
       this.store.layouts.put(MODE_KIND, defaultMeetingMode.id, defaultMeetingMode)
+    }
+  }
+
+  /**
+   * Seed a shipped window template if absent; else, on an existing install, refresh it to the new
+   * shipped body ONLY when it is an UNEDITED builtin (#130). Seeds are seed-if-absent, so without this
+   * an upgrader would keep the old voice-baked body forever. "Unedited" is detected CONSERVATIVELY:
+   * the stored doc must still be at version 1 (any user PUT bumps the version off 1) AND its body must
+   * be byte-for-byte the previous shipped body for this id (PREVIOUS_BUILTIN_BODIES). Either signal
+   * failing ⇒ a user has taken ownership ⇒ leave it untouched. A refresh is itself a put(), bumping to
+   * version 2, so it runs at most once (v2's body no longer matches the previous body, and v2 ≠ v1).
+   */
+  private seedOrRefreshBuiltin(template: PromptTemplate): void {
+    const existing = this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, template.id)
+    if (!existing) {
+      this.store.layouts.put(TEMPLATE_KIND, template.id, template)
+      return
+    }
+    const previousBody = PREVIOUS_BUILTIN_BODIES[template.id]
+    if (previousBody !== undefined && existing.version === 1 && existing.body.body === previousBody) {
+      this.store.layouts.put(TEMPLATE_KIND, template.id, template)
     }
   }
 

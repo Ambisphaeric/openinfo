@@ -62,10 +62,23 @@ test('well-formed llm output extracts typed, contract-valid moments with provena
   assert.equal(question!.kind, 'question')
   assert.equal(question!.answered, false)
 
-  // the extraction prompt is the versioned template with voice + window inputs interpolated
-  assert.match(llm.prompts[0]!, /specificity 9\/10/)
+  // #130: the neutral default template interpolates the WINDOW inputs but bakes NO voice vector.
   assert.match(llm.prompts[0]!, /retention language to legal/)
   assert.match(llm.prompts[0]!, /routing retention language through legal/) // {{summary}}
+  assert.doesNotMatch(llm.prompts[0]!, /specificity|brevity|\bVoice:\s/i) // no baked persona dials
+})
+
+test('voice machinery still interpolates for a template that carries the dial placeholders (#130)', async () => {
+  // The default body is neutral, but the machinery is untouched: an author who edits {{specificity}}/
+  // {{voice.rules}} back into a template still gets the resolved dials merged into the prompt.
+  const voiced = {
+    ...defaultExtractTemplate,
+    body: 'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' + defaultExtractTemplate.body,
+  }
+  const llm = canned('[]')
+  await extractMoments(input, { invoke: llm.invoke, template: voiced })
+  assert.match(llm.prompts[0]!, /specificity 9\/10/)
+  assert.match(llm.prompts[0]!, /brevity 8\/10/)
 })
 
 test('partially-valid output: valid moments salvaged, invalid dropped', async () => {

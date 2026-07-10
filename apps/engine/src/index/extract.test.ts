@@ -46,8 +46,8 @@ test('well-formed llm output extracts typed entity candidates', async () => {
   const artifact = result.entities.find((e) => e.kind === 'artifact')!
   assert.deepEqual(artifact.aliases, [])
 
-  // the extraction prompt is the versioned template with voice + window inputs interpolated
-  assert.match(llm.prompts[0]!, /specificity 9\/10/)
+  // #130: the neutral default entities template interpolates the WINDOW inputs but bakes NO voice vector.
+  assert.doesNotMatch(llm.prompts[0]!, /specificity|brevity|\bVoice:\s/i)
   assert.match(llm.prompts[0]!, /SOC 2 addendum/) // {{transcript}}
   assert.match(llm.prompts[0]!, /user routes retention language/) // {{summary}}
 })
