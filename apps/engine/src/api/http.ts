@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller, DistillCadence, FieldValueStore, FastFieldScheduler, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
+import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
@@ -149,6 +149,23 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     publish: (value) => bus.publish('field.updated', value),
     log,
   })
+  // Judge stage (#62): the dual-input review that lifts fast fields off `provisional`. It reads the SAME
+  // released batch the fast fan-out did (so it sees the SAME source), but at a LOWER cadence — its own
+  // accumulation buffer (judgeCadence below) releases a wider window, decoupled from the fast tier's per-
+  // batch fan-out. It reviews each judge prompt document's fast-result set against that source window and
+  // confirms/corrects/flags in place, republishing field.updated with the overrule provenance. Gated by
+  // distill.judge (default OFF) AND tier-gated on fabric contents — with no judge-capable endpoint the
+  // pass is a logged no-op and fields stay provisional (honest degradation, never an error).
+  const judgeScheduler = new JudgeScheduler({
+    store,
+    fabric,
+    docs: distillDocs,
+    values: fieldValues,
+    resolveKey,
+    runtimeManager: runtime,
+    publish: (value) => bus.publish('field.updated', value),
+    log,
+  })
   // Seam (see PHASE2-NOTES): distill rides the queue drain, gated on distill.enabled (OFF by
   // default). Flag off → the drain stays the Phase 1 no-op GC; on → each drained file distills.
   // Moments extraction (distill.moments) and entity indexing (distill.index) are further opt-ins
@@ -237,11 +254,36 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
       log(`fast-field fan-out failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  // Judge cadence (#62): decoupled from the fast fan-out. Fast fields run every released distill batch
+  // (~15s); the judge accumulates those batches in its OWN buffer and only reviews once its span crosses
+  // a WIDER threshold (default 4× the distill cadence, so the judge sees ~a minute of source at once —
+  // a larger model at a lower cadence). OPENINFO_JUDGE_CADENCE_MS overrides it (finite >= 0). Resolved
+  // once at wiring time. The judge rides the SAME batches the fast tier saw, so it judges the SAME source.
+  const judgeCadenceMs = ((): number => {
+    const raw = Number(process.env['OPENINFO_JUDGE_CADENCE_MS'])
+    return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_DISTILL_CADENCE_MS * 4
+  })()
+  const judgeCadence = new DistillCadence(judgeCadenceMs)
+  // Best-effort like the fast fan-out: a judge is a distinct, later pass, so a review error must never
+  // sink the drain (the scheduler already catches per-judge invoke failures; this guards the whole pass).
+  // Gated by distill.judge (read per-drain, hot-flippable). On a flush the cadence is bypassed so the tail
+  // gets judged; otherwise the batch is accumulated and released only when the judge's wider span is met.
+  const runJudgePass = async (batch: readonly CaptureChunk[], flush = false): Promise<void> => {
+    if (batch.length === 0 || !isFlagEnabled(store, 'distill.judge')) return
+    const due = flush ? [...judgeCadence.flush(), ...batch] : judgeCadence.offer(batch)
+    if (due.length === 0) return
+    try {
+      await judgeScheduler.runJudge(due)
+    } catch (error) {
+      log(`judge pass failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   const distillThrottled = async (chunks: readonly CaptureChunk[], opts: DistillOptions): Promise<void> => {
     if (flushing) {
       if (chunks.length > 0) {
         await distiller.distillChunks(chunks, opts)
         await runFastFields(chunks)
+        await runJudgePass(chunks, true)
       }
       return
     }
@@ -249,6 +291,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     if (due.length > 0) {
       await distiller.distillChunks(due, opts)
       await runFastFields(due)
+      await runJudgePass(due)
     }
   }
   // Session-end flush: distill the accumulated sub-threshold tail so the record — and any follow-up draft —
@@ -272,6 +315,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
         // same flushed batch explicitly — otherwise a short (sub-cadence) session's fields would strand (#61).
         await distiller.distillChunks(remainder, currentDistillOpts())
         await runFastFields(remainder)
+        await runJudgePass(remainder, true)
       }
     } finally {
       flushing = false
