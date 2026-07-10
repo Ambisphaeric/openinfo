@@ -1,6 +1,6 @@
 import type { BacklogEta, QueueStatus } from '@openinfo/contracts'
 import { h, type VNode } from '../block-renderer/vnode.js'
-import type { BlockRenderer } from '../block-renderer/registry.js'
+import type { BlockRenderArgs, BlockRenderer } from '../block-renderer/registry.js'
 
 const LABEL = 'Queue · status'
 
@@ -21,6 +21,49 @@ const etaLine = (eta: BacklogEta): string => {
   if (eta.etaMs !== undefined && eta.etaMs <= 0) return 'ETA · caught up'
   const secs = eta.etaMs !== undefined ? Math.round(eta.etaMs / 1000) : undefined
   return secs !== undefined ? `ETA · ~${secs}s to clear` : 'ETA · clearing'
+}
+
+/**
+ * The delay-disclosure threshold (#102 keep-time), in ms. Below this we render NOTHING — a sub-threshold
+ * lag is normal pipeline slack, not a delay worth announcing; above it, the block honestly says how far
+ * behind the present the data is. Overridable per surface via the block query params (`lagThresholdMs`) —
+ * the smallest honest configurability, no new settings framework (that is design-session territory, #102
+ * item 4). Default 5s: long enough that ordinary drain jitter stays silent, short enough that a real
+ * backlog surfaces before delayed data could be mistaken for the present.
+ */
+const DEFAULT_LAG_THRESHOLD_MS = 5000
+
+const lagThresholdOf = (block: BlockRenderArgs['block']): number => {
+  const override = block.query?.params?.['lagThresholdMs']
+  return typeof override === 'number' && Number.isFinite(override) && override >= 0 ? override : DEFAULT_LAG_THRESHOLD_MS
+}
+
+/**
+ * The honest delay line (#102): "processing ~Ns behind", rendered ONLY when the backward-looking lag is a
+ * measured `capture-time` value AT OR ABOVE the threshold. `unknown` basis claims nothing (we never invent
+ * a lag we couldn't measure); caught up (lag absent) renders nothing. This is the visible half of the
+ * guarantee that delayed data is never presented as real-time.
+ */
+const lagDisclosure = (status: QueueStatus, thresholdMs: number): string | null => {
+  const lag = status.lag
+  if (!lag || lag.basis !== 'capture-time' || lag.behindMs < thresholdMs) return null
+  return `processing ~${Math.round(lag.behindMs / 1000)}s behind`
+}
+
+const lagRow = (status: QueueStatus, thresholdMs: number): VNode | null => {
+  const line = lagDisclosure(status, thresholdMs)
+  if (line === null) return null
+  return h(
+    'div',
+    { class: 'rel lag' },
+    h('span', { class: 'mk q' }, '⏱'),
+    h(
+      'span',
+      { class: 'body' },
+      h('span', { class: 'ttl' }, line),
+      h('span', { class: 'why' }, 'delayed capture is appended with its true time, never shown as now'),
+    ),
+  )
 }
 
 const backlogLine = (status: QueueStatus): string => {
@@ -80,7 +123,11 @@ export const renderQueue: BlockRenderer = ({ block, result }) => {
   if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL))
   const status = (result?.items ?? [])[0] as QueueStatus | undefined
   const rows: VNode[] = status !== undefined
-    ? [statusRow(status), ...(failureRow(status) !== null ? [failureRow(status) as VNode] : [])]
+    ? [
+        statusRow(status),
+        ...(lagRow(status, lagThresholdOf(block)) !== null ? [lagRow(status, lagThresholdOf(block)) as VNode] : []),
+        ...(failureRow(status) !== null ? [failureRow(status) as VNode] : []),
+      ]
     : [unavailableRow()]
   return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), ...rows)
 }

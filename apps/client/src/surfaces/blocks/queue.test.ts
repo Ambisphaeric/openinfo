@@ -49,6 +49,42 @@ test('a SEEDED FAILURE renders as VISIBLE text — never a hidden or silent bloc
   assert.match(html, /class="why">load a smaller model/) // the one-line fix hint
 })
 
+// #102 keep-time: the honest delay disclosure — visible when lagging, absent when caught up.
+test('a LAGGING queue renders the honest delay line "processing ~Ns behind"', () => {
+  const lagging = status({ lag: { behindMs: 42000, oldestPendingCapturedAt: '2026-07-07T14:39:18Z', basis: 'capture-time' } })
+  const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([lagging])] }, defaultBlockRegistry))
+  assert.match(html, /class="rel lag"/) // a distinct, visible row — not folded into silence
+  assert.match(html, /processing ~42s behind/) // the honest "how far behind the present" line
+  assert.match(html, /never shown as now/) // the why: delayed capture keeps its true time
+})
+
+test('a CAUGHT-UP queue renders NO delay line (absence = 0 behind)', () => {
+  // The default status() carries no `lag` — the caught-up case.
+  const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([status()])] }, defaultBlockRegistry))
+  assert.doesNotMatch(html, /processing ~/) // nothing announced when caught up
+  assert.doesNotMatch(html, /class="rel lag"/)
+})
+
+test('a sub-threshold lag stays SILENT; an `unknown` basis claims nothing', () => {
+  const tiny = renderToHtml(renderSurface({ surface, now, results: [undefined, result([status({ lag: { behindMs: 3000, basis: 'capture-time' } })])] }, defaultBlockRegistry))
+  assert.doesNotMatch(tiny, /processing ~/) // 3s < 5s default threshold → normal slack, not announced
+  const unknown = renderToHtml(renderSurface({ surface, now, results: [undefined, result([status({ lag: { behindMs: 0, basis: 'unknown' } })])] }, defaultBlockRegistry))
+  assert.doesNotMatch(unknown, /processing ~/) // unknown basis never invents a lag
+})
+
+test('the delay threshold is configurable via the block query params (lagThresholdMs)', () => {
+  const strict: Surface = {
+    id: 's', name: 's', context: 'meeting', version: 1,
+    stack: [
+      { block: 'now' },
+      { block: 'queue', show: 'always', query: { source: 'queue', params: { lagThresholdMs: 60000 } } },
+    ],
+  }
+  const lagging = status({ lag: { behindMs: 42000, oldestPendingCapturedAt: '2026-07-07T14:39:18Z', basis: 'capture-time' } })
+  const html = renderToHtml(renderSurface({ surface: strict, now, results: [undefined, result([lagging])] }, defaultBlockRegistry))
+  assert.doesNotMatch(html, /processing ~/) // 42s < the surface's raised 60s bar → below threshold, silent
+})
+
 test('honest ETA basis: `none` never fabricates a number; and an unavailable status stays explainable', () => {
   const unknown = status({ eta: { basis: 'none' } })
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([unknown])] }, defaultBlockRegistry))
