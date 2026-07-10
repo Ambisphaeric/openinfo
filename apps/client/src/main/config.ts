@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { asChunkStrategy, DEFAULT_CHUNK_STRATEGY, DEFAULT_VAD_PARAMS, type ChunkStrategy } from '../capture/vad.js'
 
 /**
  * Client-local shell configuration — resolved from the environment and, for a double-clicked packaged
@@ -88,9 +89,33 @@ export interface ShellConfig {
    * document, for the same reason every other capture behaviour is (it is how the client drives its own
    * recorder; it never touches the engine or its store). The resolved value is sent to the renderer with
    * each `capture:start` and is the chunk's `durationMs`. Override with OPENINFO_SEGMENT_MS or
-   * `"segmentMs"`; a non-positive/garbage value falls back to the default. See PHASE4-NOTES (#57).
+   * `"segmentMs"`; a non-positive/garbage value falls back to the default. See PHASE4-NOTES (#57). Under
+   * the `vad` chunk strategy (the default, #95) segmentMs is only the durationMs echo — WHERE a segment is
+   * cut is decided by pause detection, not this cadence; it still governs the `fixed` strategy.
    */
   segmentMs: number
+  /**
+   * How the capture renderer decides WHERE to cut an audio segment (#95). `vad` (the MEASURED default —
+   * tools/stt-accuracy) cuts at detected pauses so a cut never splits a word (accuracy matches whole-file,
+   * ~0.00 WER); `fixed` keeps the old wall-clock `segmentMs` cadence (measured ~0.20 WER at 1s — the 0.0.8
+   * word-boundary corruption). CONFIG, not a flag document, like every other capture behaviour — it drives
+   * the client's own recorder. Override with OPENINFO_CHUNK_STRATEGY=fixed|vad or `"chunkStrategy"`.
+   */
+  chunkStrategy: ChunkStrategy
+  /**
+   * VAD knobs (#95), used only under `chunkStrategy: 'vad'` and forwarded to the renderer with each start.
+   * Defaults from tools/stt-accuracy (capture/vad.ts DEFAULT_VAD_PARAMS). The accuracy↔latency dial:
+   * - vadSilenceHoldMs: how long it must stay quiet to count as a pause and cut (default 400).
+   * - vadMinSegmentMs: never cut before this much audio — avoids sub-word fragments (default 600).
+   * - vadMaxSegmentMs: always cut by this even with no pause — bounds latency on pauseless speech (default 6000).
+   * - vadSilencePeak: peak amplitude (0..1) below which a poll tick is silence, not speech (default 0.02).
+   * Override via OPENINFO_VAD_SILENCE_HOLD_MS / _MIN_SEGMENT_MS / _MAX_SEGMENT_MS / _SILENCE_PEAK or the
+   * matching client.json keys; a non-positive/garbage value falls back to the default.
+   */
+  vadSilenceHoldMs: number
+  vadMinSegmentMs: number
+  vadMaxSegmentMs: number
+  vadSilencePeak: number
   /**
    * Debug: draw visible outlines around the HUD window's bounds and its painted panel. The HUD window
    * is frameless and TRANSPARENT — when nothing paints (engine unreachable, empty layout) there is
@@ -118,6 +143,11 @@ export interface ClientConfigFile {
   screen?: boolean
   screenIntervalMs?: number
   segmentMs?: number
+  chunkStrategy?: ChunkStrategy
+  vadSilenceHoldMs?: number
+  vadMinSegmentMs?: number
+  vadMaxSegmentMs?: number
+  vadSilencePeak?: number
   hudOutline?: boolean
 }
 
@@ -209,6 +239,13 @@ const resolveScreenIntervalMs = (envRaw: string | undefined, fileVal: number | u
   return Math.min(Math.max(Math.round(chosen), SCREEN_INTERVAL_MIN_MS), SCREEN_INTERVAL_MAX_MS)
 }
 
+/**
+ * Resolve the chunk strategy (#95): a valid env token (fixed|vad) wins, else the file value, else the
+ * measured default (vad). Mirrors the env > file > default precedence of the string/url fields.
+ */
+const resolveChunkStrategy = (envRaw: string | undefined, fileVal: ChunkStrategy | undefined, def: ChunkStrategy): ChunkStrategy =>
+  asChunkStrategy(envRaw?.trim().toLowerCase()) ?? fileVal ?? def
+
 /** Trim a trailing slash so `${engineUrl}${path}` never doubles up. */
 const normalizeUrl = (url: string): string => url.replace(/\/+$/, '')
 
@@ -245,6 +282,16 @@ export const parseClientConfigFile = (raw: unknown): ClientConfigFile | undefine
   if (screenIntervalMs !== undefined) out.screenIntervalMs = screenIntervalMs
   const segmentMs = asNumber(r['segmentMs'])
   if (segmentMs !== undefined) out.segmentMs = segmentMs
+  const chunkStrategy = asChunkStrategy(r['chunkStrategy'])
+  if (chunkStrategy !== undefined) out.chunkStrategy = chunkStrategy
+  const vadSilenceHoldMs = asNumber(r['vadSilenceHoldMs'])
+  if (vadSilenceHoldMs !== undefined) out.vadSilenceHoldMs = vadSilenceHoldMs
+  const vadMinSegmentMs = asNumber(r['vadMinSegmentMs'])
+  if (vadMinSegmentMs !== undefined) out.vadMinSegmentMs = vadMinSegmentMs
+  const vadMaxSegmentMs = asNumber(r['vadMaxSegmentMs'])
+  if (vadMaxSegmentMs !== undefined) out.vadMaxSegmentMs = vadMaxSegmentMs
+  const vadSilencePeak = asNumber(r['vadSilencePeak'])
+  if (vadSilencePeak !== undefined) out.vadSilencePeak = vadSilencePeak
   const hudOutline = asBool(r['hudOutline'])
   if (hudOutline !== undefined) out.hudOutline = hudOutline
   return out
@@ -302,6 +349,11 @@ export const resolveShellConfig = (
     screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen, SENSE_DEFAULTS.screen),
     screenIntervalMs: resolveScreenIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),
     segmentMs: resolveIntervalMs(env['OPENINFO_SEGMENT_MS'], file?.segmentMs, DEFAULTS.segmentMs),
+    chunkStrategy: resolveChunkStrategy(env['OPENINFO_CHUNK_STRATEGY'], file?.chunkStrategy, DEFAULT_CHUNK_STRATEGY),
+    vadSilenceHoldMs: resolveIntervalMs(env['OPENINFO_VAD_SILENCE_HOLD_MS'], file?.vadSilenceHoldMs, DEFAULT_VAD_PARAMS.silenceHoldMs),
+    vadMinSegmentMs: resolveIntervalMs(env['OPENINFO_VAD_MIN_SEGMENT_MS'], file?.vadMinSegmentMs, DEFAULT_VAD_PARAMS.minSegmentMs),
+    vadMaxSegmentMs: resolveIntervalMs(env['OPENINFO_VAD_MAX_SEGMENT_MS'], file?.vadMaxSegmentMs, DEFAULT_VAD_PARAMS.maxSegmentMs),
+    vadSilencePeak: resolveIntervalMs(env['OPENINFO_VAD_SILENCE_PEAK'], file?.vadSilencePeak, DEFAULT_VAD_PARAMS.silencePeak),
     hudOutline: resolveOptIn(env['OPENINFO_HUD_OUTLINE'], file?.hudOutline, false),
   }
 }

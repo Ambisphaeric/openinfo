@@ -3610,3 +3610,79 @@ already existed; everything here is client-side.
   functional but not restyled (v0).
 - **Out of scope (untouched):** workspace binding/instantiation (#99), new surface content (#100/#101),
   any engine contract change. Must-not-touch capture/queue paths were not modified.
+
+## Slice: Chunking architecture — measured fix for word-boundary corruption  *(#95/#97, branch `feat/95-chunking-architecture`, 2026-07-10)*
+
+The 0.0.8 latency default sliced capture audio into FIXED 1-second segments and transcribed each one
+INDEPENDENTLY. A wall-clock cut lands mid-word roughly once a second at speaking pace, and the model —
+handed a word fragment with zero context — fabricates a phantom word ('testing testing testing' → the
+boundary chunk came back 'thing.'; live rig: 'Testing. Absolutely. I think Good. Okay, One.'). Latency won,
+accuracy lost. The model was NOT hallucinating — the slicing was the corruption.
+
+### Measure first (the harness, seeds #97): `tools/stt-accuracy/measure.mjs`
+Renders known utterances with `say` (to file — never played), then runs whole-file vs each chunking
+strategy at 1/2/5s cadences against a local STT endpoint and prints a WER table (word-level Levenshtein vs
+the reference). Silence + pink-noise probes confirm empty→0. Endpoints are args/env (localhost defaults),
+never hardcoded. Measured on BOTH engines the owner cares about (parakeet must be ironed out; whisper stays
+tested because it's widely used):
+
+```
+                   whole   fixed-1s  fixed-2s  fixed-5s  overlap-5s/2s  vad
+parakeet MEAN(speech)  0.00    0.20      0.05      0.01      0.14         0.00
+whisper  MEAN(speech)  0.00    0.16      0.03      0.01      0.07         0.00
+```
+
+The short fixtures (1–6s) fit inside a 5s chunk, so a 20s continuous `monologue` fixture was added to expose
+5s-cadence boundaries: parakeet fixed-5s 0.04 (still corrupts 'straddle a boundary' → 'stress Battle of
+Boundary'); vad **0.00**. Latency (mean request time) is comparable across strategies on parakeet
+(~0.01s/req — the compute headroom the issue noted).
+
+### Winner: VAD (pause-based segmentation), issue candidate (a)
+Cut at a detected PAUSE, not the wall clock — a cut in silence never splits a word, so accuracy matches
+whole-file. **Overlap+merge (candidate b) was measured and REJECTED**: a naive exact-word-overlap merge
+DUPLICATES the boundary span (parakeet 0.69 WER on the monologue), because the same audio region transcribes
+differently in adjacent windows so the exact-overlap dedup never matches. A robust overlap merge needs fuzzy
+alignment — much larger, and unnecessary once VAD gives whole-file accuracy. `mergeOverlap` stays in the
+harness as the measurable candidate, not shipped. Streaming STT (candidate c) remains the long-term answer.
+
+### Shipped (behind the existing seams)
+- **`client/capture/vad.ts`** (NEW, pure + unit-tested): `shouldRotate`/`nextSilenceRunMs`/`resolveVadParams`
+  + `DEFAULT_VAD_PARAMS` (silenceHoldMs 400, minSegmentMs 600, maxSegmentMs 6000, silencePeak 0.02, pollMs
+  50 — all chosen FROM the measurements) + `DEFAULT_CHUNK_STRATEGY = 'vad'`. The renderer feeds it amplitude
+  telemetry; the DECISION is here so it's testable in the node env.
+- **`capture-renderer.ts`**: generalized the system-audio AnalyserNode probe (`attachAmplitudeProbe`) to the
+  vad path too; `armRotation` branches — `fixed` keeps the #57 wall-clock stop-timer, `vad` runs an
+  amplitude poll that rotates at a pause (elapsed accumulated from ticks, so no wall clock and the chunk's
+  `durationMs` is the segment's ACTUAL length). Falls back to a fixed timer if the probe never attached.
+  The renderer's no-options fallback stays `fixed` (conservative for a legacy/partial start); production
+  default is `vad` via config.
+- **`main/config.ts`**: `ShellConfig.chunkStrategy` + `vadSilenceHoldMs`/`vadMinSegmentMs`/`vadMaxSegmentMs`/
+  `vadSilencePeak`, resolved env > file > default (default `vad`); `OPENINFO_CHUNK_STRATEGY` +
+  `OPENINFO_VAD_*` / matching client.json keys. Append-only fields.
+- **`capture/protocol.ts`**: `CaptureStartOptions` extended (append-only, all optional) with `chunkStrategy`
+  + the vad knobs. **No `@openinfo/contracts` change** — CaptureStartOptions is client-local, so no `pnpm gen`.
+- **`main/shell.ts`**: the `capture:start` options literal now carries the resolved strategy + knobs (a
+  minimal edit to the object literal in `setupCapture`, the capture-lifecycle region — untouched the
+  window/tray/command code owned by the parallel #19/#20/#98 agent).
+
+### Trade + why no engine change
+An utterance ships ~silenceHoldMs (400ms) after the speaker pauses — comparable to the old 1s cadence for
+conversational speech, and never mid-word; pauseless worst case = maxSegmentMs (6s). Because VAD produces
+already-clean segments, **no engine-side merge/dedup is needed** — the transcribe/accumulate path
+(`distill/transcribe.ts`) and the #58 `transcript.updated` fast path are UNCHANGED, so the strip can never
+show duplicated overlap text (there is no overlap). The engine queue files (parallel #102) were not touched.
+
+### Tests + verification (all green in isolation and under `pnpm -r`)
+- Contracts 77 · Engine 631 (unchanged) · **Client 309** (from 307): `vad.test.ts` (6 — decision/clamp/
+  strategy), `capture-renderer.test.ts` (+2 — vad rotates at a pause with real durationMs; max-cap bounds
+  pauseless latency; the AnalyserNode + setInterval fakes are additive, existing #57 fixed-timer tests
+  unchanged), `config.test.ts` (+2 — strategy + knob resolution/precedence/junk-fallback).
+- The harness reproduced the bug and picked the winner on live parakeet + whisper endpoints.
+
+### Disclosed / deferred
+- VAD uses an energy/amplitude gate (peak vs a floor), not a spectral VAD; measured sufficient on the
+  fixtures. `silencePeak` is a config dial for noisier rigs; a spectral VAD is a future refinement.
+- The renderer's browser-driving parts remain outside CI (per its header) — the new fakes cover the
+  rotation wiring, but the true getUserMedia/AudioContext path is exercised by the harness + live QA.
+- The harness manual-gate release-checklist row (#31) is documented, not yet wired into a script gate.
+- overlap+merge and streaming STT remain future candidates; the harness measures both against the same WER.

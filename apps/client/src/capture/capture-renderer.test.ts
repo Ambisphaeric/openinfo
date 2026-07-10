@@ -24,7 +24,10 @@ interface Timer {
 
 interface Harness {
   timers: Timer[]
+  intervals: Timer[]
   emitted: RawSegment[]
+  /** Test-controlled current amplitude the fake AnalyserNode reports (drives vad pause detection). */
+  peak: { value: number }
   onStart?: (source: CaptureSourceKind, options?: CaptureStartOptions) => void
   restore: () => void
 }
@@ -65,13 +68,18 @@ class FakeMediaRecorder {
 /** Install the fake browser globals + bridge, then import a FRESH copy of the renderer (cache-busted). */
 const installAndLoad = async (bust: number): Promise<Harness> => {
   const timers: Timer[] = []
+  const intervals: Timer[] = []
   const emitted: RawSegment[] = []
-  const h: Harness = { timers, emitted, restore: () => undefined }
+  const peak = { value: 0 }
+  const h: Harness = { timers, intervals, emitted, peak, restore: () => undefined }
 
   const originalSetTimeout = globalThis.setTimeout
+  const originalSetInterval = globalThis.setInterval
+  const originalClearInterval = globalThis.clearInterval
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
   const g = globalThis as unknown as Record<string, unknown>
   const originalMediaRecorder = g['MediaRecorder']
+  const originalAudioContext = g['AudioContext']
   const originalCapture = g['openinfoCapture']
 
   // Record the scheduled delay instead of waiting — the segment is fired manually via h.timers.
@@ -80,12 +88,46 @@ const installAndLoad = async (bust: number): Promise<Harness> => {
     return 0 as unknown as ReturnType<typeof setTimeout>
   }) as typeof setTimeout
 
+  // The vad poll runs on setInterval — record it so the test ticks it deterministically. Handles are the
+  // interval's index+1 so clearInterval can splice it out (a cleared poll stops firing).
+  globalThis.setInterval = ((fn: () => void, ms?: number) => {
+    intervals.push({ fn, ms: ms ?? 0 })
+    return intervals.length as unknown as ReturnType<typeof setInterval>
+  }) as typeof setInterval
+  globalThis.clearInterval = ((handle?: ReturnType<typeof setInterval>) => {
+    const i = (handle as unknown as number) - 1
+    if (i >= 0 && i < intervals.length) intervals[i] = { fn: () => undefined, ms: 0 }
+  }) as typeof clearInterval
+
   Object.defineProperty(globalThis, 'navigator', {
     value: { mediaDevices: { getUserMedia: async () => fakeStream, enumerateDevices: async () => [] } },
     configurable: true,
     writable: true,
   })
   g['MediaRecorder'] = FakeMediaRecorder
+  // Minimal AudioContext: the analyser fills the time-domain buffer with the test-controlled peak so
+  // readPeak (capture-renderer) sees it; the gain/destination nodes are inert no-ops.
+  const inertNode = { connect: () => undefined, disconnect: () => undefined }
+  g['AudioContext'] = class {
+    destination = inertNode
+    createMediaStreamSource(): typeof inertNode {
+      return inertNode
+    }
+    createAnalyser(): { fftSize: number; getFloatTimeDomainData: (a: Float32Array) => void; connect: () => void; disconnect: () => void } {
+      return {
+        fftSize: 8,
+        getFloatTimeDomainData: (a: Float32Array) => a.fill(peak.value),
+        connect: () => undefined,
+        disconnect: () => undefined,
+      }
+    }
+    createGain(): typeof inertNode & { gain: { value: number } } {
+      return { ...inertNode, gain: { value: 0 } }
+    }
+    async close(): Promise<void> {
+      return undefined
+    }
+  }
 
   const bridge: CaptureBridge = {
     onStart: (handler) => {
@@ -102,8 +144,11 @@ const installAndLoad = async (bust: number): Promise<Harness> => {
 
   h.restore = (): void => {
     globalThis.setTimeout = originalSetTimeout
+    globalThis.setInterval = originalSetInterval
+    globalThis.clearInterval = originalClearInterval
     if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator)
     g['MediaRecorder'] = originalMediaRecorder
+    g['AudioContext'] = originalAudioContext
     g['openinfoCapture'] = originalCapture
   }
 
@@ -158,5 +203,59 @@ test('clamps a non-positive/garbage segmentMs to the default (#57)', async () =>
     } finally {
       h.restore()
     }
+  }
+})
+
+/** Fire the currently-active vad poll one tick, at the given amplitude (peak). */
+const tickAt = (h: Harness, amplitude: number): void => {
+  h.peak.value = amplitude
+  h.intervals[h.intervals.length - 1]?.fn()
+}
+
+const VAD_OPTS: CaptureStartOptions = {
+  segmentMs: 1000,
+  chunkStrategy: 'vad',
+  vadMinSegmentMs: 100,
+  vadSilenceHoldMs: 100,
+  vadMaxSegmentMs: 1000,
+  vadSilencePeak: 0.02,
+}
+
+test('vad rotates the segment at a detected pause, not on the wall clock (#95)', async () => {
+  const h = await drive(VAD_OPTS)
+  try {
+    assert.equal(h.timers.length, 0, 'vad uses no fixed stop-timer')
+    assert.equal(h.intervals.length >= 1, true, 'vad armed an amplitude poll')
+    // Speech for a while: elapsed grows past the minimum but the silence run keeps resetting ⇒ no cut.
+    tickAt(h, 0.4) // elapsed 50
+    tickAt(h, 0.4) // elapsed 100 (past min) but no pause yet
+    tickAt(h, 0.4) // elapsed 150
+    await flush()
+    assert.equal(h.emitted.length, 0, 'no cut while the speaker is still talking')
+    // Now a pause: two quiet ticks reach the 100ms hold ⇒ cut lands in the silence.
+    tickAt(h, 0.0) // silenceRun 50
+    tickAt(h, 0.0) // silenceRun 100, elapsed 250 ⇒ rotate
+    await flush()
+    assert.equal(h.emitted.length, 1, 'the pause closed the segment')
+    assert.equal(h.emitted[0]?.source, 'mic')
+    assert.equal(h.emitted[0]?.durationMs, 250, 'chunk durationMs is the segment’s ACTUAL (variable) length')
+  } finally {
+    h.restore()
+  }
+})
+
+test('vad still cuts by the max cap when speech never pauses (#95 latency bound)', async () => {
+  const h = await drive(VAD_OPTS)
+  try {
+    // Loud forever: silence never accumulates, so only the 1000ms max cap can trigger a cut (20 ticks).
+    for (let i = 0; i < 19; i++) tickAt(h, 0.5)
+    await flush()
+    assert.equal(h.emitted.length, 0, 'under the cap with no pause ⇒ keep recording')
+    tickAt(h, 0.5) // elapsed 1000 ⇒ hit the cap
+    await flush()
+    assert.equal(h.emitted.length, 1, 'the max cap bounds latency for pauseless speech')
+    assert.equal(h.emitted[0]?.durationMs, 1000)
+  } finally {
+    h.restore()
   }
 })

@@ -1,4 +1,5 @@
 import type { ScreenFrameMeta } from '@openinfo/contracts'
+import type { ChunkStrategy } from './vad.js'
 
 /**
  * The capture IPC protocol — the narrow contract between the ONE hidden capture renderer and the main
@@ -109,9 +110,26 @@ export interface CaptureStartOptions {
   /**
    * Nominal segment length in ms — how long the renderer records before stopping/restarting to cut one
    * complete webm file. Resolved client-side (ShellConfig.segmentMs, env > file > 1000) and echoed into
-   * each chunk's `durationMs`. The renderer clamps a non-positive/garbage value to its own default.
+   * each chunk's `durationMs`. The renderer clamps a non-positive/garbage value to its own default. Used
+   * by the `fixed` chunk strategy; ignored (except as the durationMs echo) under `vad`.
    */
   segmentMs: number
+  /**
+   * How the renderer decides WHERE to cut a segment (#95). `vad` cuts at detected pauses (the measured
+   * default — a cut in silence never splits a word); `fixed` keeps the old wall-clock `segmentMs` cadence.
+   * OPTIONAL + append-only: a start with no strategy leaves the renderer on its built-in fallback, so the
+   * handshake never depends on the field arriving. Resolved client-side (ShellConfig.chunkStrategy).
+   */
+  chunkStrategy?: ChunkStrategy
+  /**
+   * VAD knobs (#95), forwarded only when `chunkStrategy` is `vad`. All optional — each falls back to the
+   * renderer's measured default (capture/vad.ts DEFAULT_VAD_PARAMS) via resolveVadParams. See config.ts
+   * for the env/file resolution. Held flat (not a sub-object) to mirror how segmentMs already travels.
+   */
+  vadSilenceHoldMs?: number
+  vadMinSegmentMs?: number
+  vadMaxSegmentMs?: number
+  vadSilencePeak?: number
 }
 
 /**
