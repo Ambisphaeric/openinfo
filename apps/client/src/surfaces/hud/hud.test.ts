@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { BlockQuery, Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
-import { renderToHtml, type VElement } from '../block-renderer/index.js'
+import { renderToHtml, mountSurface, renderInto, type VElement, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import type { HudTransport } from './transport.js'
 
@@ -194,6 +194,8 @@ test('the HUD renders live-transcript lines from injected transcript.updated eve
   assert.match(html, /Live transcript · raw, not saved/) // honestly labeled as raw/live, distinct from distilled
   assert.match(html, /class="lt-line me"/) // mic → me
   assert.match(html, /class="lt-line them"/) // system-audio → them
+  assert.match(html, /mic · me/) // #96: each fragment carries its SOURCE-STREAM label (inspector idiom)
+  assert.match(html, /sys · them/)
   assert.match(html, /we should ship Thursday/)
   assert.match(html, /agreed/)
   // payload feed did NOT trigger the query path (the coalescing discipline): surface fetched once
@@ -253,6 +255,57 @@ test('starting/ending a session resets the live transcript buffer', async () => 
   transport.fire('session.ended')
   await tick()
   assert.doesNotMatch(renderToHtml(panel!), /from the old session/) // the feed cleared on the boundary
+  hud.stop()
+})
+
+// --- #96: system-stream mute, DRIVEN through the real mount/wireActions seam (the QA rule) ---------
+/**
+ * A stage that captures the single delegated click listener mountSurface installs and lets the test
+ * dispatch a click at a `data-verb` button — the same pattern copy-feedback.test.ts uses, so this drives
+ * the REAL seam (Hud state → render → mount delegation → wireActions verb), not just the markup.
+ */
+const makeStage = (): { target: MountTarget; click: (verb: string) => void } => {
+  let handler: ((event: { target: { closest(sel: string): { getAttribute(n: string): string | null } | null } | null }) => void) | undefined
+  const target = { innerHTML: '', addEventListener: (_t: 'click', h: typeof handler) => { handler = h } }
+  return {
+    target: target as unknown as MountTarget,
+    click: (verb) => handler?.({ target: { closest: () => ({ getAttribute: (n) => (n === 'data-verb' ? verb : null) }) } }),
+  }
+}
+
+test('the system-stream mute toggle hides system audio from the strip without disabling capture (driven click)', async () => {
+  const transport = new FakeTransport()
+  transport.live = [session()]
+  const t0 = Date.parse('2026-07-07T14:47:00Z')
+  const stage = makeStage()
+  let mounted = false
+  const hud = new Hud({
+    transport,
+    workspace: 'acme',
+    now: () => new Date(t0),
+    onRender: (node) => {
+      if (!mounted) { mountSurface(stage.target, node, { copy: () => undefined, muteSystemStream: () => hud.toggleSystemStream() }); mounted = true }
+      else renderInto(stage.target, node)
+    },
+  })
+  await hud.start()
+
+  transport.fire('transcript.updated', { sessionId: 'ses-live', source: 'mic', text: 'lets ship it', capturedAtRange: { start: iso(t0 - 2000), end: iso(t0 - 1000) } })
+  transport.fire('transcript.updated', { sessionId: 'ses-live', source: 'system-audio', text: 'BREAKING NEWS tonight', capturedAtRange: { start: iso(t0 - 500), end: iso(t0) } })
+  // both streams present and attributed — the interleave the owner saw, but each fragment is labelled
+  assert.match(stage.target.innerHTML, /lets ship it/)
+  assert.match(stage.target.innerHTML, /BREAKING NEWS tonight/)
+  assert.match(stage.target.innerHTML, /sys · them/)
+
+  // drive the ACTUAL mute click through the delegated listener the mount installed
+  stage.click('mute-system-stream')
+  assert.match(stage.target.innerHTML, /lets ship it/) // mic stream stays
+  assert.doesNotMatch(stage.target.innerHTML, /BREAKING NEWS tonight/) // system audio hidden — the blend is gone
+  assert.match(stage.target.innerHTML, /system audio hidden · 1 line not shown \(still captured\)/) // honest, not silent
+
+  // capture was NOT disabled — the line is still buffered; un-muting brings it right back
+  stage.click('mute-system-stream')
+  assert.match(stage.target.innerHTML, /BREAKING NEWS tonight/)
   hud.stop()
 })
 
