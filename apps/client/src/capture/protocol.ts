@@ -35,6 +35,23 @@ import type { ChunkStrategy } from './vad.js'
  */
 export type CaptureSourceKind = 'mic' | 'system-audio' | 'screen'
 
+/**
+ * HOW the system-audio ("them") stream is opened (#142) — the two live capture paths, both feeding the
+ * identical MediaRecorder/VAD/chunk pipeline downstream (only *how the second stream opens* differs, exactly
+ * the source-agnostic seam ARCHITECTURE §8 set up):
+ *   - `loopback` — the NO-ROUTING path: Chromium's macOS CoreAudio-Tap (`getDisplayMedia({audio:'loopback'})`,
+ *     macOS 13+/Electron; rides the Screen-&-System-Audio-Recording TCC grant + an `NSAudioCaptureUsageDescription`
+ *     Info.plist key). Zero virtual-device install, zero Multi-Output routing — the far side is captured
+ *     out of the box once the one-time recording grant is given. A missing grant/plist yields a DEAD
+ *     (digital-silence) stream, which the existing silence probe already flags honestly rather than faking.
+ *   - `device` — the BlackHole-class virtual-input path (the shipped floor): a 2nd `getUserMedia` on a matched
+ *     loopback INPUT device (device-match.ts). Needs the user to install + route output through it, but needs
+ *     no OS recording grant. The honest fallback for pre-13 macOS or when loopback capture is refused.
+ * `auto` (config-level, resolved in main/config.ts) picks `loopback` on macOS, `device` elsewhere; the
+ * RESOLVED value is what travels here, so the renderer never re-derives platform.
+ */
+export type SystemAudioMethod = 'loopback' | 'device'
+
 /** The IPC channels. `capture:*` generalizes the drag bridge's `hud:*` naming (see preload.cts). */
 export const CAPTURE_CHANNELS = {
   /**
@@ -130,6 +147,14 @@ export interface CaptureStartOptions {
   vadMinSegmentMs?: number
   vadMaxSegmentMs?: number
   vadSilencePeak?: number
+  /**
+   * HOW to open the system-audio stream (#142) — `loopback` (Chromium CoreAudio-Tap, no routing) or
+   * `device` (a matched BlackHole-class virtual input). RESOLVED client-side from config (auto → loopback
+   * on macOS, else device). OPTIONAL + append-only: a start with no method leaves the renderer on its
+   * built-in fallback (`device` — the historical behaviour), so the handshake never depends on it arriving.
+   * IGNORED for the mic source (mic is always the default `getUserMedia` input).
+   */
+  systemAudioMethod?: SystemAudioMethod
 }
 
 /**

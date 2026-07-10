@@ -2,6 +2,14 @@ import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { asChunkStrategy, DEFAULT_CHUNK_STRATEGY, DEFAULT_VAD_PARAMS, type ChunkStrategy } from '../capture/vad.js'
+import type { SystemAudioMethod } from '../capture/protocol.js'
+
+/**
+ * The system-audio open method as CONFIGURED (#142): the two real paths plus `auto`. `auto` (the default)
+ * resolves to `loopback` on macOS — the no-routing Chromium CoreAudio-Tap — and to `device` (BlackHole)
+ * elsewhere; the resolved `ShellConfig.systemAudioMethod` is one of the two concrete paths, never `auto`.
+ */
+export type SystemAudioMethodConfig = SystemAudioMethod | 'auto'
 
 /**
  * Client-local shell configuration — resolved from the environment and, for a double-clicked packaged
@@ -45,6 +53,18 @@ export interface ShellConfig {
    * or `"systemAudio": false`.
    */
   systemAudioEnabled: boolean
+  /**
+   * HOW the system-audio ("them") stream is opened (#142), RESOLVED to a concrete path (never `auto`):
+   * - `loopback` — the NO-ROUTING default on macOS: Chromium's CoreAudio-Tap via getDisplayMedia loopback,
+   *   riding the Screen-&-System-Audio-Recording TCC grant + the `NSAudioCaptureUsageDescription` Info.plist
+   *   key the packaged app carries. No BlackHole install, no Multi-Output routing.
+   * - `device` — the BlackHole-class virtual-input floor (a 2nd getUserMedia on a matched loopback input);
+   *   the fallback off macOS or when the user prefers a virtual device / can't grant the recording TCC.
+   * Resolved from `auto` (default) → loopback on darwin, else device; overridable with
+   * OPENINFO_SYSTEM_AUDIO_METHOD=loopback|device|auto or `"systemAudioMethod"` in client.json. Client-local
+   * CONFIG, not a flag — same reasoning as micEnabled (it is how the client opens its own audio hardware).
+   */
+  systemAudioMethod: SystemAudioMethod
   /**
    * Whether the client watches the FOREGROUND WINDOW (which app/window/repo is in front) to feed the
    * context-switch detector — a client-local opt-out, default ON. This is the SECOND, client-side gate
@@ -139,6 +159,7 @@ export interface ClientConfigFile {
   surfaceId?: string
   mic?: boolean
   systemAudio?: boolean
+  systemAudioMethod?: SystemAudioMethodConfig
   focus?: boolean
   screen?: boolean
   screenIntervalMs?: number
@@ -246,6 +267,27 @@ const resolveScreenIntervalMs = (envRaw: string | undefined, fileVal: number | u
 const resolveChunkStrategy = (envRaw: string | undefined, fileVal: ChunkStrategy | undefined, def: ChunkStrategy): ChunkStrategy =>
   asChunkStrategy(envRaw?.trim().toLowerCase()) ?? fileVal ?? def
 
+/** Coerce a raw value to a valid SystemAudioMethodConfig (loopback|device|auto), or undefined if not one. */
+const asSystemAudioMethod = (v: unknown): SystemAudioMethodConfig | undefined => {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : undefined
+  return s === 'loopback' || s === 'device' || s === 'auto' ? s : undefined
+}
+
+/**
+ * Resolve the system-audio open method (#142): a valid env token wins, else the file value, else `auto`;
+ * then `auto` collapses to the concrete path for this platform — `loopback` on macOS (the no-routing
+ * CoreAudio-Tap), `device` (BlackHole) everywhere else. The result is always `loopback` or `device`.
+ */
+const resolveSystemAudioMethod = (
+  envRaw: string | undefined,
+  fileVal: SystemAudioMethodConfig | undefined,
+  platform: string,
+): SystemAudioMethod => {
+  const chosen = asSystemAudioMethod(envRaw) ?? fileVal ?? 'auto'
+  if (chosen === 'auto') return platform === 'darwin' ? 'loopback' : 'device'
+  return chosen
+}
+
 /** Trim a trailing slash so `${engineUrl}${path}` never doubles up. */
 const normalizeUrl = (url: string): string => url.replace(/\/+$/, '')
 
@@ -274,6 +316,8 @@ export const parseClientConfigFile = (raw: unknown): ClientConfigFile | undefine
   if (mic !== undefined) out.mic = mic
   const systemAudio = asBool(r['systemAudio'])
   if (systemAudio !== undefined) out.systemAudio = systemAudio
+  const systemAudioMethod = asSystemAudioMethod(r['systemAudioMethod'])
+  if (systemAudioMethod !== undefined) out.systemAudioMethod = systemAudioMethod
   const focus = asBool(r['focus'])
   if (focus !== undefined) out.focus = focus
   const screen = asBool(r['screen'])
@@ -328,6 +372,7 @@ export const loadClientConfigFile = (filePath: string = clientConfigPath()): Cli
 export const resolveShellConfig = (
   env: Record<string, string | undefined> = process.env,
   file?: ClientConfigFile,
+  platform: string = process.platform,
 ): ShellConfig => {
   const explicitEnvUrl = env['OPENINFO_ENGINE_URL']
   const envHost = env['OPENINFO_ENGINE_HOST']
@@ -345,6 +390,7 @@ export const resolveShellConfig = (
     surfaceId: env['OPENINFO_SURFACE'] ?? file?.surfaceId ?? DEFAULTS.surfaceId,
     micEnabled: resolveEnabled(env['OPENINFO_MIC'], file?.mic, SENSE_DEFAULTS.mic),
     systemAudioEnabled: resolveEnabled(env['OPENINFO_SYSTEM_AUDIO'], file?.systemAudio, SENSE_DEFAULTS.systemAudio),
+    systemAudioMethod: resolveSystemAudioMethod(env['OPENINFO_SYSTEM_AUDIO_METHOD'], file?.systemAudioMethod, platform),
     focusEnabled: resolveEnabled(env['OPENINFO_FOCUS'], file?.focus, SENSE_DEFAULTS.focus),
     screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen, SENSE_DEFAULTS.screen),
     screenIntervalMs: resolveScreenIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),

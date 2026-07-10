@@ -385,6 +385,21 @@ capture controller — the controller, protocol, chunk-shaping, and engine path 
 source-parametric, so (b) swaps only *how the second stream is opened*, changing nothing downstream. Route (c)
 is (b)'s shortcut if a trustworthy prebuilt module exists at that time; (d) stays rejected.
 
+**UPDATE (#142) — route (b) achieved with ZERO native code of our own.** Since the v0 decision, Electron/
+Chromium gained a macOS 14.2+ **CoreAudio-Tap** for system audio, exposed through the ordinary
+`getDisplayMedia({audio:'loopback'})` + `setDisplayMediaRequestHandler` path (feature
+`MacCatapLoopbackAudioForScreenShare`, the DEFAULT from Electron v39; opt-in on our v38), gated by an
+`NSAudioCaptureUsageDescription` Info.plist key + the **Screen & System Audio Recording** TCC grant. This
+delivers route (b)'s "no user routing" **without our writing or shipping a native module** — Chromium does
+the tapping — so we take it as the macOS default (`ShellConfig.systemAudioMethod: 'auto'` → `loopback`),
+with route (a) BlackHole kept as the explicit `device` fallback. It rides the exact source-agnostic seam
+this note anticipated: only *how the second stream opens* changed (`capture-renderer.ts::acquireStream`),
+nothing downstream. A from-source native tap under `client/capture/audio-tap/` (route (b)-native) is now
+wanted only if the Chromium tap proves insufficient; (c)/(d) unchanged. Honesty is preserved by the silence
+probe: a grant/plist-less tap yields a DEAD (digital-silence) stream the tray flags rather than fakes. Live
+capture needs a packaged, TCC-granted run to verify (an unsigned dev run has no bundle identity to grant
+against — the #142 spike + PHASE2 aec-loopback both stalled at that wall).
+
 **AEC posture (unchanged from the spike, still pending a human measurement run).** Default
 **`echoCancellation: true`** on the **mic** stream (Chromium/OS AEC referencing the local render signal that
 plays the call) — the zero-dependency option 1. The **system-audio** stream is the clean far-end capture and

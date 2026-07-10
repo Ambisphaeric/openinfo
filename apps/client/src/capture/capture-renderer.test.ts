@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureBridge, CaptureSourceKind, CaptureStartOptions, RawSegment } from './protocol.js'
+import type { CaptureBridge, CaptureSourceKind, CaptureStartOptions, CaptureStatus, RawSegment } from './protocol.js'
 
 /**
  * capture-renderer honours the configured segment cadence (issue #57). The renderer drives browser
@@ -26,19 +26,52 @@ interface Harness {
   timers: Timer[]
   intervals: Timer[]
   emitted: RawSegment[]
+  statuses: CaptureStatus[]
+  /** How the current run opened its stream — for asserting the #142 loopback vs device branch. */
+  calls: { getUserMedia: number; getDisplayMedia: number; enumerateDevices: number }
+  /** Video tracks the last getDisplayMedia stream handed out — to prove they are stopped + removed (audio-only). */
+  lastDisplayVideoTracks: FakeTrack[]
   /** Test-controlled current amplitude the fake AnalyserNode reports (drives vad pause detection). */
   peak: { value: number }
   onStart?: (source: CaptureSourceKind, options?: CaptureStartOptions) => void
   restore: () => void
 }
 
+/** Per-run control over what the fake getDisplayMedia produces (#142 loopback path). */
+interface DisplayMediaConfig {
+  /** How many audio tracks the loopback stream yields (0 ⇒ the "dead stream" / no-track case → no-device). */
+  audioTracks: number
+  /** How many video tracks it yields (getDisplayMedia always includes one; the renderer must drop it). */
+  videoTracks: number
+}
+
 const flush = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await new Promise((res) => setImmediate(res))
 }
 
-const fakeStream = {
-  getTracks: () => [{ stop: () => undefined }],
-  getAudioTracks: () => [{ stop: () => undefined }],
+interface FakeTrack {
+  kind: string
+  stopped: boolean
+  stop(): void
+}
+const makeTrack = (kind: string): FakeTrack => ({ kind, stopped: false, stop() { this.stopped = true } })
+
+/** A fake MediaStream with removable/stoppable tracks (mirrors the renderer's MediaStreamLike, #142). */
+const makeStream = (audio: number, video: number) => {
+  const tracks: FakeTrack[] = [
+    ...Array.from({ length: audio }, () => makeTrack('audio')),
+    ...Array.from({ length: video }, () => makeTrack('video')),
+  ]
+  return {
+    _tracks: tracks,
+    getTracks: () => tracks.slice(),
+    getAudioTracks: () => tracks.filter((t) => t.kind === 'audio'),
+    getVideoTracks: () => tracks.filter((t) => t.kind === 'video'),
+    removeTrack: (t: FakeTrack) => {
+      const i = tracks.indexOf(t)
+      if (i >= 0) tracks.splice(i, 1)
+    },
+  }
 }
 
 class FakeMediaRecorder {
@@ -66,12 +99,22 @@ class FakeMediaRecorder {
 }
 
 /** Install the fake browser globals + bridge, then import a FRESH copy of the renderer (cache-busted). */
-const installAndLoad = async (bust: number): Promise<Harness> => {
+const installAndLoad = async (bust: number, display: DisplayMediaConfig = { audioTracks: 1, videoTracks: 1 }): Promise<Harness> => {
   const timers: Timer[] = []
   const intervals: Timer[] = []
   const emitted: RawSegment[] = []
+  const statuses: CaptureStatus[] = []
   const peak = { value: 0 }
-  const h: Harness = { timers, intervals, emitted, peak, restore: () => undefined }
+  const h: Harness = {
+    timers,
+    intervals,
+    emitted,
+    statuses,
+    calls: { getUserMedia: 0, getDisplayMedia: 0, enumerateDevices: 0 },
+    lastDisplayVideoTracks: [],
+    peak,
+    restore: () => undefined,
+  }
 
   const originalSetTimeout = globalThis.setTimeout
   const originalSetInterval = globalThis.setInterval
@@ -100,7 +143,26 @@ const installAndLoad = async (bust: number): Promise<Harness> => {
   }) as typeof clearInterval
 
   Object.defineProperty(globalThis, 'navigator', {
-    value: { mediaDevices: { getUserMedia: async () => fakeStream, enumerateDevices: async () => [] } },
+    value: {
+      mediaDevices: {
+        getUserMedia: async () => {
+          h.calls.getUserMedia += 1
+          return makeStream(1, 0)
+        },
+        // #142: loopback stream — the renderer must keep audio, stop+remove video. `audioTracks:0` models
+        // the "dead stream" (no CoreAudio-Tap grant) case, which must degrade to a benign no-device.
+        getDisplayMedia: async () => {
+          h.calls.getDisplayMedia += 1
+          const s = makeStream(display.audioTracks, display.videoTracks)
+          h.lastDisplayVideoTracks = s.getVideoTracks()
+          return s
+        },
+        enumerateDevices: async () => {
+          h.calls.enumerateDevices += 1
+          return []
+        },
+      },
+    },
     configurable: true,
     writable: true,
   })
@@ -136,7 +198,7 @@ const installAndLoad = async (bust: number): Promise<Harness> => {
     onStop: () => undefined,
     sendSegment: (segment) => emitted.push(segment),
     sendStopped: () => undefined,
-    sendStatus: () => undefined,
+    sendStatus: (status) => statuses.push(status),
     sendLoaded: () => undefined,
     sendStartAck: () => undefined,
   }
@@ -162,6 +224,19 @@ const drive = async (options?: CaptureStartOptions): Promise<Harness> => {
   assert.ok(h.onStart, 'renderer registered an onStart handler on load')
   h.onStart('mic', options)
   await flush() // getUserMedia resolves → cycle() runs → the segment stop-timer is recorded
+  return h
+}
+
+/** Drive a specific source (#142 loopback needs `system-audio`), with a configurable loopback stream. */
+const driveSource = async (
+  source: CaptureSourceKind,
+  options?: CaptureStartOptions,
+  display?: DisplayMediaConfig,
+): Promise<Harness> => {
+  const h = await installAndLoad(++bust, display)
+  assert.ok(h.onStart, 'renderer registered an onStart handler on load')
+  h.onStart(source, options)
+  await flush()
   return h
 }
 
@@ -255,6 +330,47 @@ test('vad still cuts by the max cap when speech never pauses (#95 latency bound)
     await flush()
     assert.equal(h.emitted.length, 1, 'the max cap bounds latency for pauseless speech')
     assert.equal(h.emitted[0]?.durationMs, 1000)
+  } finally {
+    h.restore()
+  }
+})
+
+test('system-audio LOOPBACK opens via getDisplayMedia — not a device match — and drops the video track (#142)', async () => {
+  const h = await driveSource('system-audio', { segmentMs: 500, systemAudioMethod: 'loopback' })
+  try {
+    assert.equal(h.calls.getDisplayMedia, 1, 'loopback uses getDisplayMedia (the CoreAudio-Tap path)')
+    assert.equal(h.calls.getUserMedia, 0, 'loopback never opens a getUserMedia input')
+    assert.equal(h.calls.enumerateDevices, 0, 'loopback never enumerates for a BlackHole device')
+    assert.equal(h.lastDisplayVideoTracks.length, 1, 'getDisplayMedia handed out a video track')
+    assert.equal(h.lastDisplayVideoTracks[0]?.stopped, true, 'the unwanted video track is stopped (audio-only capture)')
+    assert.deepEqual(h.statuses.map((s) => s.state), ['ready'], 'loopback reached the capturing-ready state')
+    h.timers[0]?.fn() // close the segment
+    await flush()
+    assert.equal(h.emitted[0]?.source, 'system-audio', 'loopback audio flows into the SAME chunk pipeline as "them"')
+    // system-audio segments carry the silence honesty flag (a dead loopback stream reads as silent, not faked).
+    assert.equal(typeof h.emitted[0]?.silent, 'boolean', 'the silence probe still tags system-audio segments under loopback')
+  } finally {
+    h.restore()
+  }
+})
+
+test('system-audio LOOPBACK with no audio track degrades to a benign no-device (dead-stream honesty, #142)', async () => {
+  const h = await driveSource('system-audio', { segmentMs: 500, systemAudioMethod: 'loopback' }, { audioTracks: 0, videoTracks: 1 })
+  try {
+    assert.deepEqual(h.statuses.map((s) => s.state), ['no-device'], 'a loopback stream with no audio track reports no-device (→ unavailable), never a fake capture')
+    assert.equal(h.emitted.length, 0, 'nothing is shipped when the tap produced no audio')
+  } finally {
+    h.restore()
+  }
+})
+
+test('system-audio DEVICE method still enumerates + matches a BlackHole input, never getDisplayMedia (#142)', async () => {
+  const h = await driveSource('system-audio', { segmentMs: 500, systemAudioMethod: 'device' })
+  try {
+    assert.equal(h.calls.getDisplayMedia, 0, 'device method never touches the loopback path')
+    assert.equal(h.calls.enumerateDevices, 1, 'device method enumerates to match a virtual input')
+    // No BlackHole-class device in the fake enumeration ⇒ benign no-device (the shipped floor behaviour).
+    assert.deepEqual(h.statuses.map((s) => s.state), ['no-device'], 'no matching device ⇒ no-device (unchanged floor)')
   } finally {
     h.restore()
   }

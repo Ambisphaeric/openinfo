@@ -4,12 +4,27 @@
 timed webm/opus segments to the engine (`POST /capture/mic`, base64, `source: mic` → "me"). No session
 ⇒ nothing captured (privacy default — capture follows the session lifecycle the tray controls).
 
-**System-audio capture — SHIPPED (BlackHole detect-and-guide).** While a session is live the client
-ALSO captures the far side of a call ("them") when a BlackHole-like virtual audio input is present —
-a SECOND MediaRecorder in the SAME hidden window, streaming to `POST /capture/system-audio` (`source:
-system-audio`). Zero native code: it rides the identical `getUserMedia` path as the mic. The engine's
-STT slice attributes mic="me" / system-audio="them" for free (no diarization). See ARCHITECTURE §8
-(the design note weighs BlackHole vs. a native CoreAudio tap — (a) now, (b) later).
+**System-audio capture — SHIPPED (two open paths, #142).** While a session is live the client ALSO
+captures the far side of a call ("them") — a SECOND MediaRecorder in the SAME hidden window, streaming to
+`POST /capture/system-audio` (`source: system-audio`). The engine's STT slice attributes mic="me" /
+system-audio="them" for free (no diarization). HOW the second stream opens is `ShellConfig.systemAudioMethod`
+(config.ts, env > file > `auto`):
+
+- `loopback` (#142, the **macOS default** via `auto`) — the NO-ROUTING path: Chromium's macOS CoreAudio-Tap.
+  The main process grants the hidden renderer's `getDisplayMedia({audio:'loopback'})` via
+  `session.setDisplayMediaRequestHandler` (shell.ts); the renderer keeps only the audio track (the system
+  mix) and drops the video track getDisplayMedia requires. NO virtual-device install, NO Multi-Output
+  routing — the far side is captured out of the box once the one-time **Screen & System Audio Recording**
+  TCC grant is given. Requires the `NSAudioCaptureUsageDescription` Info.plist key (packaged in package.mjs)
+  and the `MacCatapLoopbackAudioForScreenShare` feature switch (default from Electron v39; explicit on v38);
+  a missing grant/plist yields a DEAD (digital-silence) stream, which the silence probe below flags honestly.
+- `device` (the shipped floor / `auto` off macOS) — the BlackHole detect-and-guide path: a 2nd `getUserMedia`
+  on a matched BlackHole-class virtual INPUT (device-match.ts). Needs the user to install + route output
+  through it, but needs no OS recording grant.
+
+Both paths feed the identical MediaRecorder/VAD/chunk/silence pipeline downstream — only *how the second
+stream opens* differs, exactly the source-agnostic seam ARCHITECTURE §8 set up. See ARCHITECTURE §8 for the
+route-(a)/(b) decision record (the Chromium tap is route (b) achieved with ZERO native code of our own).
 
 Both sources share one window / renderer / preload, keyed by `source`:
 
@@ -37,6 +52,10 @@ accepted by ffmpeg-backed OpenAI-compatible servers (faster-whisper-server, spea
 AudioWorklet is the documented fallback for a WAV-only whisper.cpp server.
 
 ## Setting up system audio (the honest minimal recipe)
+
+On macOS the default is now `loopback` (no setup — grant **Screen & System Audio Recording** once when
+prompted and the far side is captured; if it stays silent, the readout points at the grant + relaunch).
+The recipe below is the `device` path — the BlackHole fallback for pre-13 macOS or `systemAudioMethod=device`.
 
 BlackHole is a virtual audio device: audio sent to its *output* is readable from its matching *input*,
 which is what openinfo captures. You have to route your call/app's output into it. Two ways:
@@ -79,7 +98,13 @@ with `OPENINFO_FOCUS=0`. FUTURE: a reviewed native reader replaces osascript beh
 seam; a `git -C` / native resolution replaces the title-derived `repoPath` heuristic with a true root.
 
 Still to come (glass transplant / later phases):
-- `audio-tap/` — a native CoreAudio process-tap (no user routing; the designed future, ARCHITECTURE §8)
+- The `loopback` path (#142) delivers the no-routing capture ARCHITECTURE §8 called route (b) WITHOUT a
+  native module of our own (Chromium's CoreAudio-Tap does the tapping). Its live capture needs a packaged,
+  TCC-granted app to verify end-to-end (an unsigned dev run has no bundle identity to grant against) —
+  follow-up: confirm on a packaged run + a physical audio source, then consider Electron 39 (tap is the
+  default there), and an auto-fallback to `device` when the tap yields silence.
+- `audio-tap/` — a from-source native CoreAudio process-tap, only if the Chromium tap ever proves
+  insufficient (no user routing; ARCHITECTURE §8 route (b)-native)
   · `aec/` (P1–2, pending the AEC spike) · `screen.ts` (Δ-diff gate, P1/P3) · `calendar.ts` (P2,
   read-only) · `camera.ts` (P7, flagged).
 Inputs are user-configurable sources: each exposes on/off + cadence to the palette (P6).

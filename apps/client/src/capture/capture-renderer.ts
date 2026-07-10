@@ -1,5 +1,5 @@
 import { matchSystemAudioDevice, type AudioDevice } from './device-match.js'
-import type { CaptureBridge, CaptureSourceKind, CaptureStartOptions } from './protocol.js'
+import type { CaptureBridge, CaptureSourceKind, CaptureStartOptions, SystemAudioMethod } from './protocol.js'
 import {
   asChunkStrategy,
   DEFAULT_CHUNK_STRATEGY,
@@ -64,6 +64,10 @@ const DEFAULT_SEGMENT_MS = 1_000
 /** config.ts (ShellConfig.chunkStrategy) and sent with every start by the main process. */
 const DEFAULT_STRATEGY: ChunkStrategy = 'fixed'
 
+/** Fallback system-audio method when a `capture:start` arrives WITHOUT one — kept `device` (the historical */
+/** BlackHole path) so a legacy/partial message is conservative; the real default is resolved in config.ts. */
+const DEFAULT_SYSTEM_AUDIO_METHOD: SystemAudioMethod = 'device'
+
 /** Peak-amplitude floor below which a system-audio segment counts as silence (digital silence = 0). */
 const SILENCE_PEAK = 1e-3
 
@@ -75,9 +79,15 @@ interface BlobLike {
 interface BlobCtor {
   new (parts: BlobLike[], options?: { type?: string }): BlobLike
 }
+interface MediaTrackLike {
+  stop(): void
+  kind?: string
+}
 interface MediaStreamLike {
-  getTracks(): Array<{ stop(): void }>
-  getAudioTracks(): Array<{ stop(): void }>
+  getTracks(): MediaTrackLike[]
+  getAudioTracks(): MediaTrackLike[]
+  getVideoTracks(): MediaTrackLike[]
+  removeTrack(track: MediaTrackLike): void
 }
 interface MediaRecorderLike {
   state: string
@@ -124,6 +134,10 @@ interface CaptureGlobals {
   navigator: {
     mediaDevices: {
       getUserMedia(constraints: unknown): Promise<MediaStreamLike>
+      /** System-audio loopback (#142): the macOS CoreAudio-Tap path. main grants `audio:'loopback'` via */
+      /** setDisplayMediaRequestHandler; the audio track is the system mix. Video is requested (getDisplayMedia */
+      /** requires it) then dropped. Absent in older/odd runtimes — guarded before use. */
+      getDisplayMedia(constraints: unknown): Promise<MediaStreamLike>
       enumerateDevices(): Promise<MediaDeviceInfoLike[]>
     }
   }
@@ -148,12 +162,39 @@ const pickMimeType = (): string => {
   return 'audio/webm'
 }
 
-/** getUserMedia constraints per source. Mic = default input, EC/NS on (unchanged). System-audio = the */
-/** matched virtual input by exact deviceId, EC/NS/AGC OFF so the far end is captured faithfully. */
+/** getUserMedia constraints per source. Mic = default input, EC/NS on (unchanged). System-audio DEVICE = */
+/** the matched virtual input by exact deviceId, EC/NS/AGC OFF so the far end is captured faithfully. */
 const constraintsFor = (source: CaptureSourceKind, deviceId?: string): unknown =>
   source === 'mic'
     ? { audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }
     : { audio: { deviceId: { exact: deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false } }
+
+/**
+ * Acquire the loopback (Chromium CoreAudio-Tap) system-audio stream (#142). getDisplayMedia REQUIRES a
+ * video request, so we ask for both, then keep ONLY the audio track (the system mix) and stop+detach the
+ * video track — we never want the pixels, and dropping the track keeps the MediaRecorder audio-only and
+ * frees the screen-capture stream. If the OS/Chromium produced NO audio track (loopback denied / not
+ * supported / the NSAudioCaptureUsageDescription grant missing — the "dead stream" case), we throw the
+ * NO_SYSTEM_AUDIO_SOURCE sentinel so `start` reports a benign `no-device` (→ `unavailable`) rather than
+ * shipping silence. A denied recording grant instead REJECTS getDisplayMedia (NotAllowedError) → the
+ * existing permission-denied path. EC/NS/AGC are left off implicitly (loopback is already the clean mix).
+ */
+const NO_SYSTEM_AUDIO_SOURCE = 'NoSystemAudioSource'
+const acquireLoopbackStream = async (): Promise<MediaStreamLike> => {
+  const stream = await g.navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
+  const audio = stream.getAudioTracks()
+  if (audio.length === 0) {
+    for (const t of stream.getTracks()) t.stop() // nothing usable — release the screen grab too
+    const err = new Error('loopback produced no system-audio track') as Error & { name: string }
+    err.name = NO_SYSTEM_AUDIO_SOURCE
+    throw err
+  }
+  for (const v of stream.getVideoTracks()) {
+    v.stop()
+    stream.removeTrack(v) // keep the stream audio-only so MediaRecorder records the system mix, no video
+  }
+  return stream
+}
 
 /** One source's live capture state: its stream, current recorder, run flag, and (system-audio) silence probe. */
 interface Capturer {
@@ -173,6 +214,8 @@ interface Capturer {
   strategy: ChunkStrategy
   /** Resolved VAD knobs for this run (only meaningful when `strategy === 'vad'`). */
   vad: VadParams
+  /** How this source's stream is opened (system-audio only, #142): `loopback` (CoreAudio-Tap) vs `device`. */
+  method: SystemAudioMethod
   /** VAD poll interval handle (vad only) — samples amplitude + re-asks shouldRotate; cleared on rotate/stop. */
   vadTimer?: ReturnType<typeof setInterval> | undefined
   /** Actual length (ms) of the segment just closed — set by the vad poll so the chunk's durationMs is real. */
@@ -183,7 +226,7 @@ const capturers = new Map<CaptureSourceKind, Capturer>()
 const capturerFor = (source: CaptureSourceKind): Capturer => {
   let c = capturers.get(source)
   if (!c) {
-    c = { source, running: false, peakThisSegment: 0, segmentMs: DEFAULT_SEGMENT_MS, strategy: DEFAULT_STRATEGY, vad: resolveVadParams() }
+    c = { source, running: false, peakThisSegment: 0, segmentMs: DEFAULT_SEGMENT_MS, strategy: DEFAULT_STRATEGY, method: DEFAULT_SYSTEM_AUDIO_METHOD, vad: resolveVadParams() }
     capturers.set(source, c)
   }
   return c
@@ -342,12 +385,24 @@ const armRotation = (c: Capturer, rec: MediaRecorderLike): void => {
   }, pollMs)
 }
 
-/** Resolve the input deviceId for a source: mic uses the default (undefined); system-audio matches by name. */
-const resolveDeviceId = async (source: CaptureSourceKind): Promise<{ ok: true; deviceId?: string } | { ok: false }> => {
-  if (source === 'mic') return { ok: true }
-  const devices = (await g.navigator.mediaDevices.enumerateDevices()) as AudioDevice[]
-  const match = matchSystemAudioDevice(devices)
-  return match ? { ok: true, deviceId: match.deviceId } : { ok: false }
+/**
+ * Open the audio stream for a source (#142). Mic and system-audio DEVICE ride getUserMedia (the latter on
+ * the matched BlackHole-class input, absence ⇒ the NO_SYSTEM_AUDIO_SOURCE sentinel → benign `no-device`).
+ * System-audio LOOPBACK rides getDisplayMedia (Chromium CoreAudio-Tap) — no device match, no routing.
+ */
+const acquireStream = async (source: CaptureSourceKind, method: SystemAudioMethod): Promise<MediaStreamLike> => {
+  if (source === 'system-audio' && method === 'loopback') return acquireLoopbackStream()
+  if (source === 'system-audio') {
+    const devices = (await g.navigator.mediaDevices.enumerateDevices()) as AudioDevice[]
+    const match = matchSystemAudioDevice(devices)
+    if (!match) {
+      const err = new Error('no BlackHole-class loopback input found') as Error & { name: string }
+      err.name = NO_SYSTEM_AUDIO_SOURCE
+      throw err
+    }
+    return g.navigator.mediaDevices.getUserMedia(constraintsFor(source, match.deviceId))
+  }
+  return g.navigator.mediaDevices.getUserMedia(constraintsFor(source))
 }
 
 const start = (source: CaptureSourceKind, bridge: CaptureBridge, options?: CaptureStartOptions): void => {
@@ -355,6 +410,7 @@ const start = (source: CaptureSourceKind, bridge: CaptureBridge, options?: Captu
   if (c.running) return
   c.segmentMs = resolveSegmentMs(options?.segmentMs) // config-resolved cadence for this run (#57)
   c.strategy = asChunkStrategy(options?.chunkStrategy) ?? DEFAULT_STRATEGY // config-resolved strategy (#95)
+  c.method = options?.systemAudioMethod ?? DEFAULT_SYSTEM_AUDIO_METHOD // config-resolved open path (#142)
   c.vad = resolveVadParams({
     ...(options?.vadSilenceHoldMs !== undefined ? { silenceHoldMs: options.vadSilenceHoldMs } : {}),
     ...(options?.vadMinSegmentMs !== undefined ? { minSegmentMs: options.vadMinSegmentMs } : {}),
@@ -362,30 +418,31 @@ const start = (source: CaptureSourceKind, bridge: CaptureBridge, options?: Captu
     ...(options?.vadSilencePeak !== undefined ? { silencePeak: options.vadSilencePeak } : {}),
   })
   void (async (): Promise<void> => {
-    const resolved = await resolveDeviceId(source)
-    if (!resolved.ok) {
-      // system-audio: no BlackHole-like input on this machine — a benign absence, not an error.
-      bridge.sendStatus({ source, state: 'no-device' })
+    let granted: MediaStreamLike
+    try {
+      granted = await acquireStream(source, c.method)
+    } catch (err) {
+      const e = err as { name?: string; message?: string }
+      // No capturable system-audio source (no BlackHole device / loopback yielded no track) — a BENIGN
+      // absence, not an error: capture just doesn't happen for this source, session/text path untouched.
+      if (e?.name === NO_SYSTEM_AUDIO_SOURCE) {
+        bridge.sendStatus({ source, state: 'no-device' })
+        return
+      }
+      // NotAllowedError / SecurityError = the user or the OS refused (e.g. loopback's recording grant).
+      if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
+        bridge.sendStatus({ source, state: 'permission-denied' })
+      } else {
+        bridge.sendStatus({ source, state: 'error', detail: e?.message ?? e?.name ?? 'audio capture failed' })
+      }
       return
     }
-    g.navigator.mediaDevices
-      .getUserMedia(constraintsFor(source, resolved.deviceId))
-      .then((granted) => {
-        c.stream = granted
-        c.running = true
-        // Attach the amplitude probe when EITHER the system-audio silent flag OR the vad strategy needs it.
-        if (source === 'system-audio' || c.strategy === 'vad') attachAmplitudeProbe(c)
-        bridge.sendStatus({ source, state: 'ready' })
-        cycle(c, bridge)
-      })
-      .catch((err: { name?: string; message?: string }) => {
-        // NotAllowedError / SecurityError = the user or the OS refused; anything else is an error.
-        if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
-          bridge.sendStatus({ source, state: 'permission-denied' })
-        } else {
-          bridge.sendStatus({ source, state: 'error', detail: err?.message ?? err?.name ?? 'getUserMedia failed' })
-        }
-      })
+    c.stream = granted
+    c.running = true
+    // Attach the amplitude probe when EITHER the system-audio silent flag OR the vad strategy needs it.
+    if (source === 'system-audio' || c.strategy === 'vad') attachAmplitudeProbe(c)
+    bridge.sendStatus({ source, state: 'ready' })
+    cycle(c, bridge)
   })()
 }
 

@@ -1,4 +1,5 @@
 import type { ShellCommand } from './shortcuts.js'
+import type { SystemAudioMethod } from '../capture/protocol.js'
 
 /**
  * The capture-permission readout — a pure mapping from raw OS state (macOS TCC media-access statuses +
@@ -87,6 +88,12 @@ export interface CaptureStatusInput {
   micEnabled?: boolean
   /** Whether the system-audio sense is enabled in client config (cfg.systemAudioEnabled). Undefined ⇒ on. */
   systemAudioEnabled?: boolean
+  /**
+   * HOW system audio is opened (#142): `loopback` (Chromium CoreAudio-Tap — no routing, rides the Screen-&-
+   * System-Audio-Recording grant) or `device` (a BlackHole-class virtual input). Drives which fix the
+   * readout names. Undefined ⇒ treated as `device` (the historical BlackHole copy).
+   */
+  systemAudioMethod?: SystemAudioMethod
   /** Whether the engine is currently reachable (shell `connected`). Undefined ⇒ unknown (not asserted). */
   engineReachable?: boolean
   /** Whether a session is live (nothing captures without one). Undefined ⇒ unknown (not asserted). */
@@ -160,12 +167,38 @@ const screenStatus = (input: CaptureStatusInput): SenseStatus => {
   return { sense: 'screen', label: 'Screen recording', level, state: 'n/a', detail: 'Governed by the OS on this platform.' }
 }
 
+/**
+ * System-audio readout (#142) — the copy depends on the OPEN METHOD. `loopback` is the no-routing macOS
+ * default (Chromium CoreAudio-Tap): present ⇒ it is capturing with no device to install; "missing" ⇒ the
+ * tap yielded nothing (recording grant / plist absent, or unsupported) → grant Screen & System Audio
+ * Recording and relaunch (one-click), or fall back to a virtual device. `device` keeps the BlackHole
+ * detect-and-guide copy. Either way the honesty floor is the silence probe: a present-but-silent stream is
+ * surfaced elsewhere, never faked.
+ */
 const sysAudioStatus = (input: CaptureStatusInput): SenseStatus => {
+  const loopback = input.systemAudioMethod === 'loopback'
   if (input.sysAudio === 'present')
-    return { sense: 'sys-audio', label: 'System audio', level: 'granted', state: 'device present', detail: 'A loopback device is present — route your call/app output through it to capture the far side. It rides the Microphone grant.' }
+    return {
+      sense: 'sys-audio',
+      label: 'System audio',
+      level: 'granted',
+      state: loopback ? 'capturing (loopback)' : 'device present',
+      detail: loopback
+        ? 'openinfo is capturing system audio directly (no virtual device, no routing) — the far side of calls and media is recorded.'
+        : 'A loopback device is present — route your call/app output through it to capture the far side. It rides the Microphone grant.',
+    }
   if (input.sysAudio === 'missing-device')
-    return { sense: 'sys-audio', label: 'System audio', level: 'missing-device', state: 'no device', detail: 'No loopback input found — install a BlackHole-class virtual device and route output through it to capture system audio.' }
-  return { sense: 'sys-audio', label: 'System audio', level: 'not-determined', state: 'unknown', detail: 'Device presence is reported once capture starts (start a session).' }
+    return loopback
+      ? {
+          sense: 'sys-audio',
+          label: 'System audio',
+          level: 'missing-device',
+          state: 'not available',
+          detail: 'System-audio recording is not available — grant openinfo Screen & System Audio Recording in System Settings, then RELAUNCH. (Or set systemAudioMethod=device to use a BlackHole-class virtual input instead.)',
+          fixCommand: 'open-screen-settings',
+        }
+      : { sense: 'sys-audio', label: 'System audio', level: 'missing-device', state: 'no device', detail: 'No loopback input found — install a BlackHole-class virtual device and route output through it to capture system audio.' }
+  return { sense: 'sys-audio', label: 'System audio', level: 'not-determined', state: 'unknown', detail: 'System-audio state is reported once capture starts (start a session).' }
 }
 
 /** Whether this sense is toggled OFF in client config (undefined config reads as ON — the defaults). */

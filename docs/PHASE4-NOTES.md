@@ -4218,3 +4218,73 @@ no-voice-vocab guard. `pipeline.test.ts` / `index/extract.test.ts` voice-resolut
 from "dial reached the prompt text" to the resolved-dials-on-provenance + a no-dial-line prompt guard
 (the neutral body no longer carries the numbers; resolution is still proven). Suites at the PR:
 contracts 81 / client 363 / engine 691.
+
+## #142 — system audio out-of-the-box: the no-routing loopback path (Chromium CoreAudio-Tap)  *(branch feat/142-sys-audio)*
+
+### Diagnosis (what worked / what didn't, per path)
+The shipped state was `device` only — a 2nd `getUserMedia` on a matched BlackHole-class virtual input
+(device-match.ts), attributed system-audio="them", VAD-chunked (#95), silence-honest (#96/#7). It works
+but demands the user install BlackHole AND route output through it (Multi-Output Device / headphones) —
+the friction #142 targets. The pipeline was already fully source-agnostic (controller/protocol/chunk/VAD),
+so only *how the 2nd stream opens* needed to change.
+
+Per no-BlackHole path, weighed:
+- **(a) BlackHole** — the shipped floor; kept as the `device` fallback.
+- **(b) native CoreAudio process-tap** (our own Swift/node-addon) — large: node-gyp/prebuilds across
+  arch × Electron ABI, signing, packaging. NOT one slice.
+- **(b′) Chromium's CoreAudio-Tap** — the decisive find: Electron/Chromium now implement the macOS 14.2+
+  system-audio tap itself, exposed through `getDisplayMedia({audio:'loopback'})` +
+  `setDisplayMediaRequestHandler`, feature `MacCatapLoopbackAudioForScreenShare` (DEFAULT from Electron
+  v39; opt-in on our v38), gated by the `NSAudioCaptureUsageDescription` Info.plist key + the Screen-&-
+  System-Audio-Recording TCC. This achieves route (b)'s "no user routing" with **zero native code of our
+  own**. The PHASE2 aec-loopback "loopback is Windows-only" verdict PREDATES this and was confounded by a
+  denied Screen-Recording TCC + a missing plist key (→ the documented "dead silent stream").
+- **(c) prebuilt community module** / **(d) inherited SystemAudioDump blob** — unchanged: (c) only if
+  vetted current+licensed; (d) rejected on the fresh-code-only principle.
+
+### Spike (empirical, `spikes/sysaudio-loopback/`)
+A real-Electron-38 probe: enable the tap feature, grant screen+`audio:'loopback'` via the handler, call
+`getDisplayMedia` in a hidden window, report the audio-track outcome. **Finding:** the API surface EXISTS
+on Electron 38 (`setDisplayMediaRequestHandler` accepts `audio:'loopback'`; getDisplayMedia is present),
+but on an UNSIGNED dev run it stalls at the OS wall — the request handler never even fires because macOS
+gates screen/system-audio capture on a TCC grant an unsigned `electron .` (no bundle identity) can't
+obtain. Same two walls PHASE2 hit. So **live loopback capture is NOT verifiable in the automated env**;
+it needs a packaged, TCC-granted `.app` + a physical audio source (a human run).
+
+### What changed (the increment, all behind the source-agnostic seam)
+- **protocol.ts** — `SystemAudioMethod = 'loopback' | 'device'`; append-only optional
+  `CaptureStartOptions.systemAudioMethod`.
+- **capture-renderer.ts** — `acquireStream(source, method)`: loopback opens getDisplayMedia, KEEPS the
+  audio track, STOPS+REMOVES the video track (getDisplayMedia requires a video request), then rides the
+  IDENTICAL MediaRecorder/VAD/chunk/silence loop. No audio track ⇒ benign `no-device` (the "dead stream"
+  honesty); a denied recording grant ⇒ the existing `permission-denied` path.
+- **config.ts** — `ShellConfig.systemAudioMethod`, resolved env(`OPENINFO_SYSTEM_AUDIO_METHOD`) > file
+  (`systemAudioMethod`) > `auto`; `auto` → `loopback` on darwin, `device` elsewhere.
+- **shell.ts** — `setDisplayMediaRequestHandler` on the hidden capture window's session grants
+  screen+`audio:'loopback'`; `MacCatapLoopbackAudioForScreenShare` feature switch at module init (loopback
+  only); threads the method into the dispatcher start options + into the capture-status readout.
+- **capture-status.ts** — method-aware sysAudio copy: loopback names the Screen-&-System-Audio-Recording
+  grant + the one-click `open-screen-settings` fix (and the honest `systemAudioMethod=device` downgrade);
+  device keeps the BlackHole copy.
+- **package.mjs** — `NSAudioCaptureUsageDescription` Info.plist key (without it the tap is a dead stream).
+
+### Honesty posture (why defaulting to loopback is truthful despite no live verification)
+A broken loopback is LOUD, never silent: no audio track ⇒ `unavailable` (sense-gate: "not available —
+grant recording + relaunch, or use a device"); a dead (grant/plist-less) stream ⇒ digital silence the
+existing probe flags. So the tray never claims to record when it isn't — the same anti-fake bar the mic
+path holds. The default is the owner's zero-setup intent; the fallback is one env var away.
+
+### Follow-up (filed with evidence)
+Confirm live loopback capture on a packaged, TCC-granted run + a physical audio source; then consider
+Electron 39 (tap is the Chromium default there) and an auto-fallback to `device` when the tap yields
+persistent silence. A from-source native `capture/audio-tap/` is now only wanted if the Chromium tap
+proves insufficient.
+
+### Tests / green
+`capture-renderer.test.ts` +3 (#142): loopback opens getDisplayMedia (not a device match) and drops the
+video track → audio flows into the "them" pipeline with the silence flag intact; a no-audio-track loopback
+stream degrades to `no-device` (dead-stream honesty); the `device` method still enumerates+matches, never
+getDisplayMedia. `config.test.ts` +2: `auto`→loopback on darwin / device elsewhere; env>file override,
+junk-token ignored. `capture-status.test.ts` +2: loopback names the recording grant + one-click Settings
+fix (not a device install) and is an actionable OS-layer block. Suite counts at the PR: contracts 81 /
+client 370 / engine 693.
