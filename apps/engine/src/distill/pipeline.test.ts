@@ -99,11 +99,12 @@ test('drain → distill → store → bus with a fake llm endpoint', async () =>
     assert.equal(d.schemaVersion, 1)
 
     // the meeting mode is bound to boardroom (mode.registerId) → its low-charm/high-specificity
-    // vector reached the prompt as both raw numbers and compiled rules
+    // vector is resolved and recorded on provenance. #130: the neutral default body no longer bakes
+    // the dials INTO the prompt, so we assert the resolution (provenance) not the prompt text.
     assert.equal(d.voice.registerId, 'reg-boardroom')
     assert.equal(d.voice.scope, 'mode')
     assert.equal(d.voice.dials.charm, 2)
-    assert.match(llm.prompts[0]!, /specificity 9\/10/)
+    assert.doesNotMatch(llm.prompts[0]!, /specificity \d+\/10/) // neutral default carries no dial line
     assert.match(llm.prompts[0]!, /we should ship Thursday/)
 
     assert.equal((await queue.status()).pendingFiles, 0) // file drained after processing
@@ -145,14 +146,13 @@ test('a real session record steers voice resolution off the default-mode fallbac
     assert.equal(produced.length, 1)
     assert.equal(produced[0]!.voice.registerId, 'reg-sales-floor')
     assert.equal(produced[0]!.voice.scope, 'session')
-    assert.equal(produced[0]!.voice.dials.charm, 8)
-    assert.match(llm.prompts[0]!, /specificity 5\/10/) // sales-floor, NOT boardroom's 9
+    assert.equal(produced[0]!.voice.dials.charm, 8) // sales-floor resolved, NOT boardroom's charm 2
 
     // contrast: a session id with NO record falls back to the default meeting mode → boardroom
     const fallback = await distiller.distillChunks([{ ...chunk(3, 0, 'different meeting'), sessionId: 'ses-unstarted' }])
     assert.equal(fallback[0]!.voice.registerId, 'reg-boardroom')
     assert.equal(fallback[0]!.voice.scope, 'mode')
-    assert.match(llm.prompts.at(-1)!, /specificity 9\/10/)
+    assert.equal(fallback[0]!.voice.dials.specificity, 9) // boardroom resolved on the fallback
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })
@@ -217,10 +217,11 @@ test('drain → distill → moments → store → bus with a fake llm endpoint',
     assert.equal(m.provenance?.model, 'llama-3.2-3b')
     assert.equal(m.at, distillates[0]!.windowEnd)
 
-    // the extraction prompt interpolated the boardroom voice and the window summary
+    // the extraction prompt interpolated the window summary + transcript. #130: the neutral default
+    // extract body no longer bakes the voice dials, so we assert the window inputs, not the dial line.
     const extractPrompt = llm.prompts.find((p) => p.includes('Return ONLY a JSON array'))
     assert.ok(extractPrompt)
-    assert.match(extractPrompt, /specificity 9\/10/)
+    assert.doesNotMatch(extractPrompt, /specificity \d+\/10/)
     assert.match(extractPrompt, /they agreed to ship Thursday/) // {{summary}} from the distill call
     assert.match(extractPrompt, /we should ship Thursday/) // {{transcript}}
 

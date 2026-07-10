@@ -4134,3 +4134,53 @@ AllSchemas · shape (≥1 input, ≥1 output, description, emits∉outputs) · e
 step has ports · pipeline coherence (each drain step in the seeded default can consume an upstream
 output or the drain batch — the exact connection check a graph editor performs, pinned against the
 shipped document so table and document cannot drift).
+
+## #130 — factory prompt defaults go neutral (strip the baked voice vector)
+
+### What / where
+The three shipped WINDOW templates (`distill/defaults.ts`: `tpl-distill-default`,
+`tpl-extract-default`, `tpl-entities-default`) baked a full personality vector into every distill
+pass — `Voice: tone {{tone}}/10, warmth …, wit …, charm …, specificity …, brevity …` + `{{voice.rules}}`.
+The factory posture is now NEUTRAL: the bodies keep only the load-bearing parts (output grammar, the
+invent-nothing rule, `{{transcript}}`/`{{windowStart}}`/`{{windowEnd}}`/`{{summary}}` interpolation)
+and carry no persona/dial line. Contract example mirrors (`shared/contracts/examples/promptTemplate.{distill,extract,entities}.json`)
+updated in lockstep (the contracts suite validates them; no new schema, no `pnpm gen`).
+
+### The machinery is NOT removed
+`voice/interpolate.ts` (`compileVoiceVars`/`compileVoiceRules`) and `voice/resolve.ts` are untouched.
+The distiller/moments/fields still merge the resolved dials into the interpolation vars every pass —
+a user-authored or edited template that names `{{tone}}…{{voice.rules}}` still interpolates exactly
+as before (regression pinned in `moments.test.ts` + `documents.test.ts`). The dials remain the
+substrate for the output-orientation companion issue.
+
+### Builtin-body refresh (the seed-if-absent trap)
+Seeds are seed-if-absent, so an existing install would keep its old voice-baked body forever.
+`DistillDocuments.ensureDefaults` now calls `seedOrRefreshBuiltin` for the three window templates:
+absent ⇒ seed; else refresh to the new body ONLY when the stored doc is an UNEDITED builtin — detected
+CONSERVATIVELY as version still 1 (any user PUT bumps it off 1) AND body byte-for-byte one of
+`PREVIOUS_BUILTIN_BODIES` (the pre-#130 bodies, kept in `defaults.ts`). Either signal failing ⇒ a user
+owns the doc ⇒ untouched. A refresh is itself a `put` (v2), so it runs at most once.
+
+### Sweep of the other seeded prompt docs
+- **Fast-field bundle (#61: topic / entities-mentioned / work-items)** — already clean (tiny, one
+  job, transcript-only). No change. This was the desired shape the window templates were the outlier from.
+- **Judge doc (#62 `tpl-judge-default`)** — no voice dials / no `{{tone}}` interpolation. Its "You are a
+  JUDGE…" framing is a load-bearing FUNCTIONAL role (confirm/correct/flag against the source), not a
+  tunable persona. Left as-is.
+- **Mode documents (`mode-meeting`)** — config only (windows/sources/acts), no prompt body. Nothing to strip.
+- **Act follow-up draft (`act/defaults.ts` `tpl-act-*`)** — DOES bake the full voice vector, but left
+  INTENTIONALLY: the follow-up draft is a user-facing OUTPUT deliverable — precisely where the voice
+  vector legitimately applies (IMPLEMENTATION.md §1's canonical dial consumer / the output-orientation
+  dials). Out of #130's named scope (three window templates); reported here, not stripped.
+
+### Tests / green
+`distill/documents.test.ts` (NEW, 7): fresh-install seeds neutral bodies · rendered default distill
+prompt carries no voice/persona vocabulary + a length guard vs the old body (re-bloat guard) · the
+machinery still interpolates a user-authored `{{tone}}` template · unedited-builtin refresh (v1+old-body
+→ v2 neutral) · refresh runs at most once · a user-EDITED builtin (version off 1) is never clobbered ·
+a v1 builtin whose body diverges from the previous shipped body is left untouched. `moments.test.ts`
++1 (voice-bearing template still interpolates) and its default-prompt assertion flipped to a
+no-voice-vocab guard. `pipeline.test.ts` / `index/extract.test.ts` voice-resolution assertions moved
+from "dial reached the prompt text" to the resolved-dials-on-provenance + a no-dial-line prompt guard
+(the neutral body no longer carries the numbers; resolution is still proven). Suites at the PR:
+contracts 81 / client 363 / engine 691.
