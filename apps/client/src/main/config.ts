@@ -75,6 +75,19 @@ export interface ShellConfig {
    */
   screenIntervalMs: number
   /**
+   * Audio capture segment length in ms — how often the hidden renderer stops-and-restarts its
+   * MediaRecorder to cut one complete, independently-decodable webm file (capture-renderer.ts explains
+   * why segmenting is stop/restart, never `timeslice`). This is the DOMINANT capture latency: a spoken
+   * word waits up to one segment before its audio even leaves the client, so the default is **1000 (~1s)**
+   * — small enough for a real-time surface, large enough to amortize the per-request + stop/restart
+   * overhead (the engine merges chunks into larger windows downstream). Client-local CONFIG, not a flag
+   * document, for the same reason every other capture behaviour is (it is how the client drives its own
+   * recorder; it never touches the engine or its store). The resolved value is sent to the renderer with
+   * each `capture:start` and is the chunk's `durationMs`. Override with OPENINFO_SEGMENT_MS or
+   * `"segmentMs"`; a non-positive/garbage value falls back to the default. See PHASE4-NOTES (#57).
+   */
+  segmentMs: number
+  /**
    * Debug: draw visible outlines around the HUD window's bounds and its painted panel. The HUD window
    * is frameless and TRANSPARENT — when nothing paints (engine unreachable, empty layout) there is
    * nothing to see, which reads as "the HUD disappeared". Opt-IN (default OFF — it is debug chrome):
@@ -100,6 +113,7 @@ export interface ClientConfigFile {
   focus?: boolean
   screen?: boolean
   screenIntervalMs?: number
+  segmentMs?: number
   hudOutline?: boolean
 }
 
@@ -110,6 +124,7 @@ const DEFAULTS = {
   modeId: 'mode-meeting',
   surfaceId: 'surf-openinfo-hud',
   screenIntervalMs: 5000,
+  segmentMs: 1000,
 } as const
 
 /** OPENINFO_MIC / OPENINFO_SYSTEM_AUDIO / OPENINFO_FOCUS are opt-OUT: only an explicit falsy token disables. */
@@ -182,6 +197,8 @@ export const parseClientConfigFile = (raw: unknown): ClientConfigFile | undefine
   if (screen !== undefined) out.screen = screen
   const screenIntervalMs = asNumber(r['screenIntervalMs'])
   if (screenIntervalMs !== undefined) out.screenIntervalMs = screenIntervalMs
+  const segmentMs = asNumber(r['segmentMs'])
+  if (segmentMs !== undefined) out.segmentMs = segmentMs
   const hudOutline = asBool(r['hudOutline'])
   if (hudOutline !== undefined) out.hudOutline = hudOutline
   return out
@@ -211,6 +228,7 @@ export const loadClientConfigFile = (filePath: string = clientConfigPath()): Cli
  * - workspace/modeId/surfaceId: the env var, else the file value, else the default.
  * - the audio/focus toggles: an explicit env token (opt-out), else the file boolean, else ON.
  * - screen: an explicit env token (opt-IN), else the file boolean, else OFF; screenIntervalMs: env/file/5000.
+ * - segmentMs: a valid positive env number, else the file value, else 1000 (~1s) — the capture cadence (#57).
  */
 export const resolveShellConfig = (
   env: Record<string, string | undefined> = process.env,
@@ -235,6 +253,7 @@ export const resolveShellConfig = (
     focusEnabled: resolveEnabled(env['OPENINFO_FOCUS'], file?.focus),
     screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen),
     screenIntervalMs: resolveIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),
+    segmentMs: resolveIntervalMs(env['OPENINFO_SEGMENT_MS'], file?.segmentMs, DEFAULTS.segmentMs),
     hudOutline: resolveOptIn(env['OPENINFO_HUD_OUTLINE'], file?.hudOutline),
   }
 }

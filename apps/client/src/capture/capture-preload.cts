@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { CaptureSourceKind, CaptureStatus, RawSegment } from './protocol.js'
+import type { CaptureSourceKind, CaptureStartOptions, CaptureStatus, RawSegment } from './protocol.js'
 
 /**
  * The hidden capture window's preload — the capture renderer's ONLY bridge to the main process. It
@@ -32,8 +32,8 @@ const CHANNELS = {
 } as const
 
 contextBridge.exposeInMainWorld('openinfoCapture', {
-  onStart: (handler: (source: CaptureSourceKind) => void) =>
-    ipcRenderer.on(CHANNELS.start, (_event, source: CaptureSourceKind) => handler(source)),
+  onStart: (handler: (source: CaptureSourceKind, options?: CaptureStartOptions) => void) =>
+    ipcRenderer.on(CHANNELS.start, (_event, source: CaptureSourceKind, options?: CaptureStartOptions) => handler(source, options)),
   onStop: (handler: (source: CaptureSourceKind) => void) =>
     ipcRenderer.on(CHANNELS.stop, (_event, source: CaptureSourceKind) => handler(source)),
   sendSegment: (segment: RawSegment) => ipcRenderer.send(CHANNELS.segment, segment),

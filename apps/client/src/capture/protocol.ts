@@ -36,7 +36,12 @@ export type CaptureSourceKind = 'mic' | 'system-audio' | 'screen'
 
 /** The IPC channels. `capture:*` generalizes the drag bridge's `hud:*` naming (see preload.cts). */
 export const CAPTURE_CHANNELS = {
-  /** main → renderer: begin capturing a source (a session went live). */
+  /**
+   * main → renderer: begin capturing a source (a session went live). The message carries the source AND
+   * a CaptureStartOptions payload — the config-resolved segment length (#57) — so the renderer records at
+   * the configured cadence rather than a hardcoded default. Extends the existing start message rather than
+   * adding a channel; the preload forwards the extra arg untouched (its channel strings stay inlined).
+   */
   start: 'capture:start',
   /** main → renderer: stop a source and flush its final in-flight segment (the session ended). */
   stop: 'capture:stop',
@@ -95,6 +100,21 @@ export interface RawSegment {
 }
 
 /**
+ * Options the main process sends WITH a `capture:start` (issue #57). Today it carries only the segment
+ * cadence; it exists as its own shape so future per-start knobs extend it without touching the channel.
+ * OPTIONAL end-to-end: a start with no options (e.g. an older/partial message) leaves the renderer on its
+ * built-in default, so the handshake never depends on the payload arriving.
+ */
+export interface CaptureStartOptions {
+  /**
+   * Nominal segment length in ms — how long the renderer records before stopping/restarting to cut one
+   * complete webm file. Resolved client-side (ShellConfig.segmentMs, env > file > 1000) and echoed into
+   * each chunk's `durationMs`. The renderer clamps a non-positive/garbage value to its own default.
+   */
+  segmentMs: number
+}
+
+/**
  * Renderer → main lifecycle signal, per source. `ready` = getUserMedia succeeded; `no-device` = the
  * source has no capturable input on this machine (system-audio found no BlackHole-like device — a
  * benign absence, NOT an error); the rest are terminal-ish. This is the "expose presence/absence to
@@ -113,8 +133,12 @@ export type CaptureStatus =
  * other.
  */
 export interface CaptureBridge {
-  /** Subscribe to the main process's "start capturing <source>" command. */
-  onStart(handler: (source: CaptureSourceKind) => void): void
+  /**
+   * Subscribe to the main process's "start capturing <source>" command. The handler also receives the
+   * CaptureStartOptions the main process sent (the configured segment cadence, #57); it is optional so a
+   * start that arrives without a payload still drives capture on the renderer's built-in default.
+   */
+  onStart(handler: (source: CaptureSourceKind, options?: CaptureStartOptions) => void): void
   /** Subscribe to the main process's "stop capturing <source>" command. */
   onStop(handler: (source: CaptureSourceKind) => void): void
   /** Send a finished segment up to the main process. */
