@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, type DistillOptions } from '../distill/index.js'
@@ -40,6 +40,13 @@ export interface EngineApp {
    * POST-createEngineApp by startCalendarCollector (P4C), feeds the SAME detector buffer the focus drain
    * feeds — mirroring how wireScreenOcr reaches the screen processor from main.ts. */
   attributor: Attributor
+  /** The distill/LLM track's spool (#115). The STT track (the primary `queue`) transcribes and writes the
+   * text stream here; this queue drains it on its OWN loop, so a parked LLM never blocks transcription.
+   * Exposed so a test / embedder can inspect the LLM-track backlog independently of the audio backlog. */
+  textQueue: CaptureQueue
+  /** True once the first live transcript has been published this process (#115) — the cold-boot gate the
+   * calendar collector reads so it holds its first Calendar.app sample until a transcript has landed. */
+  firstTranscriptSeen: () => boolean
   close: () => Promise<void>
 }
 
@@ -74,7 +81,10 @@ interface HandlerContext {
   todos: TodoDocuments
   workflow: WorkflowDocuments
   hints: HintsDocuments
+  /** The STT track's spool — the capture backlog (#115). */
   queue: CaptureQueue
+  /** The distill/LLM track's spool (#115) — folded into the surfaced status so a distill failure still shows. */
+  textQueue: CaptureQueue
   /** In-memory ring of recent ephemeral transcript updates (#101) — the diagnostics inspector's honest v0 source. */
   transcripts: TranscriptRing
   store: WorkspaceRegistry
@@ -341,55 +351,79 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   }
 
   // The executor runs the seeded workflow-default document behind workflow.enabled (default OFF). It is
-  // assigned just below (after the queue exists, so its drainNow seam can close over it) and referenced
-  // here lazily — the drain callback only fires async, long after assignment. See PHASE4-NOTES.
+  // assigned just below (after the queues exist, so its drainNow seam can close over them) and referenced
+  // lazily by the text-queue drain — that callback only fires async, long after assignment. See PHASE4-NOTES.
   let executor: WorkflowExecutor
+  // Typed-queue envelope seams (P4A slice 3 / #70), READ-ONLY, SHARED by both drain queues so each keeps
+  // zero fabric/store imports (the describeFailure precedent). measuredTokPerSec: the primary (fabric-order
+  // first) llm endpoint's benchmarked tok/s — the envelope's measured side, surfaced as ETA context (never
+  // converted to an ETA in v0). overflowState: the active mode's declared overflow policy mapped to the
+  // status tri-state (only queue-for-idle is enforced in v0). sessionLive: a live default-workspace session
+  // flips the drain to newest-first (render the present); at idle it stays oldest-first FIFO.
+  const measuredTokPerSec = (): number | undefined => fabric.load().slots.llm[0]?.measured?.tokPerSec
+  const overflowState = (): OverflowState => {
+    const raw = distillDocs.mode().overflow
+    const policy = raw === 'degrade' ? 'degrade-cadence' : raw === 'drop' ? 'drop' : 'queue-for-idle'
+    return { policy, enforced: policy === 'queue-for-idle' }
+  }
+  const sessionLive = (): boolean => store.liveSession('default') !== undefined
+
+  // #115 — STT and distill run on INDEPENDENT drain queues that never share a lock. The TEXT queue is the
+  // LLM track: it consumes the PERSISTED transcript stream the STT track writes (below), on its OWN single-
+  // flight loop, and runs the distill / moments / fields / judge chain (cadence-gated). A parked LLM stalls
+  // only THIS queue — parakeet keeps transcribing on the audio queue. The transcribed segments are ordinary
+  // utf8 CaptureChunks (exactly what runTranscribe emits and the distiller already consumes), so the stream
+  // needs NO new contract — a second spool of the SAME shape, reusing the spool machinery (single-flight,
+  // freshness-first ordering, age-shed, overflow/ETA envelope). DistillCadence still governs the LLM cadence.
+  const textQueue = new CaptureQueue(join(store.dataDir, 'queue-text'), async (chunks) => {
+    // workflow.enabled ON → the executor runs the workflow document over the transcribed stream (its own
+    // transcribe step is a passthrough no-op on already-text chunks, so no double live feed; its ocr/vlm
+    // steps consume any screen frames the STT track forwarded). OFF → the legacy throttled distill. Both
+    // read their flags per-drain so they stay hot-flippable. This queue is LLM-only: transcription already
+    // ran on the STT track, so a due distill window can never block parakeet (the #115 root cause).
+    if (isFlagEnabled(store, 'workflow.enabled')) return executor.runDrain(chunks)
+    if (!isFlagEnabled(store, 'distill.enabled')) return
+    // Throttled: accumulate across drains, distill only when the span crosses the cadence threshold (or on
+    // session-end flush). A distill/moments/judge invoke throw PROPAGATES → this queue re-queues the text
+    // file (retry-at-idle), the same resilience the single queue had — now isolated to the LLM track.
+    await distillThrottled(chunks, currentDistillOpts())
+  }, toQueueFailure, measuredTokPerSec, overflowState, sessionLive, queueMaxAgeMinutes)
+
+  // The AUDIO queue is the STT track. Its drain does routing-context focus detection, then transcription
+  // (the #58 live fast-path), then hands the transcribed TEXT stream to the text queue — it NEVER awaits an
+  // LLM call. A transcribe transport failure still propagates so THIS queue re-queues the audio file
+  // (retry-at-idle, unchanged); the age-shed horizon + freshness-first ordering still govern the STT track.
   const queue = new CaptureQueue(join(store.dataDir, 'queue'), async (chunks) => {
-    // Focus chunks feed the detector, never the distiller (distill hygiene, PHASE3-NOTES). This is
-    // routing CONTEXT, not a workflow step, so it stays OUTSIDE the executor and runs on BOTH paths.
-    // Read the flag per-drain like the distill flags, so flipping it takes effect without a restart.
+    // Focus chunks feed the detector, never the distiller (distill hygiene, PHASE3-NOTES) — routing
+    // CONTEXT, on both paths, read per-drain so it is hot-flippable like the distill flags.
     if (isFlagEnabled(store, 'route.detect')) {
       const signals = extractFocusSignals(chunks, log)
       if (signals.length > 0) await attributor.observe(signals)
     }
-    // workflow.enabled ON → the executor runs the workflow document (behavior-identical to the legacy
-    // path below with the seeded default). Read per-drain so the flag is hot-flippable like the others.
-    if (isFlagEnabled(store, 'workflow.enabled')) return executor.runDrain(chunks)
-    // ---- legacy direct-wiring path (workflow.enabled OFF): untouched, byte-for-byte behavior ----
-    if (!isFlagEnabled(store, 'distill.enabled')) return
-    // Transcription is a pre-distill drain stage (distill.transcribe, OFF by default). It is gated
-    // INSIDE distill.enabled on purpose — there is no persistence path for transcribed-but-undistilled
-    // text, so running stt when nothing will distill it is pure waste (see PHASE2-NOTES).
-    const ready = isFlagEnabled(store, 'distill.transcribe') ? await runTranscribe(chunks) : chunks
-    // Throttled: accumulate across drains, distill only when the span crosses the cadence threshold
-    // (or on session end). Transcription already ran above every drain (the live fast-path).
-    await distillThrottled(ready, currentDistillOpts())
-    // When a drain re-queues (a transcribe/distill invoke failed), classify WHY and record it on the queue
-    // so GET /queue, Status, and the Try-it card surface the real reason instead of re-queuing silently
-    // forever (the user's wall). A model-load failure's hint is enriched with the loaded-model suggestion.
-  }, toQueueFailure,
-    // Typed-queue envelope seams (P4A slice 3), READ-ONLY, injected so the queue keeps zero fabric/store
-    // imports (the describeFailure precedent). measuredTokPerSec: the primary (fabric-order first) llm
-    // endpoint's benchmarked tok/s — the envelope's measured side, surfaced as ETA context (never
-    // converted to an ETA in v0). overflow: the active mode's declared overflow policy mapped to the
-    // status tri-state; only queue-for-idle is enforced in v0 (degrade-cadence is client-side capture,
-    // drop would violate never-lose-capture — both declared-but-inert, see PHASE4-NOTES).
-    () => fabric.load().slots.llm[0]?.measured?.tokPerSec,
-    () => {
-      const raw = distillDocs.mode().overflow
-      const policy = raw === 'degrade' ? 'degrade-cadence' : raw === 'drop' ? 'drop' : 'queue-for-idle'
-      return { policy, enforced: policy === 'queue-for-idle' }
-    },
-    // Freshness-first drain (#70), READ-ONLY like the seams above (zero store import in the queue):
-    // isSessionLive — a live capture session for the default workspace flips the drain to newest-first so
-    // the surface renders the present, not a stalled backlog; at idle it stays oldest-first FIFO. The
-    // 'default' workspace matches every other liveSession call site in this file (the HUD's Now line).
-    () => store.liveSession('default') !== undefined,
-    // maxAgeMinutes — the age-shed horizon: backlog whose newest activity is older than this is dropped
-    // (with accounting), never processed into a live session's past. OPENINFO_QUEUE_MAX_AGE_MINUTES
-    // overrides the default at wiring time (tunable without a rebuild); <= 0 disables shedding entirely.
-    queueMaxAgeMinutes,
-  )
+    // Nothing downstream consumes the stream unless distill or the workflow executor is on — this matches
+    // the legacy early return (distill off ⇒ the drain was a no-op GC), so an idle default engine is
+    // unchanged. When neither is on the text queue is never fed and never drains.
+    const distillOn = isFlagEnabled(store, 'distill.enabled')
+    if (!distillOn && !isFlagEnabled(store, 'workflow.enabled')) return
+    // Transcription (distill.transcribe) is the STT stage: audio → utf8 text, emitting the live
+    // transcript.updated fast-path. Gated exactly as the legacy path was — INSIDE distill.enabled, because
+    // there is no persistence for transcribed-but-undistilled text (PHASE2-NOTES). With it off, raw chunks
+    // forward unchanged (the executor's ocr/vlm still need the screen frames; the distiller filters non-text).
+    const ready = distillOn && isFlagEnabled(store, 'distill.transcribe') ? await runTranscribe(chunks) : chunks
+    // Persist the transcript stream onto the LLM track and wake it — enqueue-then-schedule mirrors the
+    // capture ingest path (captureChunk). The text queue drains on its OWN single-flight loop, so a distill
+    // in flight there does not block this audio drain from returning and transcribing the next chunk.
+    for (const segment of ready) await textQueue.append(segment)
+    textQueue.scheduleDrain(log)
+  }, toQueueFailure, measuredTokPerSec, overflowState, sessionLive, queueMaxAgeMinutes)
+
+  // #115 session-end drain-first flush: run the STT track to empty FIRST (all pending audio → transcribed
+  // text on the text queue), THEN the LLM track to empty (that text → the cadence buffer), so the following
+  // flushDistill releases the whole session's tail. Draining only one queue would strand the hand-off.
+  const drainBoth = async (): Promise<void> => {
+    await queue.drainNow(log)
+    await textQueue.drainNow(log)
+  }
 
   // Act v0 (the first Act node): the follow-up draft. It rides session END, not the chunk drain —
   // see PHASE2-NOTES for the direct-trigger (vs DAG) and ≤60s decisions. On session.ended, when
@@ -446,9 +480,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     recognizeScreen,
     // The executor calls drainNow ONLY at session-end (runSessionEnd, when an act is enabled), and it
     // runs BEFORE the acts — so flushing the cadence tail here means a follow-up draft sees the whole
-    // session. Draining the spool first accumulates any last chunks, then flushDistill releases them.
+    // session. drainBoth runs the STT track then the LLM track to empty (#115), then flushDistill releases
+    // the accumulated cadence tail.
     drainNow: async () => {
-      await queue.drainNow(log)
+      await drainBoth()
       await flushDistill()
     },
     acts: { 'follow-up-draft': async (session) => void (await actor.runFollowUpDraft(session)) },
@@ -465,18 +500,18 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
       if (isFlagEnabled(store, 'workflow.enabled')) {
         await executor.runSessionEnd(session)
       } else if (isFlagEnabled(store, 'act.enabled')) {
-        await queue.drainNow(log)
+        await drainBoth()
         await flushDistill()
         await actor.runFollowUpDraft(session)
       }
       // The distill cadence throttle (#58) means a short session's transcribed material never crossed the
       // 15s threshold and is still buffered (or still spooled un-drained). Session end MUST distill that
       // tail so the whole meeting is recorded — otherwise the throttle would silently drop sub-threshold
-      // sessions. Drain any pending spool INTO the cadence, then flush it. Both steps are safe no-ops when
-      // an act path above already ran them (drainNow with nothing pending; flush with an empty buffer).
-      // Gated on distill.enabled — with distill off nothing ever accumulated.
+      // sessions. Drain the STT track then the LLM track INTO the cadence (drainBoth, #115), then flush it.
+      // Both steps are safe no-ops when an act path above already ran them (drainBoth with nothing pending;
+      // flush with an empty buffer). Gated on distill.enabled — with distill off nothing ever accumulated.
       if (isFlagEnabled(store, 'distill.enabled')) {
-        await queue.drainNow(log)
+        await drainBoth()
         await flushDistill()
       }
     })().catch((error: unknown) =>
@@ -495,6 +530,11 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // Fed off the SAME bus event — no new persistence path; the ring is process-scoped and cleared on restart.
   const transcripts = new TranscriptRing()
   bus.subscribe('transcript.updated', (update) => transcripts.record(update))
+  // Cold-boot gate (#115): latch the instant the first live transcript flies past. The calendar collector
+  // reads firstTranscriptSeen() so it defers its first Calendar.app sample past the first transcript — one
+  // less surprise window (a TCC automation prompt) during the messy first session.
+  let firstTranscriptAt: string | undefined
+  bus.subscribe('transcript.updated', () => { firstTranscriptAt ??= new Date().toISOString() })
   bus.subscribe('moment.created', (moment) => ws.broadcast('moment.created', moment))
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
   // Fast-field fan-out (#61): rebroadcast a field's latest value the instant it lands (mirrors the #58
@@ -512,7 +552,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('guard.hold.updated', (hold) => ws.broadcast('guard.hold.updated', hold))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, hints: hintsDocs, queue, transcripts, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -528,12 +568,39 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     store,
     guardHolds,
     attributor,
+    textQueue,
+    firstTranscriptSeen: () => firstTranscriptAt !== undefined,
     close: async () => {
       ws.close()
       runtime.shutdown() // kill any spawned local runtimes (tier zero)
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
       store.close()
     },
+  }
+}
+
+/**
+ * The queue status the API surfaces (#115). STT and distill now drain on two queues, so a distill/moments/
+ * judge failure lands on the LLM track (`textQueue`) while the capture backlog (depth/eta/lag/overflow/shed)
+ * lives on the STT track (`queue`). The surfaced snapshot is the STT track's numbers — the real capture
+ * backlog the HUD renders — with the LLM track's failure ADOPTED when it is the more recent, and the later
+ * lastSuccessAt across both. Otherwise GET /queue, Status, /senses, and the queue-status block would lose
+ * the very failure the user needs to see (#7, the user's wall).
+ */
+async function surfacedQueueStatus(ctx: HandlerContext): Promise<QueueStatus> {
+  const [audio, text] = await Promise.all([ctx.queue.status(), ctx.textQueue.status()])
+  const lastFailure = [audio.lastFailure, text.lastFailure]
+    .filter((f): f is QueueFailure => f !== undefined)
+    .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+    .at(-1)
+  const lastSuccessAt = [audio.lastSuccessAt, text.lastSuccessAt]
+    .filter((s): s is string => s !== undefined)
+    .sort()
+    .at(-1)
+  return {
+    ...audio,
+    ...(lastFailure !== undefined ? { lastFailure } : {}),
+    ...(lastSuccessAt !== undefined ? { lastSuccessAt } : {}),
   }
 }
 
@@ -552,7 +619,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/contracts') return send(res, 200, Object.keys(AllSchemas))
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
-  if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, await ctx.queue.status())
+  if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, await surfacedQueueStatus(ctx))
   if (req.method === 'GET' && url.pathname === '/senses') return getSenses(res, ctx)
   if (url.pathname === '/screen' || url.pathname.startsWith('/screen/')) return handleScreen(req, res, ctx) // P4B: screen-OCR results + status (router owned by screen/)
   // /setup is the former name of the Settings surface — 301 to /settings, preserving any subpath +
@@ -715,7 +782,7 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
     defaultSurfaceId: defaultHudSurface.id,
     flags: readFlags(ctx.store),
     uptimeMs: process.uptime() * 1000,
-    queue: await ctx.queue.status(),
+    queue: await surfacedQueueStatus(ctx),
     localModels: ctx.models.statuses(),
     ...(host !== undefined ? { engineLabel: host } : {}),
     ...(liveSession !== undefined ? { liveSession } : {}),
@@ -763,7 +830,7 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
  */
 async function getSenses(res: ServerResponse, ctx: HandlerContext): Promise<void> {
   const fabric = ctx.fabric.load()
-  const queue = await ctx.queue.status()
+  const queue = await surfacedQueueStatus(ctx)
   // Probe the stt + ocr endpoints so the health gate reflects a live check (deduped by name). Best-effort:
   // a probe that throws is caught inside checkEndpoint and returns ok:false with its error.
   const probeSlots = [...fabric.slots.stt, ...fabric.slots.ocr]
@@ -1069,7 +1136,7 @@ async function captureChunk(req: IncomingMessage, res: ServerResponse, ctx: Hand
   ctx.onCapture?.(chunk)
   await ctx.bus.publish('capture.received', chunk)
   ctx.queue.scheduleDrain(ctx.log)
-  await ctx.bus.publish('queue.updated', await ctx.queue.status())
+  await ctx.bus.publish('queue.updated', await surfacedQueueStatus(ctx))
   const ack: Ack = { ok: true, chunkId: chunk.id, sequence: chunk.sequence, receivedAt: new Date().toISOString() }
   send(res, 200, ack)
 }
@@ -1525,7 +1592,7 @@ function sttSlotEndpoints(fabric: Fabric): SttSlotEndpoint[] {
  * needs no injection returns {} (unchanged behavior).
  */
 async function buildQuerySources(query: BlockQuery, ctx: HandlerContext): Promise<QuerySources> {
-  if (query.source === 'queue') return { queueStatus: await ctx.queue.status() }
+  if (query.source === 'queue') return { queueStatus: await surfacedQueueStatus(ctx) }
   if (query.source === 'transcript') {
     return { transcript: { chunks: ctx.transcripts.recent(), sttSlot: sttSlotEndpoints(ctx.fabric.load()), ringLimit: ctx.transcripts.capacity } }
   }
@@ -1533,7 +1600,7 @@ async function buildQuerySources(query: BlockQuery, ctx: HandlerContext): Promis
     // The SAME pure verdict the Status-section render uses (flags + fabric + the queue's last classified
     // failure), WITHOUT the live checkEndpoint probe GET /senses affords — the block re-hydrates often, so a
     // per-refresh network probe would be wrong here; the health gate leans on lastFailure alone (disclosed).
-    const status = await ctx.queue.status()
+    const status = await surfacedQueueStatus(ctx)
     return {
       senseGates: evaluateSenseGates({
         flags: readFlags(ctx.store),

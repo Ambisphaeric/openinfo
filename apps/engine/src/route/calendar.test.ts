@@ -116,3 +116,57 @@ test('poller: an empty events array observes nothing', async () => {
   assert.equal(rec.samples, 1)
   assert.equal(rec.observed.length, 0)
 })
+
+// ---- cold-boot readiness gate (#115) ----
+
+test('poller: cold-boot gate HOLDS the first sample until isReady() (a transcript has landed)', async () => {
+  let ready = false
+  const rec = { samples: 0 }
+  const poller = new CalendarPoller({
+    sample: async () => { rec.samples += 1; return '[]' },
+    isEnabled: () => true,
+    isReady: () => ready,
+    observe: async () => undefined,
+    now: () => new Date(AT),
+  })
+  // Not ready → the first Calendar.app query is HELD (no TCC prompt during the messy first session).
+  await poller.tick()
+  await poller.tick()
+  assert.equal(rec.samples, 0)
+  // A transcript lands → the gate opens and the sample proceeds.
+  ready = true
+  await poller.tick()
+  assert.equal(rec.samples, 1)
+  // Once warmed up the gate is never consulted again — a later isReady()===false does NOT re-gate.
+  ready = false
+  await poller.tick()
+  assert.equal(rec.samples, 2)
+})
+
+test('poller: the cold-boot gate RELEASES after the grace window even if isReady never goes true (calendar-only routing is not stranded)', async () => {
+  const rec = { samples: 0 }
+  const poller = new CalendarPoller({
+    sample: async () => { rec.samples += 1; return '[]' },
+    isEnabled: () => true,
+    isReady: () => false, // no mic, so a transcript never arrives
+    readyGraceMs: 0, // grace already elapsed → the first sample proceeds anyway
+    observe: async () => undefined,
+    now: () => new Date(AT),
+  })
+  await poller.tick()
+  assert.equal(rec.samples, 1)
+})
+
+test('poller: the readiness gate never overrides the privacy gate (route.detect OFF → still no sample)', async () => {
+  const rec = { samples: 0 }
+  const poller = new CalendarPoller({
+    sample: async () => { rec.samples += 1; return '[]' },
+    isEnabled: () => false,
+    isReady: () => true,
+    readyGraceMs: 0,
+    observe: async () => undefined,
+    now: () => new Date(AT),
+  })
+  await poller.tick()
+  assert.equal(rec.samples, 0)
+})
