@@ -280,6 +280,47 @@ test('resolver (#72): exact matches still resolve identically — score 1, band 
   }
 })
 
+test('#94 create-marking: an unrelated create amid a same-kind corpus stays SILENT (no near rival)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-create-silent-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // A same-kind corpus already exists — under the OLD rule this alone stamped every new create provisional.
+    const rivera = registry.upsertEntity({ workspaceId: 'ws-c', kind: 'person', name: 'Sam Rivera', seenAt: '2026-07-08T09:00:00Z' })
+    assert.equal(rivera.state, undefined, 'first-of-its-kind create is silent')
+
+    // A CJK name shares NO surface form with the Latin corpus → best rival scores ~0 → clean silent create.
+    const tanaka = registry.upsertEntity({ workspaceId: 'ws-c', kind: 'person', name: '田中太郎', seenAt: '2026-07-08T09:05:00Z' })
+    assert.notEqual(tanaka.id, rivera.id, 'a genuinely new record, not a merge')
+    assert.equal(tanaka.state, undefined, 'unrelated create with no near rival stays silent (not provisional)')
+    assert.equal(tanaka.resolutions?.at(-1)?.band, 'new')
+
+    // Contrast: a distant near-miss (shares one token but scores below the near-band window) also stays silent.
+    const cruz = registry.upsertEntity({ workspaceId: 'ws-c2', kind: 'person', name: 'Dana Cruz', seenAt: '2026-07-08T09:00:00Z' })
+    const kim = registry.upsertEntity({ workspaceId: 'ws-c2', kind: 'person', name: 'Dana Kim', seenAt: '2026-07-08T09:05:00Z' })
+    assert.notEqual(kim.id, cruz.id)
+    assert.equal(kim.state, undefined, 'a far-below-band rival does not trigger the review dot')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#94 create-marking: a create with a NEAR-provisional-band rival is still stamped provisional', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-create-prov-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const rivera = registry.upsertEntity({ workspaceId: 'ws-n', kind: 'person', name: 'Sam Rivera', seenAt: '2026-07-08T09:00:00Z' })
+    // "Sam Lee" shares the "Sam" token → scores in the near-band window (new band, but rival ≥ band − margin).
+    const lee = registry.upsertEntity({ workspaceId: 'ws-n', kind: 'person', name: 'Sam Lee', seenAt: '2026-07-08T09:05:00Z' })
+    assert.notEqual(lee.id, rivera.id, 'stays a distinct record (does not merge)')
+    assert.equal(lee.resolutions?.at(-1)?.band, 'new', 'a create, not a link')
+    assert.equal(lee.state, 'provisional', 'a genuine near-namesake collision still earns the review dot')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('pins + page-anchored chunks persist per workspace; unknown workspace reads empty', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-pins-'))
   try {

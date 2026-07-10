@@ -3805,3 +3805,51 @@ over ssh; this surface puts the exact probes on a surface.
   block's scope line).
 - The implementing agent hit the org spend limit mid-slice; finished inline (editor arms +
   enumeration, sense-gates renderer + tests, seeded surface, window px, list-test updates, docs).
+
+## Slice: resolver hardening — NaN guards, signal clamps, honest band docs, create-marking rule  *(#94, branch fix/94-resolver-hardening, 2026-07-10)*
+
+Four findings from the #72 spot-verification probe (all functional claims held; these are hardening
+gaps that should die before #74/#75/#76 wire real producers onto the resolver seam). Engine-internal;
+no contract change.
+
+### What shipped
+- **NaN-proof corpusPrior** (`index/resolve.ts`): a corrupt DB row (unparseable `lastSeen`) made
+  `corpusPrior` return NaN → a NaN score that (NaN-unstable `<`) could WIN the sort and persist as a NaN
+  confidence in band `provisional`. Now every input is finite-guarded — a non-parseable `lastSeen` drops
+  recency to fully-decayed (the neutral, least-boosting fallback) instead of poisoning the product, a
+  non-finite mention count reads 0, and the return is finite-guarded to neutral 1.0. `clamp01` floors
+  non-finite → 0, and the winner sort uses a `finiteScore` key so a non-finite score sorts as 0. Regression
+  seeds a corrupt `lastSeen`.
+- **Signal clamps** (`index/resolve.ts`): `crossSourceCorroboration`/`personAffinity` are clamped to a
+  documented `[0.5, 1.5]` (`SIGNAL_MULTIPLIER_MIN/MAX`) at the resolver boundary — both in `scoreCandidate`
+  and in the recorded `components` so the trail matches the applied factor. A future #74 producer emitting
+  5× can no longer silently auto-link a ~0.2 fuzzy over the phonetic evidence. Test proves the extreme
+  multiplier cannot flip the band and the floor/ceiling are recorded.
+- **Honest band docstrings** (`index/resolve.ts`): the probe found FALSE the claim that the establishment
+  boost "never crosses a band boundary alone" — mathematically impossible for a multiplicative boost (a
+  fuzzy 0.8256 partial against a 1000-mention record is lifted provisional→auto). Corrected to what the
+  math GUARANTEES: it only multiplies up, so it never drags an exact match DOWN below auto; it CAN lift a
+  partial across a band edge (by design, bounded by `establishmentBoost`). **Decision: honesty-by-comment,
+  not band-aware capping.** Band-aware capping (cap the boosted score below the next edge unless fuzzy alone
+  crosses) is the stronger property but changes recorded scores and resolution behavior on the core scoring
+  seam the whole ambient-entity story sits on — it warrants its own slice + fixture pass, and the boost's
+  small bound (0.1) plus the provisional/ambiguity review already limit the blast radius. Documented the
+  guarantee accurately instead of asserting a false one; the signal-clamp docs likewise state the clamp
+  BOUNDS the pull (≤1.5×) rather than being band-preserving for every score.
+
+### Owner call — create-marking rule (implemented recommended rule; flagged for owner review)
+- **Rule:** a `new`-band create is stamped `state:'provisional'` ONLY when its best same-kind rival landed
+  NEAR the provisional band — `bestRivalScore ≥ provisionalBand − CREATE_PROVISIONAL_MARGIN` (margin 0.1,
+  so ≥0.4 at the default band 0.5). Previously ANY same-kind record present stamped the create provisional,
+  so after the first record per kind a clean create (rival 0.0) was almost never silent — the review dot
+  fired on non-collisions. The near-band rule keeps the dot for the genuine near-namesake collisions it was
+  meant to catch and lets an unrelated create stay silent. Constant `CREATE_PROVISIONAL_MARGIN` in
+  `store/workspaces.ts`, documented at the def.
+- **Regression:** a CJK name (`田中太郎`) created amid a Latin same-kind corpus (rival ≈0) stays SILENT (was
+  provisional); a near-namesake (`Sam Lee` vs existing `Sam Rivera`, rival ≈0.42) is STILL stamped
+  provisional; a distant near-miss (`Dana Kim` vs `Dana Cruz`, rival ≈0.34) stays silent.
+
+### Tests / green
+- `index/resolve.test.ts` +2 (NaN guard, signal clamp); `store/workspaces.test.ts` +2 (create-marking
+  silent + still-provisional). `pnpm -r build` + engine suite 643/643 green (known load-flakes re-run
+  isolated).
