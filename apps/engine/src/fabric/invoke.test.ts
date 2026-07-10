@@ -206,3 +206,65 @@ test('invokeLlm throws when the slot is empty and skips local/cloud stubs', asyn
   }
   await assert.rejects(() => invokeLlm(fabric, [{ role: 'user', content: 'x' }]), /stubbed|out of scope/)
 })
+
+// --- #65 token accounting -------------------------------------------------------------------------
+
+/** A fake llm that returns a completion body WITH an OpenAI-compat `usage` block. */
+const startFakeLlmWithUsage = async (reply: string, usage: Record<string, number>): Promise<FakeServer> => {
+  const requests: unknown[] = []
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply } }], usage }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}`, requests }
+}
+
+test('invokeLlm captures MEASURED usage from the API usage block (estimated:false)', async () => {
+  const fake = await startFakeLlmWithUsage('ok', { prompt_tokens: 210, completion_tokens: 34, total_tokens: 244 })
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'llm.fast', url: fake.url, api: 'openai-compat', model: 'm' }] } }
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'summarize this' }])
+    assert.ok(result.usage, 'usage is captured')
+    assert.equal(result.usage.estimated, false)
+    assert.equal(result.usage.promptTokens, 210)
+    assert.equal(result.usage.completionTokens, 34)
+    assert.equal(result.usage.totalTokens, 244)
+    assert.equal(typeof result.usage.durationMs, 'number')
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('invokeLlm derives total from halves when the server omits total_tokens', async () => {
+  const fake = await startFakeLlmWithUsage('ok', { prompt_tokens: 100, completion_tokens: 20 })
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'e', url: fake.url, api: 'openai-compat', model: 'm' }] } }
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'x' }])
+    assert.equal(result.usage?.estimated, false)
+    assert.equal(result.usage?.totalTokens, 120)
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('invokeLlm ESTIMATES usage (chars/4) and marks it when the server reports none', async () => {
+  const fake = await startFakeLlm('12345678') // 8 chars → 2 completion tokens; no usage block
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'e', url: fake.url, api: 'openai-compat', model: 'm' }] } }
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'abcd' }]) // 4 chars → 1 prompt token
+    assert.equal(result.usage?.estimated, true)
+    assert.equal(result.usage?.promptTokens, 1)
+    assert.equal(result.usage?.completionTokens, 2)
+    assert.equal(result.usage?.totalTokens, 3)
+  } finally {
+    await stop(fake)
+  }
+})

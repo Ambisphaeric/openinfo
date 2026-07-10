@@ -150,6 +150,25 @@ body.settings{padding:0;background:
 .future p{color:var(--muted);font-size:13px;line-height:1.6;max-width:70ch;margin:0 0 12px}
 .future ul{margin:0 0 6px;padding-left:18px;color:var(--muted);font-size:13px;line-height:1.7}
 .future ul .mono{color:var(--ink-2)}
+/* ---------- Audit ledger (#65) ---------- */
+.ldg-summary{display:flex;flex-wrap:wrap;gap:6px 20px;margin:4px 0 14px;font-size:13px;color:var(--ink-2)}
+.ldg-summary .n{font-family:var(--mono);color:var(--ink);font-weight:600}
+.ldg-scroll{overflow-x:auto;border-radius:var(--radius);border:1px solid var(--line-soft)}
+.ldg-table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:640px}
+.ldg-table th{text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--line-soft);white-space:nowrap}
+.ldg-table td{padding:8px 12px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.ldg-table tr:last-child td{border-bottom:0}
+.ldg-stage{font-family:var(--mono);color:var(--accent);text-transform:uppercase;font-size:11px}
+.ldg-ep{color:var(--ink-2)}
+.ldg-model{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.ldg-tok{font-family:var(--mono);color:var(--ink);white-space:nowrap}
+.ldg-est{color:var(--warn);font-size:10.5px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em}
+.ldg-absent{color:var(--faint);font-style:italic}
+.ldg-local{color:var(--muted);font-family:var(--mono);font-size:11px}
+.ldg-when{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
+.ldg-note{margin-top:16px;font-size:12px;color:var(--faint);border-top:1px solid var(--line-soft);
+  padding-top:14px;max-width:76ch;line-height:1.55}
 @media (max-width:720px){
   .app{grid-template-columns:1fr}
   .sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line-soft)}

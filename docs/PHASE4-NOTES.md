@@ -3131,3 +3131,66 @@ the cadence so a short session's tail is still judged). Reuses the existing `fie
 - **Surfacing `distill.judge` in Settings → Features** is left to the settings-copy owner (the flag ships in
   `flag.examples.json` and toggles over PUT /flags). No new render surface — the #66 dot already consumes
   the state, and `field.updated` already carries it to the HUD.
+
+## Slice: Token accounting in provenance + the Audit-ledger surface  *(M5, #65, branch feat/65-token-audit-ledger, 2026-07-10)*
+
+Provenance is stamped on records throughout the pipeline but rendered almost nowhere; this slice adds the
+CONSUMPTION half (tokens in/out + duration) and makes the whole hop trail visible + auditable: what data
+went where, how much, and what filtered it.
+
+### Contract (append-only)
+- NEW `InvokeUsage` (`shared/contracts/src/common.ts`, `$id: InvokeUsage`): `{ promptTokens?, completionTokens?,
+  totalTokens?, estimated: boolean, durationMs? }`. `estimated:false` ⇒ measured from the API `usage` block;
+  `estimated:true` ⇒ chars/4 estimate (server reported no usage). Every count is optional because servers vary.
+- Extended `Distillate.provenance` and `OcrResult.provenance` with `usage: Optional(InvokeUsage)` — APPEND-ONLY,
+  so existing records without it still validate. Regenerated schemas via `tools/schema-gen` (only `InvokeUsage.json`,
+  `Distillate.json`, `OcrResult.json` are mine). Distillate example gains a `usage` block for coverage.
+
+### Invoke layer — generic capture (`apps/engine/src/fabric/invoke.ts`)
+- `buildUsage(raw, promptText, completionText, durationMs)` + `estimateTokens` (chars/4): measured when the server
+  reported ANY numeric usage field (total derived from halves when omitted), else estimated + MARKED. Generic on
+  purpose — any slot's caller gets consistent accounting from ONE builder, so the #62 judge (which flows through
+  `invokeLlm`) picks it up automatically.
+- `callHttp` / `callVlmHttp` / `callPaddleOcr` now capture wall-clock + usage and return it; `LlmResult` and
+  `ScreenTextResult` carry an optional `usage`. STT is NOT wired (see deferred). VLM/paddle estimates cover only the
+  text prompt / recognized text (image tokens are not derivable) — the `estimated` flag keeps that honest.
+- Threaded into records: `distill/distiller.ts` (llm distillate) and `screen/processor.ts` (OcrResult + its mirror
+  distillate) copy `result.usage` into provenance when present.
+
+### The ledger view (`apps/engine/src/surfaces/settings/sections/ledger.ts`, Settings → Diagnostics → "Audit ledger")
+- Chosen placement: a Settings SECTION (the smaller, honest option — the `status.ts`/#7 precedent), not a new surface.
+- `buildLedger(distillates, ocrResults)` (pure) → newest-first passes: an llm distillate is a `distill` pass; an
+  OcrResult is a `screen` pass; ocr/vlm distillates are SKIPPED (they mirror the OcrResult — no double count).
+- `renderLedger` renders a per-pass hop-trail table: when · stage · endpoint/model · tokens in/out (+`est` marker) ·
+  guard · egress. Assembled in `api/http.ts` ONLY when the section is active (two cheap store reads, default workspace),
+  mirroring the discovery-only-when-relevant discipline.
+- HONEST ABSENCES (not fabricated): GUARD renders "— no guard" (no guard slot yet, #63); EGRESS renders "local" with a
+  footer "no egress hops recorded — all invokes local" (no egress marking yet, #64). The columns exist so #63/#64 light
+  them up with no new surface.
+
+### Rule-7 check (definition of done)
+- Invoke captures usage (measured/estimated + marked) ✅ · provenance extended append-only ✅ · ledger section renders
+  per-pass hop trails ✅ · served surface gets a DRIVEN test ✅ (see below) · CODE_MAP rows added ✅ · this entry ✅.
+
+### Tests + verification
+- **Contracts 70 → 70:** the distillate example now carries `usage` and still validates; `InvokeUsage` in `AllSchemas`.
+- **Engine +11:** `fabric/invoke.test.ts` (+3: measured usage, total-from-halves, estimated+marked) ·
+  `settings/sections/ledger.test.ts` (+7: build dedup/ordering, empty state, measured vs estimated render, honest
+  guard/egress) · `api/settings-ledger.test.ts` (+1 DRIVEN per the QA rule: boot the real engine, seed a measured + an
+  estimated distillate, GET the SERVED `/settings/ledger`, assert endpoint/model/tokens/`est`/summary totals + the
+  honest guard(#63)/egress(#64) text render — a handler failure surfaces as missing visible text, not a silent blank).
+- **Full `pnpm -r test`:** contracts 70, engine 551, client 298 — all green on the final run. KNOWN FLAKE CLASSES (both
+  documented, untouched by this slice): on an EARLIER parallel run the client `seam streams…flushes exactly once`
+  (EngineLink wall-clock) and engine `openai-compat health falls back to /v1/models` (port-probe) each failed once →
+  both green when re-run in isolation.
+
+### Deferred / disclosed (out of this v0, by scope)
+- **STT usage not captured:** an STT invoke has no provenance-record home (transcripts become capture chunks that feed
+  distill, and audio has no meaningful prompt-token count) — wiring it would be dead weight, so it is deferred honestly
+  rather than faked. LLM + screen (vlm/ocr) — the paths that DO persist a provenance record — are captured.
+- **Guard verdict (#63) and egress marking (#64)** are not built; rendered as honest absences (see above).
+- **Workspace scope:** the ledger reads the DEFAULT workspace's recorded passes (most recent 100) — the same scope the
+  Status section already uses (`liveSession('default')`). A workspace picker is a later refinement.
+- **Pre-existing, NOT mine:** `tools/schema-gen` regeneration shows drift in 9 UNRELATED schemas (Endpoint, Fabric,
+  Health, etc. — committed schemas are stale vs source, e.g. `auth`/`chatTemplateKwargs` missing). Reverted from this
+  branch to keep scope clean; belongs on the board as a "regenerate stale schemas" chore.

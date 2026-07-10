@@ -1,5 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Id, IsoTime, Confidence } from '../common.js'
+import { Id, IsoTime, Confidence, InvokeUsage } from '../common.js'
 
 /**
  * The output of one screen-understanding pass — the OCR/VLM analogue of a Distillate (P4B;
@@ -63,6 +63,7 @@ export const OcrResult = Type.Object(
         slot: OcrSlot,
         endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this' }),
         model: Type.Optional(Type.String()),
+        usage: Type.Optional(InvokeUsage),
       },
       { additionalProperties: false },
     ),
