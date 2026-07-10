@@ -234,6 +234,13 @@ export const QueueStatus = Type.Object(
     /** ISO time of the last file the drain processed successfully — present once one has drained. */
     lastSuccessAt: Type.Optional(IsoTime),
     /**
+     * Count of spool files DROPPED by the age-shed policy (#70) — backlog older than the configured
+     * freshness horizon, dropped-not-processed so a live session renders the present. Additive: present
+     * once at least one file has been shed (absent = nothing ever shed). Never silent — each shed also
+     * emits a log line with count + age range. Distinct from drainedFiles (processed) and re-queues.
+     */
+    shedFiles: Type.Optional(Type.Integer({ minimum: 0 })),
+    /**
      * Per-kind pending depth (P4A slice 3, additive). Present once the queue tallies kinds; sums may be
      * LESS than pendingBytes because focus chunks (routing context) are deliberately excluded.
      */
