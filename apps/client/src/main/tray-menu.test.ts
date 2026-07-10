@@ -192,6 +192,30 @@ test('senseDot maps levels to at-a-glance glyphs', () => {
   assert.equal(senseDot('unsupported'), '·')
 })
 
+test('the Apps folder appears only when surfaces are known, listing them with favorites first (#98)', () => {
+  // No apps field ⇒ no folder (before the surface list is fetched).
+  assert.equal(item(buildTrayMenu(state()), 'apps'), undefined)
+  // Empty surface list ⇒ still no folder (an engine that serves none).
+  assert.equal(item(buildTrayMenu(state({ apps: { surfaces: [], favorites: [], openIds: [] } })), 'apps'), undefined)
+
+  const apps = {
+    surfaces: [
+      { id: 'surf-openinfo-hud', name: 'openinfo HUD' },
+      { id: 'surf-diag', name: 'Diagnostics' },
+    ],
+    favorites: ['surf-diag'],
+    openIds: ['surf-openinfo-hud'],
+  }
+  const folder = item(buildTrayMenu(state({ apps })), 'apps')
+  assert.ok(folder?.submenu, 'the Apps folder is a submenu')
+  // Favorite floats to the top.
+  assert.equal(folder!.submenu![0]?.id, 'app-surf-diag')
+  // The open HUD carries the ● marker and its Open reads "Focus".
+  const hudRow = folder!.submenu!.find((m) => m.id === 'app-surf-openinfo-hud')
+  assert.match(hudRow?.label ?? '', /^● /)
+  assert.equal(hudRow!.submenu!.find((m) => m.id === 'app-surf-openinfo-hud-open')?.label, 'Focus window')
+})
+
 test('quit is always present and enabled', () => {
   const q = item(buildTrayMenu(state()), 'quit')
   assert.equal(q?.command, 'quit')
