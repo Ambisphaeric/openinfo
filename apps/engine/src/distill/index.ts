@@ -24,4 +24,5 @@ export {
 } from './moments.js'
 export { parseJsonCandidates } from './parse.js'
 export { transcribeChunks, buildTranscriptUpdates, isAudioChunk, speakerLabel, type SttInvoke, type TranscribeDeps } from './transcribe.js'
+export { TranscriptRing, DEFAULT_TRANSCRIPT_RING_SIZE } from './transcript-ring.js'
 export { DistillCadence, DEFAULT_DISTILL_CADENCE_MS } from './cadence.js'

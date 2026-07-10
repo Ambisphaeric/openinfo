@@ -138,6 +138,10 @@ export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   // the two sit side-by-side without overlap. Glass chrome also means it renders through the SAME HUD
   // controller (hud.ts), so it inherits the event-fed live-transcript strip (#58) for free.
   'surf-openinfo-fields': { chrome: 'hud', width: 480 },
+  // The #101 diagnostics app: deliberately the FRAMED `app` chrome, not glass — a debugger is a tool the
+  // user wants visible in screenshots/screen-share (no content protection), resizable, and focusable while
+  // they poke at the pipeline; it must NOT float always-on-top over the app it is diagnosing.
+  'surf-openinfo-diagnostics': { chrome: 'app', width: 560 },
 }
 
 /** The window config for a surface id — its explicit entry, else the disclosed `'app'` default. */

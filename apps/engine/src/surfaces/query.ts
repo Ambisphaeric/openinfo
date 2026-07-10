@@ -1,4 +1,5 @@
-import type { BlockQuery, QueryResult, QueueStatus } from '@openinfo/contracts'
+import type { BlockQuery, QueryResult, QueueStatus, TranscriptInspector } from '@openinfo/contracts'
+import type { SenseGateChain } from './settings/sense-gates.js'
 import { relevantNow } from '../index/index.js'
 import { FieldValueStore } from '../distill/index.js'
 import { TeachStore, deriveHintCandidates } from '../teach/index.js'
@@ -17,6 +18,19 @@ const MAX_ROWS = 50
  */
 export interface QuerySources {
   queueStatus?: QueueStatus
+  /**
+   * The transcription-inspector snapshot for the `transcript` source (#101) — recent ephemeral transcript
+   * chunks (the in-memory ring) plus the CURRENT stt slot config. Like `queueStatus`, this is operational/
+   * config engine state, NOT a store record, so the /query route builds it (from the TranscriptRing + the
+   * live fabric) and injects it here. Absent (a unit test, or a non-transcript query) ⇒ the arm reads [].
+   */
+  transcript?: TranscriptInspector
+  /**
+   * The per-sense gate chains for the `senses` source (#7/#101) — the SAME verdict GET /senses computes,
+   * evaluated by the route from the live flags/fabric/last-failure and injected here. Computed state, not a
+   * store record. Absent (a unit test, or a non-senses query) ⇒ the arm reads [], explainable-empty.
+   */
+  senseGates?: SenseGateChain[]
 }
 
 /**
@@ -190,6 +204,20 @@ export const compileQuery = (
       const values = new FieldValueStore(store).list(workspaceId, sessionId)
       return capSuppressed([...values].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), (v) => v.fieldId)
     }
+    case 'transcript':
+      // The transcription inspector (#101): the diagnostics app's headline. UNLIKE the record sources this
+      // is NOT a store record — it is the recent ephemeral transcript ring + the current stt slot config,
+      // built and INJECTED by the /query route (the `queue` pattern). One row: the whole TranscriptInspector
+      // snapshot, rendered client-side (chunk rows + the stt-slot line + the disclosed #65 per-chunk gap).
+      // Not injected (a unit caller) ⇒ [], explainable-empty — never an error. Workspace/session params
+      // don't scope it: the ring is process-global (a debugging glance, disclosed as last-N, not persisted).
+      return cap(sources.transcript !== undefined ? [sources.transcript] : [])
+    case 'senses':
+      // The sense-gate chains (#7 on a diagnostics surface, #101): the SAME per-sense "what is blocking this
+      // sense" verdict GET /senses serves, evaluated by the route from live flags/fabric/last-failure and
+      // injected here (computed state, not a store record). One row per sense; the block renders the first
+      // blocking gate + its fix, or all-pass. Not injected (a unit caller) ⇒ [], explainable-empty.
+      return cap(sources.senseGates ?? [])
     case 'ledger':
       // Backing store not built yet (ledger P4): empty, explainable, not an error.
       return cap([])

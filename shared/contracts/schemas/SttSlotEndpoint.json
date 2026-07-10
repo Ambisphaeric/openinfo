@@ -1,0 +1,18 @@
+{
+  "$id": "SttSlotEndpoint",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "endpoint"
+  ],
+  "properties": {
+    "endpoint": {
+      "description": "the stt endpoint name (never a secret)",
+      "type": "string"
+    },
+    "model": {
+      "description": "the model the endpoint serves, when it names one",
+      "type": "string"
+    }
+  }
+}

@@ -126,6 +126,49 @@ export const TranscriptUpdate = Type.Object(
 )
 export type TranscriptUpdate = Static<typeof TranscriptUpdate>
 
+/** One endpoint currently occupying the stt slot — its name and (when the endpoint names one) model. */
+export const SttSlotEndpoint = Type.Object(
+  {
+    endpoint: Type.String({ description: 'the stt endpoint name (never a secret)' }),
+    model: Type.Optional(Type.String({ description: 'the model the endpoint serves, when it names one' })),
+  },
+  { $id: 'SttSlotEndpoint', additionalProperties: false },
+)
+export type SttSlotEndpoint = Static<typeof SttSlotEndpoint>
+
+/**
+ * The transcription-inspector snapshot (#101) — the ONE row the `transcript` query source returns, the
+ * headline of the diagnostics app. Composes the two HONESTLY-KNOWN facts the transcript-garbage QA needed
+ * on a surface instead of over ssh:
+ *
+ * - `chunks`: the most recent EPHEMERAL TranscriptUpdates, newest-first, drawn from an in-memory ring the
+ *   engine keeps (fed off the transcript.updated bus). Each carries its stream (mic = me / system-audio =
+ *   them), captured-at span (⇒ a duration), and raw text. Like the live feed itself, this is NOT persisted:
+ *   the ring holds only the last `ringLimit` updates for the running process, cleared on restart.
+ * - `sttSlot`: the CURRENT stt slot configuration (endpoint · model). This is DELIBERATELY separate from the
+ *   chunks: per-chunk stt provenance is NOT recorded anywhere (the disclosed #65 gap — STT invokes persist
+ *   no provenance row, unlike DISTILLATE records). So the inspector renders the slot as the current config,
+ *   NOT as a claim about which endpoint served any specific chunk. The block discloses this limit in text.
+ *
+ * Operational/config state, not a store record — injected by the /query route (the `queue` pattern).
+ */
+export const TranscriptInspector = Type.Object(
+  {
+    chunks: Type.Array(TranscriptUpdate, { description: 'recent transcript updates, newest-first, from the in-memory ring — NOT persisted' }),
+    sttSlot: Type.Array(SttSlotEndpoint, {
+      description: 'the CURRENT stt slot endpoints (endpoint · model). NOT per-chunk provenance — per-chunk stt provenance is the disclosed #65 gap',
+    }),
+    ringLimit: Type.Integer({ minimum: 1, description: 'how many recent updates the ephemeral ring retains for this process (retention disclosure)' }),
+  },
+  {
+    $id: 'TranscriptInspector',
+    additionalProperties: false,
+    description:
+      'the transcript-inspector snapshot (#101): recent ephemeral transcript chunks + the current stt slot config. Per-chunk stt endpoint/model is NOT recorded (#65 gap); sttSlot is the current configuration, not a per-chunk claim.',
+  },
+)
+export type TranscriptInspector = Static<typeof TranscriptInspector>
+
 /**
  * A classified drain failure (INVOKE-RESILIENCE) — the LAST time the drain processor could not process a
  * spooled file because an invoke failed. It names WHICH endpoint, WHAT went wrong (the class the engine
@@ -364,9 +407,9 @@ export type HintCandidate = Static<typeof HintCandidate>
 export const QueryResult = Type.Object(
   {
     source: Type.Union(
-      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue'].map((s) => Type.Literal(s)),
+      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue', 'transcript', 'senses'].map((s) => Type.Literal(s)),
     ),
-    items: Type.Array(Type.Unknown(), { description: 'hydrated rows; element shape is keyed by `source` (fields → FieldValue, #61)' }),
+    items: Type.Array(Type.Unknown(), { description: 'hydrated rows; element shape is keyed by `source` (fields → FieldValue, #61; transcript → TranscriptInspector, #101; senses → SenseGateChain, #7/#101)' }),
     top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     truncated: Type.Boolean({ description: 'true when more rows existed than were returned under `top`' }),
     suppressed: Type.Optional(

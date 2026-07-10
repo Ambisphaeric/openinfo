@@ -54,6 +54,14 @@
       "type": "string"
     },
     {
+      "const": "transcript-inspector",
+      "type": "string"
+    },
+    {
+      "const": "sense-gates",
+      "type": "string"
+    },
+    {
       "const": "custom",
       "type": "string"
     }
