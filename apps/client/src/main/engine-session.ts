@@ -1,4 +1,5 @@
 import type { Fabric, Session, StartSessionRequest } from '@openinfo/contracts'
+import type { EngineSenseVerdict, Sense } from './capture-status.js'
 
 /**
  * The tray's session control, over the engine HTTP API — the client NEVER opens a DB (dependency
@@ -41,6 +42,25 @@ export class EngineSessionClient {
   /** The live fabric (active-profile view) — the tray reads it to decide the "Set up models…" nudge. */
   fabric(): Promise<Fabric> {
     return this.request('GET', '/fabric') as Promise<Fabric>
+  }
+
+  /**
+   * The engine-side per-sense gate verdicts (GET /senses, issue #7) — reduced to the FIRST blocking gate
+   * per sense the tray chains after its client-side gates. Defensive: an old engine with no /senses route
+   * (404) or a malformed body yields [] so the tray simply omits the engine-side gates, never crashes.
+   */
+  async senses(): Promise<EngineSenseVerdict[]> {
+    const chains = (await this.request('GET', '/senses')) as { sense?: unknown; blocking?: { id?: unknown; label?: unknown; fix?: unknown } }[]
+    if (!Array.isArray(chains)) return []
+    return chains.flatMap((c) => {
+      if (typeof c.sense !== 'string') return []
+      const verdict: EngineSenseVerdict = { sense: c.sense as Sense }
+      const b = c.blocking
+      if (b && typeof b.id === 'string' && typeof b.label === 'string') {
+        verdict.blocking = { id: b.id, label: b.label, ...(typeof b.fix === 'string' ? { fix: b.fix } : {}) }
+      }
+      return [verdict]
+    })
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {

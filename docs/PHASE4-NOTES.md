@@ -2476,6 +2476,71 @@ land on a slower cadence.
 - KNOWN FLAKE CLASS under parallel load: all suites verified green both via `pnpm -r test` and per-file in
   isolation.
 
+## Slice: #7 — per-sense gate chain (name the blocking gate + its fix)
+
+HONESTY EXTENSION. Getting a transcript out of a sense needs SEVERAL independent gates all open (OS
+permission, the sense enabled, the engine reachable, an stt/ocr endpoint configured, the processing flag
+on, the endpoint healthy). When one is closed the only observable was "no transcript" — the tray reported
+the OS-permission layer honestly per sense (issue #41 groundwork) but stopped there. This composes ALL the
+gates into ONE named, per-sense verdict: the FIRST closed gate is the blocker, with a one-step fix, so no
+sense ever reads as a bare "off" when a specific gate is the cause.
+
+### The split (why two halves compose cleanly)
+The chain divides on the process boundary. The CLIENT owns the gates only it can see — sense toggled off
+(config), OS/TCC permission, engine reachable, a live session — and the ENGINE owns the gates only it can
+see — `distill.enabled`/`distill.transcribe` (audio) or `screen.ocr` (screen), the stt/ocr slot occupancy,
+and endpoint health. So the engine evaluates its half and the client chains it AFTER its own; the first
+closed gate across the whole ordered chain is the named blocker. No gate logic is duplicated across the
+two packages (which cannot share code): each side owns the gates it can honestly answer.
+
+### Engine half (`engine/surfaces/settings/sense-gates.ts`, pure)
+- `evaluateSenseGates(input) → SenseGateChain[]` — for each sense (`mic`, `sys-audio`, `screen`, sharing
+  the client capture-status sense ids) an ordered `SenseGate[]` with `pass`/`fix`/`detail`, plus the first
+  `!pass` gate as `blocking`. Audio chain: `distill.enabled → distill.transcribe → stt slot → stt-health`.
+  Screen chain (independent of distill — a frame is read by OCR, not the transcript distiller):
+  `screen.ocr → ocr slot → ocr-health`.
+- Reuses the EXISTING signals, never re-implements health: flags (GET /flags), the live fabric slots
+  (GET /fabric), the queue's classified `lastFailure` (GET /queue), and — when the caller can afford it —
+  live `EndpointHealth` from `checkEndpoint`. The health gate closes when a live probe fails OR the drain's
+  last classified failure names one of the slot's endpoints (carrying that failure's own `hint` verbatim).
+- Pure and I/O-free: health is an INPUT, so every gate combination is asserted headless.
+
+### Surfaced two ways (append-only)
+- **`GET /senses`** (`engine/api/http.ts` `getSenses`) — the verdict as JSON for a support flow AND the
+  client tray. It runs a LIVE `checkEndpoint` probe of the configured stt/ocr endpoints (the route can
+  afford the probe the pure Status render cannot), then composes with flags + fabric + queue lastFailure.
+  Added to the `Routes` contract (`SenseGateChain[]`, phase 4).
+- **Settings → Status** (`sections/status.ts`) — a "Capture pipeline" card renders each sense's chain with
+  the first closed gate highlighted + its fix. PURE render: it uses queue `lastFailure` for the health gate
+  (no probe in the render path, matching the section's existing "no new probes" ethos); the live probe
+  lives on the route. New CSS `.gate-chain`/`.gate.block` in `settings/assets.ts`.
+
+### Client half (`client/main/capture-status.ts`, pure + `tray-menu.ts`)
+- `captureStatuses` now attaches a `blocking: SenseBlock` to each `SenseStatus`, composed in precedence:
+  `sense-off → os-permission → engine-unreachable → no-session → <engine gate>`. Unknown client state
+  (`engineReachable`/`sessionLive` undefined) is NOT asserted as a block — no false "unreachable" claim.
+- The tray submenu names the deeper gate on its own `⚠ blocked: …` line + a `→ <fix>` line; the
+  OS-permission gate is NOT re-emitted (the existing header/detail/fix-it already own it, #41 lines intact).
+- `EngineSessionClient.senses()` fetches `GET /senses` defensively (404/malformed ⇒ `[]`, so an old engine
+  just omits the engine-side gates). `shell.ts` threads `micEnabled`/`systemAudioEnabled`/`connected`/
+  `liveState.live` + the fetched verdicts into `captureStatusInput`, refreshing on seed and on the WS
+  `flag.changed`/`fabric.changed` events (a flipped flag or a slot edit can open/close an engine gate).
+
+### Tests + verification (all suites green)
+- Engine 493 → 508: NEW `sense-gates.test.ts` (11 — precedence per gate, stt/ocr slot, live-health vs
+  queue-lastFailure health with the right endpoint, screen's distill-independence) + NEW
+  `sections/status.test.ts` (4 — the card renders, names distill.enabled with its fix when all-off, reads
+  clear when configured, surfaces a stt lastFailure's hint).
+- Client 269 → 279: `capture-status.test.ts` +9 (each gate as the first blocker, precedence, unknown state
+  not asserted, sys-audio device gate) + `tray-menu.test.ts` +1 (the blocked line + fix render; the
+  os-permission gate is not duplicated).
+- Contracts 68 (unchanged count; the `/senses` route row is a `RouteDef`, not a schema example).
+- SERVED e2e (driven, not a route test): booted the REAL engine on a temp `OPENINFO_DATA`, drove four
+  blocked states over the real HTTP surfaces and asserted `GET /senses` + `GET /settings/status` name the
+  correct gate each time — all-off ⇒ `distill.enabled`; distill on / transcribe off ⇒ `distill.transcribe`;
+  flags on / empty stt slot ⇒ `stt`; a configured-but-UNREACHABLE stt endpoint ⇒ `stt-health` (via the
+  live `checkEndpoint` probe). All four passed; every blocked state surfaced as visible named text.
+- KNOWN FLAKE CLASS under parallel load: suites verified green via `pnpm -r test` and per-package.
 ## Slice: #69 — silence filter (drop no-speech/hallucinated segments before accumulation)
 
 Near-silent capture windows come back from STT as plausible-looking stock phrases (a known failure mode of

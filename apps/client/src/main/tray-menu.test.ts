@@ -150,6 +150,40 @@ test('the Capture-status submenu appears only when a readout is present, and car
   assert.match(submenu!.find((m) => m.id === 'cap-sys-audio-detail')?.label ?? '', /loopback/)
 })
 
+test('a deeper blocking gate (issue #7) is named on its own line with a fix; OS-permission is not duplicated', () => {
+  const captureStatus = [
+    // mic is granted at the OS layer but the engine-side transcription flag is off — the readout must NOT
+    // read as a bare granted "off"; it names the gate + the one-step fix.
+    {
+      sense: 'mic' as const,
+      label: 'Microphone',
+      level: 'granted' as const,
+      state: 'granted',
+      detail: 'openinfo can record the mic.',
+      blocking: { gate: 'distill.transcribe', reason: 'Transcribe audio', fix: 'Enable distill.transcribe in Settings → Features' },
+    },
+    // screen is blocked by the OS layer — the header/detail already say it, so NO redundant blocked line.
+    {
+      sense: 'screen' as const,
+      label: 'Screen recording',
+      level: 'denied' as const,
+      state: 'denied',
+      detail: 'Flip it in System Settings.',
+      fixCommand: 'open-screen-settings' as const,
+      blocking: { gate: 'os-permission' as const, reason: 'Screen recording — denied', fixCommand: 'open-screen-settings' as const },
+    },
+  ]
+  const submenu = item(buildTrayMenu(state({ captureStatus })), 'capture-status')?.submenu
+  assert.ok(submenu)
+  // The deeper gate is surfaced as a named, disabled "blocked:" line + its fix line.
+  assert.match(submenu!.find((m) => m.id === 'cap-mic-blocked')?.label ?? '', /blocked: Transcribe audio/)
+  assert.equal(submenu!.find((m) => m.id === 'cap-mic-blocked')?.enabled, false)
+  assert.match(submenu!.find((m) => m.id === 'cap-mic-blockfix')?.label ?? '', /Enable distill\.transcribe/)
+  // The OS-permission gate is NOT re-emitted as a blocked line (the header + detail + fix-it already own it).
+  assert.equal(submenu!.find((m) => m.id === 'cap-screen-blocked'), undefined)
+  assert.equal(submenu!.find((m) => m.id === 'cap-screen-fix')?.command, 'open-screen-settings')
+})
+
 test('senseDot maps levels to at-a-glance glyphs', () => {
   assert.equal(senseDot('granted'), '●')
   assert.equal(senseDot('denied'), '⚠')
