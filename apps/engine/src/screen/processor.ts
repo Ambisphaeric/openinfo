@@ -270,6 +270,10 @@ export class ScreenOcrProcessor {
       provenance,
       schemaVersion: OCR_RESULT_SCHEMA_VERSION,
       createdAt,
+      // #102 keep-time: carry the frame's TRUE capture instant onto the record itself, not just the mirror
+      // Distillate's windowStart/End — so a direct OcrResult consumer can never present delayed OCR as
+      // real-time. A single frame is captured at one instant, so this is exactly the Distillate window.
+      capturedAt: chunk.capturedAt,
     }
     this.store.saveOcrResult(ocr)
     await this.publishOcr?.(ocr)

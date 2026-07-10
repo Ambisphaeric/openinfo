@@ -227,6 +227,40 @@
         }
       }
     },
+    "lag": {
+      "$id": "BacklogLag",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "behindMs",
+        "basis"
+      ],
+      "properties": {
+        "behindMs": {
+          "minimum": 0,
+          "description": "now − oldest-pending capture time; 0 when the basis is unknown",
+          "type": "number"
+        },
+        "oldestPendingCapturedAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "basis": {
+          "description": "capture-time = computed from pending chunks capturedAt; unknown = a backlog exists but no capture time was recoverable (behindMs 0, nothing claimed)",
+          "anyOf": [
+            {
+              "const": "capture-time",
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
     "overflow": {
       "$id": "OverflowState",
       "additionalProperties": false,

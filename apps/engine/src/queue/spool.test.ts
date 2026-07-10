@@ -292,6 +292,58 @@ test('shedFiles is absent until something is shed (additive) (#70)', async () =>
   }
 })
 
+// --- #102 keep-time: backlog LAG metric (now − oldest-pending capture time) -------------------
+
+test('lag reports how far behind the present the oldest pending capture is (#102)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  try {
+    const queue = new CaptureQueue(dir)
+    // Two pending work chunks with TRUE capture times ~90s and ~30s in the past. The lag is measured
+    // against the OLDEST (90s) — that is how far behind the present the pipeline is.
+    const ninetyAgo = new Date(Date.now() - 90_000).toISOString()
+    const thirtyAgo = new Date(Date.now() - 30_000).toISOString()
+    await queue.append(mk({ id: 'old', sessionId: 'sess-old', capturedAt: ninetyAgo }))
+    await queue.append(mk({ id: 'new', sessionId: 'sess-new', capturedAt: thirtyAgo }))
+    const status = await queue.status()
+    assert.equal(status.lag?.basis, 'capture-time')
+    assert.equal(status.lag?.oldestPendingCapturedAt, ninetyAgo, 'the oldest pending capture instant is reported')
+    assert.ok((status.lag?.behindMs ?? 0) >= 85_000, `behindMs tracks the oldest capture (~90s) — got ${status.lag?.behindMs}`)
+    assert.ok((status.lag?.behindMs ?? 0) < 120_000, 'behindMs is now − oldest, not fabricated')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('lag is ABSENT when the queue is caught up (#102)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  try {
+    const queue = new CaptureQueue(dir, async () => undefined)
+    assert.equal((await queue.status()).lag, undefined, 'empty queue → no lag (absence = 0 behind)')
+    await queue.append(mk({ id: 'c' }))
+    await queue.drainNow(() => undefined)
+    assert.equal((await queue.status()).lag, undefined, 'fully drained → caught up → lag absent')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('lag ignores focus chunks — it tracks WORK capture time, like byKind/ETA (#102)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  try {
+    const queue = new CaptureQueue(dir)
+    // A focus chunk captured LONG ago (routing context) must not inflate the lag; the work chunk governs.
+    const longAgo = new Date(Date.now() - 600_000).toISOString()
+    const recent = new Date(Date.now() - 20_000).toISOString()
+    await queue.append(mk({ id: 'f', sessionId: 'focus-sess', source: 'focus', contentType: 'application/json', capturedAt: longAgo }))
+    await queue.append(mk({ id: 'w', sessionId: 'work-sess', capturedAt: recent }))
+    const status = await queue.status()
+    assert.equal(status.lag?.oldestPendingCapturedAt, recent, 'the focus chunk (10m old) is excluded — the work chunk governs the lag')
+    assert.ok((status.lag?.behindMs ?? 0) < 120_000, 'lag reflects the work chunk, not the ancient focus chunk')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 async function waitForDrain(queue: CaptureQueue): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     if ((await queue.status()).pendingFiles === 0) return
