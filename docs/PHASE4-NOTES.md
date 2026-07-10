@@ -2622,3 +2622,70 @@ slice's transcribe.ts changes would not render as a reviewable diff. Replaced th
 ESCAPE in source: byte-identical runtime key (still a NUL-delimited group key, zero behavior change), but
 the file is now valid UTF-8 text and diffs render. Verified: the #58 transcript-fastpath grouping test
 still passes unchanged.
+
+## Slice: #4 — senses-on defaults + configurable screen-capture cadence (3–6s band)
+
+CLIENT-LOCAL. This slice hardens the existing client-local capture config (config.ts) rather than the
+issue's fuller "served, schema-validated capture-config document" vision — a **deliberate scope call**
+(see the deviation note below). Two concrete deliverables, both in `apps/client`:
+
+### 1 — the senses-on defaults are now first-class + pinned (`SENSE_DEFAULTS`)
+"Which senses are enabled out of the box" was already correct but scattered as hardcoded returns inside
+`resolveEnabled` (ON) / `resolveOptIn` (OFF). Lifted into one exported `SENSE_DEFAULTS` const — the single
+source of truth: **mic / system-audio / focus default ON, screen default OFF (strictly opt-in)**. The
+resolver helpers now take the default as a parameter sourced from it, and a test PINS the out-of-the-box
+shape so any future change to the privacy posture trips CI. Values are unchanged (the audio/focus ON
+defaults are safe: system-audio no-ops without a loopback device, focus no-ops without `route.detect`;
+screen stays OFF, matching the `capture.camera` posture). The consent boundary is untouched —
+`SENSE_DEFAULTS` governs what captures once a session is LIVE; nothing captures before the tray's Start
+Session (capture-consent.ts, not touched).
+
+### 2 — the screen cadence is clamped into the owner's 3–6s target band
+`screenIntervalMs` was already env/file-overridable (default 5000, in band) but only rejected
+non-positive/garbage — so `OPENINFO_SCREEN_INTERVAL_MS=50` would have spun the desktopCapturer ~20×/sec.
+Added `resolveScreenIntervalMs`: same env > file > default precedence as `resolveIntervalMs`, then the
+chosen value is rounded to whole ms and **clamped into [`SCREEN_INTERVAL_MIN_MS`=3000,
+`SCREEN_INTERVAL_MAX_MS`=6000]** — an out-of-band value snaps to the nearest bound (too-hot → 3000,
+too-cold/dead → 6000), garbage falls back to the default. Kept SEPARATE from `resolveIntervalMs` because
+`segmentMs` (#57) is a different cadence whose larger values are legitimate and must NOT be clamped.
+
+### The cadence loop moved into a testable "screen source" (`capture/screen-source.ts`)
+The screen grab loop was inline in shell.ts (`setInterval(captureScreenFrame, cfg.screenIntervalMs)`),
+untestable in the headless set. Extracted `startScreenCadence({ intervalMs, grab })` → a
+`ScreenCadenceHandle` with an idempotent `stop()`, preserving the old behaviour verbatim (grab one frame
+immediately, then on cadence). shell.ts's `startScreenLoop`/`stopScreenLoop` are now thin wrappers holding
+the handle (the `screenTimer` module var is gone). It schedules on the global timers so a test fakes them —
+the #57 renderer-test pattern — proving the loop honours the configured interval in BEHAVIOUR, not just
+that a value was accepted.
+
+### Deviation — stayed client-local; did NOT build the served capture-config document
+The issue's definition-of-done asks for a `shared/contracts` capture-config schema served read/write by the
+engine, with a live client refresh. This slice deliberately did NOT do that, for three reasons: (1) config.ts's
+own long-standing header argues at length WHY these capture behaviours are client-local and NOT engine
+documents (they are how the client drives its own hardware; they never touch the engine or its store; whether
+captured bytes MEAN anything is already gated engine-side by the distill/screen.ocr flags — the #7 gate chain),
+and #57 landed `segmentMs` on exactly this env>file>default pattern days earlier; (2) a served document would
+require new engine store/route/contract surface + schema regeneration, outside this slice's territory and
+adjacent to work a sibling owns; (3) the parent's concrete target for tonight was the senses-on defaults + a
+3–6s-band configurable cadence with env/file override. **Deferred (unbuilt), tied together:** the served
+capture-config document + its schema-validation-rejects-invalid guarantee + the live no-relaunch refresh of
+the running loop. `startScreenCadence` is shaped so that live refresh is a small follow-up (stop → start with
+the new interval; the restart-adopts-a-new-cadence path is already unit-tested) once a document/refresh trigger
+exists to drive it.
+
+### Tests + verification (all green in isolation; full suites green)
+- Client 279 → 284 (+5): config.test.ts +2 (the CLAMP into [3000,6000] — too-hot snaps up, too-cold snaps
+  down, file value clamped, fractional rounded; and the pinned senses-on default shape mic/sys/focus ON,
+  screen OFF), screen-source.test.ts +3 (grab-now + schedules at the configured interval + each tick grabs;
+  stop() clears exactly the scheduled timer and is idempotent; a restart adopts a changed cadence). Updated the
+  two pre-existing screen-cadence assertions that assumed un-clamped values (2000/1500 now clamp to 3000).
+- Full `pnpm -r test`: contracts 68, engine 520, client 284, workbench (no tests). In the parallel run the
+  KNOWN client-seam timing flake (`seam streams, spools while engine is down, then flushes exactly once in
+  order`) failed once under contention (4223ms — a wall-clock timeout) and passed cleanly in isolation
+  (744ms); it touches the EngineLink spool, nothing in this slice. Client suite in isolation: 284/284 green.
+
+### Rule-7 check (definition of done)
+No engine route, flag, or CONTRIBUTING-recipe surface changed (client-local slice), so no rail needs keeping
+true there. CODE_MAP: the `capture/` screen row + the `main/` config row updated (new screen-source.ts module,
+the 3–6s clamp, SENSE_DEFAULTS). No contracts touched (no schema regen — the deliberate client-local call).
+capture-consent.ts untouched (consent boundary intact).
