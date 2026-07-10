@@ -22,9 +22,13 @@ Both sources share one window / renderer / preload, keyed by `source`:
   permission → capturing → end + final-segment flush → idle; denial; `no-device` → `unavailable`;
   system-audio silence honesty; auto-end→restart serialization; clean shutdown).
 - `capture-renderer.ts` — the hidden window's renderer: per-source getUserMedia + MediaRecorder,
-  segmenting by stop/restart (complete webm files, configurable cadence — `ShellConfig.segmentMs`,
-  default ~1s, sent with each `capture:start`; #57), system-audio device match + an AnalyserNode
-  silence probe. Browser globals; the #57 cadence-honouring path is unit-tested (`capture-renderer.test.ts`).
+  segmenting by stop/restart (complete webm files). WHERE it cuts is `ShellConfig.chunkStrategy` (#95):
+  `vad` (default) rotates at a detected PAUSE via the AnalyserNode amplitude poll so a cut never splits a
+  word (measured whole-file-equal, vs ~0.20 WER at the old fixed-1s — `tools/stt-accuracy`); `fixed` keeps
+  the wall-clock `segmentMs` cadence (#57). System-audio device match + the silence probe as before.
+- `vad.ts` — PURE pause-based rotation decision (`shouldRotate`/`nextSilenceRunMs`/`resolveVadParams`,
+  `DEFAULT_VAD_PARAMS`); the renderer feeds it amplitude telemetry. Unit-tested (`vad.test.ts`); the
+  renderer's fixed + vad rotation wiring is unit-tested (`capture-renderer.test.ts`).
 - `capture-preload.cts` (→ `.cjs`) — the `window.openinfoCapture` contextBridge (contextIsolation on).
 - `sim.ts` (P1) — the headless capture simulator; still used by the seam test.
 

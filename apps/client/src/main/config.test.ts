@@ -120,6 +120,39 @@ test('file can set the segment cadence; env still wins (precedence env > file > 
   assert.deepEqual(parseClientConfigFile({ segmentMs: '500' }), {}) // wrong type dropped
 })
 
+test('chunk strategy defaults to the measured vad and resolves env > file > default (#95)', () => {
+  assert.equal(resolveShellConfig({}).chunkStrategy, 'vad') // the MEASURED default (tools/stt-accuracy)
+  assert.equal(resolveShellConfig({ OPENINFO_CHUNK_STRATEGY: 'fixed' }).chunkStrategy, 'fixed')
+  assert.equal(resolveShellConfig({ OPENINFO_CHUNK_STRATEGY: 'VAD' }).chunkStrategy, 'vad') // case-insensitive token
+  assert.equal(resolveShellConfig({ OPENINFO_CHUNK_STRATEGY: 'nonsense' }).chunkStrategy, 'vad') // junk ⇒ default
+  assert.equal(resolveShellConfig({}, { chunkStrategy: 'fixed' }).chunkStrategy, 'fixed') // file honoured
+  assert.equal(resolveShellConfig({ OPENINFO_CHUNK_STRATEGY: 'vad' }, { chunkStrategy: 'fixed' }).chunkStrategy, 'vad') // env wins
+  assert.deepEqual(parseClientConfigFile({ chunkStrategy: 'fixed' }), { chunkStrategy: 'fixed' })
+  assert.deepEqual(parseClientConfigFile({ chunkStrategy: 'overlap' }), {}) // unknown strategy dropped
+})
+
+test('vad knobs default from DEFAULT_VAD_PARAMS and are overridable; junk falls back (#95)', () => {
+  const def = resolveShellConfig({})
+  assert.equal(def.vadSilenceHoldMs, 400)
+  assert.equal(def.vadMinSegmentMs, 600)
+  assert.equal(def.vadMaxSegmentMs, 6000)
+  assert.equal(def.vadSilencePeak, 0.02)
+  const over = resolveShellConfig({
+    OPENINFO_VAD_SILENCE_HOLD_MS: '250',
+    OPENINFO_VAD_MIN_SEGMENT_MS: '300',
+    OPENINFO_VAD_MAX_SEGMENT_MS: '9000',
+    OPENINFO_VAD_SILENCE_PEAK: '0.05',
+  })
+  assert.equal(over.vadSilenceHoldMs, 250)
+  assert.equal(over.vadMinSegmentMs, 300)
+  assert.equal(over.vadMaxSegmentMs, 9000)
+  assert.equal(over.vadSilencePeak, 0.05)
+  for (const bad of ['0', '-5', 'nope', '']) assert.equal(resolveShellConfig({ OPENINFO_VAD_SILENCE_HOLD_MS: bad }).vadSilenceHoldMs, 400)
+  assert.equal(resolveShellConfig({}, { vadMaxSegmentMs: 4000 }).vadMaxSegmentMs, 4000) // file honoured
+  assert.deepEqual(parseClientConfigFile({ vadSilencePeak: 0.03 }), { vadSilencePeak: 0.03 })
+  assert.deepEqual(parseClientConfigFile({ vadSilencePeak: '0.03' }), {}) // wrong type dropped
+})
+
 // --- packaged-app config file (~/.openinfo/client.json) ---
 
 test('a client.json file supplies defaults when the env is empty (the packaged-app config story)', () => {

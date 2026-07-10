@@ -596,7 +596,16 @@ const setupCapture = (): void => {
     // channel constants and the config — the dispatcher's ack/retry state machine stays payload-agnostic.
     send: (channel: DispatchChannel, source: CaptureSourceKind) =>
       channel === 'start'
-        ? captureWindow?.webContents.send(CAPTURE_CHANNELS.start, source, { segmentMs: cfg.segmentMs })
+        ? captureWindow?.webContents.send(CAPTURE_CHANNELS.start, source, {
+            segmentMs: cfg.segmentMs,
+            // Chunk strategy + vad knobs (#95) — the renderer cuts at pauses under `vad` (the default) so a
+            // cut never splits a word. Constant per run, so every ack/retry resends the same options.
+            chunkStrategy: cfg.chunkStrategy,
+            vadSilenceHoldMs: cfg.vadSilenceHoldMs,
+            vadMinSegmentMs: cfg.vadMinSegmentMs,
+            vadMaxSegmentMs: cfg.vadMaxSegmentMs,
+            vadSilencePeak: cfg.vadSilencePeak,
+          })
         : captureWindow?.webContents.send(CAPTURE_CHANNELS.stop, source),
     onFault: onCaptureFault,
     log: clientLog,
