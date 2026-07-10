@@ -3485,3 +3485,53 @@ by a blended score. Deterministic engine code — models extract candidate strin
 - The distiller passes no `signals` yet (defaults neutral); the seam is on `EntityUpsert` for #74 to fill.
 - Double-Metaphone is a compact in-repo implementation tuned + tested for ASR-homophone collapse, not a
   line-for-line reference port; a fuller port is a cheap future change if a case demands it.
+
+## Slice: Keep time — backlog LAG metric, OcrResult.capturedAt, honest delay disclosure  *(#102, 2026-07-10)*
+
+When processing falls behind capture (e.g. 20 screenshots queued), delayed data must NEVER present as
+real-time. The rendered block already showed true capture time via the mirror Distillate's
+windowStart/End; this slice makes the guarantee STRUCTURAL (on the record), MEASURABLE (a metric), and
+VISIBLE (a disclosure line) — self-contained, no per-user "inform based on their config" framework (that
+is design-session territory).
+
+### Contracts added (all additive/optional — the INVOKE-RESILIENCE precedent)
+- **`BacklogLag`** (`api/payloads.ts`, `$id`): the backward-looking companion to `BacklogEta`. `behindMs`
+  (now − oldest-pending WORK-chunk `capturedAt`, ≥0) · `oldestPendingCapturedAt?` · `basis`
+  (`capture-time` = computed from chunk capturedAt · `unknown` = a backlog exists but no capture time was
+  recoverable this pass ⇒ behindMs 0, nothing fabricated). Added as optional `QueueStatus.lag`, ABSENT when
+  caught up (absence = 0 behind).
+- **`OcrResult.capturedAt`** (`records/ocr.ts`, optional): the frame's TRUE capture instant, threaded from
+  the source `CaptureChunk.capturedAt`. Pre-existing records without it still validate (their capture time
+  stays unknown on the record; the mirror Distillate remains the fallback).
+- Registered in `AllSchemas`; `pnpm gen` regenerated `BacklogLag.json` + `OcrResult.json` + `QueueStatus.json`.
+
+### Engine
+- `queue/spool.ts` `status()` folds the oldest pending WORK-chunk `capturedAt` while it already parses each
+  pending file for `byKind` (no extra pass), then `computeLag(backlogChunks, oldest, now)`. Focus chunks
+  excluded exactly as in `byKind`/`eta`. A single `now = Date.now()` is reused for eta + lag. Lag flows
+  through GET `/queue`, the `queue.updated` event, and the `queue` query source unchanged — all pass the
+  whole `QueueStatus` object (no field whitelist).
+- `screen/processor.ts` `persist()` stamps `capturedAt: chunk.capturedAt` onto the `OcrResult` (shared by
+  the ingest + drain paths, so both records match). A single frame ⇒ capturedAt == the Distillate window.
+
+### Client
+- `surfaces/blocks/queue.ts`: `lagRow` renders "processing ~Ns behind" ONLY when `lag.basis` is
+  `capture-time` and `behindMs ≥` a threshold (default 5s, overridable per surface via the block query
+  param `lagThresholdMs` — the smallest honest configurability, no new settings framework). Caught up,
+  sub-threshold, or `unknown` basis ⇒ nothing renders. Amber `mk q` marker (the queue's own waiting tone).
+
+### Tests
+- Contracts +2: OcrResult validates with/without capturedAt (append-only); QueueStatus.lag additive +
+  BacklogLag rejects negative behindMs / an invented basis.
+- Engine +3 (`queue/spool.test.ts`): seeded-stale-spool lag (behindMs tracks the oldest capture); caught
+  up → lag absent; focus chunk excluded. Processor test asserts capturedAt (capture) vs createdAt (processing).
+- Client +4 (`blocks/queue.test.ts`): lagging → visible line; caught up → absent; sub-threshold + unknown
+  basis silent; `lagThresholdMs` override respected.
+
+### Disclosed limitations / deferred (never fabricated)
+- Capture time IS always recoverable from the spool — every `CaptureChunk` carries a required `capturedAt`
+  — so NO spool-write change was needed; the `unknown` basis is a defensive corner (a work chunk with a
+  malformed capturedAt, or all pending files unreadable this pass), reported honestly rather than invented.
+- No per-user "inform based on their configuration" UI framework (issue item 4) — that is settings
+  requirements-ledger / design-session territory. Shipped: the metric + the record field + one honest line.
+- The lag is OVERALL (oldest pending work chunk), not per-kind — matching the overall (mixed-kind) ETA.
