@@ -33,6 +33,15 @@ export const CALENDAR_POLL_INTERVAL_MS = 30_000
 /** Hard cap on one osascript sample so a slow/hung Calendar.app scripting call can't wedge the loop. */
 export const CALENDAR_SAMPLE_TIMEOUT_MS = 15_000
 
+/**
+ * Cold-boot readiness grace (#115). The FIRST calendar sample is held behind the `isReady` gate (wired to
+ * "a live transcript has landed") so a fresh machine does not pop Calendar.app / a TCC automation prompt
+ * during the messy first session. But calendar routing must not be STRANDED when there is no mic activity
+ * (a transcript may never arrive), so once this window elapses from start the first sample proceeds anyway.
+ * Sized to the detector's sustain horizon so the gate never delays routing by more than one sustain window.
+ */
+export const CALENDAR_READY_GRACE_MS = 90_000
+
 /** How far ahead an event counts as "imminent" — routes you into a meeting a few minutes before it starts. */
 const IMMINENT_LEAD_MS = 5 * 60 * 1000
 
@@ -106,6 +115,17 @@ export interface CalendarPollerDeps {
   sample: () => Promise<string | undefined>
   /** True iff calendar collection should run right now (the `route.detect` flag; read PER-TICK, hot-flippable). */
   isEnabled: () => boolean
+  /**
+   * Cold-boot gate for the FIRST sample only (#115): while this returns false the poller holds its first
+   * Calendar.app query, so a fresh machine does not pop a TCC prompt during the first session. Wired to
+   * "a first transcript has landed". Absent ⇒ ready immediately (existing behavior, all prior tests). Once
+   * the first sample has run (gate satisfied OR the readyGrace window below elapsed) it is never consulted
+   * again — steady-state polling is unchanged.
+   */
+  isReady?: () => boolean
+  /** Fallback so calendar-only routing (no mic) is never stranded: proceed with the first sample this long
+   * after start even if isReady never went true. Defaults to CALENDAR_READY_GRACE_MS. */
+  readyGraceMs?: number
   /** Feed decoded signals into the shared detector buffer (the Attributor.observe the focus drain also calls). */
   observe: (signals: readonly TimedCalendarSignal[]) => Promise<unknown>
   /** Poll cadence; defaults to CALENDAR_POLL_INTERVAL_MS. */
@@ -119,12 +139,19 @@ export class CalendarPoller {
   private timer: ReturnType<typeof setInterval> | undefined
   /** Reentrancy guard: an in-flight async sample must not overlap the next tick. */
   private sampling = false
+  /** Cold-boot latch (#115): false until the first sample has been allowed through; then never re-gated. */
+  private warmedUp = false
+  private readonly startedAtMs = Date.now()
   private readonly intervalMs: number
   private readonly now: () => Date
+  private readonly isReady: () => boolean
+  private readonly readyGraceMs: number
 
   constructor(private readonly deps: CalendarPollerDeps) {
     this.intervalMs = deps.intervalMs ?? CALENDAR_POLL_INTERVAL_MS
     this.now = deps.now ?? (() => new Date())
+    this.isReady = deps.isReady ?? (() => true)
+    this.readyGraceMs = deps.readyGraceMs ?? CALENDAR_READY_GRACE_MS
   }
 
   /** Start the poll timer (idempotent). Unref'd so it never holds the process open on its own. */
@@ -151,6 +178,15 @@ export class CalendarPoller {
   async tick(): Promise<void> {
     if (this.sampling) return
     if (!this.deps.isEnabled()) return // privacy gate: never query Calendar.app while route.detect is OFF
+    // Cold-boot gate (#115): hold the FIRST sample until a transcript has landed (or the grace window has
+    // elapsed, so calendar-only routing is not stranded). Once warmed up this is never consulted again.
+    if (!this.warmedUp) {
+      if (this.isReady() || Date.now() - this.startedAtMs >= this.readyGraceMs) {
+        this.warmedUp = true
+      } else {
+        return
+      }
+    }
     this.sampling = true
     try {
       let raw: string | undefined
@@ -178,6 +214,9 @@ export class CalendarPoller {
 export interface CalendarWiringApp {
   store: WorkspaceRegistry
   attributor: Attributor
+  /** Cold-boot gate (#115): the first sample is held until a live transcript has landed. Optional so a bare
+   * app (older tests) with no such seam is ready immediately — steady-state behavior is unchanged. */
+  firstTranscriptSeen?: () => boolean
 }
 
 export interface CalendarWiringOptions {
@@ -186,6 +225,8 @@ export interface CalendarWiringOptions {
   sample?: () => Promise<string | undefined>
   intervalMs?: number
   now?: () => Date
+  /** Override the cold-boot readiness grace (#115); defaults to CALENDAR_READY_GRACE_MS. */
+  readyGraceMs?: number
 }
 
 /**
@@ -199,8 +240,12 @@ export const startCalendarCollector = (app: CalendarWiringApp, options: Calendar
     sample: options.sample ?? sampleCalendarViaOsascript,
     isEnabled: () => isFlagEnabled(app.store, 'route.detect'),
     observe: (signals) => app.attributor.observe(signals),
+    // Cold-boot gate (#115): hold the first sample until a transcript has landed. Ready-immediately when
+    // the app exposes no such seam, so nothing regresses for an app without the STT-track wiring.
+    isReady: () => app.firstTranscriptSeen?.() ?? true,
     ...(options.intervalMs !== undefined ? { intervalMs: options.intervalMs } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.readyGraceMs !== undefined ? { readyGraceMs: options.readyGraceMs } : {}),
     ...(options.log ? { log: options.log } : {}),
   })
   poller.start()
