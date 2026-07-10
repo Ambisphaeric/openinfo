@@ -206,6 +206,24 @@ export const acceptHintCandidate =
     if (!res.ok) throw new Error(`accept: write failed (HTTP ${res.status})`)
   }
 
+/**
+ * The `dismiss` write path (#66) — the honest end of a verb that was visible-but-inert. Dismissing a row
+ * POSTs a suppression record (an ItemSignal, kind `dismiss`) naming the item's source + id within its
+ * workspace; the engine's POST /query then EXCLUDES it, so it stays dismissed across reloads. `at` is
+ * server-stamped, so the body carries only workspace/source/item. Honest outcome: a non-ok POST REJECTS
+ * with the HTTP status, so the clicked glyph paints visible failure rather than a silent no-op (#43).
+ */
+export const dismissItem =
+  (baseUrl: string, fetchFn: FetchLike = fetch) =>
+  async ({ workspaceId, source, itemId }: { workspaceId: string; source: string; itemId: string }): Promise<void> => {
+    const res = await fetchFn(`${baseUrl}/item-signals`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId, source, itemId, kind: 'dismiss' }),
+    })
+    if (!res.ok) throw new Error(`dismiss: write failed (HTTP ${res.status})`)
+  }
+
 export const startHud = (options: { baseUrl?: string; workspace?: string; surfaceId?: string } = {}): void => {
   const g = globalThis as unknown as DevGlobal
   const doc = g.document
@@ -245,6 +263,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   // failure, so the mount layer paints visible success/failure text on the clicked button (never silent).
   const markDone = markTodoDone(baseUrl)
   const accept = acceptHintCandidate(baseUrl)
+  const dismiss = dismissItem(baseUrl)
   let mounted = false
   // Event-driven refresh failures re-enter the boot loop — visible, never an unhandled rejection.
   let onHudError: (error: unknown) => void = () => {}
@@ -254,7 +273,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     ...(resolvedSurfaceId !== undefined ? { surfaceId: resolvedSurfaceId } : {}),
     onRender: (node) => {
       if (!mounted) {
-        mountSurface(panel, node, { copy, markDone, accept })
+        mountSurface(panel, node, { copy, markDone, accept, dismiss })
         mounted = true
       } else {
         renderInto(panel, node)

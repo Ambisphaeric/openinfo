@@ -30,7 +30,7 @@ export const Action = Type.Object(
     id: Id,
     label: Type.String({ minLength: 1, maxLength: 24 }),
     verb: Type.Union(
-      ['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate', 'accept'].map((v) => Type.Literal(v)),
+      ['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate', 'accept', 'pin', 'mark-for-follow-up'].map((v) => Type.Literal(v)),
     ),
     params: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
   },
@@ -53,6 +53,21 @@ export const Block = Type.Object(
       ),
     ),
     actions: Type.Optional(Type.Array(Action)),
+    states: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            key: Type.String({ minLength: 1, description: 'the value a hydrated item carries in its `state` field' }),
+            tone: Type.String({ minLength: 1, description: 'the dot colour tone class (provisional | confirmed | corrected shipped; a custom key maps to any tone)' }),
+          },
+          { additionalProperties: false },
+        ),
+        {
+          description:
+            'micro-state dot vocabulary override: field-state key → dot tone. Absent ⇒ the shipped default vocab (provisional/confirmed/corrected). Lets a document re-vocabularize the dot per surface (e.g. approved/denied/tabled) without a code change.',
+        },
+      ),
+    ),
     custom: Type.Optional(
       Type.Object(
         { htmlEndpoint: Type.String({ description: 'engine-served, sandboxed; API-only reach' }) },

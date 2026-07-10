@@ -235,6 +235,14 @@
               {
                 "const": "accept",
                 "type": "string"
+              },
+              {
+                "const": "pin",
+                "type": "string"
+              },
+              {
+                "const": "mark-for-follow-up",
+                "type": "string"
               }
             ]
           },
@@ -244,6 +252,30 @@
             "patternProperties": {
               "^(.*)$": {}
             }
+          }
+        }
+      }
+    },
+    "states": {
+      "description": "micro-state dot vocabulary override: field-state key → dot tone. Absent ⇒ the shipped default vocab (provisional/confirmed/corrected). Lets a document re-vocabularize the dot per surface (e.g. approved/denied/tabled) without a code change.",
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "tone"
+        ],
+        "properties": {
+          "key": {
+            "minLength": 1,
+            "description": "the value a hydrated item carries in its `state` field",
+            "type": "string"
+          },
+          "tone": {
+            "minLength": 1,
+            "description": "the dot colour tone class (provisional | confirmed | corrected shipped; a custom key maps to any tone)",
+            "type": "string"
           }
         }
       }

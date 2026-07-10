@@ -2821,3 +2821,78 @@ the generator was not run — none of the 8 known-drift schemas was touched.
   accurately; they simply don't enumerate the new routes, which is not an error).
 - Scope honored: did not touch `apps/client/*` or `surfaces/blocks` rendering (sibling agent's territory);
   no suppression store.
+## Slice: #66 — field micro-state dot + configurable glyph verbs; dismiss becomes real
+
+Two display-layer primitives for field rows plus the honest end of a long-inert verb: (1) a dot-scale
+micro-state indicator, (2) a compact glyph verb strip, and (3) `dismiss` finally writing a suppression
+record that queries honor. All three obey the house honesty rule — a primitive never fabricates data and
+a verb is live iff it can actually act.
+
+### 1 — the micro-state dot (`client surfaces/block-renderer/micro-state.ts`)
+`stateDot(state, vocab)` renders a few-px colour-coded dot for a field's judge tier, NOT a chip/text. The
+LOAD-BEARING rule: it renders ONLY when an item carries a `state`. No judge exists yet, so today NOTHING
+stamps `state` and NOTHING draws a dot — nothing pretends to be reviewed. This is the carrier PRIMITIVE,
+wired to real data the day a judge stamps a tier. The vocabulary is document-configurable: the shipped
+default is provisional → confirmed / corrected, and `block.states` (a new optional `[{key,tone}]` on the
+Block contract) REPLACES it for a situational vocabulary (approved/denied/tabled, …). An item whose state
+is not in the vocabulary still shows a dot (a real review signal is never dropped) in a neutral tone with
+the raw state on hover. Carrier field added: optional `state` on `TodoItem` ONLY — the clearest
+machine-filled-field-under-review story, and the one source with a real store + query + rows to test
+against. The dot is wired into the todos row; the renderer is generic so any future carrier lights up.
+
+### 2 — the glyph verb strip (`client surfaces/blocks/actions.ts`)
+`glyphStrip` / `rowAffordances` render dismiss/pin/mark-for-follow-up as a compact ~60px, three-~15px-glyph
+strip, PARTITIONED from the text `.mini` verbs (copy/open/mark-done/accept) by verb. The verb SET is the
+EXISTING `block.actions` array — already document-configurable — so no new config surface was needed for
+configurability; the shipped defaults now sit on the relevant-now block. Two new verbs were appended to the
+Action union: `pin`, `mark-for-follow-up` (`dismiss` already existed). Honesty per #15: `dismiss` renders
+LIVE (a solid `.gverb` carrying {workspace, source, item}) only where the block supplies that payload; `pin`
+and `mark-for-follow-up` have no write path this slice, so they render visible-but-inert ghosts.
+
+### 3 — dismiss becomes real: the suppression store (`engine surfaces/signals.ts`)
+`ItemSignalStore` persists per-item signals as ONE `_meta.db` document per workspace (LayoutStore-versioned,
+exactly like TodoDocuments/HintsDocuments), idempotent per (source, itemId, kind). A `dismiss` signal IS the
+suppression record. ONE new write route, self-contained over the store seam: `POST /item-signals` — `at` is
+SERVER-stamped, the body carries only workspace/source/item/kind, mirroring createPin's validate-then-persist.
+`compileQuery` reads `dismissedKeys(workspaceId)` once and every id-bearing source drops rows keyed
+`${source}:${id}` (relevant-now via `entity.id`, the rest via top-level `id`), threading the suppressed COUNT
+onto the QueryResult (new optional `suppressed` field) so a block emptied purely by dismissal can DISCLOSE it
+("N follow-ups dismissed") rather than vanishing mysteriously. The client wires the write path in dev-entry
+(`dismissItem` → POST /item-signals) and mount.ts (`dismiss` handler → `✓`/`!` paint, the #43/#15 pattern).
+
+### pin / mark-for-follow-up — deliberately inert, disclosed (judgment call)
+The issue's DOD line asserts pin composes with the pins store and follow-up "lands somewhere queryable". Both
+were kept HONESTLY INERT this slice rather than fabricated: a Pin requires a real kind/title/ingest lifecycle
+(constructing one from an entity/to-do row would be invented data), and a cross-session to-do write from a row
+is circular/session-ambiguous. The suppression store IS generalized to carry a `follow-up` signal kind (so a
+follow-up mark HAS an honest, queryable home the moment the verb is wired) — but the verb is not wired to it
+this slice, and both glyphs render as ghosts. This respects the honesty rule over the DOD checkbox; wiring
+follow-up → an ItemSignal `follow-up` write is a small, honest follow-up now that the store exists.
+
+### Tests + verification (all green in isolation; full suites green)
+- Contracts 68/68 (append-only: TodoItem.state, Block.states, Action verbs +pin/+mark-for-follow-up,
+  QueryResult.suppressed, new ItemSignal/ItemSignalKind; regenerated ONLY those schemas — reverted stale
+  pre-existing drift in 9 unrelated schemas: Health/Fabric/Endpoint/…).
+- Engine 525 → 530 (+5): signals.test.ts — store idempotency + dismissedKeys scoping; the dismiss ROUND-TRIP
+  (dismiss → suppression persisted → query excludes + discloses count); all-suppressed empties with a count;
+  per-source isolation (dismissing `todos:x1` never hides `moments:x1`). http.test.ts +1: the SERVED round-trip
+  over the live engine (PUT /todos → POST /item-signals → POST /query excludes + discloses; malformed → 400).
+- Client 284 → 294 (+10): microstate-glyphs.test.ts — dot honesty (no state → no dot), tone + through-block
+  render, unknown-state neutral dot, `block.states` replace-not-merge, verb-strip config (live-with-payload vs
+  inert), no-glyph-verbs → no strip, empty-state disclosure copy; action-verbs.test.ts — the DOM dismiss click
+  + the SERVED/DRIVEN e2e proving the write ROUND-TRIPS over real fetch and a 500 paints visible failure (the
+  QA served-surface rule for the write path).
+- Full `pnpm -r test`: contracts 68, engine 530, client 294, workbench (no tests) — green.
+
+### Flake observed (isolated + reported, per the flake rule)
+Under the FIRST parallel run of client+engine suites together, one client test failed once
+(`strictEqual actual 12 / expected 11`) and never reproduced across ~40 subsequent isolated client runs. It
+is the KNOWN EngineLink seam/spool timing flake already documented in the #4 slice notes (a wall-clock/ordering
+race under CPU contention on the capture spool) — untouched by this slice (block-renderer/query/store only). No
+new flake introduced; the client suite is 294/294 green in isolation.
+
+### Rule-7 check (definition of done)
+Contracts changed append-only (touched schemas regenerated, drift reverted). ONE new engine route
+(POST /item-signals) — self-contained over the store seam; did NOT touch templates/registers/modes routes or
+distill/queue. CODE_MAP: engine `surfaces/` row (query.ts suppression + new signals.ts) and client `surfaces/`
+row (micro-state.ts, glyph strip, wired dismiss verb, todos dot/disclosure) updated.

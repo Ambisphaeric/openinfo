@@ -12,7 +12,23 @@ export interface ActionPayload {
   copy: string
   markDone?: { sessionId: string; todoId: string }
   accept?: { workspaceId: string; pattern: AttributionPattern }
+  /** dismiss (#66): the item to suppress — the source it came from + its stable id, scoped to a workspace. */
+  dismiss?: { workspaceId: string; source: string; itemId: string }
 }
+
+/**
+ * The glyph-scale verbs (#66) and their marks: a compact per-row strip fits three ~15px glyphs. `dismiss`
+ * has a real write path this slice (a suppression record); `pin` and `mark-for-follow-up` are honestly
+ * inert per the #15 pattern (visible glyph, `ghost` styling — no fabricated Pin / cross-session to-do).
+ * The verb SET is document-configurable via `block.actions`; these are the shipped defaults.
+ */
+export const GLYPH_VERBS: Readonly<Record<string, string>> = {
+  dismiss: '✕',
+  pin: '⊚',
+  'mark-for-follow-up': '⚑',
+}
+
+const isGlyphVerb = (verb: string): boolean => Object.prototype.hasOwnProperty.call(GLYPH_VERBS, verb)
 
 /**
  * Render a block's action affordances as the HUD's `.mini` buttons. Each button carries the verb and
@@ -55,3 +71,62 @@ export const actionButtons = (
       action.label,
     )
   })
+
+/**
+ * Render a block's glyph verbs (#66) as a compact per-row strip of ~15px glyph buttons — the dot-scale
+ * affordance, not text `.mini` buttons. Each glyph carries its verb + action id as data-attributes for
+ * the mount layer, and its human label as `title` (so hover discloses what the glyph does). Honesty per
+ * #15: `dismiss` renders LIVE (a solid `.gverb`) only when this block supplied the dismiss payload it
+ * needs to write (workspace + source + item id); `pin` / `mark-for-follow-up` have no write path this
+ * slice, so they render visible-but-inert (`.gverb ghost`) — a glyph is live iff it can actually act.
+ * Returns null when the block configures no glyph verbs (the strip simply doesn't render).
+ */
+export const glyphStrip = (
+  actions: readonly Action[],
+  wired: { dismiss?: ActionPayload['dismiss'] } = {},
+): VNode | null => {
+  const glyphs = actions.filter((action) => isGlyphVerb(action.verb))
+  if (glyphs.length === 0) return null
+  return h(
+    'span',
+    { class: 'glyphs' },
+    ...glyphs.map((action) => {
+      const data: Record<string, string> = {}
+      let live = false
+      if (action.verb === 'dismiss' && wired.dismiss) {
+        data['data-workspace'] = wired.dismiss.workspaceId
+        data['data-source'] = wired.dismiss.source
+        data['data-item'] = wired.dismiss.itemId
+        live = true
+      }
+      // pin / mark-for-follow-up: no write path this slice — honestly inert (see PHASE4-NOTES / #15).
+      return h(
+        'button',
+        {
+          class: live ? 'gverb' : 'gverb ghost',
+          'data-verb': action.verb,
+          'data-action': action.id,
+          title: action.label,
+          ...data,
+        },
+        GLYPH_VERBS[action.verb] ?? '·',
+      )
+    }),
+  )
+}
+
+/**
+ * The full per-row action affordance (#66): the block's TEXT verbs as `.mini` buttons plus its GLYPH
+ * verbs as the compact strip, partitioned by verb. A row renders whatever its document configured —
+ * copy/open/mark-done as text, dismiss/pin/mark-for-follow-up as glyphs — with each verb honest about
+ * whether it can act. Returns the children for the row's `.go` slot.
+ */
+export const rowAffordances = (
+  actions: readonly Action[],
+  copyText: string,
+  wired: { markDone?: ActionPayload['markDone']; accept?: ActionPayload['accept']; dismiss?: ActionPayload['dismiss'] } = {},
+): VNode[] => {
+  const textVerbs = actions.filter((action) => !isGlyphVerb(action.verb))
+  const strip = glyphStrip(actions, wired.dismiss ? { dismiss: wired.dismiss } : {})
+  return [...actionButtons(textVerbs, copyText, wired), ...(strip ? [strip] : [])]
+}

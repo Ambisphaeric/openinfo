@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
@@ -14,7 +14,7 @@ import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
-import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, type SetupData } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, type SetupData } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
@@ -524,6 +524,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
   if (req.method === 'PUT' && surface?.[1]) return putSurface(req, res, ctx, decodeURIComponent(surface[1]))
   if (req.method === 'POST' && url.pathname === '/query') return runQuery(req, res, ctx)
+  // #66: dismiss / mark-for-follow-up write a per-item signal. Dismiss is the SUPPRESSION record that
+  // runQuery above then honors (dismissed rows excluded). Self-contained: one POST over the store seam.
+  if (req.method === 'POST' && url.pathname === '/item-signals') return postItemSignal(req, res, ctx)
   if (req.method === 'GET' && url.pathname.startsWith('/contracts/')) return sendContract(url, res)
   if (req.method === 'PUT' && url.pathname.startsWith('/flags/')) return saveFlag(req, res, ctx, decodeURIComponent(url.pathname.slice(7)))
   const capture = url.pathname.match(/^\/capture\/([^/]+)$/)
@@ -1358,6 +1361,24 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
   // store/ (see compileQuery / QuerySources). status() is async, so it is awaited only when needed.
   const sources = query.source === 'queue' ? { queueStatus: await ctx.queue.status() } : {}
   send(res, 200, compileQuery(ctx.store, query, new Date(), sources))
+}
+
+/**
+ * Record a per-item user signal (#66) — the write path behind the dismiss / mark-for-follow-up glyph
+ * verbs, the honest end of "dismiss is currently inert". `at` is SERVER-stamped (timestamps are never
+ * client-controlled), so the body carries only workspace/source/itemId/kind and this route stamps the
+ * time before validating the full ItemSignal. The store de-dupes per (source, itemId, kind), so a
+ * double-dismiss is idempotent. A `dismiss` signal is the SUPPRESSION record POST /query honors; a
+ * `follow-up` signal is persisted in the same store, queryable. No flag — recording a user signal is a
+ * resource write, not a gated engine behavior (mirrors createPin). The ItemSignalStore is stateless over
+ * store/, constructed per call exactly like TeachStore in readTeachCandidates.
+ */
+async function postItemSignal(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const stamped = { ...(body as Record<string, unknown>), at: new Date().toISOString() }
+  const errors = validationErrors('ItemSignal', stamped)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid ItemSignal', details: errors })
+  send(res, 200, new ItemSignalStore(ctx.store).add(stamped as ItemSignal))
 }
 
 function readFlags(store: WorkspaceRegistry): Flag[] {

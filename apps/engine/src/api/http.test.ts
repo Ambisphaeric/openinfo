@@ -570,6 +570,66 @@ test('e2e: a todos surface hydrates its todos block from the store over POST /qu
   }
 })
 
+test('e2e: dismiss over POST /item-signals persists a suppression that POST /query then honors (#66)', async () => {
+  // The full dismiss path the HUD drives: author a to-do list, POST a dismiss signal for one item over the
+  // real route, then POST the todos query and assert the dismissed item is EXCLUDED and the response discloses
+  // the suppressed count. This is the "dismiss → suppression persisted → query excludes → empty-state explains"
+  // round-trip over the live server (the QA served-driven rule for the write path, engine side).
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-dismiss-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const list: TodoList = {
+      id: 'ses-d', name: 'to-do — ses-d', version: 1, sessionId: 'ses-d', workspaceId: 'ws-d',
+      items: [
+        { id: 't1', text: 'Send the MSA', createdAt: '2026-07-07T14:40:00Z' },
+        { id: 't2', text: 'Book the walkthrough', createdAt: '2026-07-07T14:41:00Z' },
+      ],
+    }
+    assert.equal((await fetch(`${base}/todos/ses-d`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(list),
+    })).status, 200)
+
+    const query = { source: 'todos', params: { workspace: 'ws-d' }, top: 20 }
+    const before = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(query),
+    })).json()) as QueryResult
+    assert.deepEqual((before.items as { id: string }[]).map((i) => i.id), ['t1', 't2'])
+    assert.equal(before.suppressed, undefined)
+
+    // dismiss t2 over the real route — `at` is server-stamped, so the body omits it
+    const dismissRes = await fetch(`${base}/item-signals`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-d', source: 'todos', itemId: 't2', kind: 'dismiss' }),
+    })
+    assert.equal(dismissRes.status, 200)
+    const stored = (await dismissRes.json()) as { itemId: string; at: string }
+    assert.equal(stored.itemId, 't2')
+    assert.match(stored.at, /^\d{4}-\d{2}-\d{2}T/) // server stamped the timestamp
+
+    // the query now excludes t2 and discloses the suppression
+    const after = (await (await fetch(`${base}/query`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(query),
+    })).json()) as QueryResult
+    assert.deepEqual((after.items as { id: string }[]).map((i) => i.id), ['t1'])
+    assert.equal(after.suppressed, 1)
+
+    // a malformed signal (missing itemId) is a 400, never a silent accept
+    const bad = await fetch(`${base}/item-signals`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws-d', source: 'todos', kind: 'dismiss' }),
+    })
+    assert.equal(bad.status, 400)
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('e2e: fake llm + seeded HUD surface → data hydration round-trip through the API', async () => {
   const llm = await startFakeLlm()
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))

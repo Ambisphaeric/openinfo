@@ -1,9 +1,12 @@
 import type { Block, TodoItem } from '@openinfo/contracts'
 import { h, type VNode } from '../block-renderer/vnode.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
-import { actionButtons } from './actions.js'
+import { stateDot, resolveStateVocab, type StateVocab } from '../block-renderer/micro-state.js'
+import { rowAffordances, type ActionPayload } from './actions.js'
 
 type Actions = NonNullable<Block['actions']>
+/** The workspace + source a row's dismiss glyph addresses (the item id is added per row). */
+type DismissBase = { workspaceId: string; source: string }
 
 const LABEL = 'To-do · this session'
 
@@ -26,7 +29,7 @@ const whyLine = (item: TodoItem): string => {
   return item.done === true ? `done · ${origin}` : origin
 }
 
-const todoRow = (item: TodoItem, actions: Actions): VNode => {
+const todoRow = (item: TodoItem, actions: Actions, vocab: StateVocab, dismissBase: DismissBase): VNode => {
   const done = item.done === true
   // mark-done addresses PUT /todos/:sessionId. The flattened query row keeps the item's provenance, and
   // the extraction pass stamps `provenance.sessionId` on every item it distils (act/todo composeTaskExtract);
@@ -34,6 +37,10 @@ const todoRow = (item: TodoItem, actions: Actions): VNode => {
   // write it can't address — honest, not falsely live (#15).
   const sessionId = item.provenance?.sessionId
   const markDone = sessionId !== undefined ? { sessionId, todoId: item.id } : undefined
+  // dismiss (#66): every row is addressable (source + workspace + the item's stable id), so the glyph is
+  // live wherever the block configures a `dismiss` action. The micro-state dot renders ONLY when the item
+  // carries a `state` — nothing pretends to be reviewed (no judge stamps one yet, so today it stays absent).
+  const dismiss: ActionPayload['dismiss'] = { ...dismissBase, itemId: item.id }
   return h(
     'div',
     { class: 'rel' },
@@ -41,31 +48,47 @@ const todoRow = (item: TodoItem, actions: Actions): VNode => {
     h(
       'span',
       { class: 'body' },
-      h('span', { class: done ? 'ttl done' : 'ttl' }, item.text),
+      h('span', { class: done ? 'ttl done' : 'ttl' }, stateDot(item.state, vocab), item.text),
       h('span', { class: 'why' }, whyLine(item)),
     ),
-    h('span', { class: 'go' }, ...actionButtons(actions, item.text, { markDone })),
+    h('span', { class: 'go' }, ...rowAffordances(actions, item.text, { markDone, dismiss })),
   )
 }
 
-const emptyRow = (): VNode =>
-  h(
+/**
+ * The empty state, EXPLAINABLE not silent. When the list emptied purely because the user dismissed its
+ * items, disclose that ("N dismissed") rather than implying task-extract found nothing (#66) — a block
+ * never mysteriously disappears.
+ */
+const emptyRow = (suppressed: number): VNode => {
+  const why =
+    suppressed > 0
+      ? `${suppressed} follow-up${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`
+      : 'task-extract has found no follow-ups this session'
+  return h(
     'div',
     { class: 'rel' },
     h('span', { class: 'mk q' }, '○'),
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, 'No follow-ups yet'),
-      h('span', { class: 'why' }, 'task-extract has found no follow-ups this session'),
+      h('span', { class: 'ttl' }, suppressed > 0 ? 'No follow-ups shown' : 'No follow-ups yet'),
+      h('span', { class: 'why' }, why),
     ),
   )
+}
 
 export const renderTodos: BlockRenderer = ({ block, result }) => {
   if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL))
   const actions = block.actions ?? []
+  const vocab = resolveStateVocab(block.states)
+  const source = block.query?.source ?? 'todos'
+  const workspaceParam = block.query?.params?.['workspace']
+  const workspaceId = typeof workspaceParam === 'string' ? workspaceParam : 'default'
+  const dismissBase: DismissBase = { workspaceId, source }
   const all = (result?.items ?? []) as TodoItem[]
   const items = block.top !== undefined ? all.slice(0, block.top) : all
-  const rows: VNode[] = items.length > 0 ? items.map((item) => todoRow(item, actions)) : [emptyRow()]
+  const rows: VNode[] =
+    items.length > 0 ? items.map((item) => todoRow(item, actions, vocab, dismissBase)) : [emptyRow(result?.suppressed ?? 0)]
   return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), ...rows)
 }

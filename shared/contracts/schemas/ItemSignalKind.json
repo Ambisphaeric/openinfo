@@ -1,0 +1,14 @@
+{
+  "$id": "ItemSignalKind",
+  "description": "dismiss = suppression (queries exclude); follow-up = flagged for later (queryable)",
+  "anyOf": [
+    {
+      "const": "dismiss",
+      "type": "string"
+    },
+    {
+      "const": "follow-up",
+      "type": "string"
+    }
+  ]
+}

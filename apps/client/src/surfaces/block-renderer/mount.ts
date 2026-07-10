@@ -46,6 +46,8 @@ export interface ActionHandlers {
   markDone?: (payload: { sessionId: string; todoId: string }) => Promise<void>
   /** apply a suggested teach hint candidate → PUT /hints/:workspaceId (append the pattern). */
   accept?: (payload: { workspaceId: string; pattern: string }) => Promise<void>
+  /** dismiss an item → POST /item-signals (a suppression record; queries then exclude it) — #66. */
+  dismiss?: (payload: { workspaceId: string; source: string; itemId: string }) => Promise<void>
 }
 
 /** Replace the target's content with a freshly rendered VNode (called on every live update). */
@@ -123,7 +125,16 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
       paintFeedback(el, handlers.accept({ workspaceId, pattern }), { ok: 'Accepted', fail: 'Failed' })
       return
     }
-    // every other verb is visible-but-inert this slice (no write path yet)
+    if (verb === 'dismiss' && handlers.dismiss) {
+      const workspaceId = el.getAttribute('data-workspace')
+      const source = el.getAttribute('data-source')
+      const itemId = el.getAttribute('data-item')
+      if (workspaceId === null || source === null || itemId === null) return // inert glyph — no addressable item
+      paintFeedback(el, handlers.dismiss({ workspaceId, source, itemId }), { ok: '✓', fail: '!' })
+      return
+    }
+    // every other verb (pin, mark-for-follow-up, open, navigate, run-mode, draft-with) is visible-but-inert
+    // this slice — no write path yet (see PHASE4-NOTES / #15)
   })
 }
 

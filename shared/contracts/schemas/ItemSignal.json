@@ -1,0 +1,49 @@
+{
+  "$id": "ItemSignal",
+  "additionalProperties": false,
+  "description": "the app records the user’s dismiss/follow-up; it never sends or commits anything outward",
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "source",
+    "itemId",
+    "kind",
+    "at"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "description": "the query source the item came from (todos, relevant-now, moments, entities, pins, drafts, distillates, ledger)",
+      "type": "string"
+    },
+    "itemId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "kind": {
+      "$id": "ItemSignalKind",
+      "description": "dismiss = suppression (queries exclude); follow-up = flagged for later (queryable)",
+      "anyOf": [
+        {
+          "const": "dismiss",
+          "type": "string"
+        },
+        {
+          "const": "follow-up",
+          "type": "string"
+        }
+      ]
+    },
+    "at": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

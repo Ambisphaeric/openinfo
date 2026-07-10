@@ -3,7 +3,7 @@ import { h, type VNode } from '../block-renderer/vnode.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
 import { clockLabel } from '../block-renderer/format.js'
 import { entityGlyph } from './glyphs.js'
-import { actionButtons } from './actions.js'
+import { rowAffordances, type ActionPayload } from './actions.js'
 
 /**
  * The `relevant-now` block — the live join, the heart of the HUD (design/renderings/hud-v2.html state
@@ -61,12 +61,22 @@ const whyLine = (row: RelevantEntity): { why: VNode; text: string } | undefined 
   return { why: text, text }
 }
 
-const renderRow = (row: RelevantEntity, actions: NonNullable<import('@openinfo/contracts').Block['actions']>): VNode | undefined => {
+type DismissBase = { workspaceId: string; source: string }
+
+const renderRow = (
+  row: RelevantEntity,
+  actions: NonNullable<import('@openinfo/contracts').Block['actions']>,
+  dismissBase: DismissBase,
+): VNode | undefined => {
   const line = whyLine(row)
   if (!line) return undefined // no why sentence → no card (display rule #1)
   const mark = entityGlyph(row.entity.kind)
   const { why, text } = line
   const ext = `${row.entity.kind}${(row.entity.mentions ?? 0) > 0 ? ` · ${row.entity.mentions}×` : ''}`
+  // dismiss (#66): suppress this entity from the join — addressable by its stable id + source + workspace,
+  // so the glyph is live wherever the block configures a `dismiss` action (pin / mark-for-follow-up stay
+  // inert this slice). No micro-state dot here: an Entity carries no judge `state` field (nothing to show).
+  const dismiss: ActionPayload['dismiss'] = { ...dismissBase, itemId: row.entity.id }
   return h(
     'div',
     { class: 'rel' },
@@ -77,16 +87,20 @@ const renderRow = (row: RelevantEntity, actions: NonNullable<import('@openinfo/c
       h('span', { class: 'ttl' }, row.entity.name, ' ', h('span', { class: 'ext' }, ext)),
       h('span', { class: 'why' }, why),
     ),
-    h('span', { class: 'go' }, ...actionButtons(actions, `${row.entity.name} — ${text}`)),
+    h('span', { class: 'go' }, ...rowAffordances(actions, `${row.entity.name} — ${text}`, { dismiss })),
   )
 }
 
 export const renderRelevantNow: BlockRenderer = ({ block, result }) => {
   if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, 'Relevant now'))
+  const source = block.query?.source ?? 'relevant-now'
+  const workspaceParam = block.query?.params?.['workspace']
+  const workspaceId = typeof workspaceParam === 'string' ? workspaceParam : 'default'
+  const dismissBase: DismissBase = { workspaceId, source }
   const all = (result?.items ?? []) as RelevantEntity[]
   const rows = block.top !== undefined ? all.slice(0, block.top) : all
   const cards = rows
-    .map((row) => renderRow(row, block.actions ?? []))
+    .map((row) => renderRow(row, block.actions ?? [], dismissBase))
     .filter((card): card is VNode => card !== undefined)
   return h(
     'div',

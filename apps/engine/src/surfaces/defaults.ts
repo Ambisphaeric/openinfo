@@ -28,6 +28,12 @@ export const defaultHudSurface: Surface = {
       actions: [
         { id: 'act-copy', label: 'Copy', verb: 'copy', params: {} },
         { id: 'act-open', label: 'Open', verb: 'open', params: {} },
+        // The glyph verb strip (#66), shipped defaults: dismiss is a real write (a suppression record the
+        // query then excludes); pin / mark-for-follow-up render as honestly-inert glyphs (no write path
+        // this slice — the #15 pattern). The verb SET is document-configurable — a surface edits `actions`.
+        { id: 'act-dismiss', label: 'Dismiss', verb: 'dismiss', params: {} },
+        { id: 'act-pin', label: 'Pin', verb: 'pin', params: {} },
+        { id: 'act-followup', label: 'Follow up', verb: 'mark-for-follow-up', params: {} },
       ],
     },
     {
