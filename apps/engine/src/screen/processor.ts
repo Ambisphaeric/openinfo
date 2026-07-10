@@ -242,6 +242,9 @@ export class ScreenOcrProcessor {
       slot: result.slot,
       endpoint: result.endpoint,
       ...(result.model !== undefined ? { model: result.model } : {}),
+      // #65: carry the invoke's token accounting (estimated for a screen invoke — see invoke.ts) onto both
+      // the OcrResult and the mirror Distillate so the audit ledger renders this screen pass's consumption.
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
     }
     const ocr: OcrResult = {
       id: this.newId(),

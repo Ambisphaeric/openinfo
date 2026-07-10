@@ -1,4 +1,4 @@
-import type { Endpoint, Fabric, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
+import type { Endpoint, Fabric, InvokeUsage, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
 import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
@@ -74,6 +74,43 @@ export interface LlmResult {
   endpoint: string
   model?: string
   slot: 'llm'
+  /** token accounting for this invoke (#65) — measured from the API `usage` block or estimated + marked. */
+  usage?: InvokeUsage
+}
+
+/** The OpenAI-compatible `usage` block (all optional — servers vary; some omit it entirely, some report only a total). */
+interface RawUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+}
+
+/** A cheap, honest token estimate when the server reports no usage: chars/4 (the widely-used heuristic), rounded up. */
+const estimateTokens = (text: string): number => (text.length === 0 ? 0 : Math.ceil(text.length / 4))
+
+/**
+ * Assemble the #65 token-accounting block for one invoke. When the server reported ANY numeric `usage`
+ * field, the counts are MEASURED (`estimated:false`) — a missing total is derived only when both halves
+ * are known. Otherwise the counts are chars/4 ESTIMATES over the prompt/completion text and MARKED
+ * (`estimated:true`) so a measurement is never impersonated. `durationMs` is wall-clock either way.
+ * Generic on purpose: any slot's caller (llm/vlm/ocr — and the judge that flows through invokeLlm) gets
+ * consistent accounting from the same builder.
+ */
+const buildUsage = (raw: RawUsage | undefined, promptText: string, completionText: string, durationMs: number): InvokeUsage => {
+  const p = raw?.prompt_tokens
+  const c = raw?.completion_tokens
+  const t = raw?.total_tokens
+  if (typeof p === 'number' || typeof c === 'number' || typeof t === 'number') {
+    const usage: InvokeUsage = { estimated: false, durationMs }
+    if (typeof p === 'number') usage.promptTokens = p
+    if (typeof c === 'number') usage.completionTokens = c
+    if (typeof t === 'number') usage.totalTokens = t
+    else if (typeof p === 'number' && typeof c === 'number') usage.totalTokens = p + c
+    return usage
+  }
+  const promptTokens = estimateTokens(promptText)
+  const completionTokens = estimateTokens(completionText)
+  return { estimated: true, promptTokens, completionTokens, totalTokens: promptTokens + completionTokens, durationMs }
 }
 
 export interface InvokeOptions {
@@ -99,6 +136,7 @@ interface ChatChoice {
 }
 interface ChatCompletion {
   choices?: ChatChoice[]
+  usage?: RawUsage
 }
 
 /**
@@ -119,11 +157,12 @@ const isReasoningExhausted = (choice: ChatChoice | undefined): boolean => {
  * the real reason. The non-ok body is read before throwing so a model-load 400 (LM Studio's verbatim
  * "Model … failed to load") is captured and classified — not flattened to "HTTP 400".
  */
-const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: InvokeOptions): Promise<string> => {
+const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: InvokeOptions): Promise<{ text: string; usage: InvokeUsage }> => {
   const ctx = ctxOf(endpoint)
   const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 30_000)
+  const started = Date.now()
   let response: Response
   try {
     const body: Record<string, unknown> = { messages, stream: false }
@@ -174,7 +213,8 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
       serverMessage: choice?.finish_reason === 'length' ? 'finish_reason: length, empty content' : 'reasoning consumed the token budget, empty content',
     })
   }
-  return text
+  const usage = buildUsage(json.usage, messages.map((m) => m.content).join('\n'), text, Date.now() - started)
+  return { text, usage }
 }
 
 /**
@@ -203,8 +243,8 @@ export const invokeLlm = async (
         lines.push(`${endpoint.name}: unsupported api "${http.api}"`)
         continue
       }
-      const text = await callHttp(http, messages, opts)
-      const result: LlmResult = { text, endpoint: endpoint.name, slot: 'llm' }
+      const { text, usage } = await callHttp(http, messages, opts)
+      const result: LlmResult = { text, endpoint: endpoint.name, slot: 'llm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       return result
     } catch (error) {
@@ -388,6 +428,10 @@ export interface ScreenTextResult {
   endpoint: string
   model?: string
   slot: 'ocr' | 'vlm'
+  /** token accounting for this invoke (#65). For a vision invoke, image tokens are not counted in an
+   * estimate (only the text prompt is) — the estimated flag makes that honest; a paddle-serving OCR
+   * reports no usage, so its counts are a chars/4 estimate over the recognized text. */
+  usage?: InvokeUsage
 }
 
 /** Shared invoke options for the screen slots — the image + timeout ride the contract params, so these
@@ -409,11 +453,12 @@ const imageDataUri = (image: string, contentType: string): string => `data:${con
  * (prose). Empty content ('') is a valid empty-frame outcome and is returned as-is; a MISSING content field
  * is a `bad-response`. Throws a classified InvokeError on transport/protocol failure so the caller falls through.
  */
-const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts: ScreenInvokeOptions): Promise<string> => {
+const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts: ScreenInvokeOptions): Promise<{ text: string; usage: InvokeUsage }> => {
   const ctx = ctxOf(endpoint)
   const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 60_000)
+  const started = Date.now()
   let response: Response
   try {
     const body: Record<string, unknown> = {
@@ -449,7 +494,10 @@ const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts
   }
   const text = json.choices?.[0]?.message?.content
   if (typeof text !== 'string') throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in vision response' })
-  return text // '' is a valid empty-frame result, not an error
+  // '' is a valid empty-frame result, not an error. The estimate covers only the text prompt (image
+  // tokens are not derivable from chars) — `estimated` keeps that honest when the server reports no usage.
+  const usage = buildUsage(json.usage, params.prompt, text, Date.now() - started)
+  return { text, usage }
 }
 
 /**
@@ -478,8 +526,8 @@ export const invokeVlm = async (
         lines.push(`${endpoint.name}: unsupported api "${http.api}"`)
         continue
       }
-      const text = await callVlmHttp(http, params, opts)
-      const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'vlm' }
+      const { text, usage } = await callVlmHttp(http, params, opts)
+      const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'vlm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       return result
     } catch (error) {
@@ -558,11 +606,12 @@ const callPaddleOcr = async (
   endpoint: HttpEndpoint,
   params: OcrInvokeParams,
   opts: ScreenInvokeOptions,
-): Promise<{ text: string; blocks: ScreenBlock[] }> => {
+): Promise<{ text: string; blocks: ScreenBlock[]; usage: InvokeUsage }> => {
   const ctx = ctxOf(endpoint)
   const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 30_000)
+  const started = Date.now()
   let response: Response
   try {
     response = await fetch(`${endpoint.url.replace(/\/$/, '')}${PADDLE_OCR_PATH}`, {
@@ -595,7 +644,11 @@ const callPaddleOcr = async (
     const block = paddleRegionToBlock(region)
     if (block !== undefined) blocks.push(block)
   }
-  return { text: blocks.map((b) => b.text).join('\n'), blocks } // '' when nothing recognized — a normal result
+  const text = blocks.map((b) => b.text).join('\n') // '' when nothing recognized — a normal result
+  // PaddleOCR reports no token usage; there is no text prompt, only the image. So the count is a chars/4
+  // estimate over the RECOGNIZED text (output only), marked estimated — a measurement is never faked.
+  const usage = buildUsage(undefined, '', text, Date.now() - started)
+  return { text, blocks, usage }
 }
 
 /**
@@ -624,20 +677,21 @@ export const invokeOcr = async (
       const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint
       let text: string
       let blocks: ScreenBlock[] | undefined
+      let usage: InvokeUsage
       if (http.api === 'paddle-serving') {
-        ;({ text, blocks } = await callPaddleOcr(http, params, opts))
+        ;({ text, blocks, usage } = await callPaddleOcr(http, params, opts))
       } else if (http.api === 'openai-compat') {
         // An openai-compat VLM filling the ocr slot: transcribe with a default recognition prompt (prose).
-        text = await callVlmHttp(
+        ;({ text, usage } = await callVlmHttp(
           http,
           { image: params.image, contentType: params.contentType, prompt: OCR_VLM_PROMPT, ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}) },
           opts,
-        )
+        ))
       } else {
         lines.push(`${endpoint.name}: unsupported api "${http.api}"`)
         continue
       }
-      const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'ocr' }
+      const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'ocr', usage }
       if (blocks !== undefined) result.blocks = blocks
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       return result

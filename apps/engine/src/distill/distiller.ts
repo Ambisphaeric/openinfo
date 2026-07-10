@@ -173,6 +173,10 @@ export class Distiller {
             slot: result.slot,
             endpoint: result.endpoint,
             ...(result.model !== undefined ? { model: result.model } : {}),
+            // #65: the invoke layer stamps token accounting (measured from the API, or estimated + marked);
+            // carry it verbatim so the audit ledger can render this pass's consumption. Optional — a result
+            // without usage (older path) still persists a valid distillate.
+            ...(result.usage !== undefined ? { usage: result.usage } : {}),
           },
           schemaVersion: DISTILLATE_SCHEMA_VERSION,
           createdAt: this.now().toISOString(),
