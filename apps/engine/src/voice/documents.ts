@@ -32,6 +32,15 @@ export class VoiceDocuments {
       .filter((r): r is Register => r !== undefined)
   }
 
+  /**
+   * The stored register for an id, falling back to a shipped builtin of that id, else undefined — the GET
+   * /registers/:id read (unknown ⇒ 404), symmetric with DistillDocuments.templateById/modeById. The
+   * write half (saveRegister) already existed; #23 exposes it over PUT /registers/:id.
+   */
+  registerById(id: string): Register | undefined {
+    return this.store.layouts.getLatest<Register>(REGISTER_KIND, id)?.body ?? builtinRegisters.find((r) => r.id === id)
+  }
+
   saveRegister(register: Register): Register {
     this.store.layouts.put(REGISTER_KIND, register.id, register)
     const ids = this.store.layouts.getLatest<string[]>(REGISTER_KIND, REGISTER_INDEX)?.body ?? []
