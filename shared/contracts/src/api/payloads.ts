@@ -204,6 +204,33 @@ export const BacklogEta = Type.Object(
 export type BacklogEta = Static<typeof BacklogEta>
 
 /**
+ * How far BEHIND THE PRESENT the pipeline is (#102 "keep time") — the BACKWARD-looking companion to the
+ * forward-looking BacklogEta. Where the ETA projects when the backlog will CLEAR, the lag reports how old
+ * the oldest still-unprocessed capture is RIGHT NOW: `behindMs` = now − the oldest pending WORK chunk's
+ * true capture time (`CaptureChunk.capturedAt`). This is the measurable half of the guarantee that delayed
+ * data is never presented as real-time — a surface can honestly say "processing ~Ns behind".
+ *
+ * `basis` is HONEST about where the number comes from: `capture-time` = computed from the pending chunks'
+ * own `capturedAt` (the normal case — every chunk carries it); `unknown` = a backlog exists but no pending
+ * capture time was recoverable (all pending files unreadable/corrupt this pass), so `behindMs` is 0 and no
+ * lag is claimed rather than fabricated. `oldestPendingCapturedAt` is that oldest capture instant when
+ * known. The whole object is ABSENT from QueueStatus when the pipeline is caught up (no pending work) —
+ * absence means "0 behind", so nothing false renders. Focus chunks (routing context) are excluded, exactly
+ * as they are from byKind/BacklogEta.
+ */
+export const BacklogLag = Type.Object(
+  {
+    behindMs: Type.Number({ minimum: 0, description: 'now − oldest-pending capture time; 0 when the basis is unknown' }),
+    oldestPendingCapturedAt: Type.Optional(IsoTime),
+    basis: Type.Union(['capture-time', 'unknown'].map((b) => Type.Literal(b)), {
+      description: 'capture-time = computed from pending chunks capturedAt; unknown = a backlog exists but no capture time was recoverable (behindMs 0, nothing claimed)',
+    }),
+  },
+  { $id: 'BacklogLag', additionalProperties: false },
+)
+export type BacklogLag = Static<typeof BacklogLag>
+
+/**
  * The overflow policy in effect for the queue (ARCHITECTURE §7 hardware envelope). `policy` is the
  * DECLARED intent, read from the active mode's `overflow` field (`queue`→`queue-for-idle`,
  * `degrade`→`degrade-cadence`, `drop`). `enforced` is HONEST about what the engine actually does in v0:
@@ -252,6 +279,12 @@ export const QueueStatus = Type.Object(
     ),
     /** the backlog projection at the current drain rate (additive) — `basis: 'none'` when unknowable. */
     eta: Type.Optional(BacklogEta),
+    /**
+     * How far behind the present the pipeline is (#102, additive) — now − the oldest pending capture's
+     * true `capturedAt`. Present only while a work backlog exists; ABSENT when caught up (absence = 0
+     * behind). The measurable half of "delayed data is never presented as real-time".
+     */
+    lag: Type.Optional(BacklogLag),
     /** the overflow policy in effect (additive) — declared intent + whether the engine enforces it in v0. */
     overflow: Type.Optional(OverflowState),
   },

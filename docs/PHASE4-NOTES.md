@@ -3486,6 +3486,131 @@ by a blended score. Deterministic engine code — models extract candidate strin
 - Double-Metaphone is a compact in-repo implementation tuned + tested for ASR-homophone collapse, not a
   line-for-line reference port; a fuller port is a cheap future change if a case demands it.
 
+## Slice: Keep time — backlog LAG metric, OcrResult.capturedAt, honest delay disclosure  *(#102, 2026-07-10)*
+
+When processing falls behind capture (e.g. 20 screenshots queued), delayed data must NEVER present as
+real-time. The rendered block already showed true capture time via the mirror Distillate's
+windowStart/End; this slice makes the guarantee STRUCTURAL (on the record), MEASURABLE (a metric), and
+VISIBLE (a disclosure line) — self-contained, no per-user "inform based on their config" framework (that
+is design-session territory).
+
+### Contracts added (all additive/optional — the INVOKE-RESILIENCE precedent)
+- **`BacklogLag`** (`api/payloads.ts`, `$id`): the backward-looking companion to `BacklogEta`. `behindMs`
+  (now − oldest-pending WORK-chunk `capturedAt`, ≥0) · `oldestPendingCapturedAt?` · `basis`
+  (`capture-time` = computed from chunk capturedAt · `unknown` = a backlog exists but no capture time was
+  recoverable this pass ⇒ behindMs 0, nothing fabricated). Added as optional `QueueStatus.lag`, ABSENT when
+  caught up (absence = 0 behind).
+- **`OcrResult.capturedAt`** (`records/ocr.ts`, optional): the frame's TRUE capture instant, threaded from
+  the source `CaptureChunk.capturedAt`. Pre-existing records without it still validate (their capture time
+  stays unknown on the record; the mirror Distillate remains the fallback).
+- Registered in `AllSchemas`; `pnpm gen` regenerated `BacklogLag.json` + `OcrResult.json` + `QueueStatus.json`.
+
+### Engine
+- `queue/spool.ts` `status()` folds the oldest pending WORK-chunk `capturedAt` while it already parses each
+  pending file for `byKind` (no extra pass), then `computeLag(backlogChunks, oldest, now)`. Focus chunks
+  excluded exactly as in `byKind`/`eta`. A single `now = Date.now()` is reused for eta + lag. Lag flows
+  through GET `/queue`, the `queue.updated` event, and the `queue` query source unchanged — all pass the
+  whole `QueueStatus` object (no field whitelist).
+- `screen/processor.ts` `persist()` stamps `capturedAt: chunk.capturedAt` onto the `OcrResult` (shared by
+  the ingest + drain paths, so both records match). A single frame ⇒ capturedAt == the Distillate window.
+
+### Client
+- `surfaces/blocks/queue.ts`: `lagRow` renders "processing ~Ns behind" ONLY when `lag.basis` is
+  `capture-time` and `behindMs ≥` a threshold (default 5s, overridable per surface via the block query
+  param `lagThresholdMs` — the smallest honest configurability, no new settings framework). Caught up,
+  sub-threshold, or `unknown` basis ⇒ nothing renders. Amber `mk q` marker (the queue's own waiting tone).
+
+### Tests
+- Contracts +2: OcrResult validates with/without capturedAt (append-only); QueueStatus.lag additive +
+  BacklogLag rejects negative behindMs / an invented basis.
+- Engine +3 (`queue/spool.test.ts`): seeded-stale-spool lag (behindMs tracks the oldest capture); caught
+  up → lag absent; focus chunk excluded. Processor test asserts capturedAt (capture) vs createdAt (processing).
+- Client +4 (`blocks/queue.test.ts`): lagging → visible line; caught up → absent; sub-threshold + unknown
+  basis silent; `lagThresholdMs` override respected.
+
+### Disclosed limitations / deferred (never fabricated)
+- Capture time IS always recoverable from the spool — every `CaptureChunk` carries a required `capturedAt`
+  — so NO spool-write change was needed; the `unknown` basis is a defensive corner (a work chunk with a
+  malformed capturedAt, or all pending files unreadable this pass), reported honestly rather than invented.
+- No per-user "inform based on their configuration" UI framework (issue item 4) — that is settings
+  requirements-ledger / design-session territory. Shipped: the metric + the record field + one honest line.
+- The lag is OVERALL (oldest pending work chunk), not per-kind — matching the overall (mixed-kind) ETA.
+
+## Slice: Multi-window app registry + per-app window options + tray Apps folder  *(M3, #19 #20 #98, branch feat/19-multiwindow-apps, 2026-07-10)*
+
+### The arc — mini apps in a folder
+Surfaces are "mini apps." The shell used to show ONE `hudWindow` bound to a single scalar surface id
+(`ShellConfig.surfaceId`, a URL query param frozen at window creation). The product frame is instead
+MULTIPLE app windows open at once (a diagnostics app beside the real HUD, the same template opened for
+several repos) plus a tray "Apps" folder to open/focus/close them and favorite them. This slice builds
+the backbone (#19 window registry keyed by surface id), the px (#20 per-surface window options + position
+persistence), and the menu path (#98 the Apps folder). **No engine changes** — `GET /layouts/surfaces`
+already existed; everything here is client-side.
+
+### What shipped
+- **#19 — window registry (`app-registry.ts`).** A pure, generic `WindowRegistry<W>` keyed by surface id:
+  `openOrFocus` (create once, focus thereafter), `close`, `retire` (called from the window's `closed`
+  event so a user-closed window leaves no orphan), `isOpen`/`openSurfaceIds`. DI'd create/focus/close/
+  isAlive so it's asserted headless with fake windows. A window is BORN bound to its surface (the id stays
+  a frozen URL param); multi-window is a REGISTRY of such windows, never a mutable re-binding of one.
+- **The default HUD keeps its EXACT prior behavior** — one HUD window at boot, same `cfg.surfaceId`, its
+  own long-standing position store (`window-store.ts`, untouched), its Show/Hide + ⌘\, its content-sizing.
+  It is the singular anchor and is NOT in the registry; `open-app` for its surface id = Show HUD,
+  `close-app` = Hide HUD. Additional app windows open from the tray and live in the registry.
+- **`ShellCommand` parameterized (`shortcuts.ts`).** The blocker #98 named: the command union was
+  parameterless. Widened to `ShellCommandName | AppCommand` where `AppCommand = {kind:'open-app'|
+  'close-app'|'toggle-favorite', surfaceId}`. `dispatch` branches on `typeof command === 'object'` first;
+  every existing string command is untouched. `capture-status.ts` `fixCommand` still assigns the string
+  literals (a subset), so it compiles unchanged.
+- **#98 — the Apps folder (`app-catalog.ts` + `tray-menu.ts`).** `TrayState` gains `apps` (the surface
+  list from `GET /layouts/surfaces`, the favorites, the open-window ids). Pure `appsSubmenuItems` renders
+  an "Apps" submenu: one submenu per app whose name carries ● (open) / ★ (favorite) markers, with
+  Open-or-Focus, Close (enabled only when open), and the favorite toggle. `sortApps` floats favorites to
+  the top then alphabetizes. The folder is omitted until the surface list is known (never an empty folder).
+- **#20 — per-surface window options (`window-options.ts`).** `configForSurface`/`SURFACE_WINDOW_CONFIG`
+  map the shipped HUD surfaces to the inherited Glass shell (frameless, transparent, always-on-top,
+  content-protected, content-sized, drag-follow) with an optional per-surface width override (default
+  preserved). Any OTHER surface id resolves to `appWindowSpec` — a normal framed/opaque/resizable/
+  focusable app window that is NOT content-protected (a diagnostics app you WANT visible + in screenshots).
+- **#20 — position + open-set + favorites persistence (`app-store.ts`).** A client-local `apps-state.json`
+  (`{favorites, openApps, positions}`), pure/tolerant parse+serialize like `parseClientConfigFile`. The
+  open set reopens at boot (`reopenPersistedApps`); each app window's position restores via the same
+  `resolveStartupPosition` on-screen guard the HUD uses; favorites persist across launches.
+- **N-window drag/resize (`shell.ts`).** `hud:drag-start`/`hud:drag-end`/`hud:resize` IPC are now routed by
+  `event.sender` (`BrowserWindow.fromWebContents`) to the exact window that sent them. Content-sizing +
+  cursor-follow drag apply to HUD-chrome windows only; a framed app window's drag/resize IPC is ignored
+  (it uses its native titlebar/resize). The renderer is UNCHANGED — the chrome decision is a pure
+  main-process gate off the per-window meta.
+
+### Verification
+- **Headless:** `app-registry.test.ts` (+8: open-or-focus, distinct windows, close-then-retire, retire
+  handle-match guard, dead-handle replacement, close-one-other-unaffected), `app-catalog.test.ts` (+7:
+  favorites-first sort, per-app commands, open/favorite markers, empty list), `app-store.test.ts` (+7:
+  round-trip, first-run, corrupt→empty, tolerant parse, de-dupe, rounding, toggle), `tray-menu.test.ts`
+  (+1: Apps folder present/omitted, favorites-first, open marker). **Client 299 → 320, all green.**
+- **Driven e2e (`scripts/multiwindow-e2e.mjs`, `pnpm test:e2e:multiwindow`):** REAL Electron + REAL
+  `WindowRegistry` + REAL hud.html against a two-surface fake engine — opens two surfaces → asserts TWO
+  live windows, each with its own `?surface=` binding, each fetched from the engine → closes ONE → asserts
+  only it is destroyed and the other's panel is intact. PASS. The existing `hud-bounds-e2e` (the resize
+  path I generalized) still PASSes (152→398→152).
+- Full `pnpm -r build` clean; `pnpm -r test` green (contracts 77 · client 320 · engine 631).
+
+### Disclosed limitations (honest subset)
+- **Favorites/open-set/positions are CLIENT-side** (`apps-state.json`). On-surface-document favorites (a
+  favorite that follows the surface across machines) is a deliberate later choice (#98 allowed either).
+- **Per-surface window options are client-declared** (`SURFACE_WINDOW_CONFIG`), not on the surface doc —
+  moving them onto the document is a later choice. Only the two shipped surfaces are HUD-chrome; both are
+  frameless glass, so the framed `app`-chrome path is exercised by unit tests + is the disclosed default
+  for any future/unknown surface id (no framed surface ships yet).
+- **The default HUD keeps its OWN position store** (`window-state.json`) separate from the app windows'
+  `apps-state.json` positions — its exact prior behavior + tests are preserved rather than migrated.
+- **Menu-initiated close** covers app windows; a frameless glass app window opened as a second window has
+  no native close button, so it closes via the Apps folder's Close (which the registry handles). The
+  glass panel styling is tuned for a transparent window; rendered in a framed `app`-chrome window it is
+  functional but not restyled (v0).
+- **Out of scope (untouched):** workspace binding/instantiation (#99), new surface content (#100/#101),
+  any engine contract change. Must-not-touch capture/queue paths were not modified.
+
 ## Slice: Chunking architecture — measured fix for word-boundary corruption  *(#95/#97, branch `feat/95-chunking-architecture`, 2026-07-10)*
 
 The 0.0.8 latency default sliced capture audio into FIXED 1-second segments and transcribed each one

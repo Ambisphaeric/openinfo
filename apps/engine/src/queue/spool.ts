@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { CaptureChunk, OverflowState, QueueFailure, QueueStatus } from '@openinfo/contracts'
-import { countWork, emptyByKind, tallyFile } from './kinds.js'
+import type { BacklogLag, CaptureChunk, OverflowState, QueueFailure, QueueStatus } from '@openinfo/contracts'
+import { classifyKind, countWork, emptyByKind, tallyFile } from './kinds.js'
 import { projectEta, type DrainSample } from './eta.js'
 
 const safeName = (value: string): string => value.replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -16,6 +16,42 @@ const fmtAge = (ms: number): string => {
 
 /** Most recent drain samples kept for the ETA (in-memory, operational — like drainedFiles, not a document). */
 const DRAIN_SAMPLE_WINDOW = 20
+
+/**
+ * Fold a file's parsed chunks into the running oldest WORK-chunk capture instant (#102 keep-time). The lag
+ * metric measures how far behind the present the pipeline is, so it reads the chunks' OWN `capturedAt` (the
+ * true capture time the client stamps) — focus chunks are excluded, exactly as they are from byKind/ETA
+ * (routing context, never a meaningful backlog). A chunk whose `capturedAt` doesn't parse is skipped (its
+ * capture time is simply unknown); it never fabricates a time. Returns the min in ms, or `current` unchanged.
+ */
+const foldOldestWorkCapturedAt = (chunks: readonly CaptureChunk[], current: number | undefined): number | undefined => {
+  let oldest = current
+  for (const chunk of chunks) {
+    if (classifyKind(chunk) === 'focus') continue
+    const ms = Date.parse(chunk.capturedAt)
+    if (Number.isNaN(ms)) continue
+    if (oldest === undefined || ms < oldest) oldest = ms
+  }
+  return oldest
+}
+
+/**
+ * The backlog LAG (#102 keep-time) — how far behind the present the pipeline is, the backward-looking
+ * companion to the forward-looking BacklogEta. ABSENT when caught up (no work backlog): absence means "0
+ * behind", so nothing false renders. When a backlog exists and the oldest pending capture time was
+ * recoverable, `behindMs = now − that instant` (clamped ≥ 0 against clock skew), basis `capture-time`.
+ * When a backlog exists but NO capture time was recoverable (all pending files unreadable this pass), it
+ * reports basis `unknown` with behindMs 0 rather than inventing a lag — an unknown is unknown.
+ */
+const computeLag = (backlogChunks: number, oldestCapturedAtMs: number | undefined, now: number): BacklogLag | undefined => {
+  if (backlogChunks <= 0) return undefined
+  if (oldestCapturedAtMs === undefined) return { behindMs: 0, basis: 'unknown' }
+  return {
+    behindMs: Math.max(0, now - oldestCapturedAtMs),
+    oldestPendingCapturedAt: new Date(oldestCapturedAtMs).toISOString(),
+    basis: 'capture-time',
+  }
+}
 
 /**
  * READ-ONLY seams the queue calls for the envelope/overflow surfacing (P4A slice 3), injected from
@@ -103,6 +139,9 @@ export class CaptureQueue {
     // because the backlog only grows when the model is slow/down (else it drains immediately), and a
     // future incremental-counter optimization is deferred (PHASE4-NOTES).
     const byKind = emptyByKind()
+    // Oldest still-pending WORK-chunk capture instant, folded across the pending files as we parse them —
+    // the basis for the #102 lag metric. Undefined until a work chunk with a parseable capturedAt is seen.
+    let oldestCapturedAtMs: number | undefined
     for (const file of files) {
       const path = join(this.queueDir, file)
       let fileBytes = 0
@@ -113,19 +152,23 @@ export class CaptureQueue {
       }
       pendingBytes += fileBytes
       try {
-        tallyFile(await this.parse(path), fileBytes, byKind)
+        const parsed = await this.parse(path)
+        tallyFile(parsed, fileBytes, byKind)
+        oldestCapturedAtMs = foldOldestWorkCapturedAt(parsed, oldestCapturedAtMs)
       } catch {
-        // unreadable/racing file — its bytes still count; its kinds do not
+        // unreadable/racing file — its bytes still count; its kinds and capture times do not
       }
     }
+    const now = Date.now()
     const backlogChunks = byKind.audio.pendingChunks + byKind.screen.pendingChunks + byKind['llm-work'].pendingChunks
     const measured = this.measuredTokPerSec?.()
     const eta = projectEta({
       backlogChunks,
       samples: this.drainSamples,
-      now: Date.now(),
+      now,
       ...(measured !== undefined ? { measuredTokPerSec: measured } : {}),
     })
+    const lag = computeLag(backlogChunks, oldestCapturedAtMs, now)
     const overflow = this.overflow?.()
     return {
       pendingFiles: files.length,
@@ -134,6 +177,7 @@ export class CaptureQueue {
       updatedAt: new Date().toISOString(),
       byKind,
       eta,
+      ...(lag !== undefined ? { lag } : {}),
       ...(overflow !== undefined ? { overflow } : {}),
       ...(this.lastFailure !== undefined ? { lastFailure: this.lastFailure } : {}),
       ...(this.lastSuccessAt !== undefined ? { lastSuccessAt: this.lastSuccessAt } : {}),

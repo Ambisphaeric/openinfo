@@ -47,3 +47,28 @@ test('drift card steps always offer exactly two ways back', () => {
   const card = mode.drift.chain.find((s: { step: string }) => s.step === 'card')
   assert.equal(card.offer.length, 2)
 })
+
+// #102 keep-time: OcrResult.capturedAt is append-only/optional — a record WITHOUT it must still validate
+// (pre-existing records predate the field), and one WITH it validates.
+test('OcrResult validates with and without capturedAt (append-only)', () => {
+  const base = {
+    id: 'ocr-1', sessionId: 's-1', workspaceId: 'default', sourceChunks: ['c-1'],
+    text: 'hello screen', provenance: { slot: 'ocr', endpoint: 'paddle' },
+    schemaVersion: 1, createdAt: '2026-07-10T14:00:00Z',
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.OcrResult, base)], [], 'old record (no capturedAt) still validates')
+  const withCapturedAt = { ...base, capturedAt: '2026-07-10T13:59:30Z' }
+  assert.deepEqual([...Value.Errors(AllSchemas.OcrResult, withCapturedAt)], [], 'record with capturedAt validates')
+})
+
+// #102 keep-time: QueueStatus.lag is additive/optional; BacklogLag is honest about basis + non-negative.
+test('QueueStatus.lag (BacklogLag) is additive and honest', () => {
+  const base = { pendingFiles: 0, pendingBytes: 0, drainedFiles: 0, updatedAt: '2026-07-10T14:00:00Z' }
+  assert.deepEqual([...Value.Errors(AllSchemas.QueueStatus, base)], [], 'status without lag validates (caught up)')
+  const lagging = { ...base, lag: { behindMs: 42000, oldestPendingCapturedAt: '2026-07-10T13:59:18Z', basis: 'capture-time' } }
+  assert.deepEqual([...Value.Errors(AllSchemas.QueueStatus, lagging)], [], 'status with a capture-time lag validates')
+  const unknown = { ...base, lag: { behindMs: 0, basis: 'unknown' } }
+  assert.deepEqual([...Value.Errors(AllSchemas.QueueStatus, unknown)], [], 'status with an unknown-basis lag validates')
+  assert.ok([...Value.Errors(AllSchemas.BacklogLag, { behindMs: -1, basis: 'capture-time' })].length > 0, 'negative behindMs is rejected')
+  assert.ok([...Value.Errors(AllSchemas.BacklogLag, { behindMs: 0, basis: 'made-up' })].length > 0, 'an invented basis is rejected')
+})
