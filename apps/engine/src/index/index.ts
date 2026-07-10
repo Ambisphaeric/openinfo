@@ -30,6 +30,19 @@ export {
   type HeardMention,
   type ScoredCandidate,
 } from './resolve.js'
+export {
+  correlate,
+  correlateWindow,
+  overlapsWindow,
+  ocrForms,
+  ocrTextForms,
+  DEFAULT_CORRELATION_CONFIG,
+  type CorrelationConfig,
+  type Correlatable,
+  type CorrelationResult,
+  type WindowCorrelation,
+  type WindowCorrelationInput,
+} from './correlate.js'
 export { mergeCanon, type CanonGroup, type CanonResult } from './canon.js'
 export { relevantNow, type RelevantNowOptions } from './relevant.js'
 export * from './ingest/index.js'

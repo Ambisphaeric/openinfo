@@ -3,7 +3,7 @@ import type { CaptureChunk, Distillate, Entity, EntityProvenance, GuardHold, Mom
 import { DISTILLATE_SCHEMA_VERSION } from '@openinfo/contracts'
 import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
 import type { GuardDocuments, GuardHoldStore } from '../guard/documents.js'
-import { entityMentioned, extractEntities } from '../index/index.js'
+import { correlateWindow, entityMentioned, extractEntities } from '../index/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
 import { bucketIntoWindows } from './merge.js'
@@ -331,9 +331,24 @@ export class Distiller {
             endpoint: result.endpoint,
             ...(result.model !== undefined ? { model: result.model } : {}),
           }
+          // #74: the screen-understanding stream this session persisted, read once per window so the
+          // correlator can notice a heard mention that was ALSO seen on screen in the same window. It
+          // consumes the persisted OcrResult stream (not the HTTP drain) — pure timestamp correlation, so a
+          // late-arriving OCR pass simply corroborates a later window rather than racing this one.
+          const sessionOcr = this.store.listOcrResults(workspaceId, sessionId)
           for (const candidate of extraction.entities) {
             const mentionedBy = windowMoments.filter((m) => entityMentioned(m.text, candidate.name, candidate.aliases))
-            // Contract v2 (#73) evidence, populated from the signal we genuinely have HERE: this window
+            // #74: correlate this heard mention against same-window OCR. A match feeds the resolver's
+            // crossSourceCorroboration multiplier AND supplies a `seen` sighting — so a corroborated mention
+            // auto-links (the multiplier lifts the score through the resolver's own band decision), the
+            // record is promoted to confirmed, and the ASR-mangled surface form is taught as a heardAs alias,
+            // all with no user ask. Neutral (multiplier 1.0, no seen sighting) when nothing on screen agreed.
+            const corr = correlateWindow({
+              heard: { name: candidate.name, aliases: candidate.aliases },
+              window: { start: window.start, end: window.end },
+              ocr: sessionOcr,
+            })
+            // Contract v2 (#73) evidence, populated from the signals we genuinely have HERE: this window
             // came from the transcript, so the mention is a `heard` sighting tied to the distillate, and
             // the extracted surface form is a `stt` heardAs variant. Per-variant ASR confidence is NOT
             // surfaced by the pipeline today, so it is left undefined (disclosed) rather than fabricated.
@@ -347,6 +362,9 @@ export class Distiller {
               momentRefs: mentionedBy.map((m) => m.id),
               sighting: { via: 'heard', at: window.end, distillateId: distillate.id },
               heardAs: { text: candidate.name, source: 'stt', at: window.end },
+              ...(corr.corroborated && corr.sighting !== undefined
+                ? { signals: { crossSourceCorroboration: corr.multiplier }, crossSighting: corr.sighting }
+                : {}),
             })
             for (const moment of mentionedBy) {
               if (!moment.refs.includes(entity.id)) moment.refs.push(entity.id)

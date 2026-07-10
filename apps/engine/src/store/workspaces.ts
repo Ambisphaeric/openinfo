@@ -49,9 +49,18 @@ export interface EntityUpsert {
   sighting?: Sighting
   heardAs?: HeardAs
   /**
-   * Resolver (#72) inputs. `signals` carries the cross-source / person-affinity INPUT MULTIPLIERS (both
-   * default to the neutral 1.0 — no producer feeds them yet, honestly disclosed); `resolverConfig`
-   * overrides the band/margin thresholds for tests. Omitted ⇒ the deterministic defaults.
+   * Cross-source corroboration evidence (#74). The correlator (`index/correlate.ts`), run at the distiller
+   * seam, produces a `seen` (or `calendar`) Sighting when an INDEPENDENT sense named the same concept in the
+   * same window as this heard mention. It is appended to the trail exactly like `sighting`, and its presence
+   * (paired with a >1 `signals.crossSourceCorroboration`) is what PROMOTES a link to `confirmed` with no user
+   * ask (see `stampResolution`). Absent ⇒ no cross-source corroboration this window (the common case).
+   */
+  crossSighting?: Sighting
+  /**
+   * Resolver (#72) inputs. `signals` carries the cross-source / person-affinity INPUT MULTIPLIERS (person
+   * affinity still defaults to the neutral 1.0 — no producer yet; #74's correlator now feeds
+   * `crossSourceCorroboration` at the distiller seam); `resolverConfig` overrides the band/margin thresholds
+   * for tests. Omitted ⇒ the deterministic defaults.
    */
   signals?: ResolutionSignals
   resolverConfig?: ResolverConfig
@@ -345,13 +354,18 @@ export class WorkspaceRegistry {
           outboundCount: 0,
           mentions: 1,
           ...(input.provenance !== undefined ? { provenance: [input.provenance] } : {}),
-          ...(input.sighting !== undefined ? { sightings: [input.sighting] } : {}),
+          ...(this.newSightings(input).length > 0 ? { sightings: this.newSightings(input) } : {}),
           ...(input.heardAs !== undefined ? { heardAs: [input.heardAs] } : {}),
           firstSeen: input.seenAt,
           lastSeen: input.seenAt,
         }
 
-    const entity = this.stampResolution(base, resolution, input, existing !== undefined, hadCandidates, overridePinned)
+    // #74: a cross-source corroborating sighting (an independent sense named the same concept in-window) is
+    // the one signal strong enough to CONFIRM a link with no user ask. Its multiplier already lifted the
+    // score through the resolver's band decision (never a forked promotion path); its presence here stamps
+    // the confirmed micro-state.
+    const corroborated = input.crossSighting !== undefined
+    const entity = this.stampResolution(base, resolution, input, existing !== undefined, hadCandidates, overridePinned, corroborated)
 
     if (!Value.Check(EntitySchema, entity)) {
       throw new Error(`entity failed contract validation: ${input.kind} "${input.name}"`)
@@ -741,8 +755,15 @@ export class WorkspaceRegistry {
    *    first-of-its-kind create, or one whose only rivals scored far below the band, stays silent.
    * A record already `confirmed` (a sovereign user override) is NEVER downgraded, and an override-pinned
    * resolution never re-stamps state (the override already settled it).
+   *
+   * CROSS-SOURCE CORROBORATION (#74): when `corroborated` (an independent sense named the same concept
+   * in-window) AND the mention LINKED to an existing record, the resolution is PROMOTED straight to
+   * `confirmed` — the design rule that two independent senses agreeing is near-proof and needs no ask. This
+   * OUTRANKS the provisional stamping below (a corroborated provisional-band link becomes confirmed, not
+   * reviewable) and clears any prior provisional state. It fires only on a LINK: a fresh `new` create is not
+   * confirmed by corroboration alone.
    */
-  private stampResolution(entity: Entity, resolution: Resolution, input: EntityUpsert, linked: boolean, hadCandidates: boolean, overridePinned: boolean): Entity {
+  private stampResolution(entity: Entity, resolution: Resolution, input: EntityUpsert, linked: boolean, hadCandidates: boolean, overridePinned: boolean, corroborated: boolean): Entity {
     const record: EntityResolution = {
       at: input.seenAt,
       heard: input.name.trim(),
@@ -765,6 +786,14 @@ export class WorkspaceRegistry {
     // Never touch state on an override-pinned resolution (the override owns it), and never downgrade a
     // confirmed record.
     if (overridePinned || next.state === 'confirmed') return next
+
+    // #74: cross-source corroboration promotes a LINK straight to confirmed (near-proof, no ask). Precedes
+    // the provisional stamping so a corroborated provisional-band link is confirmed, not left reviewable.
+    if (linked && corroborated) {
+      next.state = 'confirmed'
+      next.confidence = resolution.score
+      return next
+    }
 
     const reviewable = resolution.band === 'provisional' || (resolution.band === 'auto' && resolution.ambiguous)
     if (linked && reviewable) {
@@ -836,7 +865,7 @@ export class WorkspaceRegistry {
     // text, source) so the same surface form heard again is not re-listed. `...existing` carries every
     // v2 field forward untouched — crucially state/confidence/overrides/external/ambiguity, so a
     // user-confirmed record STAYS confirmed through subsequent mentions (reads honor the override).
-    const sightings = this.mergeSightings(existing.sightings, input.sighting)
+    const sightings = this.mergeSightings(existing.sightings, this.newSightings(input))
     const heardAs = this.mergeHeardAs(existing.heardAs, input.heardAs)
     return {
       ...existing,
@@ -851,13 +880,27 @@ export class WorkspaceRegistry {
     }
   }
 
-  /** Append a sighting to the trail, deduped by (via, at, distillateId) so re-runs add nothing already there. */
-  private mergeSightings(existing: readonly Sighting[] | undefined, added: Sighting | undefined): Sighting[] {
+  /**
+   * This mention's typed evidence, in trail order: the `heard` sighting first, then the cross-source
+   * corroborating `seen`/`calendar` sighting (#74) when the correlator supplied one. Both optional.
+   */
+  private newSightings(input: EntityUpsert): Sighting[] {
+    const out: Sighting[] = []
+    if (input.sighting !== undefined) out.push(input.sighting)
+    if (input.crossSighting !== undefined) out.push(input.crossSighting)
+    return out
+  }
+
+  /** Append sightings to the trail, deduped by (via, at, distillateId) so re-runs add nothing already there. */
+  private mergeSightings(existing: readonly Sighting[] | undefined, added: readonly Sighting[]): Sighting[] {
     const trail = [...(existing ?? [])]
-    if (added === undefined) return trail
     const key = (s: Sighting): string => `${s.via}|${s.at}|${s.distillateId ?? ''}`
     const seen = new Set(trail.map(key))
-    if (!seen.has(key(added))) trail.push(added)
+    for (const s of added) {
+      if (seen.has(key(s))) continue
+      seen.add(key(s))
+      trail.push(s)
+    }
     return trail
   }
 
