@@ -6,6 +6,8 @@ export const Events = {
   'session.rerouted': 'Session',
   'moment.created': 'Moment',
   'distillate.updated': 'Distillate',
+  // Ephemeral live-transcript fast-path (#58) — payload is a TranscriptUpdate, NOT persisted anywhere.
+  'transcript.updated': 'TranscriptUpdate',
   'entity.updated': 'Entity',
   'draft.created': 'Draft',
   'fabric.changed': 'Fabric',

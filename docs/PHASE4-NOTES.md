@@ -2349,3 +2349,66 @@ Client 259 → 260 (all green), contracts 67, engine 486 — all green in isolat
   (which the fix deliberately avoids); the explicit-param seam is what the NEW unit test proves TZ-free.
   (`renderer.test.ts:33/57`'s `2:47p · 31m` is a literal `NowContext.elapsed` fixture, not a `clockLabel`
   output, so it needed no change.)
+
+## Slice: #58 — transcript fast-path to the HUD + distill cadence decoupling
+
+Two coupled halves. Before this, every visible artifact waited for the full distill pass (LLM, 1.6–3s):
+transcribed-but-undistilled text had no path to a surface, and once segments shrink a per-drain distill
+would fire an LLM call every couple of seconds — wasteful and still laggy. This adds a live, ephemeral
+transcript feed AND throttles the distill LLM pass, so raw words show ~immediately while distilled moments
+land on a slower cadence.
+
+### 1 — ephemeral `transcript.updated` (live feed, never persisted)
+- **Contract (append-only):** new payload `TranscriptUpdate` (`api/payloads.ts`) `{ sessionId, source,
+  text, capturedAtRange:{start,end} }`, and `'transcript.updated' → 'TranscriptUpdate'` added to the
+  `Events` map + `EngineEvents`. Only `schemas/TranscriptUpdate.json` was regenerated; the 8 pre-existing
+  drift schemas were reverted (untouched by this change).
+- **Publish point:** `runTranscribe` in `api/http.ts` (shared by BOTH the legacy drain path and the
+  workflow-executor's `transcribe` seam, so both paths emit it). `transcribeChunks` grew an
+  `onTranscribed(chunk, text)` hook; the wiring aggregates per (session, source) via the pure
+  `buildTranscriptUpdates` and publishes on the bus. `http.ts` rebroadcasts it to WS clients exactly like
+  `distillate.updated`/`moment.created`. NOT persisted — durable records still come only from distill; a
+  mid-crash loses only the live tail (raw chunks stay durable, re-transcribed next drain).
+- **HUD affordance:** `hud/live-transcript.ts` renders a compact rolling strip (last ~45s, oldest fading
+  via `.fade`, me/them from the capture split), fed by a client-side buffer the `Hud` fills from
+  `transcript.updated`. DEVIATION disclosed in-file: this feed is EVENT-fed (payload rendered directly),
+  not query-fed like every other block — so it does NOT go through the query-refresh coalescer (payload
+  events re-paint, they do not re-hydrate; that IS the coalescing discipline). The why-line convention does
+  not apply — it is honestly labeled "Live transcript · raw, not saved", visually distinct from distilled
+  content, with an explainable empty state ("listening…") when a session is live but silent, and NO chrome
+  at idle. Buffer resets on session start/end.
+
+### 2 — distill cadence throttle
+- **`DistillCadence`** (`distill/cadence.ts`, `DEFAULT_DISTILL_CADENCE_MS = 15_000`) accumulates each
+  drain's transcribed chunks per session and releases them to the distiller only when the buffered
+  capturedAt SPAN reaches the threshold (there is no `durationMs` on `CaptureChunk` — span is judged from
+  capturedAt) OR on a session-end flush. Transcription still runs every drain (it feeds the fast-path);
+  only the distill/moments/index LLM pass is throttled. Carry-over is in-memory (disclosed tradeoff).
+- **Wiring:** the throttle wraps the `distill` seam on BOTH paths (`distillThrottled`). Session end flushes
+  the tail via `flushDistill`, routed through the SAME drain pipeline the throttle wraps (executor
+  `runDrain` when `workflow.enabled`, else the legacy distiller call) with a `flushing` bypass so the
+  released batch is not re-buffered — this is why the drain acts that ride the distill pass (task-extract)
+  run once more over the flushed material before the session-end draft. Session end now always drains +
+  flushes when `distill.enabled` (even with no act), so a short session's tail is never stranded.
+- **Queue drain-until-empty** (`queue/spool.ts`): the drain now loops until the spool is empty (stopping on
+  a failure, to preserve retry-at-idle). Chunks appended mid-drain used to strand until the next external
+  trigger; the throttle depends on spooled material ACCUMULATING across drains, so a stranded tail would
+  delay distill indefinitely. With this, a multi-chunk capture spanning ≥15s reliably releases a distill
+  INLINE on the drain (preserving failure classification + drain acts), and single short sessions flush at
+  session end.
+
+### Tests + verification (all green in isolation; full suites green)
+- Engine 486 → 493: NEW `distill/cadence.test.ts` (7 — accumulate/release-at-threshold, per-session span,
+  flush drains all, `buildTranscriptUpdates` aggregation) + NEW `api/transcript-fastpath.test.ts` (1, a
+  createEngineApp e2e: fake stt+llm → `transcript.updated` on the bus AND over a real WS client (served
+  proof) → 0 distillates mid-session (throttled, fake llm never called) → session end flushes exactly one).
+- The existing drain e2es that asserted per-drain distill were reconciled to the new cadence, NOT weakened:
+  multi-chunk ≥15s tests pass UNCHANGED once drain-until-empty lands (distill releases inline mid-session);
+  six single-chunk tests were given a second chunk spanning >15s so the drain still releases mid-session as
+  they assert (Try-it TYPE/VOICE, tier-zero, model-load, queue-surface, act-off).
+- Client 260 → 264: NEW `hud.test.ts` cases render live lines from injected `transcript.updated` events
+  (me/them, raw label), expire lines past the ~45s window, show the explainable empty state, and reset on
+  session boundaries — all through the real `renderToHtml` path.
+- Contracts 67 → 68: `transcriptUpdate.live.json` example validates against `TranscriptUpdate`.
+- KNOWN FLAKE CLASS under parallel load: all suites verified green both via `pnpm -r test` and per-file in
+  isolation.

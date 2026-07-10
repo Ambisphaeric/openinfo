@@ -10,4 +10,5 @@ export {
   type ExtractResult,
 } from './moments.js'
 export { parseJsonCandidates } from './parse.js'
-export { transcribeChunks, isAudioChunk, speakerLabel, type SttInvoke, type TranscribeDeps } from './transcribe.js'
+export { transcribeChunks, buildTranscriptUpdates, isAudioChunk, speakerLabel, type SttInvoke, type TranscribeDeps } from './transcribe.js'
+export { DistillCadence, DEFAULT_DISTILL_CADENCE_MS } from './cadence.js'

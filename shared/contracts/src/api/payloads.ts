@@ -103,6 +103,30 @@ export const Ack = Type.Object(
 export type Ack = Static<typeof Ack>
 
 /**
+ * An EPHEMERAL live-transcript update — the transcript fast-path (#58). Published on the bus (and
+ * broadcast over the WS event feed) IMMEDIATELY after the transcribe drain stage succeeds, so raw
+ * spoken words reach a surface within one WS hop instead of waiting for the slower distill pass. It is
+ * NOT persisted anywhere: the durable record still comes only from distill (the distillate/moments).
+ * A mid-crash therefore loses only the undistilled live tail — the raw audio chunks remain the durable
+ * source, re-transcribed on the next drain. `text` aggregates the chunks transcribed in one drain for a
+ * single (session, source) pair; `capturedAtRange` is the capturedAt span of those chunks. `source`
+ * carries the free me/them split (mic = me, system-audio = them) so the HUD can attribute the speaker.
+ */
+export const TranscriptUpdate = Type.Object(
+  {
+    sessionId: Id,
+    source: CaptureSource,
+    text: Type.String({ description: 'raw transcribed text for this drain window — a live feed, never persisted' }),
+    capturedAtRange: Type.Object(
+      { start: IsoTime, end: IsoTime },
+      { additionalProperties: false, description: 'the capturedAt span of the chunks aggregated into this update' },
+    ),
+  },
+  { $id: 'TranscriptUpdate', additionalProperties: false },
+)
+export type TranscriptUpdate = Static<typeof TranscriptUpdate>
+
+/**
  * A classified drain failure (INVOKE-RESILIENCE) — the LAST time the drain processor could not process a
  * spooled file because an invoke failed. It names WHICH endpoint, WHAT went wrong (the class the engine
  * detected: an unreachable server vs a timeout vs a rejected key vs a model that won't load vs a garbled

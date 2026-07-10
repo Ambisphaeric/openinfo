@@ -1,0 +1,77 @@
+{
+  "$id": "TranscriptUpdate",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "sessionId",
+    "source",
+    "text",
+    "capturedAtRange"
+  ],
+  "properties": {
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "source": {
+      "$id": "CaptureSource",
+      "description": "mic = the user; system-audio = the far side of a call (loopback) — the free me/them split; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript",
+      "anyOf": [
+        {
+          "const": "mic",
+          "type": "string"
+        },
+        {
+          "const": "screen",
+          "type": "string"
+        },
+        {
+          "const": "calendar",
+          "type": "string"
+        },
+        {
+          "const": "repo",
+          "type": "string"
+        },
+        {
+          "const": "camera",
+          "type": "string"
+        },
+        {
+          "const": "system-audio",
+          "type": "string"
+        },
+        {
+          "const": "focus",
+          "type": "string"
+        }
+      ]
+    },
+    "text": {
+      "description": "raw transcribed text for this drain window — a live feed, never persisted",
+      "type": "string"
+    },
+    "capturedAtRange": {
+      "additionalProperties": false,
+      "description": "the capturedAt span of the chunks aggregated into this update",
+      "type": "object",
+      "required": [
+        "start",
+        "end"
+      ],
+      "properties": {
+        "start": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "end": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type LocalDownloadRequest, type Moment, type Pin, type PinChunk, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller, transcribeChunks } from '../distill/index.js'
+import { DistillDocuments, Distiller, DistillCadence, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
@@ -152,8 +152,61 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // non-audio chunks pass through. A transcription transport failure propagates → the drain re-queues
   // the file (retry-at-idle), exactly like distill/moments. Shared verbatim by the legacy drain path
   // and the workflow executor's transcribe seam, so the two are byte-for-byte identical.
-  const runTranscribe = (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> =>
-    transcribeChunks(chunks, { invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }), log })
+  // Transcript fast-path (#58): as each audio chunk transcribes we collect (session, source, text,
+  // capturedAt), then publish EPHEMERAL transcript.updated events — one per (session, source) in the
+  // drain — the instant transcription succeeds, BEFORE the throttled distill pass. This is the live
+  // feed the HUD renders within one WS hop; it is never persisted (durable records still come only from
+  // distill). Shared by both the legacy drain and the executor's transcribe seam, so both paths emit it.
+  const runTranscribe = async (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> => {
+    const segments: { sessionId: string; source: CaptureChunk['source']; text: string; capturedAt: string }[] = []
+    const ready = await transcribeChunks(chunks, {
+      invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }),
+      onTranscribed: (chunk, text) => segments.push({ sessionId: chunk.sessionId, source: chunk.source, text, capturedAt: chunk.capturedAt }),
+      log,
+    })
+    for (const update of buildTranscriptUpdates(segments)) await bus.publish('transcript.updated', update)
+    return ready
+  }
+
+  // Distill cadence throttle (#58): transcription runs every drain (cheap now, and it feeds the live
+  // fast-path above), but the LLM distill/moments/index pass must NOT fire per drain once segments
+  // shrink. DistillCadence accumulates each drain's transcribed text per session and only releases it to
+  // the distiller when the buffered span reaches the threshold (default 15s) — or on session end (flush
+  // below). Carry-over is in-memory: a mid-crash loses only the undistilled tail (chunks stay durable).
+  const cadence = new DistillCadence()
+  const currentDistillOpts = (): DistillOptions => ({
+    extractMoments: isFlagEnabled(store, 'distill.moments'),
+    extractEntities: isFlagEnabled(store, 'distill.index'),
+  })
+  // When true, the distill seam BYPASSES the throttle and distills immediately — used only while flushing
+  // the accumulated tail (below), so the released batch is not re-buffered.
+  let flushing = false
+  const distillThrottled = async (chunks: readonly CaptureChunk[], opts: DistillOptions): Promise<void> => {
+    if (flushing) {
+      if (chunks.length > 0) await distiller.distillChunks(chunks, opts)
+      return
+    }
+    const due = cadence.offer(chunks)
+    if (due.length > 0) await distiller.distillChunks(due, opts)
+  }
+  // Session-end flush: distill the accumulated sub-threshold tail so the record — and any follow-up draft —
+  // reflects the whole session. Routed through the SAME drain pipeline the throttle wraps, so the drain
+  // acts that ride the distill pass (task-extract, gated act.tasks) run once more over the flushed
+  // material before the session-end act composes its draft — otherwise a short session's to-do would never
+  // populate. workflow.enabled ON → the executor's runDrain (distill bypassed + moments/index + drain
+  // acts); OFF → the legacy direct distill (the legacy path has no drain acts). Idempotent: an empty
+  // buffer is a no-op, so calling it after a path that already flushed is safe.
+  const flushDistill = async (): Promise<void> => {
+    const remainder = cadence.flush()
+    if (remainder.length === 0) return
+    flushing = true
+    try {
+      if (isFlagEnabled(store, 'workflow.enabled')) await executor.runDrain(remainder)
+      else await distiller.distillChunks(remainder, currentDistillOpts())
+    } finally {
+      flushing = false
+    }
+  }
 
   // The executor runs the seeded workflow-default document behind workflow.enabled (default OFF). It is
   // assigned just below (after the queue exists, so its drainNow seam can close over it) and referenced
@@ -176,10 +229,9 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     // INSIDE distill.enabled on purpose — there is no persistence path for transcribed-but-undistilled
     // text, so running stt when nothing will distill it is pure waste (see PHASE2-NOTES).
     const ready = isFlagEnabled(store, 'distill.transcribe') ? await runTranscribe(chunks) : chunks
-    await distiller.distillChunks(ready, {
-      extractMoments: isFlagEnabled(store, 'distill.moments'),
-      extractEntities: isFlagEnabled(store, 'distill.index'),
-    })
+    // Throttled: accumulate across drains, distill only when the span crosses the cadence threshold
+    // (or on session end). Transcription already ran above every drain (the live fast-path).
+    await distillThrottled(ready, currentDistillOpts())
     // When a drain re-queues (a transcribe/distill invoke failed), classify WHY and record it on the queue
     // so GET /queue, Status, and the Try-it card surface the real reason instead of re-queuing silently
     // forever (the user's wall). A model-load failure's hint is enriched with the loaded-model suggestion.
@@ -246,10 +298,18 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   executor = new WorkflowExecutor({
     store,
     docs: workflow,
-    distill: (chunks, opts) => distiller.distillChunks(chunks, opts),
+    // Throttled distill (#58) — same cadence instance the legacy path uses, so both drain paths share
+    // one carry-over buffer. The executor's own step flags already produced `opts`.
+    distill: (chunks, opts) => distillThrottled(chunks, opts),
     transcribe: runTranscribe,
     recognizeScreen,
-    drainNow: () => queue.drainNow(log),
+    // The executor calls drainNow ONLY at session-end (runSessionEnd, when an act is enabled), and it
+    // runs BEFORE the acts — so flushing the cadence tail here means a follow-up draft sees the whole
+    // session. Draining the spool first accumulates any last chunks, then flushDistill releases them.
+    drainNow: async () => {
+      await queue.drainNow(log)
+      await flushDistill()
+    },
     acts: { 'follow-up-draft': async (session) => void (await actor.runFollowUpDraft(session)) },
     drainActs: { 'task-extract': (chunks, step) => taskExtractor.runOnDrain(chunks, step) },
     log,
@@ -257,13 +317,27 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
 
   bus.subscribe('session.ended', (session) => {
     void (async () => {
-      // workflow.enabled ON → the executor's session-end seam (drain-first flush, then the enabled
-      // session-end acts). OFF → the legacy act trigger, byte-for-byte: act.enabled gate, then drainNow
-      // → runFollowUpDraft. The flag is read per-event so it is hot-flippable like the drain path.
-      if (isFlagEnabled(store, 'workflow.enabled')) return executor.runSessionEnd(session)
-      if (!isFlagEnabled(store, 'act.enabled')) return
-      await queue.drainNow(log)
-      await actor.runFollowUpDraft(session)
+      // workflow.enabled ON → the executor's session-end seam (drain-first flush incl. the cadence tail
+      // via the drainNow seam above, then the enabled session-end acts). OFF → the legacy act trigger:
+      // act.enabled gate, drainNow, flush the distill tail so the draft reflects it, then runFollowUpDraft.
+      // The flag is read per-event so it is hot-flippable like the drain path.
+      if (isFlagEnabled(store, 'workflow.enabled')) {
+        await executor.runSessionEnd(session)
+      } else if (isFlagEnabled(store, 'act.enabled')) {
+        await queue.drainNow(log)
+        await flushDistill()
+        await actor.runFollowUpDraft(session)
+      }
+      // The distill cadence throttle (#58) means a short session's transcribed material never crossed the
+      // 15s threshold and is still buffered (or still spooled un-drained). Session end MUST distill that
+      // tail so the whole meeting is recorded — otherwise the throttle would silently drop sub-threshold
+      // sessions. Drain any pending spool INTO the cadence, then flush it. Both steps are safe no-ops when
+      // an act path above already ran them (drainNow with nothing pending; flush with an empty buffer).
+      // Gated on distill.enabled — with distill off nothing ever accumulated.
+      if (isFlagEnabled(store, 'distill.enabled')) {
+        await queue.drainNow(log)
+        await flushDistill()
+      }
     })().catch((error: unknown) =>
       log(`follow-up draft failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`),
     )
@@ -273,6 +347,8 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('queue.updated', (status) => ws.broadcast('queue.updated', status))
   bus.subscribe('flag.changed', (flag) => ws.broadcast('flag.changed', flag))
   bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
+  // Ephemeral transcript fast-path (#58): rebroadcast the live feed to WS clients. Never persisted.
+  bus.subscribe('transcript.updated', (update) => ws.broadcast('transcript.updated', update))
   bus.subscribe('moment.created', (moment) => ws.broadcast('moment.created', moment))
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
   bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
