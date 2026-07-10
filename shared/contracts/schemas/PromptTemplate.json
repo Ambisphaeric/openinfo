@@ -155,6 +155,10 @@
           "type": "integer"
         }
       }
+    },
+    "neverEgress": {
+      "description": "#64 layer 2: true ⇒ this prompt never uses egress-capable endpoints",
+      "type": "boolean"
     }
   }
 }

@@ -32,6 +32,20 @@
       "description": "distillate retention; raw always deletes post-distill",
       "type": "integer"
     },
+    "egress": {
+      "$id": "EgressPolicy",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "deny"
+      ],
+      "properties": {
+        "deny": {
+          "description": "true ⇒ this mode/workspace denies egress wholesale",
+          "type": "boolean"
+        }
+      }
+    },
     "createdAt": {
       "format": "date-time",
       "description": "ISO-8601 timestamp",

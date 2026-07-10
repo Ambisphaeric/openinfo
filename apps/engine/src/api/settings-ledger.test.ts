@@ -70,10 +70,12 @@ test('GET /settings/ledger (served): a seeded pass renders its hop trail with to
     // The estimated pass is MARKED est and the summary flags estimation.
     assert.match(html, /class="ldg-est">est</)
     assert.match(html, /some estimated/)
-    // Honest absences: guard not built (#63), egress local (#64).
+    // Guard is still an honest absence (#63); egress (#64) renders from data — these seeded passes carry
+    // no egress decision, so they show the honest local default and the footer explains the column.
     assert.match(html, /no guard/i)
     assert.match(html, /Guard verdicts \(#63\)/)
-    assert.match(html, /egress marking \(#64\)/)
+    assert.match(html, /egress column \(#64\)/)
+    assert.match(html, /class="ldg-local"[^>]*>local</)
     // The summary totals both passes' input tokens (210 + 12 = 222).
     assert.match(html, /222<\/span> tokens in/)
   } finally {

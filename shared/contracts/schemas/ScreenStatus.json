@@ -50,7 +50,7 @@
         ],
         "properties": {
           "class": {
-            "description": "the detected failure class — the difference the user asked the system to tell apart",
+            "description": "the detected failure class — the difference the user asked the system to tell apart (egress-denied #64: an egress endpoint was skipped because this content may not leave the machine)",
             "anyOf": [
               {
                 "const": "unreachable",
@@ -74,6 +74,10 @@
               },
               {
                 "const": "reasoning-exhausted",
+                "type": "string"
+              },
+              {
+                "const": "egress-denied",
                 "type": "string"
               }
             ]

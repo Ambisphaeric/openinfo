@@ -67,7 +67,7 @@ test('buildLedger: passes are newest-first', () => {
 test('renderLedger: empty state is an honest card, never blank', () => {
   const html = renderLedger(withLedger([]))
   assert.match(html, /No passes recorded yet/)
-  assert.match(html, /no egress hops are recorded/i) // the honest egress disclosure still shows
+  assert.match(html, /nothing can leave/i) // the honest egress disclosure (#64) still shows in the footer
 })
 
 test('renderLedger: a measured pass renders endpoint, tokens, and NO est marker', () => {
@@ -86,11 +86,37 @@ test('renderLedger: an estimated pass is MARKED est (a measurement is never impe
   assert.match(html, /some estimated/)
 })
 
-test('renderLedger: guard and egress render as honest absences (#63/#64 not built)', () => {
+test('renderLedger: guard stays an honest absence; a pre-#64 record with no egress decision renders the local default', () => {
   const passes = buildLedger([distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z' })], [])
   const html = renderLedger(withLedger(passes))
   assert.match(html, /no guard/i)
-  assert.match(html, /local/)
+  assert.match(html, /class="ldg-local"[^>]*>local</)
   assert.match(html, /Guard verdicts \(#63\)/)
-  assert.match(html, /egress marking \(#64\)/)
+})
+
+test('buildLedger: carries the recorded egress decision onto the hop', () => {
+  const passes = buildLedger(
+    [distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z', provenance: { slot: 'llm', endpoint: 'llm.fast', egress: { reach: 'local', allowed: false, decidedBy: 'workspace', reason: 'stayed local: this workspace denies egress' } } })],
+    [],
+  )
+  assert.equal(passes[0]?.hops[0]?.egress?.decidedBy, 'workspace')
+})
+
+test('renderLedger: a stayed-local-by-policy hop shows the deciding layer', () => {
+  const passes = buildLedger(
+    [distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z', provenance: { slot: 'llm', endpoint: 'llm.fast', egress: { reach: 'local', allowed: false, decidedBy: 'content-class', reason: 'stayed local: screen-derived content never leaves the machine' } } })],
+    [],
+  )
+  const html = renderLedger(withLedger(passes))
+  assert.match(html, /local <span class="ldg-model">· content-class/)
+})
+
+test('renderLedger: a hop that actually egressed is flagged distinctly and counted in the summary', () => {
+  const passes = buildLedger(
+    [distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z', provenance: { slot: 'llm', endpoint: 'hosted', egress: { reach: 'egress', allowed: true, decidedBy: 'default', reason: 'content left the machine (no layer denied egress)' } } })],
+    [],
+  )
+  const html = renderLedger(withLedger(passes))
+  assert.match(html, /class="ldg-egress"[^>]*>egress</)
+  assert.match(html, /<span class="n">1<\/span> egress hop</)
 })
