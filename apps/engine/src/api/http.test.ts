@@ -768,6 +768,109 @@ test('e2e: fast fields fan out over the drain → field.updated on the bus + the
   }
 })
 
+test('e2e: judge stage reviews the fast result set + overrules in place → corrected state + judge provenance on the bus (#62)', async () => {
+  const llm = await startFakeLlm()
+  // A dedicated fake JUDGE endpoint: it always returns a per-field verdict array. The judge is routed to
+  // the `llm.judge`-named endpoint specifically (a one-endpoint sub-fabric), so this proves the tier-gate
+  // resolves the judge lane and never spills onto the fast endpoint.
+  const judge = await new Promise<{ server: Server; url: string }>((resolve) => {
+    const server = createServer((req, res) => {
+      const buf: Buffer[] = []
+      req.on('data', (c: Buffer) => buf.push(c))
+      req.on('end', () => {
+        const content = JSON.stringify([
+          { fieldId: 'field-topic', verdict: 'correct', value: 'Q3 security review deck delivery', note: 'the fast tier was too generic' },
+        ])
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }))
+      })
+    })
+    server.listen(0, () => {
+      const address = server.address()
+      assert.ok(address && typeof address === 'object')
+      resolve({ server, url: `http://127.0.0.1:${address.port}` })
+    })
+  })
+  // Fire the judge on the SAME released batch as the fast fan-out (its own cadence, forced to 0 here so the
+  // e2e need not wait the default ~60s). Read once at wiring, so it must be set BEFORE createEngineApp.
+  const priorCadence = process.env['OPENINFO_JUDGE_CADENCE_MS']
+  process.env['OPENINFO_JUDGE_CADENCE_MS'] = '0'
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const updates: FieldValue[] = []
+  app.bus.subscribe('field.updated', (v) => {
+    updates.push(v)
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slots: {
+          ...fabric.slots,
+          llm: [
+            { kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' },
+            { kind: 'http', name: 'llm.judge', url: judge.url, api: 'openai-compat', model: 'big-32b' },
+          ],
+        },
+      }),
+    })
+    // distill.fields must produce the values; distill.judge runs the review over them. Both ride the drain.
+    for (const key of ['distill.enabled', 'distill.fields', 'distill.judge']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 7, 15, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    for (const c of [
+      chunk(1, 0, 'we should ship the Q3 security review deck to Dana on Thursday afternoon'),
+      chunk(2, 20, 'Dana agreed and will schedule the vendor security review for next week'),
+    ]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+
+    // The drain fans out the fields (provisional) then the judge reviews + overrules field-topic in place.
+    await eventuallyHttp(async () => {
+      const result = (await (await fetch(`${base}/query`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ source: 'fields', params: { workspace: 'default', session: started.id } }),
+      })).json()) as QueryResult
+      const topic = (result.items as FieldValue[]).find((v) => v.fieldId === 'field-topic')
+      assert.ok(topic, 'field-topic hydrates')
+      assert.equal(topic!.state, 'corrected', 'the judge overruled the topic in place')
+      assert.equal(topic!.value, 'Q3 security review deck delivery', 'the value is the judge correction')
+      assert.ok(topic!.provenance.judge, 'the overrule stamped judge provenance')
+      assert.equal(topic!.provenance.judge!.endpoint, 'llm.judge', 'routed to the judge endpoint, not the fast one')
+      assert.equal(topic!.provenance.judge!.model, 'big-32b')
+      assert.equal(topic!.provenance.judge!.verdict, 'correct')
+      assert.ok(topic!.provenance.judge!.priorValue, 'the overruled value is recorded (what changed)')
+      assert.equal(topic!.provenance.endpoint, 'llm.fast', 'the fast lineage is preserved on the top-level provenance')
+    })
+    // The overrule republished field.updated with the corrected state — the WS broadcast seam.
+    assert.ok(updates.some((u) => u.fieldId === 'field-topic' && u.state === 'corrected' && u.provenance.judge?.endpoint === 'llm.judge'), 'a corrected field.updated fired')
+  } finally {
+    if (priorCadence === undefined) delete process.env['OPENINFO_JUDGE_CADENCE_MS']
+    else process.env['OPENINFO_JUDGE_CADENCE_MS'] = priorCadence
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+    await new Promise<void>((resolve) => judge.server.close(() => resolve()))
+  }
+})
+
 interface FakeLlm { server: Server; url: string }
 const startFakeLlm = async (): Promise<FakeLlm> => {
   const server = createServer((req, res) => {

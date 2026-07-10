@@ -10,9 +10,11 @@ export {
   defaultEntitiesField,
   defaultWorkItemsField,
   defaultFieldTemplates,
+  defaultJudgeTemplate,
 } from './defaults.js'
 export { FieldValueStore } from './field-values.js'
 export { FastFieldScheduler, type FastFieldSchedulerDeps } from './fields.js'
+export { JudgeScheduler, JUDGE_ENDPOINT_NAME, type JudgeSchedulerDeps } from './judge.js'
 export {
   extractMoments,
   parseMomentCandidates,

@@ -11,6 +11,34 @@ export const FIELD_VALUE_SCHEMA_VERSION = 1
  * material window the value was drawn from. A rendered field's why-line (`via <endpoint> · <model> ·
  * <template id>`) is composed entirely from this — no value is ever shown without it.
  */
+/**
+ * The judge's overrule stamp (#62) — the append-only record of ONE dual-input review that confirmed,
+ * corrected, or flagged a fast-field value. It is the "which judge, which template, what changed"
+ * provenance the judge stage must carry: the judge prompt DOCUMENT (`templateId`), the fabric endpoint
+ * and model that judged (never a secret value), the `verdict`, and — on a `correct` — the `priorValue`
+ * it overruled plus the `priorState` it moved the field off of (so "what changed" is inspectable). It
+ * lives ALONGSIDE the top-level FieldValueProvenance, which keeps naming the field's ORIGINAL fast
+ * producer — the judge annotates lineage, it does not erase it. `note` carries the judge's rationale
+ * (required-ish for a `flag`, optional otherwise). A rendered field's why-line reads
+ * `via <fast endpoint> · <verdict> by <judge model>` when this is present.
+ */
+export const JudgeReview = Type.Object(
+  {
+    templateId: Id,
+    endpoint: Type.String({ description: 'the fabric endpoint name that judged (never a secret value)' }),
+    model: Type.Optional(Type.String({ description: 'the judge model that answered, when the endpoint names one' })),
+    verdict: Type.Union(['confirm', 'correct', 'flag'].map((v) => Type.Literal(v)), {
+      description: 'confirm: value stands; correct: value overruled in place (see priorValue); flag: questionable/too thin to judge',
+    }),
+    priorValue: Type.Optional(Type.String({ description: 'the fast value the judge overruled — present on a `correct`, so "what changed" is inspectable' })),
+    priorState: Type.Optional(Type.String({ description: 'the field state the review moved off of (e.g. provisional)' })),
+    note: Type.Optional(Type.String({ description: "the judge's rationale — the flag reason, or why a value was corrected" })),
+    judgedAt: IsoTime,
+  },
+  { $id: 'JudgeReview', additionalProperties: false },
+)
+export type JudgeReview = Static<typeof JudgeReview>
+
 export const FieldValueProvenance = Type.Object(
   {
     templateId: Id,
@@ -19,6 +47,10 @@ export const FieldValueProvenance = Type.Object(
     model: Type.Optional(Type.String({ description: 'the model that answered, when the endpoint names one' })),
     windowStart: Type.Optional(IsoTime),
     windowEnd: Type.Optional(IsoTime),
+    // The judge's overrule stamp (#62), present once a judge has reviewed this value — the fast producer
+    // above is untouched (lineage is preserved); this annotates it with the confirm/correct/flag verdict
+    // and, on a correct, the overruled priorValue. Absent ⇒ the value is still provisional (unjudged).
+    judge: Type.Optional(JudgeReview),
   },
   { $id: 'FieldValueProvenance', additionalProperties: false },
 )
@@ -46,7 +78,7 @@ export const FieldValue = Type.Object(
     value: Type.String({ description: 'the model output text for this field — the current value' }),
     state: Type.String({
       description:
-        'field micro-state / judge tier (#66) — fast results are `provisional` by definition (the confirm judge is a later issue). Document-configurable vocab per surface; never fabricated.',
+        'field micro-state / judge tier (#66) — a fast result is `provisional`; a judge review (#62) moves it to `confirmed` (value stands), `corrected` (value overruled in place), or `flagged` (questionable). Document-configurable vocab per surface; never fabricated.',
     }),
     provenance: FieldValueProvenance,
     updatedAt: IsoTime,
