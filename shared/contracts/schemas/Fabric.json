@@ -73,6 +73,20 @@
                   "model": {
                     "type": "string"
                   },
+                  "auth": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "keyRef"
+                    ],
+                    "properties": {
+                      "keyRef": {
+                        "minLength": 1,
+                        "description": "name of a secret in the engine secret store — never the value",
+                        "type": "string"
+                      }
+                    }
+                  },
                   "measured": {
                     "additionalProperties": false,
                     "description": "MEASURED by tools/bench — never vendor claims",
@@ -167,6 +181,16 @@
                         "type": "string"
                       }
                     }
+                  },
+                  "chatTemplateKwargs": {
+                    "description": "passed as chat_template_kwargs on the completions request, e.g. {enable_thinking:false} to stop a reasoning model burning the token budget. Per-endpoint user config, never auto-set.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "responseFormat": {
+                    "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
                   }
                 }
               },
@@ -276,6 +300,20 @@
                   "model": {
                     "type": "string"
                   },
+                  "auth": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "keyRef"
+                    ],
+                    "properties": {
+                      "keyRef": {
+                        "minLength": 1,
+                        "description": "name of a secret in the engine secret store — never the value",
+                        "type": "string"
+                      }
+                    }
+                  },
                   "measured": {
                     "additionalProperties": false,
                     "description": "MEASURED by tools/bench — never vendor claims",
@@ -370,6 +408,16 @@
                         "type": "string"
                       }
                     }
+                  },
+                  "chatTemplateKwargs": {
+                    "description": "passed as chat_template_kwargs on the completions request, e.g. {enable_thinking:false} to stop a reasoning model burning the token budget. Per-endpoint user config, never auto-set.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "responseFormat": {
+                    "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
                   }
                 }
               },
@@ -479,6 +527,20 @@
                   "model": {
                     "type": "string"
                   },
+                  "auth": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "keyRef"
+                    ],
+                    "properties": {
+                      "keyRef": {
+                        "minLength": 1,
+                        "description": "name of a secret in the engine secret store — never the value",
+                        "type": "string"
+                      }
+                    }
+                  },
                   "measured": {
                     "additionalProperties": false,
                     "description": "MEASURED by tools/bench — never vendor claims",
@@ -573,6 +635,16 @@
                         "type": "string"
                       }
                     }
+                  },
+                  "chatTemplateKwargs": {
+                    "description": "passed as chat_template_kwargs on the completions request, e.g. {enable_thinking:false} to stop a reasoning model burning the token budget. Per-endpoint user config, never auto-set.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "responseFormat": {
+                    "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
                   }
                 }
               },
@@ -682,6 +754,20 @@
                   "model": {
                     "type": "string"
                   },
+                  "auth": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "keyRef"
+                    ],
+                    "properties": {
+                      "keyRef": {
+                        "minLength": 1,
+                        "description": "name of a secret in the engine secret store — never the value",
+                        "type": "string"
+                      }
+                    }
+                  },
                   "measured": {
                     "additionalProperties": false,
                     "description": "MEASURED by tools/bench — never vendor claims",
@@ -776,6 +862,16 @@
                         "type": "string"
                       }
                     }
+                  },
+                  "chatTemplateKwargs": {
+                    "description": "passed as chat_template_kwargs on the completions request, e.g. {enable_thinking:false} to stop a reasoning model burning the token budget. Per-endpoint user config, never auto-set.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "responseFormat": {
+                    "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
                   }
                 }
               },
@@ -885,6 +981,20 @@
                   "model": {
                     "type": "string"
                   },
+                  "auth": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "keyRef"
+                    ],
+                    "properties": {
+                      "keyRef": {
+                        "minLength": 1,
+                        "description": "name of a secret in the engine secret store — never the value",
+                        "type": "string"
+                      }
+                    }
+                  },
                   "measured": {
                     "additionalProperties": false,
                     "description": "MEASURED by tools/bench — never vendor claims",
@@ -979,6 +1089,16 @@
                         "type": "string"
                       }
                     }
+                  },
+                  "chatTemplateKwargs": {
+                    "description": "passed as chat_template_kwargs on the completions request, e.g. {enable_thinking:false} to stop a reasoning model burning the token budget. Per-endpoint user config, never auto-set.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "responseFormat": {
+                    "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
                   }
                 }
               },
@@ -1088,6 +1208,20 @@
                   "model": {
                     "type": "string"
                   },
+                  "auth": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "keyRef"
+                    ],
+                    "properties": {
+                      "keyRef": {
+                        "minLength": 1,
+                        "description": "name of a secret in the engine secret store — never the value",
+                        "type": "string"
+                      }
+                    }
+                  },
                   "measured": {
                     "additionalProperties": false,
                     "description": "MEASURED by tools/bench — never vendor claims",
@@ -1182,6 +1316,16 @@
                         "type": "string"
                       }
                     }
+                  },
+                  "chatTemplateKwargs": {
+                    "description": "passed as chat_template_kwargs on the completions request, e.g. {enable_thinking:false} to stop a reasoning model burning the token budget. Per-endpoint user config, never auto-set.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "responseFormat": {
+                    "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
                   }
                 }
               },

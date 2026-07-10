@@ -84,6 +84,10 @@
         "note": {
           "description": "why it was skipped",
           "type": "string"
+        },
+        "sample": {
+          "description": "the model's actual reply text (truncated), rendered in the Test area as proof of a live completion",
+          "type": "string"
         }
       }
     }

@@ -44,7 +44,7 @@
       "type": "string"
     },
     "state": {
-      "description": "field micro-state / judge tier (#66) — fast results are `provisional` by definition (the confirm judge is a later issue). Document-configurable vocab per surface; never fabricated.",
+      "description": "field micro-state / judge tier (#66) — a fast result is `provisional`; a judge review (#62) moves it to `confirmed` (value stands), `corrected` (value overruled in place), or `flagged` (questionable). Document-configurable vocab per surface; never fabricated.",
       "type": "string"
     },
     "provenance": {
@@ -108,6 +108,66 @@
           "format": "date-time",
           "description": "ISO-8601 timestamp",
           "type": "string"
+        },
+        "judge": {
+          "$id": "JudgeReview",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "templateId",
+            "endpoint",
+            "verdict",
+            "judgedAt"
+          ],
+          "properties": {
+            "templateId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "endpoint": {
+              "description": "the fabric endpoint name that judged (never a secret value)",
+              "type": "string"
+            },
+            "model": {
+              "description": "the judge model that answered, when the endpoint names one",
+              "type": "string"
+            },
+            "verdict": {
+              "description": "confirm: value stands; correct: value overruled in place (see priorValue); flag: questionable/too thin to judge",
+              "anyOf": [
+                {
+                  "const": "confirm",
+                  "type": "string"
+                },
+                {
+                  "const": "correct",
+                  "type": "string"
+                },
+                {
+                  "const": "flag",
+                  "type": "string"
+                }
+              ]
+            },
+            "priorValue": {
+              "description": "the fast value the judge overruled — present on a `correct`, so \"what changed\" is inspectable",
+              "type": "string"
+            },
+            "priorState": {
+              "description": "the field state the review moved off of (e.g. provisional)",
+              "type": "string"
+            },
+            "note": {
+              "description": "the judge's rationale — the flag reason, or why a value was corrected",
+              "type": "string"
+            },
+            "judgedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            }
+          }
         }
       }
     },

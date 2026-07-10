@@ -35,6 +35,11 @@
           "url": {
             "pattern": "^https?://",
             "type": "string"
+          },
+          "keyRef": {
+            "minLength": 1,
+            "description": "a secret REFERENCE sent as a bearer when stored — never a value",
+            "type": "string"
           }
         }
       }

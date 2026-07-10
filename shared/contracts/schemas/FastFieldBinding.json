@@ -15,7 +15,7 @@
       "type": "string"
     },
     "tier": {
-      "description": "model lane: fast runs event-driven on the small model (the only tier scheduled in v0); judge is the reserved confirm pass",
+      "description": "model lane: fast runs event-driven on the small model; judge (#62) is the dual-input review pass on a larger model at a lower cadence",
       "anyOf": [
         {
           "const": "fast",
@@ -58,6 +58,20 @@
           "type": "string"
         }
       ]
+    },
+    "reviews": {
+      "description": "judge tier only (#62): the fast fieldIds this judge reviews; absent ⇒ every fast field in scope",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "description": "opaque identifier",
+        "type": "string"
+      }
+    },
+    "cadenceMs": {
+      "minimum": 0,
+      "description": "judge tier only (#62): minimum re-review interval, decoupled from the fast fan-out; absent ⇒ engine default",
+      "type": "integer"
     }
   }
 }

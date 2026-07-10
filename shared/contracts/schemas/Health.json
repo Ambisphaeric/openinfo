@@ -25,6 +25,14 @@
       "format": "date-time",
       "description": "ISO-8601 timestamp",
       "type": "string"
+    },
+    "version": {
+      "description": "the engine's package version, read at startup from its own package.json",
+      "type": "string"
+    },
+    "build": {
+      "description": "an optional build id (e.g. a git short sha) when the build stamped one via OPENINFO_BUILD",
+      "type": "string"
     }
   }
 }

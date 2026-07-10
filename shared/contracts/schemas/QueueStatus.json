@@ -98,6 +98,10 @@
       "description": "ISO-8601 timestamp",
       "type": "string"
     },
+    "shedFiles": {
+      "minimum": 0,
+      "type": "integer"
+    },
     "byKind": {
       "additionalProperties": false,
       "type": "object",
