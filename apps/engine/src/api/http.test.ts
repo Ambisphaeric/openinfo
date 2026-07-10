@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Moment, Pin, PinChunk, QueryResult, QueueStatus, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
@@ -2794,6 +2794,104 @@ test('/workflows routes: list has the seeded default, GET 404 unknown, PUT inval
     const after = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
     assert.equal(after.version, 2)
     assert.ok(!after.steps.some((s) => s.kind === 'moments'), 'GET reflects the edit')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// ---- #23: GET/PUT /templates, /registers, /modes — the prompt layer is user-composable like /workflows ----
+// Templates gain a whole resource; registers/modes gain write + by-id reads (fixing the read-only drift).
+// Every route follows the /workflows pattern: create-on-unknown-id, contract-validated body ⇒ 400, and the
+// pipeline reads templates/modes/registers fresh, so a stored edit takes effect with no restart.
+
+const putJson = (base: string, path: string, body: unknown): Promise<Response> =>
+  fetch(`${base}${path}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+test('/templates routes: list has the seeded defaults, GET default → PUT → GET returns the edit, invalid 400, unknown-id creates', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // the shipped defaults enumerate — the distill trio plus the act templates seeded by the actor,
+    // since /templates lists the WHOLE prompt-template store (not just the distill seeds)
+    const listed = (await (await fetch(`${base}/templates`)).json()) as PromptTemplate[]
+    const ids = listed.map((t) => t.id)
+    for (const seeded of ['tpl-distill-default', 'tpl-extract-default', 'tpl-entities-default']) assert.ok(ids.includes(seeded), `lists ${seeded}`)
+    // GET default resolves; an unknown id ⇒ 404
+    const current = (await (await fetch(`${base}/templates/tpl-distill-default`)).json()) as PromptTemplate
+    assert.equal(current.kind, 'distill')
+    assert.equal((await fetch(`${base}/templates/nope`)).status, 404)
+    // a garbage body ⇒ 400 (a malformed body must NOT persist silently)
+    assert.equal((await putJson(base, '/templates/tpl-distill-default', { not: 'a template' })).status, 400)
+    // an empty body violates minLength ⇒ 400
+    assert.equal((await putJson(base, '/templates/tpl-distill-default', { ...current, body: '' })).status, 400)
+    // a valid body whose id disagrees with the route ⇒ 400
+    assert.equal((await putJson(base, '/templates/tpl-distill-default', { ...current, id: 'other' })).status, 400)
+    // a valid, matching edit persists and reads back (round-trip)
+    const edited = { ...current, body: 'edited body {{transcript}}' }
+    const putRes = await putJson(base, '/templates/tpl-distill-default', edited)
+    assert.equal(putRes.status, 200)
+    const after = (await (await fetch(`${base}/templates/tpl-distill-default`)).json()) as PromptTemplate
+    assert.equal(after.body, 'edited body {{transcript}}', 'GET reflects the edit')
+    // unknown id CREATES (mirroring PUT /workflows) — it then enumerates and resolves
+    const created: PromptTemplate = { id: 'tpl-mine', name: 'mine', kind: 'act', body: 'hello {{x}}' }
+    assert.equal((await putJson(base, '/templates/tpl-mine', created)).status, 200)
+    const relisted = (await (await fetch(`${base}/templates`)).json()) as PromptTemplate[]
+    assert.ok(relisted.some((t) => t.id === 'tpl-mine'), 'the created template enumerates')
+    assert.equal((await (await fetch(`${base}/templates/tpl-mine`)).json() as PromptTemplate).name, 'mine')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('/registers + /modes routes: read-only drift fixed — by-id GET, PUT round-trips, invalid 400, unknown-id creates', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // registers: by-id GET resolves a seeded builtin; unknown ⇒ 404
+    const reg = (await (await fetch(`${base}/registers/reg-boardroom`)).json()) as Register
+    assert.equal(reg.id, 'reg-boardroom')
+    assert.equal((await fetch(`${base}/registers/nope`)).status, 404)
+    // invalid body ⇒ 400; id/route mismatch ⇒ 400
+    assert.equal((await putJson(base, '/registers/reg-boardroom', { not: 'a register' })).status, 400)
+    assert.equal((await putJson(base, '/registers/reg-boardroom', { ...reg, id: 'other' })).status, 400)
+    // a valid edit round-trips
+    const regEdited = { ...reg, name: 'boardroom-edited' }
+    assert.equal((await putJson(base, '/registers/reg-boardroom', regEdited)).status, 200)
+    assert.equal((await (await fetch(`${base}/registers/reg-boardroom`)).json() as Register).name, 'boardroom-edited')
+    // unknown id CREATES and then appears in the list
+    const newReg: Register = { id: 'reg-mine', name: 'mine', dials: { tone: 5, warmth: 5, wit: 5, charm: 5, specificity: 5, brevity: 5 } }
+    assert.equal((await putJson(base, '/registers/reg-mine', newReg)).status, 200)
+    const regs = (await (await fetch(`${base}/registers`)).json()) as Register[]
+    assert.ok(regs.some((r) => r.id === 'reg-mine'), 'the created register enumerates')
+
+    // modes: by-id GET resolves the seeded meeting mode; unknown ⇒ 404
+    const mode = (await (await fetch(`${base}/modes/mode-meeting`)).json()) as Mode
+    assert.equal(mode.id, 'mode-meeting')
+    assert.equal((await fetch(`${base}/modes/nope`)).status, 404)
+    // invalid body ⇒ 400; id/route mismatch ⇒ 400
+    assert.equal((await putJson(base, '/modes/mode-meeting', { not: 'a mode' })).status, 400)
+    assert.equal((await putJson(base, '/modes/mode-meeting', { ...mode, id: 'other' })).status, 400)
+    // a valid edit round-trips
+    const modeEdited = { ...mode, name: 'meeting-edited' }
+    assert.equal((await putJson(base, '/modes/mode-meeting', modeEdited)).status, 200)
+    assert.equal((await (await fetch(`${base}/modes/mode-meeting`)).json() as Mode).name, 'meeting-edited')
+    // unknown id CREATES and then enumerates
+    const newMode = { ...mode, id: 'mode-mine', name: 'mine' }
+    assert.equal((await putJson(base, '/modes/mode-mine', newMode)).status, 200)
+    const modes = (await (await fetch(`${base}/modes`)).json()) as Mode[]
+    assert.ok(modes.some((m) => m.id === 'mode-mine'), 'the created mode enumerates')
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })

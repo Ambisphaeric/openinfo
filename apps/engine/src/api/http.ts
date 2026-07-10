@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type ItemSignal, type LocalDownloadRequest, type Moment, type Pin, type PinChunk, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
@@ -471,6 +471,20 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/workspaces') return send(res, 200, ctx.store.all())
   if (req.method === 'GET' && url.pathname === '/registers') return send(res, 200, ctx.voice.registers())
   if (req.method === 'GET' && url.pathname === '/modes') return send(res, 200, ctx.distill.modes())
+  // #23: the prompt layer becomes readable+writable over the API like /workflows (the prerequisite for the
+  // fast-fields prompt-document layer). Templates gain a whole resource; registers/modes gain write + by-id
+  // reads, fixing the read-only drift (the route table already declared PUT /modes/:id). All follow the
+  // /workflows pattern exactly: create-on-unknown-id, contract-validated body → 400, read-fresh hot-edit.
+  if (req.method === 'GET' && url.pathname === '/templates') return send(res, 200, ctx.distill.templates())
+  const template = url.pathname.match(/^\/templates\/([^/]+)$/)
+  if (req.method === 'GET' && template?.[1]) return getTemplate(res, ctx, decodeURIComponent(template[1]))
+  if (req.method === 'PUT' && template?.[1]) return putTemplate(req, res, ctx, decodeURIComponent(template[1]))
+  const register = url.pathname.match(/^\/registers\/([^/]+)$/)
+  if (req.method === 'GET' && register?.[1]) return getRegister(res, ctx, decodeURIComponent(register[1]))
+  if (req.method === 'PUT' && register?.[1]) return putRegister(req, res, ctx, decodeURIComponent(register[1]))
+  const mode = url.pathname.match(/^\/modes\/([^/]+)$/)
+  if (req.method === 'GET' && mode?.[1]) return getMode(res, ctx, decodeURIComponent(mode[1]))
+  if (req.method === 'PUT' && mode?.[1]) return putMode(req, res, ctx, decodeURIComponent(mode[1]))
   if (req.method === 'GET' && url.pathname === '/sessions') return send(res, 200, readSessions(ctx.store, url))
   if (req.method === 'POST' && url.pathname === '/sessions') return startSession(req, res, ctx)
   const sessionEnd = url.pathname.match(/^\/sessions\/([^/]+)\/end$/)
@@ -1121,6 +1135,82 @@ async function putWorkflow(req: IncomingMessage, res: ServerResponse, ctx: Handl
   const incoming = body as WorkflowSpec
   if (incoming.id !== id) return send(res, 400, { error: 'workflow id does not match route' })
   send(res, 200, ctx.workflow.save(incoming))
+}
+
+/**
+ * Serve a prompt-template document by id — the read seam the (future) prompt editor renders, mirroring
+ * GET /workflows/:id. The three shipped defaults (tpl-distill/extract/entities-default) always resolve
+ * (seeded + code fallback); an unknown id ⇒ 404 until a user authors one via PUT. The pipeline reads the
+ * SAME record fresh per pass, so this is exactly the template it runs.
+ */
+function getTemplate(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const doc = ctx.distill.templateById(id)
+  if (!doc) return send(res, 404, { error: `no such template: ${id}` })
+  send(res, 200, doc)
+}
+
+/**
+ * Persist an edited prompt template — the write that makes the PROMPT layer user-composable over the API
+ * (the prerequisite for the fast-fields prompt-document layer, #61). The body must validate as a
+ * PromptTemplate and its id must match the route; the store keeps version history. An unknown id CREATES
+ * (mirroring PUT /workflows /todos /hints — no other document write 404s on a fresh id), so authoring a
+ * new named template is a forward-compatible document write. A malformed body ⇒ 400, never persisted.
+ */
+async function putTemplate(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('PromptTemplate', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid PromptTemplate', details: errors })
+  const incoming = body as PromptTemplate
+  if (incoming.id !== id) return send(res, 400, { error: 'template id does not match route' })
+  send(res, 200, ctx.distill.saveTemplate(incoming))
+}
+
+/**
+ * Serve a register (voice preset) by id — the by-id read symmetric with GET /workflows/:id. The shipped
+ * builtins always resolve (seeded + code fallback); an unknown id ⇒ 404. GET /registers stays the list.
+ */
+function getRegister(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const doc = ctx.voice.registerById(id)
+  if (!doc) return send(res, 404, { error: `no such register: ${id}` })
+  send(res, 200, doc)
+}
+
+/**
+ * Persist an edited register — registers were read-only (GET /registers only); #23 exposes the existing
+ * VoiceDocuments.saveRegister over PUT, mirroring PUT /workflows. Validated as a Register, id must match
+ * the route, unknown id CREATES (saveRegister appends to the register index). Malformed body ⇒ 400.
+ */
+async function putRegister(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('Register', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid Register', details: errors })
+  const incoming = body as Register
+  if (incoming.id !== id) return send(res, 400, { error: 'register id does not match route' })
+  send(res, 200, ctx.voice.saveRegister(incoming))
+}
+
+/**
+ * Serve a mode (capture/distill preset) by id — the by-id read the route table already declared. The
+ * shipped meeting mode always resolves; an unknown id ⇒ 404. GET /modes stays the list.
+ */
+function getMode(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const doc = ctx.distill.modeById(id)
+  if (!doc) return send(res, 404, { error: `no such mode: ${id}` })
+  send(res, 200, doc)
+}
+
+/**
+ * Persist an edited mode — modes were read-only (GET /modes only) despite the route table declaring PUT
+ * /modes/:id; #23 wires the handler over DistillDocuments.saveMode, mirroring PUT /workflows. Validated
+ * as a Mode, id must match the route, unknown id CREATES. Malformed body ⇒ 400, never persisted.
+ */
+async function putMode(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('Mode', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid Mode', details: errors })
+  const incoming = body as Mode
+  if (incoming.id !== id) return send(res, 400, { error: 'mode id does not match route' })
+  send(res, 200, ctx.distill.saveMode(incoming))
 }
 
 /**
