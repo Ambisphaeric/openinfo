@@ -2350,6 +2350,69 @@ Client 259 → 260 (all green), contracts 67, engine 486 — all green in isolat
   (`renderer.test.ts:33/57`'s `2:47p · 31m` is a literal `NowContext.elapsed` fixture, not a `clockLabel`
   output, so it needed no change.)
 
+## Slice: #57 — configurable capture segment cadence (default ~1s)
+
+LATENCY FIX. `SEGMENT_MS = 8_000` in `client/capture/capture-renderer.ts` was the DOMINANT capture
+latency: the renderer records audio in fixed-length segments and only ships a segment once it closes, so a
+spoken word waited up to 8s (avg 4s) before its audio even left the client — the floor under any real-time
+surface, now that STT is ~0.05s/chunk and the LLM lane is unblocked. Made the segment length configurable,
+default dropped to 1000ms (~1s).
+
+### The seam
+`ShellConfig.segmentMs` joins the existing client-config family in `client/main/config.ts`, resolved by
+the SAME precedence as every other shell behaviour — **env > file > default** — reusing the existing
+positive-integer resolver `resolveIntervalMs` (a non-positive/garbage value falls back to the default),
+so `OPENINFO_SEGMENT_MS` or `"segmentMs"` in `~/.openinfo/client.json`, else 1000. Not a flag document:
+it is how the client drives its own recorder; it never touches the engine or its store.
+
+The value reaches the hidden capture renderer by EXTENDING the existing `capture:start` message, not a new
+channel. A new `CaptureStartOptions { segmentMs }` (protocol.ts) is the start payload; the main process
+injects `{ segmentMs: cfg.segmentMs }` at the ONE seam that knows both the channel constants and the
+config — the dispatcher's `send` closure in `shell.ts` — leaving the #41 ack/retry state machine
+(`capture-dispatcher.ts`) entirely payload-agnostic. The preload (`capture-preload.cts`) just forwards the
+extra arg; its channel strings stay INLINED (a sandboxed preload cannot `require` the ESM protocol
+sibling — #41), only `import type { CaptureStartOptions }` crosses. The renderer clamps the passed value
+(`resolveSegmentMs`, mirroring the config resolver), records at `c.segmentMs`, and echoes it into each
+chunk's `durationMs` (was a hardcoded 8000). A start with no options ⇒ a `DEFAULT_SEGMENT_MS = 1000`
+fallback, so the handshake never depends on the payload arriving.
+
+### Segmenting stays stop/restart; the 1s gap analysis (#41 wedge NOT regressed)
+Unchanged: segmenting is stop-the-recorder / `new MediaRecorder` / restart, never `timeslice` — the file's
+own comment explains why (a timeslice emits fragments of ONE webm stream; only the first carries the
+container header, so later fragments are not independently decodable; each segment must be a standalone
+webm for `/v1/audio/transcriptions`). Shrinking the segment only makes that boundary MORE FREQUENT; it does
+not change the mechanism. The stop→restart is synchronous inside `cycle`'s `onstop` (assemble the finished
+blob, ship it, then immediately `cycle()` again which news a fresh recorder), so the only audio not
+captured is the sub-frame gap between one recorder's `stop()` and the next's `start()` — inherent to
+closing/opening a webm, independent of segment length, and unbounded loss is impossible because a new
+recorder is created before control returns. The #41 wedge class (`capture-controller` stopping/pendingStart,
+the dispatcher's queued/awaiting-ack) lives one layer UP and is untouched — the renderer change never
+alters the start/stop/ack/loaded IPC, only the per-segment timer duration and the durationMs it stamps.
+
+### Per-segment overhead disclosure
+Per segment the fixed cost is: one webm/opus container header (~few hundred bytes — Matroska/EBML header +
+Opus `CodecPrivate`, order of ~0.3–0.5 KB) plus one `POST /capture/mic` request (chunk.ts base64-encodes
+the bytes, +~33%, over the existing spool/EngineLink path). Going 8s→1s multiplies the segment/request rate
+8× (≈1/s per active audio source), so the header + request overhead is ~8× what it was — still small in
+absolute terms against the audio payload and well within the engine's per-request budget (STT ~0.05s/chunk),
+and the point of the change: latency drops from up-to-8s to up-to-1s. Inter-segment audio gap: the
+sub-frame stop→restart boundary described above; not separately measurable at this layer and not amplified
+in TOTAL by a shorter segment (same boundary mechanism, just more often). The engine already merges chunks
+into larger windows downstream, so more, smaller chunks do not change what the engine reasons over.
+
+### Tests + verification
+Client 260 → 265 (all green in isolation and in a full-suite run), contracts 67, engine 486 — all green.
+- `main/config.test.ts` (+2): `segmentMs` resolves env > file > 1000, clamps `0/-5/nope/''` to the default,
+  env beats file, and `parseClientConfigFile` keeps a numeric `segmentMs` / drops a wrong-typed one.
+- `capture/capture-renderer.test.ts` (NEW, +3): the renderer is normally not CI-tested (it drives browser
+  globals — see its header), so this harness fakes just navigator/MediaRecorder (Blob is Node-native) +
+  the `openinfoCapture` bridge and replaces `setTimeout` with a spy that RECORDS the scheduled delay
+  instead of waiting. It proves a passed `segmentMs` drives BOTH the stop-timer cadence AND the chunk's
+  `durationMs` (250ms → 250, no 8000 anywhere), that a start with no options falls back to 1000, and that
+  a non-positive/`NaN` value clamps to 1000.
+- KNOWN FLAKE CLASS re-confirmed under parallel load: `client/engine-link/seam.test.ts` (12 vs 11 ordering)
+  and one engine test each failed once during a full `pnpm -r test`, then passed 4/4 (seam) and 486/486
+  (engine) in isolation — unrelated to this client-only change (nothing here touches engine or engine-link).
 ## Slice: #58 — transcript fast-path to the HUD + distill cadence decoupling
 
 Two coupled halves. Before this, every visible artifact waited for the full distill pass (LLM, 1.6–3s):

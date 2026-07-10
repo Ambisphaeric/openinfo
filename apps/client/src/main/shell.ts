@@ -572,8 +572,14 @@ const setupCapture = (): void => {
   // could race the renderer's listener registration and vanish. A start unacked after retries becomes a
   // VISIBLE tray fault + resets the controller (onCaptureFault) instead of a silent forever-`starting`.
   const dispatcher = new CaptureDispatcher({
+    // A `start` carries the config-resolved segment cadence (CaptureStartOptions, #57) so the renderer
+    // records at cfg.segmentMs rather than a hardcoded default; `stop` needs no payload. The value is
+    // constant, so every retry resends the same options. This is the one seam that knows both the
+    // channel constants and the config — the dispatcher's ack/retry state machine stays payload-agnostic.
     send: (channel: DispatchChannel, source: CaptureSourceKind) =>
-      captureWindow?.webContents.send(channel === 'start' ? CAPTURE_CHANNELS.start : CAPTURE_CHANNELS.stop, source),
+      channel === 'start'
+        ? captureWindow?.webContents.send(CAPTURE_CHANNELS.start, source, { segmentMs: cfg.segmentMs })
+        : captureWindow?.webContents.send(CAPTURE_CHANNELS.stop, source),
     onFault: onCaptureFault,
     log: clientLog,
   })
@@ -646,7 +652,7 @@ const setupCapture = (): void => {
   })
   ipcMain.on(CAPTURE_CHANNELS.startAck, (_event, source: CaptureSourceKind) => dispatcher.ackStart(source))
   console.log(
-    `[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} · screen ${cfg.screenEnabled ? `enabled (every ${cfg.screenIntervalMs}ms)` : 'disabled by config (opt-in)'} (all follow the session lifecycle)`,
+    `[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} · screen ${cfg.screenEnabled ? `enabled (every ${cfg.screenIntervalMs}ms)` : 'disabled by config (opt-in)'} · audio segments every ${cfg.segmentMs}ms (all follow the session lifecycle)`,
   )
 }
 

@@ -76,6 +76,23 @@ test('screen cadence defaults to 5000ms and is overridable; junk/non-positive fa
   }
 })
 
+test('audio segment cadence defaults to 1000ms and is overridable; junk/non-positive falls back (#57)', () => {
+  assert.equal(resolveShellConfig({}).segmentMs, 1000) // the ~1s default (was an 8s hardcode)
+  assert.equal(resolveShellConfig({ OPENINFO_SEGMENT_MS: '500' }).segmentMs, 500)
+  assert.equal(resolveShellConfig({ OPENINFO_SEGMENT_MS: '8000' }).segmentMs, 8000) // an explicit larger cadence
+  for (const bad of ['0', '-5', 'nope', '']) {
+    assert.equal(resolveShellConfig({ OPENINFO_SEGMENT_MS: bad }).segmentMs, 1000) // clamps to the default
+  }
+})
+
+test('file can set the segment cadence; env still wins (precedence env > file > 1000) (#57)', () => {
+  assert.equal(resolveShellConfig({}, { segmentMs: 2000 }).segmentMs, 2000) // file cadence honoured
+  assert.equal(resolveShellConfig({ OPENINFO_SEGMENT_MS: '750' }, { segmentMs: 2000 }).segmentMs, 750) // env wins
+  assert.equal(resolveShellConfig({}, {}).segmentMs, 1000) // absent everywhere ⇒ default
+  assert.deepEqual(parseClientConfigFile({ segmentMs: 500 }), { segmentMs: 500 })
+  assert.deepEqual(parseClientConfigFile({ segmentMs: '500' }), {}) // wrong type dropped
+})
+
 // --- packaged-app config file (~/.openinfo/client.json) ---
 
 test('a client.json file supplies defaults when the env is empty (the packaged-app config story)', () => {
