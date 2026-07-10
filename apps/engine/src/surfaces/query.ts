@@ -1,5 +1,6 @@
 import type { BlockQuery, QueryResult, QueueStatus } from '@openinfo/contracts'
 import { relevantNow } from '../index/index.js'
+import { FieldValueStore } from '../distill/index.js'
 import { TeachStore, deriveHintCandidates } from '../teach/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { ItemSignalStore } from './signals.js'
@@ -160,6 +161,18 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // are already sorted by support desc (deterministic); `cap` takes top-K. Never auto-applied — the
       // loop SUGGESTS, the user reviews and PUTs the pattern (the accept write path is the action-verbs slice).
       return cap(deriveHintCandidates(new TeachStore(store).list(workspaceId)))
+    }
+    case 'fields': {
+      // Fast fields (#61): the latest value of each fast field, produced by the fan-out scheduler and
+      // persisted per (workspace, session?, fieldId). Each row is a FieldValue carrying the model output
+      // PLUS full provenance (templateId · endpoint · model) so a block renders a why-line, and the #66
+      // `state: 'provisional'` micro-state carrier (fast results are provisional by definition — the
+      // confirm judge is a later issue). NOT gated by `known`: like todos/teach, field values are DOCUMENTS
+      // keyed by workspace/session (global _meta.db, not a workspace DB), so an unknown workspace / no
+      // fields produced yet reads as [], explainable-empty, never an error. A session-scoped query returns
+      // that session's fields plus the workspace-scoped ones (FieldValueStore.list). Freshest first.
+      const values = new FieldValueStore(store).list(workspaceId, sessionId)
+      return capSuppressed([...values].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), (v) => v.fieldId)
     }
     case 'ledger':
       // Backing store not built yet (ledger P4): empty, explainable, not an error.

@@ -50,6 +50,10 @@
           "type": "string"
         },
         {
+          "const": "fields",
+          "type": "string"
+        },
+        {
           "const": "queue",
           "type": "string"
         }

@@ -83,6 +83,10 @@
                 "type": "string"
               },
               {
+                "const": "fields",
+                "type": "string"
+              },
+              {
                 "const": "queue",
                 "type": "string"
               },
@@ -146,6 +150,10 @@
                   },
                   {
                     "const": "distillates",
+                    "type": "string"
+                  },
+                  {
+                    "const": "fields",
                     "type": "string"
                   },
                   {

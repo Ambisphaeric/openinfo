@@ -19,7 +19,7 @@
       "type": "string"
     },
     "kind": {
-      "description": "which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id)",
+      "description": "which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61)",
       "anyOf": [
         {
           "const": "distill",
@@ -31,6 +31,10 @@
         },
         {
           "const": "act",
+          "type": "string"
+        },
+        {
+          "const": "field",
           "type": "string"
         }
       ]
@@ -74,6 +78,69 @@
     },
     "builtin": {
       "type": "boolean"
+    },
+    "field": {
+      "$id": "FastFieldBinding",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "fieldId",
+        "tier",
+        "trigger",
+        "scope"
+      ],
+      "properties": {
+        "fieldId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "tier": {
+          "description": "model lane: fast runs event-driven on the small model (the only tier scheduled in v0); judge is the reserved confirm pass",
+          "anyOf": [
+            {
+              "const": "fast",
+              "type": "string"
+            },
+            {
+              "const": "judge",
+              "type": "string"
+            }
+          ]
+        },
+        "trigger": {
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "description": "fire on newly transcribed material (the accumulation seam the distill cadence uses)",
+              "const": "transcript",
+              "type": "string"
+            },
+            "minChars": {
+              "minimum": 0,
+              "description": "the inexpensive relevance gate: skip the field when the new material is shorter than this",
+              "type": "integer"
+            }
+          }
+        },
+        "scope": {
+          "description": "where the field value lives: per live session, or across sessions for the workspace",
+          "anyOf": [
+            {
+              "const": "session",
+              "type": "string"
+            },
+            {
+              "const": "workspace",
+              "type": "string"
+            }
+          ]
+        }
+      }
     }
   }
 }

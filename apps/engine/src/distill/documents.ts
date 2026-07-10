@@ -2,14 +2,16 @@ import type { Mode, PromptTemplate } from '@openinfo/contracts'
 import { Mode as ModeSchema, PromptTemplate as PromptTemplateSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultMeetingMode } from './defaults.js'
+import { defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultMeetingMode } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 const MODE_KIND = 'mode'
 
 /** The shipped prompt templates, by seed order — the code fallback GET /templates/:id resolves against an
- * unseeded store, mirroring WorkflowDocuments' loadDefaultWorkflow fallback for `workflow-default`. */
-const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate]
+ * unseeded store, mirroring WorkflowDocuments' loadDefaultWorkflow fallback for `workflow-default`. The
+ * three fast-field prompt documents (#61) are seeded alongside the distill/extract trio — they are the
+ * SAME `prompt-template` kind, discriminated by `kind: 'field'` + a `field` binding. */
+const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate, ...defaultFieldTemplates]
 
 /**
  * Store-backed distill config docs (prompt templates + modes), consistent with FabricDocuments
@@ -28,6 +30,12 @@ export class DistillDocuments {
     }
     if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultEntitiesTemplate.id)) {
       this.store.layouts.put(TEMPLATE_KIND, defaultEntitiesTemplate.id, defaultEntitiesTemplate)
+    }
+    // Fast-field prompt documents (#61) — seeded like the distill trio; a user's edit is never clobbered.
+    for (const field of defaultFieldTemplates) {
+      if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, field.id)) {
+        this.store.layouts.put(TEMPLATE_KIND, field.id, field)
+      }
     }
     if (!this.store.layouts.getLatest<Mode>(MODE_KIND, defaultMeetingMode.id)) {
       this.store.layouts.put(MODE_KIND, defaultMeetingMode.id, defaultMeetingMode)
@@ -71,6 +79,17 @@ export class DistillDocuments {
     const stored = this.store.layouts.latestOfKind<PromptTemplate>(TEMPLATE_KIND).map((doc) => doc.body)
     for (const dflt of DEFAULT_TEMPLATES) if (!stored.some((t) => t.id === dflt.id)) stored.push(dflt)
     return stored
+  }
+
+  /**
+   * Every fast-field prompt document (#61): the templates carrying a `field` binding — the fan-out
+   * scheduler's work list. Derived from templates() (the SAME store list the GET /templates route reads),
+   * so a user who authors or edits a `field`-kind template over PUT /templates/:id joins the fan-out with
+   * no restart (the read-fresh seam). Not tier-filtered here: the scheduler runs `fast` and skips `judge`
+   * (which has no confirm pass yet), so the whole binding set is returned and the scheduler decides.
+   */
+  fieldTemplates(): PromptTemplate[] {
+    return this.templates().filter((t) => t.field !== undefined)
   }
 
   /**

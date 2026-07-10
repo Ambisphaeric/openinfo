@@ -331,9 +331,9 @@ export type HintCandidate = Static<typeof HintCandidate>
 export const QueryResult = Type.Object(
   {
     source: Type.Union(
-      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'queue'].map((s) => Type.Literal(s)),
+      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue'].map((s) => Type.Literal(s)),
     ),
-    items: Type.Array(Type.Unknown(), { description: 'hydrated rows; element shape is keyed by `source`' }),
+    items: Type.Array(Type.Unknown(), { description: 'hydrated rows; element shape is keyed by `source` (fields → FieldValue, #61)' }),
     top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     truncated: Type.Boolean({ description: 'true when more rows existed than were returned under `top`' }),
     suppressed: Type.Optional(

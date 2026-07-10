@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FieldValue, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
@@ -238,7 +238,7 @@ test('surface routes: seeded HUD is served, edits round-trip with a bumped versi
     // the seeded openinfo HUD surface is served through the block-renderer's single source of truth
     const hud = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
     assert.equal(hud.name, 'openinfo HUD')
-    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'relevant-now', 'moments'])
+    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'relevant-now', 'moments', 'fields'])
     assert.equal(hud.version, 1)
 
     // unknown surface ⇒ 404
@@ -252,7 +252,7 @@ test('surface routes: seeded HUD is served, edits round-trip with a bumped versi
     assert.equal(putRes.status, 200)
     assert.equal(((await putRes.json()) as Surface).version, 2)
     const reloaded = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
-    assert.deepEqual(reloaded.stack.map((b) => b.block), ['now', 'relevant-now'])
+    assert.deepEqual(reloaded.stack.map((b) => b.block), ['now', 'relevant-now', 'fields'])
 
     // id mismatch and invalid body are rejected
     assert.equal((await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`, {
@@ -687,6 +687,80 @@ test('e2e: fake llm + seeded HUD surface → data hydration round-trip through t
         assert.ok((result.items as RelevantEntity[]).length >= 1)
       }
     }
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('e2e: fast fields fan out over the drain → field.updated on the bus + the fields query hydrates with provenance (#61)', async () => {
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  // The bus is what the WS feed broadcasts from — subscribing here is the driven proof the fan-out
+  // publishes field.updated (the same seam api/http.ts rebroadcasts to WS clients), mirroring the
+  // draft.created e2e below rather than standing up a raw socket.
+  const updates: FieldValue[] = []
+  app.bus.subscribe('field.updated', (v) => {
+    updates.push(v)
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    // distill.enabled gates the drain that reaches distillThrottled (where the fan-out rides); distill.fields
+    // is the field-specific gate. Text chunks skip transcription, so no stt endpoint is needed.
+    for (const key of ['distill.enabled', 'distill.fields']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 7, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    // Two mic chunks spanning 20s (> the 15s cadence) so the accumulator releases mid-session; the material
+    // is long enough to clear all three shipped fields' minChars gates (topic 40 / entities 60 / work 80).
+    for (const c of [
+      chunk(1, 0, 'we should ship the Q3 security review deck to Dana on Thursday afternoon'),
+      chunk(2, 20, 'Dana agreed and will schedule the vendor security review for next week'),
+    ]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+
+    // the drain fans out the fields at idle → the fields query hydrates all three with real provenance
+    await eventuallyHttp(async () => {
+      const result = (await (await fetch(`${base}/query`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ source: 'fields', params: { workspace: 'default', session: started.id } }),
+      })).json()) as QueryResult
+      assert.equal(result.source, 'fields')
+      const items = result.items as FieldValue[]
+      const ids = new Set(items.map((v) => v.fieldId))
+      assert.ok(ids.has('field-topic') && ids.has('field-entities') && ids.has('field-work-items'), 'all three shipped fields hydrate')
+      for (const v of items) {
+        assert.equal(v.provenance.endpoint, 'llm.fast') // real provenance (never fabricated)
+        assert.equal(v.provenance.model, 'llama-3.2-3b')
+        assert.equal(v.state, 'provisional') // fast results are provisional by definition (#66)
+      }
+    })
+    // and the fan-out published field.updated on the bus (the WS broadcast seam) — the driven proof
+    assert.ok(updates.length >= 3, `field.updated fired for each field (got ${updates.length})`)
+    assert.ok(updates.every((u) => u.provenance.endpoint === 'llm.fast'))
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })

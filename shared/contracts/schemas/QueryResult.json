@@ -51,13 +51,17 @@
           "type": "string"
         },
         {
+          "const": "fields",
+          "type": "string"
+        },
+        {
           "const": "queue",
           "type": "string"
         }
       ]
     },
     "items": {
-      "description": "hydrated rows; element shape is keyed by `source`",
+      "description": "hydrated rows; element shape is keyed by `source` (fields → FieldValue, #61)",
       "type": "array",
       "items": {}
     },

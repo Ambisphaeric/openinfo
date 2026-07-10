@@ -9,6 +9,9 @@ export const Events = {
   // Ephemeral live-transcript fast-path (#58) — payload is a TranscriptUpdate, NOT persisted anywhere.
   'transcript.updated': 'TranscriptUpdate',
   'entity.updated': 'Entity',
+  // A fast field's latest value changed (#61) — published immediately when a fan-out result lands,
+  // mirroring transcript.updated; the value is ALSO persisted (FieldValue), unlike the ephemeral feed.
+  'field.updated': 'FieldValue',
   'draft.created': 'Draft',
   'fabric.changed': 'Fabric',
   'surface.updated': 'Surface',

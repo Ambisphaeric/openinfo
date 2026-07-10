@@ -1,0 +1,124 @@
+{
+  "$id": "FieldValue",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "fieldId",
+    "workspaceId",
+    "label",
+    "value",
+    "state",
+    "provenance",
+    "updatedAt",
+    "schemaVersion"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "fieldId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "label": {
+      "minLength": 1,
+      "description": "the display name of the field (the prompt document name)",
+      "type": "string"
+    },
+    "value": {
+      "description": "the model output text for this field — the current value",
+      "type": "string"
+    },
+    "state": {
+      "description": "field micro-state / judge tier (#66) — fast results are `provisional` by definition (the confirm judge is a later issue). Document-configurable vocab per surface; never fabricated.",
+      "type": "string"
+    },
+    "provenance": {
+      "$id": "FieldValueProvenance",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "templateId",
+        "slot",
+        "endpoint"
+      ],
+      "properties": {
+        "templateId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "slot": {
+          "description": "fabric capability slot",
+          "anyOf": [
+            {
+              "const": "stt",
+              "type": "string"
+            },
+            {
+              "const": "tts",
+              "type": "string"
+            },
+            {
+              "const": "llm",
+              "type": "string"
+            },
+            {
+              "const": "vlm",
+              "type": "string"
+            },
+            {
+              "const": "ocr",
+              "type": "string"
+            },
+            {
+              "const": "embed",
+              "type": "string"
+            }
+          ]
+        },
+        "endpoint": {
+          "description": "the fabric endpoint name that produced the value (never a secret value)",
+          "type": "string"
+        },
+        "model": {
+          "description": "the model that answered, when the endpoint names one",
+          "type": "string"
+        },
+        "windowStart": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "windowEnd": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    },
+    "updatedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  }
+}

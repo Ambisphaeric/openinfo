@@ -2950,3 +2950,108 @@ lands; the issue's "cite the real-scenario benchmark once it lands" is noted as 
 No contract schema shapes changed (only example fixtures + a defaults document's content). No routes touched.
 Did NOT touch distill/queue/api routes/surfaces/query.ts/contracts schemas or any client file. CODE_MAP needs
 no change (no new module/route; edits are content within existing files + one new committed doc under docs/).
+## Slice: #61 — fast fields: prompt-as-document bound to a surface field (the fan-out substrate)
+
+The keystone of the prompt layer. Before this, a prompt template could only feed the ONE monolithic
+distill pass — no per-field cadence, per-field model, or user-authored field. This lands the composition
+unit: a stored prompt DOCUMENT bound to a surface field, and the engine that fans out every triggered
+fast-tier prompt CONCURRENTLY against the llm slot, each result landing in its bound field with full
+provenance. It EXTENDS the distill pass (the distiller still produces the distillate/moments/entities);
+it does not replace it. Builds directly on #23 (template routes — the prompt documents ride that store),
+#58 (the transcript fast-path + the distill cadence — fields ride the SAME accumulation seam), and #66
+(the `provisional` micro-state carrier — fast results are provisional by definition).
+
+### 1 — the fast-field prompt document (append-only extension of `PromptTemplate`)
+DECISION — extended the EXISTING `prompt-template` kind rather than a sibling kind. The template store
+(`DistillDocuments`) already discriminates instances by the `kind` FIELD while storing everything under
+one `prompt-template` LayoutStore kind, and #23 already ships GET/PUT `/templates` over the whole store.
+So a fast field is a `PromptTemplate` with `kind: 'field'` (appended to the closed kind union) and a new
+optional `field?: FastFieldBinding` = `{ fieldId, tier: 'fast'|'judge', trigger: { kind: 'transcript',
+minChars? }, scope: 'session'|'workspace' }`. Optional ⇒ every existing prompt document is unchanged; a
+user authors/edits a field prompt over the SAME #23 routes (no new route), read fresh per pass (the hot-
+edit seam). Contract adds: `FastFieldBinding` (registered), the `field` member + `'field'` kind on
+`PromptTemplate`, a new `FieldValue` record (+ `FieldValueProvenance`), `'fields'` on `BlockTypeName` /
+`BlockQuery.source` / `QueryResult.source`, and `'field.updated' → 'FieldValue'` on the `Events` map.
+Only the touched schemas were regenerated (Block/BlockQuery/BlockTypeName/PromptTemplate/QueryResult/
+Surface + 3 new) — the 9 known-drift schemas (Health/Fabric/Endpoint/…/QueueStatus) were reverted.
+
+### 2 — the fan-out scheduler (`distill/fields.ts` `FastFieldScheduler`) + the durable half
+On newly transcribed material (the SAME cadence-released batch the distiller sees), `runFields(chunks)`
+reads every `field`-binding prompt document, applies the per-field relevance gate (`trigger.minChars`
+vs the recent material length — the cheap routing the DoD asks for, disclosed as MINIMAL), and runs the
+TRIGGERED bindings CONCURRENTLY via `Promise.all` against the llm slot. Each result is ephemeral-then-
+durable: it publishes `field.updated` on the bus IMMEDIATELY (mirroring #58's transcript.updated; the
+engine rebroadcasts to WS clients) AND persists the field's latest value.
+- **Store shape (disclosed, cheapest honest):** `FieldValueStore` (`distill/field-values.ts`) — one
+  small config-shaped DOCUMENT per field in `_meta.db` via LayoutStore, keyed by a DETERMINISTIC id
+  encoding scope (`fv:<ws>:<session>:<field>` for session scope, `fv:<ws>::<field>` for workspace), so
+  `getLatest` IS the field's current value and every update keeps a version. Consistent with
+  `ItemSignalStore`/`TodoDocuments` (NOT a per-workspace record DB — a field value is config-shaped and
+  the workspace DB need not exist). Contract-validated before write (the #23 capture-id-before-Check
+  guard, since `Value.Check` narrows to `never` in the throw branch).
+- **Provenance is mandatory, never fabricated:** every `FieldValue` carries `{ templateId, slot,
+  endpoint, model?, windowStart?, windowEnd? }` → the render why-line `via <endpoint> · <model> ·
+  <template id>`. `state` is stamped `'provisional'` (#66) — the confirm judge is a later issue.
+- **Per-field failure isolation:** `runOne` catches its own invoke error → no `field.updated`, no
+  persisted value, NO fabricated result; one field's model error never sinks the batch or the others
+  (`Promise.all` would otherwise reject-all — each `runOne` resolves to a value or `undefined`).
+- **v0 context window (disclosed):** ONE shared recent-material window per session (the released batch,
+  speaker-labeled like the distiller, tail-capped at 4000 chars), gated per-field by `minChars`. Bespoke
+  per-field windows are deferred. Voice is resolved exactly as the distiller does, so a field prompt CAN
+  use the dials/`{{voice.rules}}` (the shipped defaults are transcript-only).
+
+### 3 — wiring + gate (`api/http.ts`)
+The scheduler runs on the SAME `distillThrottled` seam the distiller uses (so BOTH the legacy drain path
+and the workflow executor's `distill` seam fan out — the executor delegates to `distillThrottled`),
+gated by a NEW `distill.fields` flag (default OFF — a gated engine-processing behavior, CONTRIBUTING rule
+3). It rides the transcribed batch, so it inherits `distill.enabled` (+ `distill.transcribe` for audio)
+to have text. The legacy session-end flush distills the tail DIRECTLY (bypassing the throttle), so the
+fan-out is called explicitly there too — otherwise a short (sub-cadence) session's fields would strand.
+Best-effort with a guard catch (a fan-out error never sinks the drain). `field.updated` gets a bus→WS
+rebroadcast alongside distillate/moment/entity.
+
+### 4 — the shipped default bundle + surface rendering
+- **≥3 concurrent fast fields, seeded:** `topic` (minChars 40), `entities-mentioned` (60), `work-items`
+  (80) — tiny one-job prompts adapted from the distill/entities family, seeded by `DistillDocuments.
+  ensureDefaults` alongside the distill trio (a user's edit is never clobbered), enumerated via the new
+  `fieldTemplates()` reader (derived from the SAME `templates()` list #23 serves).
+- **`fields` query source (`surfaces/query.ts`):** reads `FieldValueStore.list(ws, session?)` (session
+  query returns the session's fields PLUS workspace-scoped ones), freshest first, each row a `FieldValue`
+  with provenance + `state`; honors the #66 dismiss suppression by `fieldId`; ungated like todos/teach
+  (documents, not a workspace DB) ⇒ unknown workspace reads `[]`, explainable-empty.
+- **Client `fields` block renderer (`client/surfaces/blocks/fields.ts`):** one row per field — label,
+  value, the provenance why-line, and the #66 micro-state dot for `provisional`; explainable empty +
+  suppressed-count disclosure. Registered in the block registry; a `fields` default lands in the surface
+  editor picker.
+- **Rendering on a surface:** the shipped `defaultHudSurface` gains a `fields` block (`show: 'on-match'`
+  so it's invisible until values exist / the flag is on), completing the DoD "rendering on a surface."
+
+### Tests + verification (all green in isolation; full suites green modulo the known flake)
+- **Contracts 68 → 70:** `promptTemplate.field.json` (a `field` prompt validates) + `fieldValue.session.
+  json` (a persisted value validates).
+- **Engine 530 → 539 (+9):** NEW `distill/fields.test.ts` (6 — fan-out CONCURRENCY proof via an injected
+  fake llm tracking max in-flight = N; the minChars gate skips a sub-threshold field WITHOUT an invoke;
+  nothing-triggers ⇒ no invoke; persistence round-trip + real provenance + `provisional`; per-field
+  failure isolation with no fabricated value; the `fields` query hydrates with provenance). NEW served
+  e2e in `api/http.test.ts` (+1, DRIVEN per the QA rule): boot the real engine, flip `distill.enabled`+
+  `distill.fields`, stream two mic chunks spanning >15s → assert `field.updated` on the bus (the WS
+  broadcast seam) for all three fields AND `POST /query {source:'fields'}` hydrates them with
+  `endpoint: 'llm.fast'` provenance + `provisional`. Reconciled 4 existing assertions to the HUD stack's
+  new `fields` block (documents.test ×2, http.test ×2) and the append-only `blockTypeNames` list
+  (surface-editor.test).
+- **Client 294 → 298 (+4):** NEW `blocks/fields.test.ts` — the provenance why-line renders through the
+  real `renderToHtml`, the provisional dot renders, explainable empty + all-dismissed disclosure, on-match
+  empty stays hidden.
+- **Full `pnpm -r test`:** contracts 70, engine 539, client 298 — green. KNOWN FLAKE CLASS: under one
+  parallel run the client's `seam streams, spools while engine is down, then flushes exactly once in
+  order` failed once (the EngineLink/spool wall-clock timing flake documented in #4/#66, untouched by this
+  slice — block-renderer/query/store/distill only); 298/298 green across 3 isolated client runs and the
+  engine + fields tests are green across 5 isolated runs.
+
+### Deferred / disclosed (out of this v0, by scope)
+The `judge` tier (a `judge` binding is a valid document but is not scheduled — the confirm pass is a later
+issue; that is why every value is `provisional`) · bespoke per-field context windows (v0 shares one recent
+window per session, gated per-field by minChars) · richer relevance routing (the workflow engine owns it —
+v0's gate is the minChars length check only) · a per-field cadence distinct from the distill cadence (v0
+rides the SAME cadence-released batch) · surfacing `distill.fields` in the Settings → Features section
+(left to the settings-copy owner; the flag ships in `flag.examples.json` and toggles over PUT /flags).

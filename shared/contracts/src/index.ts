@@ -13,6 +13,7 @@ export * from './records/pinChunk.js'
 export * from './records/teach.js'
 export * from './records/commitment.js'
 export * from './records/signal.js'
+export * from './records/fieldValue.js'
 export * from './config/voice.js'
 export * from './config/surface.js'
 export * from './config/mode.js'
@@ -42,10 +43,11 @@ import { PinChunk } from './records/pinChunk.js'
 import { TeachSignal, TeachSignalKind } from './records/teach.js'
 import { Commitment, Watcher } from './records/commitment.js'
 import { ItemSignal, ItemSignalKind } from './records/signal.js'
+import { FieldValue, FieldValueProvenance } from './records/fieldValue.js'
 import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './config/voice.js'
 import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surface.js'
 import { Mode } from './config/mode.js'
-import { PromptTemplate } from './config/promptTemplate.js'
+import { PromptTemplate, FastFieldBinding } from './config/promptTemplate.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
 import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult } from './config/discovery.js'
 import { StarterModel, StarterModels } from './config/local.js'
@@ -58,10 +60,10 @@ import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarS
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
-  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind,
+  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
-  Mode, PromptTemplate, Fabric, Endpoint, LocalRuntime, FabricProfile,
+  Mode, PromptTemplate, FastFieldBinding, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   TodoList, TodoItem, TodoProvenance,
