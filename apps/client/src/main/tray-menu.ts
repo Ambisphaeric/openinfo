@@ -186,6 +186,15 @@ export const captureStatusItems = (statuses: SenseStatus[]): TrayMenuItem[] =>
       { id: `cap-${s.sense}`, type: 'header', label: `${senseDot(s.level)} ${s.label} — ${s.state}`, enabled: false },
       { id: `cap-${s.sense}-detail`, type: 'normal', label: `    ${s.detail}`, enabled: false },
     ]
+    // The blocking-gate line (issue #7): when a gate BEYOND the OS-permission layer is what actually stops
+    // this sense — the sense toggled off, engine unreachable, no session, or an engine-side processing gate
+    // (distill/transcribe off, empty/failing stt-ocr endpoint) — name it here so the sense never reads as a
+    // granted-but-silent "off". The OS-permission gate is skipped: the header + detail lines above already
+    // say it (no redundant line), and its one-click fix is the fix-it item below.
+    if (s.blocking && s.blocking.gate !== 'os-permission') {
+      items.push({ id: `cap-${s.sense}-blocked`, type: 'normal', label: `    ⚠ blocked: ${s.blocking.reason}`, enabled: false })
+      if (s.blocking.fix) items.push({ id: `cap-${s.sense}-blockfix`, type: 'normal', label: `    → ${s.blocking.fix}`, enabled: false })
+    }
     if (s.fixCommand) items.push({ id: `cap-${s.sense}-fix`, type: 'normal', label: `    ${senseFixLabel(s.sense)}`, command: s.fixCommand, enabled: true })
     return items
   })

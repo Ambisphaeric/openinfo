@@ -129,6 +129,11 @@ body.settings{padding:0;background:
 .stat-note{margin-top:10px;font-size:12px}
 .stat-fail-class{font-family:var(--mono);font-size:11px;color:var(--bad);text-transform:uppercase;letter-spacing:.06em}
 .stat-hint{color:var(--warn)}
+.gate-chain{display:flex;flex-wrap:wrap;gap:6px 12px;margin:6px 0 2px;padding-left:2px}
+.gate{display:inline-flex;align-items:baseline;font-size:11.5px;color:var(--muted)}
+.gate.ok{color:var(--muted)}
+.gate.block{color:var(--bad);font-weight:600}
+.gate.off{color:var(--faint)}
 .stat-defer{margin-top:20px;font-size:12px;color:var(--faint);border-top:1px solid var(--line-soft);
   padding-top:14px;max-width:74ch;line-height:1.55}
 /* ---------- Privacy ---------- */
