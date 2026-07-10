@@ -347,3 +347,73 @@ test('pins + page-anchored chunks persist per workspace; unknown workspace reads
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('upsertEntity: cross-source corroboration promotes a provisional link to confirmed + teaches the heard-as alias (#74)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-xsrc-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // Tighten the auto band so the ASR homophone "pie dev" (~0.92 fuzzy) lands PROVISIONAL on its own — the
+    // cross-source multiplier is what must lift it into auto. (Same band config across the whole scenario.)
+    const resolverConfig = { autoBand: 0.95, provisionalBand: 0.5, ambiguityMargin: 0.05, establishmentBoost: 0.1, establishmentSaturation: 32, halfLifeHours: 24 * 7 }
+
+    // Corpus: an established `pi.dev` artifact (first-of-its-kind create → silent, no state).
+    const created = registry.upsertEntity({ workspaceId: 'ws-x', kind: 'artifact', name: 'pi.dev', seenAt: '2026-07-07T13:00:00Z', resolverConfig })
+    assert.equal(created.state, undefined)
+
+    // A mangled mention with NO screen agreement → provisional link, alias NOT confirmed.
+    const heardOnly = registry.upsertEntity({
+      workspaceId: 'ws-x', kind: 'artifact', name: 'pie dev', seenAt: '2026-07-07T14:00:08Z', resolverConfig,
+      heardAs: { text: 'pie dev', source: 'stt', at: '2026-07-07T14:00:08Z' },
+      sighting: { via: 'heard', at: '2026-07-07T14:00:08Z', distillateId: 'dst-a' },
+    })
+    assert.equal(heardOnly.id, created.id) // linked to pi.dev
+    assert.equal(heardOnly.state, 'provisional') // reviewable — not yet confirmed
+    assert.ok((heardOnly.heardAs ?? []).some((h) => h.text === 'pie dev'))
+
+    // SAME mangle, this time corroborated by an in-window `seen` sighting of "pi.dev" on screen.
+    const corroborated = registry.upsertEntity({
+      workspaceId: 'ws-x', kind: 'artifact', name: 'pie dev', seenAt: '2026-07-07T14:05:08Z', resolverConfig,
+      heardAs: { text: 'pie dev', source: 'stt', at: '2026-07-07T14:05:08Z' },
+      sighting: { via: 'heard', at: '2026-07-07T14:05:08Z', distillateId: 'dst-b' },
+      crossSighting: { via: 'seen', at: '2026-07-07T14:05:04Z', detail: 'pi.dev' },
+      signals: { crossSourceCorroboration: 1.5 },
+    })
+    assert.equal(corroborated.id, created.id)
+    assert.equal(corroborated.state, 'confirmed') // promoted provisional → confirmed, no user ask
+    assert.ok((corroborated.confidence ?? 0) >= 0.95)
+    // the ASR-mangled variant is taught as a heard-as alias (deduped — one entry)
+    assert.deepEqual((corroborated.heardAs ?? []).map((h) => h.text), ['pie dev'])
+    // both senses are in the evidence trail
+    assert.deepEqual((corroborated.sightings ?? []).map((s) => s.via).sort(), ['heard', 'heard', 'seen'])
+    const seen = (corroborated.sightings ?? []).find((s) => s.via === 'seen')
+    assert.equal(seen?.detail, 'pi.dev')
+
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('upsertEntity: repeat cross-source corroboration is idempotent — no duplicate heardAs or sightings (#74)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-xsrc-idem-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.upsertEntity({ workspaceId: 'ws-i', kind: 'artifact', name: 'pi.dev', seenAt: '2026-07-07T13:00:00Z' })
+    const upsert = () =>
+      registry.upsertEntity({
+        workspaceId: 'ws-i', kind: 'artifact', name: 'pie dev', seenAt: '2026-07-07T14:05:08Z',
+        heardAs: { text: 'pie dev', source: 'stt', at: '2026-07-07T14:05:08Z' },
+        sighting: { via: 'heard', at: '2026-07-07T14:05:08Z', distillateId: 'dst-b' },
+        crossSighting: { via: 'seen', at: '2026-07-07T14:05:04Z', detail: 'pi.dev' },
+        signals: { crossSourceCorroboration: 1.5 },
+      })
+    upsert()
+    const second = upsert() // identical window, replayed
+    assert.equal(second.state, 'confirmed')
+    assert.deepEqual((second.heardAs ?? []).map((h) => h.text), ['pie dev']) // no dup
+    assert.deepEqual((second.sightings ?? []).map((s) => s.via).sort(), ['heard', 'seen']) // no dup
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
