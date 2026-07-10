@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
+import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
@@ -88,6 +88,9 @@ interface WorkspaceRow {
   db_file: string
   color: string | null
   retention_days: number | null
+  // Layer 3 of the egress-consent policy (#64/#128): the workspace's wholesale egress denial, stored as
+  // the JSON-serialized EgressPolicy. null ⇒ this workspace does not deny (defers to the other layers).
+  egress: string | null
   created_at: string
 }
 
@@ -109,7 +112,7 @@ export class WorkspaceRegistry {
 
   all(): Workspace[] {
     const rows = this.metaDb
-      .prepare('select id, name, db_file, color, retention_days, created_at from workspaces order by created_at')
+      .prepare('select id, name, db_file, color, retention_days, egress, created_at from workspaces order by created_at')
       .all() as WorkspaceRow[]
     return rows.map((row) => this.fromRow(row))
   }
@@ -117,19 +120,34 @@ export class WorkspaceRegistry {
   ensureWorkspace(input: { id: string; name: string; color?: string; retentionDays?: number }): Workspace {
     const dbFile = `${input.id}.db`
     const existing = this.metaDb
-      .prepare('select id, name, db_file, color, retention_days, created_at from workspaces where id = ?')
+      .prepare('select id, name, db_file, color, retention_days, egress, created_at from workspaces where id = ?')
       .get(input.id) as WorkspaceRow | undefined
     if (existing) return this.fromRow(existing)
 
     const createdAt = new Date().toISOString()
     this.metaDb
-      .prepare('insert into workspaces (id, name, db_file, color, retention_days, created_at) values (?, ?, ?, ?, ?, ?)')
-      .run(input.id, input.name, dbFile, input.color ?? null, input.retentionDays ?? null, createdAt)
+      .prepare('insert into workspaces (id, name, db_file, color, retention_days, egress, created_at) values (?, ?, ?, ?, ?, ?, ?)')
+      .run(input.id, input.name, dbFile, input.color ?? null, input.retentionDays ?? null, null, createdAt)
     this.openWorkspace(input.id)
     const workspace: Workspace = { id: input.id, name: input.name, dbFile, createdAt }
     if (input.color !== undefined) workspace.color = input.color
     if (input.retentionDays !== undefined) workspace.retentionDays = input.retentionDays
     return workspace
+  }
+
+  /**
+   * Set (or clear) a workspace's layer-3 egress-deny policy (#64/#128) — the ONLY write path for the
+   * broadest content-side egress layer. `deny:true` denies egress wholesale for everything the workspace
+   * scopes; `undefined` clears it (the workspace defers to the other layers). The row round-trips through
+   * `fromRow`, so the distiller's consent resolver reads the live policy on its next pass. The workspace is
+   * created on demand (mirrors the other writers). No UI yet — the Settings toggle is a later slice.
+   */
+  setEgressPolicy(id: string, egress: EgressPolicy | undefined): Workspace {
+    this.ensureWorkspace({ id, name: id })
+    this.metaDb
+      .prepare('update workspaces set egress = ? where id = ?')
+      .run(egress !== undefined ? JSON.stringify(egress) : null, id)
+    return this.all().find((workspace) => workspace.id === id)!
   }
 
   /**
@@ -991,9 +1009,15 @@ export class WorkspaceRegistry {
   private createMetaTables(): void {
     this.metaDb
       .prepare(
-        'create table if not exists workspaces (id text primary key, name text not null, db_file text not null unique, color text, retention_days integer, created_at text not null)',
+        'create table if not exists workspaces (id text primary key, name text not null, db_file text not null unique, color text, retention_days integer, egress text, created_at text not null)',
       )
       .run()
+    // Additive migration (#128): DBs created before the workspace egress-deny layer predate the `egress`
+    // column. Add it in place so an existing meta.db rehydrates the layer-3 policy instead of dropping it.
+    const workspaceColumns = this.metaDb.prepare('pragma table_info(workspaces)').all() as { name: string }[]
+    if (!workspaceColumns.some((column) => column.name === 'egress')) {
+      this.metaDb.prepare('alter table workspaces add column egress text').run()
+    }
     this.metaDb
       .prepare(
         'create table if not exists documents (kind text not null, key text not null, version integer not null, body text not null, created_at text not null, primary key (kind, key, version))',
@@ -1010,6 +1034,9 @@ export class WorkspaceRegistry {
     }
     if (row.color !== null) workspace.color = row.color
     if (row.retention_days !== null) workspace.retentionDays = row.retention_days
+    // #128: rehydrate the layer-3 egress-deny policy that fromRow used to drop, so the distiller's consent
+    // resolver actually sees a workspace's wholesale egress denial (`workspace.egress?.deny`).
+    if (row.egress !== null) workspace.egress = JSON.parse(row.egress) as EgressPolicy
     return workspace
   }
 }

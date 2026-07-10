@@ -22,6 +22,29 @@ test('workspace registry creates one sqlite file per workspace', async () => {
   }
 })
 
+test('#128: a workspace-level egress deny survives the store row round-trip (fromRow used to drop it)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-egress-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // Set the layer-3 egress-deny policy, then read it back through the SAME code path the distiller uses.
+    const set = registry.setEgressPolicy('default', { deny: true })
+    assert.equal(set.egress?.deny, true)
+    assert.equal(registry.all().find((w) => w.id === 'default')?.egress?.deny, true, 'all() rehydrates egress')
+    assert.equal(registry.ensureWorkspace({ id: 'default', name: 'Default' }).egress?.deny, true, 'ensureWorkspace too')
+    registry.close()
+
+    // The policy is durable: a fresh registry over the same dir rehydrates the deny (persisted, not in-memory).
+    const reopened = new WorkspaceRegistry(dir)
+    assert.equal(reopened.all().find((w) => w.id === 'default')?.egress?.deny, true, 'the deny persists across reopen')
+    // Clearing the policy round-trips as absent — the workspace defers to the other layers again.
+    reopened.setEgressPolicy('default', undefined)
+    assert.equal(reopened.all().find((w) => w.id === 'default')?.egress, undefined, 'a cleared policy reads as absent')
+    reopened.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('upsertEntity resolves the same entity across windows into ONE record', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-entities-'))
   try {
