@@ -3332,3 +3332,79 @@ have, and the override short-circuit as store/query semantics.
 - **`moveSession` does not migrate the v2 evidence trail** — the moved-entity `Contribution` carries only
   kind/name/aliases/provenance/momentRefs; the destination's own sightings/heardAs/overrides are preserved via
   `...base`, but moved sightings are not subtracted from the source (evidence trail is append-only; acceptable).
+
+## Slice: Egress guard — content/PII filter on egress hops (redact-and-continue / hold-and-surface)  *(M5 #63, branch feat/63-guard-slot, 2026-07-10)*
+
+The pipeline's privacy filter between local capture and any external intelligence. On every hop MARKED
+egress (content leaving the machine — the `{allow:true,reach:'egress'}` return #64 documented as the guard
+hook), a `guard` fabric slot classifies the outbound content; sensitive spans (a card number in a
+screenshot's OCR, a secret in a transcript) never reach an external API un-redacted by default. Local-only
+hops never invoke it (no egress ⇒ no filter — enforced upstream by the #64 gate).
+
+### What landed
+- **A first-class `guard` SLOT KIND**, not an `llm.judge`-style name convention (the #88 lesson): optional
+  append-only `guard: Endpoint[]` on `Fabric.slots` (a fabric predating #63, or one that never egresses,
+  still validates). Not part of onboarding discovery classification in v0 (configured manually).
+- **Contracts** (`config/guard.ts`): `GuardBehavior` · `GuardSpan` ({kind,start,length} — a DESCRIPTOR,
+  never the raw value) · `GuardVerdict` ({outcome clean|redacted|held|unguarded, behavior, guarded,
+  maskedSpanCount, spans?, guardEndpoint?, reason}) · `GuardPolicy` (the verdict→behavior document —
+  document-driven, NOT hardcoded) · `GuardHold` (a suspended hop's durable audit record). Appended optional
+  onto `Distillate.provenance.guard`; `QueueFailure.class` gains `guard-held`; event `guard.hold.updated`.
+  `pnpm gen` regenerated (schemas committed) + 3 example JSONs.
+- **Pure core + classifier** (`fabric/guard.ts`): `applyRedaction`/`redactMessages` (mask back-to-front
+  with `[redacted:<kind>]`, offsets mapped across the joined messages) · `evaluateGuard` (the WHOLE
+  decision table incl. the fail-closed empty-slot edges) · `classifyEgressText` (POSTs the outbound text to
+  an openai-compat guard endpoint, parses `{flagged:[…]}`) · `runEgressGuard` (classify→evaluate→
+  redact-or-throw; a configured-but-unreachable guard FAILS CLOSED) · `GuardHeldError`.
+- **Interception** (`fabric/invoke.ts` `invokeLlm`): at the egress hook, redact-and-continue masks the
+  outbound copy and proceeds (verdict on `LlmResult.guard`); hold-and-surface / fail-closed throws
+  `GuardHeldError` — a HARD STOP, never a silent reroute to a local endpoint. A local hop never enters it.
+- **Policy + holds store** (`guard/documents.ts`): `GuardDocuments` seeds the default
+  redact-and-continue / not-acknowledged policy; `GuardHoldStore` is one `_meta.db` doc per workspace (the
+  ItemSignalStore pattern), `resolve` flips release/denied idempotently.
+- **Distiller wiring**: builds the guard opts from the policy + the `guard.egress` flag + the fabric guard
+  slot, threads them onto every window invoke; on a HOLD records a `GuardHold` (verdict, span descriptors —
+  never the raw value), publishes it, and SKIPS the window (no distillate — nothing left the machine).
+- **Routes**: `GET /guard-holds` · `POST /guard-holds/resolve` (release/deny, mirrors postItemSignal) ·
+  `GET`/`PUT /guard/policy` (contract-validated, version-bumped).
+- **Audit ledger** (`surfaces/settings/sections/ledger.ts`): the GUARD column lights up from
+  `provenance.guard` (clean · redacted·N · unguarded · "— no guard" for a local hop), and held hops surface
+  in a held block with a release/deny affordance (an inline POST). The verdict shows span KINDS on hover,
+  never the raw value.
+
+### Edge semantics (owner-confirmed canon), all in `evaluateGuard`
+- guard configured + flagged + redact-and-continue → mask + proceed (`redacted`).
+- guard configured + flagged + hold-and-surface (strict) → HOLD (`held`).
+- EMPTY guard slot + strict → HOLD, fail closed.
+- EMPTY guard slot + default + acknowledged → proceed UNGUARDED (recorded), never silent.
+- EMPTY guard slot + default + NOT acknowledged → HOLD (never silently unguarded).
+- configured guard unreachable/unparseable → HOLD, fail closed (a configured guard never lets content leave
+  unguarded).
+
+### Tests + verification (all green in isolation and under `pnpm -r`)
+- **Contracts 73 → 76:** +3 examples (guardPolicy/guardHold/guardVerdict); every prior example still validates.
+- **Engine 609 (from 596-era baseline):** `fabric/guard.test.ts` (pure: applyRedaction/redactMessages/the
+  full evaluateGuard table) · `fabric/guard-invoke.test.ts` (a REAL fake guard HTTP endpoint: redact/clean/
+  hold/fail-closed at the runEgressGuard seam, + invokeLlm wiring: a strict flagged egress hop throws, an
+  empty-slot fail-closed hop throws, and a LOCAL hop NEVER invokes the guard) · `distill/guard.test.ts`
+  (held window → GuardHold recorded + no distillate; redacted verdict → provenance; guard OFF → skipped) ·
+  `api/settings-guard.test.ts` (DRIVEN served: the ledger guard column + held block render, POST
+  release flips status, PUT /guard/policy validates). Updated the two ledger tests that asserted the old
+  "guard not built yet" footer.
+- **Full `pnpm -r build && pnpm -r test`:** contracts 76, engine 609, client 299 — green.
+
+### Deferred / disclosed (never fabricated)
+- **Real llama-guard output → spans is a follow-up adapter** — v0 speaks ONE `{flagged:[…]}` JSON shape
+  (like the STT adapters, a per-flavor adapter maps safe/unsafe+categories later); tested with a fake endpoint.
+- **The guard intercepts only the LLM text-egress path** — screen (ocr/vlm) content is content-class
+  `screen` and never egresses; stt audio egress is not a text-span filter. Both disclosed.
+- **AUTO re-driving a released hold is deferred** — the raw content is NOT retained (fail closed), so
+  release marks the hold resolved + surfaces it; the operator re-runs, or switches the policy to
+  redact-and-continue / acknowledges. The hold + visible surfacing + HTTP release/deny route ARE shipped.
+- **local/cloud guard endpoints skipped in v0** — http/openai-compat only (a managed-local guard runtime is
+  a follow-up). A hosted guard would itself egress the content — the guard endpoint should be local.
+- **No Settings UI to edit the policy yet** — the `PUT /guard/policy` route + document exist; a toggle is a
+  later slice (mirrors the #64 "no UI for egress.deny yet" disclosure).
+- **The held block's release/deny buttons** post via an inline section script (the Settings surface is
+  server-rendered per request, so it executes on load); if section navigation becomes client-side that
+  handler needs rebinding. The route it calls is fully tested.
