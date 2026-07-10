@@ -457,8 +457,8 @@ interface CapabilityRow {
 }
 
 const CAPABILITY_ROWS: readonly CapabilityRow[] = [
-  { slots: ['llm'], title: 'Thinking', what: 'chat, distill, drafts — the core pass' , missing: 'no language model found — distill can’t run until one exists' },
-  { slots: ['stt'], title: 'Hearing', what: 'transcribe what is said in a call', missing: 'no transcription server found — openinfo can still distill typed/text capture; audio needs one' },
+  { slots: ['llm'], title: 'Thinking', what: 'chat, distill, drafts — the core pass; a current-generation ~8B-class model keeps the loop real-time' , missing: 'no language model found — distill can’t run until one exists' },
+  { slots: ['stt'], title: 'Hearing', what: 'transcribe what is said in a call; parakeet-class STT keeps up in real time, whisper is a slower fallback', missing: 'no transcription server found — openinfo can still distill typed/text capture; audio needs one' },
   { slots: ['ocr', 'vlm'], title: 'Reading the screen', what: 'read text/UI off the screen', missing: 'no screen-reading model found', later: true },
   { slots: ['tts'], title: 'Speaking', what: 'read results back aloud', missing: 'no speech model found', later: true },
 ]
@@ -533,7 +533,11 @@ export const starterOfferHtml = (models: LocalModelStatus[]): string => {
   if (models.length === 0) return ''
   return (
     '<div class="starter-offer"><div class="starter-head">Or download a starter model</div>' +
-    '<div class="sub">No server needed — openinfo can fetch a small model and run it for you (llama.cpp for chat, whisper.cpp for audio).</div>' +
+    '<div class="sub">No server needed — openinfo can fetch a small model and run it for you (llama.cpp for chat, ' +
+    'whisper.cpp for audio). These are tier-zero warm-up models: enough for a first moment on CPU, not the ' +
+    'real-time fast tier. For that, serve a current-generation ~8B-class chat model plus parakeet-class STT on a ' +
+    'runtime with model residency and concurrency (mlx/omlx on Apple silicon, a CUDA equivalent elsewhere) — see the ' +
+    'model support matrix.</div>' +
     models.map(starterRowHtml).join('') +
     '</div>'
   )
@@ -621,6 +625,11 @@ export const getStartedHtml = (discovery: DiscoverResult, localModels: LocalMode
     `<script type="application/json" id="suggestion">${jsonForScript(discovery.suggestion)}</script>` +
     `<div class="gs-actions">${action}</div>` +
     starter +
+    '<div class="sub gs-rec">Recommended for the real-time loop: a current-generation ~8B-class chat model plus ' +
+    'parakeet-class STT, served on a runtime with model residency, concurrency, and current throughput ' +
+    'optimizations (speculative-decoding-class features) — mlx/omlx on Apple silicon, a CUDA equivalent elsewhere. ' +
+    'Runtimes without those will not sustain the cadence. Add a judge-tier endpoint (a 27B / 35B-A3B-class model on ' +
+    'any OpenAI-compatible host) to light up the judging layer. See the model support matrix for the full ladder.</div>' +
     '<div class="sub gs-adv">Want full control? <a href="/settings/endpoints">Advanced setup</a> — profiles, cross-host endpoints, keys.</div>' +
     '</div>'
   )

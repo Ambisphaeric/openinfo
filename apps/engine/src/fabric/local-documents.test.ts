@@ -31,6 +31,20 @@ test('ensureDefaults seeds the starter-models catalog when absent', async () => 
   })
 })
 
+test('seeded catalog is current-generation and ordered warm-up-first (#68)', async () => {
+  const ids = seededStarterModels.models.map((m) => m.id)
+  // No stale previous-generation ids remain.
+  assert.ok(!ids.some((id) => id.startsWith('qwen2.5')), `stale ids present: ${ids.join(', ')}`)
+  // The llm slot leads with the small, warms-fast first-run default, then the larger step-up.
+  const llmIds = seededStarterModels.models.filter((m) => m.slot === 'llm').map((m) => m.id)
+  assert.deepEqual(llmIds, ['qwen3-1.7b-q4', 'qwen3-4b-q4'])
+  // stt is the whisper.cpp CPU fallback, base before small (smaller/faster first).
+  const sttIds = seededStarterModels.models.filter((m) => m.slot === 'stt').map((m) => m.id)
+  assert.deepEqual(sttIds, ['whisper-base-en', 'whisper-small-en'])
+  // The catalog frames itself as tier-zero, not the recommended real-time fast tier.
+  assert.match(seededStarterModels.description ?? '', /tier zero/i)
+})
+
 test('ensureDefaults never clobbers a user edit; the store keeps versions', async () => {
   await withStore((store) => {
     const docs = new StarterModelsDocuments(store)
