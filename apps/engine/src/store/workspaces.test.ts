@@ -506,3 +506,91 @@ test('clearEntityAmbiguity settles the LOSING side of a disambiguate without con
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ── #143 public-name gazetteer: the OSS-collision rival source for the clarify gate ──────────────────
+// The whole point: an internal repo that reused a famous OSS name ("Kubeflow") must trip the ≟ gate when
+// a mention sounds like the public project, instead of silently linking to the corpus entity.
+
+test('#143 e2e: "cube flow" against an internal Kubeflow repo + the gazetteer Kubeflow ⇒ ≟ offers both', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-gaz-e2e-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const ws = 'ws-gaz'
+    // A corporate repo named the same as the famous OSS project — the collision.
+    const repo = registry.upsertEntity({ workspaceId: ws, kind: 'artifact', name: 'Kubeflow', seenAt: '2026-07-08T09:00:00Z' })
+    assert.equal(repo.ambiguity, undefined, 'the first, clean mention does not ask')
+
+    // Heard "cube flow": links to the internal repo, but the public Kubeflow is a plausible rival ⇒ ambiguous.
+    const heard = registry.upsertEntity({ workspaceId: ws, kind: 'artifact', name: 'cube flow', seenAt: '2026-07-08T09:05:00Z', heardAs: { text: 'cube flow' } })
+    assert.equal(heard.id, repo.id, 'the winner is the CORPUS repo — never the gazetteer')
+    assert.equal(heard.state, 'provisional', 'the silent auto-link is downgraded to reviewable')
+    assert.equal(heard.ambiguity?.rivalName, 'Kubeflow', 'the public name is offered as the rival (≟ shows both)')
+    assert.equal(heard.ambiguity?.rivalId, 'gaz:kubeflow', 'a stable synthetic id so rejectedRivalId is durable')
+    const trail = heard.resolutions?.at(-1)
+    assert.equal(trail?.ambiguous, true)
+    assert.equal(trail?.rivalId, 'gaz:kubeflow')
+
+    // The ≟ answer (confirm: it IS the internal repo) — exactly what POST /teach/entity writes on `confirm`:
+    // pin the heard form to the linked entity and REJECT the gazetteer rival.
+    const confirmed = registry.overrideEntity(ws, repo.id, {
+      at: '2026-07-08T09:06:00Z', by: 'the user', pinnedName: 'cube flow', rejectedRivalId: 'gaz:kubeflow', rejectedRivalName: 'Kubeflow',
+    })
+    assert.equal(confirmed?.state, 'confirmed')
+    assert.equal(confirmed?.ambiguity, undefined, 'the ≟ marker is cleared once the user answers')
+
+    // A later "cube flow" resolves straight to the repo, no ≟ — the rejected public rival is never re-offered.
+    const later = registry.upsertEntity({ workspaceId: ws, kind: 'artifact', name: 'cube flow', seenAt: '2026-07-08T10:00:00Z' })
+    assert.equal(later.id, repo.id)
+    assert.equal(later.state, 'confirmed')
+    assert.equal(later.ambiguity, undefined, 'the settled collision never asks again')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#143 a mention that only SOUNDS like a public name (no corpus entity) stays SILENT — no create, no ask', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-gaz-silent-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const ws = 'ws-gaz-s'
+    // No "Kubeflow" in the corpus. "cube flow" creates a fresh entity — and is NOT marked ambiguous by the
+    // gazetteer (a gazetteer hit is never a corpus rival on a bare create).
+    const created = registry.upsertEntity({ workspaceId: ws, kind: 'artifact', name: 'cube flow', seenAt: '2026-07-08T09:00:00Z' })
+    assert.equal(created.name, 'cube flow', 'a NEW entity for the heard form — never the gazetteer Kubeflow')
+    assert.notEqual(created.id, 'gaz:kubeflow', 'the gazetteer entry is never created as an entity')
+    assert.equal(created.ambiguity, undefined, 'gazetteer-only ⇒ no ≟')
+    // Only one entity exists, and it is the heard form (no Kubeflow record was conjured).
+    const all = registry.listEntities(ws)
+    assert.equal(all.length, 1)
+    assert.equal(all[0]?.name, 'cube flow')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#143 the seeded gazetteer document is seed-if-absent and a user edit is NEVER clobbered', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-gaz-seed-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // First read seeds the shipped default.
+    assert.ok(registry.gazetteer().entries.some((e) => e.name === 'Kubeflow'), 'default seed carries Kubeflow')
+
+    // A user prunes it down to their own list.
+    registry.layouts.put('gazetteer', 'gazetteer-default', { entries: [{ name: 'Widgetron' }] })
+    assert.deepEqual(registry.gazetteer().entries, [{ name: 'Widgetron' }], 'the edit is what reads back')
+
+    // A resolution (which reads the gazetteer) must not re-seed over the edit — the edit survives.
+    registry.upsertEntity({ workspaceId: 'ws-seed', kind: 'artifact', name: 'anything', seenAt: '2026-07-08T09:00:00Z' })
+    assert.deepEqual(registry.gazetteer().entries, [{ name: 'Widgetron' }], 'never clobbered by a later read')
+
+    // And it is durable across a reopen (persisted in _meta.db, not defaulted back).
+    registry.close()
+    const reopened = new WorkspaceRegistry(dir)
+    assert.deepEqual(reopened.gazetteer().entries, [{ name: 'Widgetron' }], 'the edit persists across restart')
+    reopened.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

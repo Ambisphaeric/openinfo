@@ -41,6 +41,14 @@ import { nameSimilarity, normalizeForm } from './phonetic.js'
  * Ambiguity: if a plausible RIVAL (itself ≥ provisionalBand) scored within `ambiguityMargin` of the winner,
  * the resolution is `ambiguous` — a silent auto-link is DOWNGRADED to a reviewable provisional one, and the
  * rival is named so the clarify affordance (#75) can key off it.
+ *
+ * Rival-only candidates (#143): callers may pass extra `rivals` — candidates that participate in scoring and
+ * can be NAMED as the runner-up (and thus trip ambiguity), but are NEVER selected as the winner/match. This
+ * is how the public-name gazetteer (gazetteer.ts) injects an OUTSIDE rival: a heard form that links to a
+ * corpus entity AND scores near a famous public name is flagged ambiguous with the public name as the rival,
+ * without ever linking to (or creating) a record for the public name. They honor `rejectedRivalId` like any
+ * candidate, and — being considered only alongside the winner — are simply ignored when the band is `new`,
+ * so a gazetteer-only hit (no corpus link) stays SILENT.
  */
 
 export type ResolutionBand = 'auto' | 'provisional' | 'new'
@@ -227,6 +235,11 @@ export const resolveEntity = (input: {
   now: Date
   signals?: ResolutionSignals
   config?: ResolverConfig
+  /**
+   * RIVAL-ONLY candidates (#143): scored and eligible to be NAMED as the runner-up (so they can trip
+   * ambiguity), but never selected as the winner/match. The gazetteer's public-name rivals arrive here.
+   */
+  rivals?: readonly Entity[]
 }): Resolution => {
   const config = input.config ?? DEFAULT_RESOLVER_CONFIG
   const signals = input.signals ?? {}
@@ -246,18 +259,32 @@ export const resolveEntity = (input: {
     }
   }
 
+  const byScore = (a: ScoredCandidate, b: ScoredCandidate): number =>
+    finiteScore(b.score) - finiteScore(a.score) ||
+    b.entity.lastSeen.localeCompare(a.entity.lastSeen) ||
+    a.entity.name.localeCompare(b.entity.name)
+
   const scored = input.candidates
     .filter((c) => !rejected.has(c.id))
     .map((c) => scoreCandidate(input.heard, c, input.now, signals, config))
-    .sort(
-      (a, b) =>
-        finiteScore(b.score) - finiteScore(a.score) ||
-        b.entity.lastSeen.localeCompare(a.entity.lastSeen) ||
-        a.entity.name.localeCompare(b.entity.name),
-    )
+    .sort(byScore)
+
+  // Rival-only candidates (#143, e.g. gazetteer public names): scored like real candidates and eligible to
+  // be NAMED as the runner-up, but never winners. They honor `rejectedRivalId` too (a settled public rival
+  // is never re-offered), and are only consulted in the LINK branch below, so a rival-only hit against a
+  // `new`-band resolution changes nothing (gazetteer-only ⇒ silent).
+  const scoredRivals = (input.rivals ?? [])
+    .filter((c) => !rejected.has(c.id))
+    .map((c) => scoreCandidate(input.heard, c, input.now, signals, config))
+    .sort(byScore)
 
   const winner = scored[0]
-  const runnerUp = scored[1]
+  // The runner-up is the strongest of the real #2 candidate and the best rival-only candidate — whichever
+  // scores higher is the one the ambiguity gate weighs against the winner.
+  const bestRival = [scored[1], scoredRivals[0]]
+    .filter((c): c is ScoredCandidate => c !== undefined)
+    .sort(byScore)[0]
+  const runnerUp = bestRival
 
   const neutralComponents: ResolutionComponents = {
     phoneticFuzzy: winner?.phoneticFuzzy ?? 0,
