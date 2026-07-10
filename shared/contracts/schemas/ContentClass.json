@@ -1,0 +1,22 @@
+{
+  "$id": "ContentClass",
+  "description": "layer 4: content origin — screen never egresses; transcript/typed may",
+  "anyOf": [
+    {
+      "const": "screen",
+      "type": "string"
+    },
+    {
+      "const": "transcript",
+      "type": "string"
+    },
+    {
+      "const": "typed",
+      "type": "string"
+    },
+    {
+      "const": "unknown",
+      "type": "string"
+    }
+  ]
+}

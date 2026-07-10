@@ -3195,6 +3195,78 @@ went where, how much, and what filtered it.
   Health, etc. — committed schemas are stale vs source, e.g. `auth`/`chatTemplateKwargs` missing). Reverted from this
   branch to keep scope clean; belongs on the board as a "regenerate stale schemas" chore.
 
+## Slice: Layered egress-consent policy — four layers, most-specific denial wins  *(M5 #64, 2026-07-10)*
+
+Egress ("may this content leave the machine?") is now resolved across FOUR layers, ANY of which can DENY,
+with which-layer-won provenance on every decision — the voice-binding precedent (global → mode → workspace
+→ session, most-specific wins). FACTORY POSTURE unchanged: a fresh install has no egress-capable endpoint,
+so nothing can leave because no path out exists — egress is a primitive the user deliberately ADDS, not a
+setting to turn off.
+
+### The four layers (specificity order, most-specific → least)
+1. **content-class** (layer 4) — the datum's origin. `screen`-derived content NEVER egresses; `transcript`/
+   `typed` MAY. Derived from what the pipeline already knows (the distiller distills transcript; the screen
+   processor recognizes screen) — NO new upstream tagging.
+2. **prompt** (layer 2) — a `PromptTemplate.neverEgress` prompt document declares it never uses
+   egress-capable endpoints.
+3. **mode** (layer 3) — `Mode.egress.deny`.
+4. **workspace** (layer 3) — `Workspace.egress.deny` (the broadest content-side container).
+
+`resolveEgress` walks these most-specific → least and returns the FIRST denier (`{allowed,decidedBy,reason}`);
+no denier ⇒ `allowed`/`decidedBy:'default'`. **Layer 1 (endpoint)** is the orthogonal DESTINATION axis:
+`classifyEndpoint`/`classifyHost` classify an endpoint as `local` (loopback / RFC1918 LAN / link-local /
+mDNS `.local` / IPv6 ULA·link-local / engine-spawned `local` kind) or `egress` (any hosted host / `cloud`
+kind), failing CLOSED on an unreadable URL. Both live in `fabric/egress.ts`, pure and unit-tested.
+
+### Contracts (all APPEND-ONLY; `pnpm gen` re-ran, 5 new + 8 changed schemas committed)
+- New `config/egress.ts`: `EgressReach` · `EgressLayer` · `ContentClass` · `EgressPolicy{deny}` ·
+  `EgressDecision{reach,allowed,decidedBy,reason}`; registered in `AllSchemas`, exported from `index.ts`.
+- `Mode.egress?` / `Workspace.egress?` (EgressPolicy) · `PromptTemplate.neverEgress?` ·
+  `Distillate.provenance.egress?` / `OcrResult.provenance.egress?` (EgressDecision) ·
+  `QueueFailure.class` gains `egress-denied`. Records predating #64 omit the optionals and still validate.
+
+### Enforcement + the guard (#63) hook point
+`fabric/invoke.ts` `egressGate(endpoint, consent, …)` runs for EACH candidate endpoint at the fall-through
+seam, BEFORE any bytes leave: a `local` endpoint is always allowed; an `egress` endpoint is allowed only
+when consent permits, else it is SKIPPED with an `egress-denied` classified failure (so the invoke falls
+through to a local endpoint, or — if none remains — throws an `AggregateInvokeError` carrying the visible
+reason, never a silent skip). **The `{allow:true, reach:'egress'}` return is the documented decision point
+where the egress guard (#63) will INTERCEPT outbound content — a DENIAL short-circuits before it.** The
+resolved decision is stamped on `LlmResult`/`SttResult`/`ScreenTextResult` (only when consent was supplied)
+and threaded into distillate/ocr provenance. Wired end-to-end: `distill/distiller.ts` (transcript class;
+resolves mode/workspace/prompt denial per window; ONE `egressInvoke` wrapper carries consent to the summary
+AND the moments/entities extraction so a denial filters uniformly) and `screen/processor.ts` (screen class,
+which always denies — recognized screen text can only ever be produced locally).
+
+### Ledger lit up (where the data now exists)
+`surfaces/settings/sections/ledger.ts` now renders the EGRESS column from real decision provenance:
+"local", "local · &lt;layer&gt;" when it stayed local BY POLICY, or a distinct "egress" when content
+actually left (counted in the summary). A pre-#64 record with no decision falls back to the honest local
+default; the footer is reworded (egress marking BUILT, guard #63 still an honest absence). With the factory
+posture the column stays "local" — but truthfully, from data, not hardcoded.
+
+### Tests + verification
+- **Contracts 72 pass** (was 70; +2 example/registry validations from the new + amended schemas).
+- **Engine 581 pass** (+ new `fabric/egress.test.ts`: 15 pure cases — host classification incl. IPv6/mDNS/
+  fail-closed, most-specific-denial-wins, egressDecision invariants; + 4 `fabric/invoke.test.ts` enforcement
+  cases — egress endpoint skipped→falls through to local (no bytes leave), egress-only→`egress-denied`
+  aggregate, allowed+local→decision stamped, no-consent→no decision; + 4 `ledger.test.ts` render/build cases;
+  amended 2 ledger tests + 1 `api/settings-ledger.test.ts` route test whose assertions named the old "not
+  built" wording).
+- **Full `pnpm -r build && pnpm -r test`:** contracts 72 · engine 581 · client 297/298 all green EXCEPT the
+  KNOWN client `engine-link/seam` wall-clock flake (documented in the task brief) — GREEN when re-run in
+  isolation (1/1). Untouched by this slice (no client changes).
+
+### Deferred / disclosed
+- **No UI yet** to set `Mode`/`Workspace.egress.deny` or `PromptTemplate.neverEgress` — the contract + engine
+  fully honor them (and the screen/transcript content-class distinction is automatic); a Settings toggle is a
+  later slice. The policy is enforced today for any doc that carries the flags.
+- **`typed` vs `transcript`** are not distinguished in v0 (both may egress) — the distiller treats its text
+  windows as `transcript`. Distinguishing typed input is a later refinement (the class enum is ready).
+- **STT egress** rides the same gate but STT has no persisted provenance record (transcripts feed distill),
+  so no ledger row — consistent with #65's STT-usage deferral.
+- **Guard (#63)** is a separate issue: this slice leaves the clearly-documented hook point, nothing more.
+
 ## Slice: Entity contract v2 — confidence, state, heard-as, sightings, sovereign overrides  *(M5, #73, branch feat/73-entity-contract, 2026-07-10)*
 
 Slice 1 of the entity-mapping arc (#72–#76). The resolver (#72) DOES NOT EXIST YET; this ships the honest

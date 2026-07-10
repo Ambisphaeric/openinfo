@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { CaptureChunk, Distillate, Entity, EntityProvenance, Moment, Mode, PromptTemplate, VoiceBinding } from '@openinfo/contracts'
 import { DISTILLATE_SCHEMA_VERSION } from '@openinfo/contracts'
-import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import { FabricDocuments, invokeLlm, resolveEgress, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
 import { entityMentioned, extractEntities } from '../index/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
@@ -136,6 +136,19 @@ export class Distiller {
       for (const window of windows) {
         const workspaceId = window.chunks[0]!.workspaceId
         const resolved = resolveVoice(registers, bindings, { sessionId, workspaceId, modeId: mode.id })
+        // Resolve layered egress consent (#64) for THIS window's transcript content. A distill window is
+        // transcript-class content (mic/system audio), which MAY egress — unless the prompt is declared
+        // never-egress, or the mode/workspace denies. The resolved consent rides EVERY invoke for this
+        // window (summary + moments + entities) so a denial filters egress endpoints uniformly; the
+        // returned decision is stamped on provenance for the audit ledger. Most-specific denial wins.
+        const workspace = this.store.all().find((w) => w.id === workspaceId)
+        const egress = resolveEgress({
+          contentClass: 'transcript',
+          promptNeverEgress: template.neverEgress,
+          modeDenies: mode.egress?.deny,
+          workspaceDenies: workspace?.egress?.deny,
+        })
+        const egressInvoke: LlmInvoke = (messages, opts) => this.invoke(messages, { ...opts, egress })
         // Speaker attribution for free (see transcribe.ts::speakerLabel): mic → "me", system-audio →
         // "them". Prefixing the transcript line is the least-invasive carry — it flows unchanged into
         // {{transcript}} for the summary AND the moment/entity extraction prompts, so the model can
@@ -154,7 +167,7 @@ export class Distiller {
           windowEnd: window.end,
         })
         const messages: LlmMessage[] = [{ role: 'user', content: prompt }]
-        const result = await this.invoke(messages, { maxTokens: mode.distill.tokenBudget })
+        const result = await egressInvoke(messages, { maxTokens: mode.distill.tokenBudget })
 
         const distillate: Distillate = {
           id: this.newId(),
@@ -177,6 +190,9 @@ export class Distiller {
             // carry it verbatim so the audit ledger can render this pass's consumption. Optional — a result
             // without usage (older path) still persists a valid distillate.
             ...(result.usage !== undefined ? { usage: result.usage } : {}),
+            // #64: carry the resolved egress decision (endpoint reach + which layer decided) so the ledger's
+            // egress column renders from real data — "local", or "egress" when content actually left.
+            ...(result.egress !== undefined ? { egress: result.egress } : {}),
           },
           schemaVersion: DISTILLATE_SCHEMA_VERSION,
           createdAt: this.now().toISOString(),
@@ -209,7 +225,7 @@ export class Distiller {
             ...(result.model !== undefined ? { model: result.model } : {}),
           }
           const extraction = await extractMoments(input, {
-            invoke: this.invoke,
+            invoke: egressInvoke,
             template: extractTemplate,
             now: this.now,
             newId: this.newId,
@@ -228,7 +244,7 @@ export class Distiller {
         if (opts.extractEntities) {
           const extraction = await extractEntities(
             { transcript, summary: distillate.text, windowStart: window.start, windowEnd: window.end, dials: resolved.dials },
-            { invoke: this.invoke, template: entitiesTemplate, log: this.log, maxTokens: mode.distill.tokenBudget },
+            { invoke: egressInvoke, template: entitiesTemplate, log: this.log, maxTokens: mode.distill.tokenBudget },
           )
           const provenance: EntityProvenance = {
             distillateId: distillate.id,

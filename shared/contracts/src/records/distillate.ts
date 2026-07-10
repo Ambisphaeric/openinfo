@@ -1,6 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Id, IsoTime, SlotName, InvokeUsage } from '../common.js'
 import { Dials } from '../config/voice.js'
+import { EgressDecision } from '../config/egress.js'
 
 /**
  * A merge-window summary — the output of one Distill pass over a rolling window of raw capture.
@@ -35,6 +36,9 @@ export const Distillate = Type.Object(
         endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this' }),
         model: Type.Optional(Type.String()),
         usage: Type.Optional(InvokeUsage),
+        // #64: the resolved egress decision this pass ran under (endpoint reach + which layer decided).
+        // Append-only/optional — records predating #64 omit it and the ledger renders the local default.
+        egress: Type.Optional(EgressDecision),
       },
       { additionalProperties: false },
     ),

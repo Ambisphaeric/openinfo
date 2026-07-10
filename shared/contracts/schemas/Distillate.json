@@ -214,6 +214,72 @@
               "type": "integer"
             }
           }
+        },
+        "egress": {
+          "$id": "EgressDecision",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "reach",
+            "allowed",
+            "decidedBy",
+            "reason"
+          ],
+          "properties": {
+            "reach": {
+              "$id": "EgressReach",
+              "description": "layer 1: an endpoint is local (loopback/LAN/spawned) or egress (hosted/cloud) by its nature",
+              "anyOf": [
+                {
+                  "const": "local",
+                  "type": "string"
+                },
+                {
+                  "const": "egress",
+                  "type": "string"
+                }
+              ]
+            },
+            "allowed": {
+              "description": "did the layered content-side policy permit egress for this content?",
+              "type": "boolean"
+            },
+            "decidedBy": {
+              "$id": "EgressLayer",
+              "description": "which of the four layers decided (or `default` = no denial, `endpoint` = destination-classification decided)",
+              "anyOf": [
+                {
+                  "const": "endpoint",
+                  "type": "string"
+                },
+                {
+                  "const": "prompt",
+                  "type": "string"
+                },
+                {
+                  "const": "mode",
+                  "type": "string"
+                },
+                {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                {
+                  "const": "content-class",
+                  "type": "string"
+                },
+                {
+                  "const": "default",
+                  "type": "string"
+                }
+              ]
+            },
+            "reason": {
+              "minLength": 1,
+              "description": "one-line, human-readable why — safe to surface (no url/secret)",
+              "type": "string"
+            }
+          }
         }
       }
     },

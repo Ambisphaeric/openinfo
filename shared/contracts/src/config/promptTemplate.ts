@@ -85,6 +85,12 @@ export const PromptTemplate = Type.Object(
     description: Type.Optional(Type.String()),
     builtin: Type.Optional(Type.Boolean()),
     field: Type.Optional(FastFieldBinding),
+    // Layer 2 of the egress-consent policy (#64): a prompt document may declare it NEVER uses
+    // egress-capable endpoints — its content stays local regardless of mode/workspace posture. Append-only/
+    // optional: absent ⇒ the prompt does not deny (it defers to the other layers).
+    neverEgress: Type.Optional(
+      Type.Boolean({ description: '#64 layer 2: true ⇒ this prompt never uses egress-capable endpoints' }),
+    ),
   },
   { $id: 'PromptTemplate', additionalProperties: false },
 )

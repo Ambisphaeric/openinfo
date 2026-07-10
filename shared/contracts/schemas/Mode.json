@@ -304,6 +304,20 @@
           "type": "string"
         }
       ]
+    },
+    "egress": {
+      "$id": "EgressPolicy",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "deny"
+      ],
+      "properties": {
+        "deny": {
+          "description": "true ⇒ this mode/workspace denies egress wholesale",
+          "type": "boolean"
+        }
+      }
     }
   }
 }

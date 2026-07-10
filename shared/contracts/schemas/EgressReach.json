@@ -1,0 +1,14 @@
+{
+  "$id": "EgressReach",
+  "description": "layer 1: an endpoint is local (loopback/LAN/spawned) or egress (hosted/cloud) by its nature",
+  "anyOf": [
+    {
+      "const": "local",
+      "type": "string"
+    },
+    {
+      "const": "egress",
+      "type": "string"
+    }
+  ]
+}
