@@ -4105,3 +4105,32 @@ awaits a rename surface. The affordance therefore offers confirm vs the-rival vs
 verdicts the override substrate honors durably on existing records. `dismiss` gains its union entry
 for the #66 dismiss surface (no emitter yet). Correlation-id stamping on teach actions rides #116
 (not merged) — deferred, not faked.
+## #121 — workflow step ports metadata (editor substrate, slice 1)
+
+### What / where
+- `workflow/ports.ts`: `STEP_PORTS: Record<WorkflowStepKind, StepPorts>` — each step kind's data-flow
+  signature (`inputs` / `outputs` / optional `emits`, every port a contract `$id` in AllSchemas) plus one
+  honest description. Data-only: no route, no flag, no executor change, no schema change.
+
+### Why engine/workflow, not contracts
+The table DESCRIBES how the executor's stages map onto the existing contracts — engine knowledge, not a
+new wire shape. The `WorkflowSpec` contract's own deferral note ("chained/fan-out nodes force the graph
+shape later, additively") reserves the graph seam; ports metadata is the additive precursor a graph
+view / connection validation reads later. Publishing it as a contract would freeze editor-internal
+vocabulary into the wire surface before the frontends design session has run.
+
+### Decisions
+- `inputs` is an ARRAY because `act` is honestly trigger-dependent (Session on session-end,
+  CaptureChunk on the drain) — one input id would lie for it.
+- `emits` names ONLY payloads that are not also outputs — i.e. the ephemeral fast-path feeds
+  (`transcribe` → `TranscriptUpdate`, #58). Absence means "this step's events are its outputs".
+- Totality is enforced twice: the `Record` type (compile-time) AND a runtime check that derives the
+  kind list from the `WorkflowStepKind` schema in AllSchemas — a future appended kind fails the suite
+  until it declares ports (the union's own append-only discipline, extended to this table).
+
+### Tests / green
+`workflow/ports.test.ts` +5: contract-derived totality (both directions) · every port id exists in
+AllSchemas · shape (≥1 input, ≥1 output, description, emits∉outputs) · every seeded workflow-default
+step has ports · pipeline coherence (each drain step in the seeded default can consume an upstream
+output or the drain batch — the exact connection check a graph editor performs, pinned against the
+shipped document so table and document cannot drift).
