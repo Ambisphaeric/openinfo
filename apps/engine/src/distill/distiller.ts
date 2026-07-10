@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import type { CaptureChunk, Distillate, Entity, EntityProvenance, Moment, Mode, PromptTemplate, VoiceBinding } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Entity, EntityProvenance, GuardHold, Moment, Mode, PromptTemplate, VoiceBinding } from '@openinfo/contracts'
 import { DISTILLATE_SCHEMA_VERSION } from '@openinfo/contracts'
-import { FabricDocuments, invokeLlm, resolveEgress, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import type { GuardDocuments, GuardHoldStore } from '../guard/documents.js'
 import { entityMentioned, extractEntities } from '../index/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
@@ -37,6 +38,14 @@ export interface DistillerDeps {
   resolveKey?: SecretResolver
   /** manages `local` endpoints' spawned runtimes (tier zero); optional. */
   runtimeManager?: LocalRuntimeManager
+  /** the guard policy documents (#63) — absent ⇒ the guard does not run (no egress interception). */
+  guardDocs?: GuardDocuments
+  /** the held-hops audit store (#63) — where a suspended egress hop lands with its verdict. */
+  guardHolds?: GuardHoldStore
+  /** whether the egress guard is enabled (the guard.egress flag) — absent ⇒ off (pre-#63 behavior). */
+  guardEnabled?: () => boolean
+  /** publish guard.hold.updated when a hop is suspended; optional (tests may omit). */
+  publishHold?: (hold: GuardHold) => void | Promise<void>
   now?: () => Date
   newId?: () => string
   log?: (message: string) => void
@@ -77,6 +86,11 @@ export class Distiller {
   private readonly publishMoment: ((m: Moment) => void | Promise<void>) | undefined
   private readonly publishEntity: ((e: Entity) => void | Promise<void>) | undefined
   private readonly invoke: LlmInvoke
+  private readonly resolveKey: SecretResolver | undefined
+  private readonly guardDocs: GuardDocuments | undefined
+  private readonly guardHolds: GuardHoldStore | undefined
+  private readonly guardEnabled: () => boolean
+  private readonly publishHold: ((hold: GuardHold) => void | Promise<void>) | undefined
   private readonly now: () => Date
   private readonly newId: () => string
   private readonly log: (message: string) => void
@@ -89,6 +103,11 @@ export class Distiller {
     this.publish = deps.publish
     this.publishMoment = deps.publishMoment
     this.publishEntity = deps.publishEntity
+    this.resolveKey = deps.resolveKey
+    this.guardDocs = deps.guardDocs
+    this.guardHolds = deps.guardHolds
+    this.guardEnabled = deps.guardEnabled ?? (() => false)
+    this.publishHold = deps.publishHold
     this.now = deps.now ?? (() => new Date())
     this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
@@ -102,6 +121,44 @@ export class Distiller {
           ...(resolveKey ? { resolveKey } : {}),
           ...(runtimeManager ? { runtimeManager } : {}),
         }))
+  }
+
+  /**
+   * Build the egress-guard config (#63) for this pass, or undefined when the guard is off. When the
+   * guard.egress flag is on and the policy docs are wired, EVERY invoke this pass makes carries it — so an
+   * allowed egress hop is filtered before any bytes leave (redact / hold per policy), and a local hop
+   * ignores it (no egress ⇒ no filter). An empty guard slot is the fail-closed edge the policy governs.
+   */
+  private guardOptions(): GuardOptions | undefined {
+    if (!this.guardEnabled() || this.guardDocs === undefined) return undefined
+    const policy = this.guardDocs.policy()
+    return {
+      endpoints: this.fabric.load().slots.guard ?? [],
+      behavior: policy.behavior,
+      acknowledgeUnguardedEgress: policy.acknowledgeUnguardedEgress,
+      ...(this.resolveKey ? { resolveKey: this.resolveKey } : {}),
+    }
+  }
+
+  /**
+   * Persist a SUSPENDED egress hop as a durable audit record (#63) and surface it. The verdict carries span
+   * descriptors (kind/start/length), NEVER the raw flagged value; the raw content is not retained (fail
+   * closed — nothing leaked). The subsequent moment/entity calls in the same window inherit this verdict
+   * (same transcript + policy), so a strict hold on the summary suspends the whole window before them.
+   */
+  private async recordHold(err: GuardHeldError, ctx: { sessionId: string; workspaceId: string; stage: string; windowStart: string; windowEnd: string }): Promise<void> {
+    const hold: GuardHold = {
+      id: this.newId(),
+      workspaceId: ctx.workspaceId,
+      sessionId: ctx.sessionId,
+      stage: ctx.stage,
+      verdict: err.verdict,
+      status: 'held',
+      createdAt: this.now().toISOString(),
+    }
+    this.guardHolds?.add(hold)
+    await this.publishHold?.(hold)
+    this.log(`guard held ${ctx.stage} window ${ctx.windowStart}→${ctx.windowEnd}: ${err.verdict.reason}`)
   }
 
   async distillChunks(chunks: readonly CaptureChunk[], opts: DistillOptions = {}): Promise<Distillate[]> {
@@ -148,7 +205,11 @@ export class Distiller {
           modeDenies: mode.egress?.deny,
           workspaceDenies: workspace?.egress?.deny,
         })
-        const egressInvoke: LlmInvoke = (messages, opts) => this.invoke(messages, { ...opts, egress })
+        // #63: the egress guard rides EVERY invoke for this window alongside the #64 consent — so an
+        // allowed egress hop is filtered (redact / hold) before any bytes leave, and a local hop ignores
+        // it. Built once per window; undefined ⇒ the guard is off (pre-#63 behavior).
+        const guard = this.guardOptions()
+        const egressInvoke: LlmInvoke = (messages, opts) => this.invoke(messages, { ...opts, egress, ...(guard !== undefined ? { guard } : {}) })
         // Speaker attribution for free (see transcribe.ts::speakerLabel): mic → "me", system-audio →
         // "them". Prefixing the transcript line is the least-invasive carry — it flows unchanged into
         // {{transcript}} for the summary AND the moment/entity extraction prompts, so the model can
@@ -167,7 +228,20 @@ export class Distiller {
           windowEnd: window.end,
         })
         const messages: LlmMessage[] = [{ role: 'user', content: prompt }]
-        const result = await egressInvoke(messages, { maxTokens: mode.distill.tokenBudget })
+        // #63: a guard HOLD (strict flagged content, or a fail-closed empty slot) throws GuardHeldError out
+        // of the invoke — a HARD STOP for this window. We record the held hop as a durable audit record
+        // (verdict + span descriptors, never the raw value), surface it, and SKIP the window (fail closed —
+        // nothing left the machine). A clean/redacted/unguarded verdict rides result.guard onto provenance.
+        let result: LlmResult
+        try {
+          result = await egressInvoke(messages, { maxTokens: mode.distill.tokenBudget })
+        } catch (err) {
+          if (err instanceof GuardHeldError) {
+            await this.recordHold(err, { sessionId, workspaceId, stage: 'distill', windowStart: window.start, windowEnd: window.end })
+            continue
+          }
+          throw err
+        }
 
         const distillate: Distillate = {
           id: this.newId(),
@@ -193,6 +267,9 @@ export class Distiller {
             // #64: carry the resolved egress decision (endpoint reach + which layer decided) so the ledger's
             // egress column renders from real data — "local", or "egress" when content actually left.
             ...(result.egress !== undefined ? { egress: result.egress } : {}),
+            // #63: the guard verdict when this pass ran through an egress hop with the guard active
+            // (clean / redacted with span descriptors / unguarded) — lights up the ledger's guard column.
+            ...(result.guard !== undefined ? { guard: result.guard } : {}),
           },
           schemaVersion: DISTILLATE_SCHEMA_VERSION,
           createdAt: this.now().toISOString(),

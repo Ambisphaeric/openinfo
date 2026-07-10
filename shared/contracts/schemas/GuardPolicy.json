@@ -1,0 +1,43 @@
+{
+  "$id": "GuardPolicy",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "behavior",
+    "acknowledgeUnguardedEgress"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "version": {
+      "minimum": 1,
+      "description": "store-stamped, monotonic; every prior version is kept",
+      "type": "integer"
+    },
+    "behavior": {
+      "$id": "GuardBehavior",
+      "description": "redact-and-continue (default, mask spans + proceed) | hold-and-surface (strict, suspend the hop)",
+      "anyOf": [
+        {
+          "const": "redact-and-continue",
+          "type": "string"
+        },
+        {
+          "const": "hold-and-surface",
+          "type": "string"
+        }
+      ]
+    },
+    "acknowledgeUnguardedEgress": {
+      "description": "default mode + empty guard slot: true ⇒ egress proceeds UNGUARDED (recorded as such); false ⇒ it HOLDS (never silently unguarded)",
+      "type": "boolean"
+    },
+    "description": {
+      "type": "string"
+    }
+  }
+}

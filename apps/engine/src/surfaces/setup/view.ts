@@ -24,7 +24,11 @@ import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelS
  * now carries an honest, INFORMATIONAL usage note — never a gate: llm/stt say what they power today;
  * the rest say the endpoint is stored and wired in a later phase, configure it freely now.
  */
-export const ALL_SLOTS: ReadonlyArray<keyof Fabric['slots']> = ['llm', 'stt', 'tts', 'vlm', 'ocr', 'embed']
+/** The six capability slots shown in the occupancy/health/editor surfaces. Excludes the optional `guard`
+ * slot (#63) — an egress content filter, not a capability endpoint the onboarding lists occupy — and
+ * excluding it keeps indexed access `fabric.slots[k]` a concrete `Endpoint[]` (guard is optional). */
+export type DisplaySlot = Exclude<keyof Fabric['slots'], 'guard'>
+export const ALL_SLOTS: ReadonlyArray<DisplaySlot> = ['llm', 'stt', 'tts', 'vlm', 'ocr', 'embed']
 
 const SLOT_NOTE: Record<string, string> = {
   llm: 'powers distill, drafts, and the core pass today.',
@@ -80,6 +84,12 @@ export interface SetupData {
    * the store); read only by the Audit-ledger section. Absent ⇒ that section renders its empty state.
    */
   ledger?: import('../settings/sections/ledger.js').LedgerPass[]
+  /**
+   * Held egress hops (#63) the guard suspended — the durable audit of every block, each carrying the
+   * verdict (span descriptors, never the raw value). Assembled by the settings route (guardHolds.list) for
+   * the Audit-ledger section, rendered as held rows with a release/deny affordance. Absent ⇒ none held.
+   */
+  guardHolds?: import('@openinfo/contracts').GuardHold[]
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */
@@ -453,7 +463,7 @@ export const rowTemplateHtml = (refs: string[]): string =>
  */
 interface CapabilityRow {
   /** the slot(s) that satisfy this capability; found = any has a suggested endpoint */
-  slots: ReadonlyArray<keyof Fabric['slots']>
+  slots: ReadonlyArray<DisplaySlot>
   title: string
   what: string
   /** honest copy when the capability was not detected */
@@ -470,7 +480,7 @@ const CAPABILITY_ROWS: readonly CapabilityRow[] = [
 ]
 
 /** One suggested endpoint's "model on server" label, or '' if the slot has no suggestion. */
-const foundLabel = (fabric: Fabric, slots: ReadonlyArray<keyof Fabric['slots']>): string => {
+const foundLabel = (fabric: Fabric, slots: ReadonlyArray<DisplaySlot>): string => {
   for (const slot of slots) {
     const ep = fabric.slots[slot][0]
     if (ep) return `${ep.kind === 'http' && ep.model ? ep.model : ep.name} · ${ep.kind === 'http' ? ep.url : ep.kind}`

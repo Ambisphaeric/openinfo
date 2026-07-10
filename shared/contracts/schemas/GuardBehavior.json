@@ -1,0 +1,14 @@
+{
+  "$id": "GuardBehavior",
+  "description": "redact-and-continue (default, mask spans + proceed) | hold-and-surface (strict, suspend the hop)",
+  "anyOf": [
+    {
+      "const": "redact-and-continue",
+      "type": "string"
+    },
+    {
+      "const": "hold-and-surface",
+      "type": "string"
+    }
+  ]
+}

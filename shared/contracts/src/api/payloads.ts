@@ -138,8 +138,8 @@ export type TranscriptUpdate = Static<typeof TranscriptUpdate>
 export const QueueFailure = Type.Object(
   {
     class: Type.Union(
-      ['unreachable', 'timeout', 'auth', 'model-load', 'bad-response', 'reasoning-exhausted', 'egress-denied'].map((c) => Type.Literal(c)),
-      { description: 'the detected failure class — the difference the user asked the system to tell apart (egress-denied #64: an egress endpoint was skipped because this content may not leave the machine)' },
+      ['unreachable', 'timeout', 'auth', 'model-load', 'bad-response', 'reasoning-exhausted', 'egress-denied', 'guard-held'].map((c) => Type.Literal(c)),
+      { description: 'the detected failure class — the difference the user asked the system to tell apart (egress-denied #64: an egress endpoint was skipped because this content may not leave the machine; guard-held #63: the egress guard suspended the hop — flagged content in strict mode, or a fail-closed empty guard slot)' },
     ),
     endpoint: Type.String({ description: 'the endpoint name the invoke failed on (never a secret value)' }),
     model: Type.Optional(Type.String({ description: 'the model that was asked for, when the endpoint names one' })),

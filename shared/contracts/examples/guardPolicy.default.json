@@ -1,0 +1,7 @@
+{
+  "id": "guard-policy",
+  "version": 1,
+  "behavior": "redact-and-continue",
+  "acknowledgeUnguardedEgress": false,
+  "description": "The egress guard policy (#63). redact-and-continue masks flagged spans and proceeds; hold-and-surface suspends the hop. With an empty guard slot in default mode, acknowledgeUnguardedEgress:false HOLDS egress (never silently unguarded)."
+}

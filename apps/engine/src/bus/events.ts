@@ -1,4 +1,4 @@
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FieldValue, Flag, Moment, OcrResult, QueueStatus, Session, Surface, TranscriptUpdate } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, Session, Surface, TranscriptUpdate } from '@openinfo/contracts'
 
 export interface EngineEvents {
   'capture.received': CaptureChunk
@@ -25,4 +25,7 @@ export interface EngineEvents {
   'draft.created': Draft
   'fabric.changed': Fabric
   'surface.updated': Surface
+  // The egress guard (#63) suspended a hop, or a held hop was released/denied — surfaces refresh their
+  // held indicator + release/deny affordance. Payload carries span descriptors, never the raw value.
+  'guard.hold.updated': GuardHold
 }

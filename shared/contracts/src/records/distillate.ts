@@ -2,6 +2,7 @@ import { Type, type Static } from '@sinclair/typebox'
 import { Id, IsoTime, SlotName, InvokeUsage } from '../common.js'
 import { Dials } from '../config/voice.js'
 import { EgressDecision } from '../config/egress.js'
+import { GuardVerdict } from '../config/guard.js'
 
 /**
  * A merge-window summary — the output of one Distill pass over a rolling window of raw capture.
@@ -39,6 +40,10 @@ export const Distillate = Type.Object(
         // #64: the resolved egress decision this pass ran under (endpoint reach + which layer decided).
         // Append-only/optional — records predating #64 omit it and the ledger renders the local default.
         egress: Type.Optional(EgressDecision),
+        // #63: the egress GUARD verdict when this pass ran through an egress hop with the guard active —
+        // clean / redacted (span-level detail, never the raw value) / unguarded. Append-only/optional: a
+        // local pass (no egress) and records predating #63 omit it and the ledger renders "— no guard".
+        guard: Type.Optional(GuardVerdict),
       },
       { additionalProperties: false },
     ),

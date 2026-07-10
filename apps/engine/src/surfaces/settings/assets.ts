@@ -170,6 +170,21 @@ body.settings{padding:0;background:
 .ldg-when{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
 .ldg-note{margin-top:16px;font-size:12px;color:var(--faint);border-top:1px solid var(--line-soft);
   padding-top:14px;max-width:76ch;line-height:1.55}
+/* ---------- Egress guard (#63) ---------- */
+.ldg-guard-clean{color:var(--muted);font-family:var(--mono);font-size:11px}
+.ldg-guard-redacted{color:var(--accent);font-family:var(--mono);font-size:11px;font-weight:600}
+.ldg-guard-held,.ldg-guard-unguarded{color:var(--warn);font-family:var(--mono);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+.ldg-held{margin:4px 0 18px;border:1px solid var(--warn);border-radius:var(--radius);padding:12px 14px;background:color-mix(in srgb,var(--warn) 7%,transparent)}
+.ldg-held-title{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--warn);font-weight:600;margin-bottom:8px}
+.ldg-held-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:7px 0;border-top:1px solid var(--line-soft);font-size:12.5px}
+.ldg-held-row:first-of-type{border-top:0}
+.ldg-held-reason{color:var(--ink-2);flex:1 1 260px;min-width:220px}
+.ldg-held-when{font-family:var(--mono);font-size:11px;color:var(--faint)}
+.ldg-held-status{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--faint)}
+.ldg-held-act{font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:6px;border:1px solid var(--line-soft);
+  background:var(--surface-2,transparent);color:var(--ink-2);cursor:pointer}
+.ldg-held-act:hover{border-color:var(--ink-2);color:var(--ink)}
+.ldg-held-act.deny:hover{border-color:var(--warn);color:var(--warn)}
 @media (max-width:720px){
   .app{grid-template-columns:1fr}
   .sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line-soft)}

@@ -19,5 +19,9 @@ export const Events = {
   'drift.step': 'DriftChainStep',
   'queue.updated': 'QueueStatus',
   'flag.changed': 'Flag',
+  // The egress guard (#63) suspended a hop, or a held hop was released/denied — the surface refreshes its
+  // held-indicator + release/deny affordance. Payload is the GuardHold (verdict carries span-level detail,
+  // never the raw value).
+  'guard.hold.updated': 'GuardHold',
 } as const
 export type EventName = keyof typeof Events
