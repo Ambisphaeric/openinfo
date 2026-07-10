@@ -240,6 +240,10 @@ export class Distiller {
           }
           for (const candidate of extraction.entities) {
             const mentionedBy = windowMoments.filter((m) => entityMentioned(m.text, candidate.name, candidate.aliases))
+            // Contract v2 (#73) evidence, populated from the signal we genuinely have HERE: this window
+            // came from the transcript, so the mention is a `heard` sighting tied to the distillate, and
+            // the extracted surface form is a `stt` heardAs variant. Per-variant ASR confidence is NOT
+            // surfaced by the pipeline today, so it is left undefined (disclosed) rather than fabricated.
             const entity = this.store.upsertEntity({
               workspaceId,
               kind: candidate.kind,
@@ -248,6 +252,8 @@ export class Distiller {
               seenAt: window.end,
               provenance,
               momentRefs: mentionedBy.map((m) => m.id),
+              sighting: { via: 'heard', at: window.end, distillateId: distillate.id },
+              heardAs: { text: candidate.name, source: 'stt', at: window.end },
             })
             for (const moment of mentionedBy) {
               if (!moment.refs.includes(entity.id)) moment.refs.push(entity.id)
