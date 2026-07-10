@@ -5,6 +5,10 @@
 - `ship-dmg-remote.sh` — rsync a built `apps/client/release/openinfo-<version>-arm64.dmg`
   to `~/Downloads` on a remote machine, to try the packaged installer itself (build it
   first with `pnpm --filter @openinfo/client dmg`).
+- `reset-app-remote.command` — double-clickable one-shot: kill + wipe app state (dbs,
+  secrets, config; TCC untouched) on the remote test machine, reinstall from the newest
+  DMG in its `~/Downloads`, relaunch, and re-seed the llm/stt fabric endpoints against
+  this machine's live LAN IP (DHCP-safe). `DRY_RUN=1` prints instead of executing.
 - `schema-gen/` — TS types → JSON Schema into shared/contracts/schemas (the Rust-portable artifact)
 - `bench/` — endpoint benchmark harness; writes measured tok/s into fabric via the API
 - `fixtures/` — capture recorder/replayer: record a real meeting once, replay it into the
