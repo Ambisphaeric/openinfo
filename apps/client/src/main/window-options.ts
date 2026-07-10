@@ -71,11 +71,11 @@ const WINDOW_MARGIN = 24
  */
 export const HUD_MIN_HEIGHT = 144
 
-export const hudWindowSpec = (opts: { startVisible?: boolean } = {}): HudWindowSpec => {
+export const hudWindowSpec = (opts: { startVisible?: boolean; width?: number } = {}): HudWindowSpec => {
   const startVisible = opts.startVisible ?? false
   return {
     browserWindow: {
-      width: PANEL_WIDTH + WINDOW_MARGIN * 2,
+      width: opts.width ?? PANEL_WIDTH + WINDOW_MARGIN * 2,
       height: HUD_MIN_HEIGHT,
       frame: false,
       transparent: true,
@@ -101,6 +101,82 @@ export const hudWindowSpec = (opts: { startVisible?: boolean } = {}): HudWindowS
       alwaysOnTopLevel: 'floating',
       visibleOnAllWorkspaces: true,
       visibleOnFullScreen: true,
+    },
+    startVisible,
+  }
+}
+
+/**
+ * Per-surface window CHROME (#20 + the mini-apps arc). The shipped HUD surfaces render as the inherited
+ * Glass shell — frameless, transparent, always-on-top, content-protected, content-sized. Any OTHER
+ * surface opened from the Apps folder is a NORMAL app window: framed, opaque, resizable, focusable, in
+ * the app switcher, and NOT content-protected (a diagnostics app you WANT visible and in screenshots,
+ * running beside the real HUD). Disclosed default: an unknown surface id ⇒ `'app'` chrome.
+ */
+export type WindowChrome = 'hud' | 'app'
+
+/** A surface's declared window options — its chrome and an optional width override (default preserved, #20). */
+export interface SurfaceWindowConfig {
+  chrome: WindowChrome
+  /** Outer window width in px; omitted ⇒ the chrome's default (HUD panel width, or the app default). */
+  width?: number
+}
+
+/**
+ * The client-side per-surface window config map (#20). Client-declared (not on the surface document) for
+ * v0 — disclosed; moving these onto the surface doc is a later choice. Only the shipped HUD surfaces are
+ * listed; everything else falls through to `'app'` chrome via `configForSurface`.
+ */
+export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
+  'surf-openinfo-hud': { chrome: 'hud' },
+  'surf-glass-minimal': { chrome: 'hud', width: 520 },
+}
+
+/** The window config for a surface id — its explicit entry, else the disclosed `'app'` default. */
+export const configForSurface = (surfaceId: string): SurfaceWindowConfig =>
+  SURFACE_WINDOW_CONFIG[surfaceId] ?? { chrome: 'app' }
+
+/** A framed app window's default outer size — a sane starting box for a normal-chrome mini app. */
+export const APP_WINDOW_DEFAULT_WIDTH = 520
+export const APP_WINDOW_DEFAULT_HEIGHT = 560
+
+/**
+ * The window spec for a NORMAL-chrome mini app (a diagnostics-style surface, not the HUD). Same structural
+ * shape as hudWindowSpec so the shell spreads it into `new BrowserWindow(...)` identically, but framed,
+ * opaque, resizable, focusable, in the app switcher, and NOT content-protected. Its hardening is all
+ * benign (no content-protection, no always-on-top, no all-workspaces) so the shell can apply the same
+ * post-create calls unconditionally — see shell.ts (setAlwaysOnTop is skipped when `alwaysOnTop` is false).
+ */
+export const appWindowSpec = (opts: { width?: number; startVisible?: boolean } = {}): HudWindowSpec => {
+  const startVisible = opts.startVisible ?? false
+  return {
+    browserWindow: {
+      width: opts.width ?? APP_WINDOW_DEFAULT_WIDTH,
+      height: APP_WINDOW_DEFAULT_HEIGHT,
+      frame: true,
+      transparent: false,
+      hasShadow: true,
+      resizable: true,
+      maximizable: true,
+      minimizable: true,
+      fullscreenable: true,
+      skipTaskbar: false,
+      alwaysOnTop: false,
+      focusable: true,
+      show: startVisible,
+      title: 'openinfo app',
+      backgroundColor: '#101014',
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        backgroundThrottling: false,
+      },
+    },
+    hardening: {
+      contentProtection: false,
+      alwaysOnTopLevel: 'floating',
+      visibleOnAllWorkspaces: false,
+      visibleOnFullScreen: false,
     },
     startVisible,
   }

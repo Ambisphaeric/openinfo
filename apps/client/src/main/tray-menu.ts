@@ -1,5 +1,6 @@
 import type { ShellCommand } from './shortcuts.js'
 import type { SenseStatus, SenseLevel } from './capture-status.js'
+import { appsSubmenuItems, type AppsFolderState } from './app-catalog.js'
 
 /**
  * The tray (menu-bar) state machine, pure so the whole thing — label flips, enabled state, the
@@ -84,6 +85,13 @@ export interface TrayState {
    * state the main process already holds. Absent ⇒ no submenu (e.g. before the first paint).
    */
   captureStatus?: SenseStatus[]
+  /**
+   * The Apps folder (#19/#98): the app surfaces the engine serves, the user's favorites (floated to the
+   * top), and which have a live window open right now. Rendered as an "Apps" submenu — the mini-apps
+   * folder the user opens/focuses/closes windows from, and favorites from. Absent / no surfaces ⇒ no
+   * Apps folder (e.g. before the surface list is fetched, or an engine that serves none).
+   */
+  apps?: AppsFolderState
 }
 
 export interface TrayMenuItem {
@@ -230,6 +238,16 @@ export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => {
       enabled: state.connected,
     },
   )
+
+  // The Apps folder (#19/#98) — the mini-apps window launcher, right under the window/session toggles.
+  // Each app opens/focuses/closes its own window; favorites float to the top. Omitted until we know the
+  // surface list (an engine that serves none, or before the first fetch) so the menu never shows an empty folder.
+  if (state.apps && state.apps.surfaces.length > 0) {
+    items.push(
+      { id: 'sep-apps', type: 'separator' },
+      { id: 'apps', type: 'normal', label: 'Apps', enabled: true, submenu: appsSubmenuItems(state.apps) },
+    )
+  }
 
   // Permission fix-its — shown ONLY in the state they fix, each opening the exact Settings pane. Denial
   // must be actionable (an unsigned dev app can't re-fire a denied TCC prompt): the user re-grants in

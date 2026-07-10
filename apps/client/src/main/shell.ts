@@ -7,10 +7,13 @@ import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, native
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
-import { hudWindowSpec, HUD_MIN_HEIGHT } from './window-options.js'
+import { hudWindowSpec, appWindowSpec, configForSurface, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
 import { resolveHudHeight } from './hud-height.js'
 import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
+import { WindowRegistry } from './app-registry.js'
+import { readAppState, writeAppState, toggleInList, type AppState } from './app-store.js'
+import type { AppSurface } from './app-catalog.js'
 import { settingsUrlFor, isLanEngine } from './permission-help.js'
 import { ContextHealthTracker } from './context-health.js'
 import { shouldOpenSetup, shouldPromptMic } from './first-run.js'
@@ -66,6 +69,20 @@ const contextHealth = new ContextHealthTracker()
 let hudWindow: BrowserWindow | undefined
 let captureWindow: BrowserWindow | undefined
 let tray: Tray | undefined
+// Per-window binding + chrome (#19/#20). The drag/resize IPC is routed by `event.sender` to the window
+// that sent it; this map tells the shell that window's surface id, whether it is a content-sized,
+// drag-follow HUD-style window or a normal framed app window, and whether it is the singular default HUD.
+const windowMeta = new WeakMap<BrowserWindow, { surfaceId: string; chrome: WindowChrome; isDefaultHud: boolean }>()
+// The app surfaces the engine serves (GET /layouts/surfaces) — feeds the tray Apps folder. Empty until fetched.
+let appSurfaces: AppSurface[] = []
+// Client-local Apps-folder state: favorites (float to top), the open-window set (reopened next launch),
+// and per-app window positions (#19/#20/#98). Loaded from apps-state.json in whenReady; see app-store.ts.
+let appState: AppState = { favorites: [], openApps: [], positions: {} }
+// Per-app-window debounced position savers — a HUD-style app window persists where the user drags it (#20).
+const appSaveTimers = new Map<BrowserWindow, ReturnType<typeof setTimeout>>()
+// True once the app is quitting — so the cascade of app-window `closed` events during teardown does NOT
+// rewrite the persisted open-set to empty (the set must survive so those windows reopen next launch, #19).
+let shuttingDown = false
 // The engine child WE spawned (only when the configured URL answered nothing AND we shipped a bundled
 // engine). Undefined when we adopted an already-running engine — so we NEVER kill an engine we didn't
 // start; only this child is shut down, on quit. See engine-supervisor.ts + ensureEngine.
@@ -122,11 +139,12 @@ let screenCadence: ScreenCadenceHandle | undefined
 let focusPoller: FocusPoller | undefined
 let focusActive = false
 
-// Drag state: while a drag is live, `dragTimer` polls the OS cursor and the window rides it, keeping
-// `dragOffset` (the grab point within the window) constant. `saveTimer` debounces persisting the origin.
+// Drag state: while a drag is live, `dragTimer` polls the OS cursor and `draggingWindow` rides it,
+// keeping `dragOffset` (the grab point within the window) constant. Only one HUD-style window drags at a
+// time (the OS cursor is singular); per-window position saves are debounced via `appSaveTimers`.
 let dragTimer: ReturnType<typeof setInterval> | undefined
 let dragOffset: ScreenPoint | undefined
-let saveTimer: ReturnType<typeof setTimeout> | undefined
+let draggingWindow: BrowserWindow | undefined
 
 // The capture-status readout's raw inputs, read live at each tray paint so the readout reflects the
 // current OS state (a user can flip a Settings toggle and see it update on the next open). macOS-only
@@ -193,6 +211,14 @@ const trayState = (): TrayState => ({
       })
     : undefined,
   captureStatus: captureStatuses(captureStatusInput()),
+  // The Apps folder (#19/#98): the surfaces the engine serves + the user's favorites + which windows are
+  // open now. The default HUD is "open" whenever its window is visible (it is the singular anchor, not in
+  // the registry); every other open surface comes from the multi-window registry.
+  apps: {
+    surfaces: appSurfaces,
+    favorites: appState.favorites,
+    openIds: [...appRegistry.openSurfaceIds(), ...(hudWindow?.isVisible() ? [cfg.surfaceId] : [])],
+  },
 })
 
 const toMenuItem = (item: TrayMenuItem): MenuItemConstructorOptions => {
@@ -222,6 +248,18 @@ const hideHud = (): void => {
 }
 
 const dispatch = (command: ShellCommand): void => {
+  // Parameterized app commands (the Apps folder, #19/#98) carry the surface id they act on.
+  if (typeof command === 'object') {
+    switch (command.kind) {
+      case 'open-app':
+        return openApp(command.surfaceId)
+      case 'close-app':
+        return closeApp(command.surfaceId)
+      case 'toggle-favorite':
+        return toggleFavorite(command.surfaceId)
+    }
+    return
+  }
   switch (command) {
     case 'show-hud':
       return showHud()
@@ -267,84 +305,200 @@ const dispatch = (command: ShellCommand): void => {
   }
 }
 
-const createHudWindow = (): void => {
-  const spec = hudWindowSpec()
-  hudWindow = new BrowserWindow({
+/**
+ * Create ONE surface window (#19) — the generalized window factory the default HUD and every Apps-folder
+ * mini app share. A window is BORN bound to its surface (the id is a frozen URL query param — see hud.ts);
+ * multi-window is a REGISTRY of such windows, never a re-binding of one. `chrome` decides the shell: HUD
+ * chrome is the inherited Glass signature (frameless, transparent, always-on-top, content-protected,
+ * content-sized, drag-follow); `app` chrome is a normal framed/opaque/resizable window (a diagnostics app
+ * beside the HUD). The window meta lets the drag/resize IPC (routed by `event.sender`) find this window
+ * and know how to treat it. The default HUD keeps its EXACT prior behavior (its own position store, its
+ * show/hide, its content-sizing) — see the isDefaultHud branches.
+ */
+const createSurfaceWindow = (
+  surfaceId: string,
+  opts: { chrome: WindowChrome; isDefaultHud: boolean; startVisible: boolean },
+): BrowserWindow => {
+  const declaredWidth = configForSurface(surfaceId).width
+  const widthOpt = declaredWidth !== undefined ? { width: declaredWidth } : {}
+  const spec: HudWindowSpec =
+    opts.chrome === 'hud'
+      ? hudWindowSpec({ startVisible: opts.startVisible, ...widthOpt })
+      : appWindowSpec({ startVisible: opts.startVisible, ...widthOpt })
+  const window = new BrowserWindow({
     ...spec.browserWindow,
     // The one bridge the renderer needs: the drag channel (preload.cts). Nothing node-bound crosses.
     webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
   })
+  windowMeta.set(window, { surfaceId, chrome: opts.chrome, isDefaultHud: opts.isDefaultHud })
 
-  // Method-only hardening (no constructor-option equivalent):
-  hudWindow.setContentProtection(spec.hardening.contentProtection)
-  hudWindow.setAlwaysOnTop(true, spec.hardening.alwaysOnTopLevel)
-  hudWindow.setVisibleOnAllWorkspaces(spec.hardening.visibleOnAllWorkspaces, {
+  // Method-only hardening (no constructor-option equivalent). Benign for app chrome (all false/off), so
+  // content-protection + all-workspaces apply unconditionally; always-on-top only when the spec asks for it.
+  window.setContentProtection(spec.hardening.contentProtection)
+  if (spec.browserWindow.alwaysOnTop) window.setAlwaysOnTop(true, spec.hardening.alwaysOnTopLevel)
+  window.setVisibleOnAllWorkspaces(spec.hardening.visibleOnAllWorkspaces, {
     visibleOnFullScreen: spec.hardening.visibleOnFullScreen,
   })
-  console.log(`[shell] HUD window created — content-protection: ${spec.hardening.contentProtection ? 'ON' : 'off'}`)
+  const tag = opts.isDefaultHud ? 'HUD' : `app ${surfaceId}`
+  console.log(`[shell] ${tag} window created — chrome ${opts.chrome}, content-protection: ${spec.hardening.contentProtection ? 'ON' : 'off'}`)
 
-  // Renderer observability: this window is TRANSPARENT, so a dead/blank renderer is otherwise
-  // indistinguishable from "hidden". Surface load failures, renderer death, and error-level console
-  // lines on the main-process stdout (visible when the .app is launched from a terminal).
-  hudWindow.webContents.on('did-fail-load', (_event, code, description) =>
-    console.error(`[shell] HUD page failed to load: ${code} ${description}`))
-  hudWindow.webContents.on('render-process-gone', (_event, details) =>
-    console.error(`[shell] HUD renderer gone: ${details.reason} (exitCode ${details.exitCode})`))
-  hudWindow.webContents.on('console-message', (details) => {
-    if (details.level === 'error') console.error(`[hud] ${details.message} (${details.sourceId}:${details.lineNumber})`)
+  // Renderer observability: a HUD-style window is TRANSPARENT, so a dead/blank renderer is otherwise
+  // indistinguishable from "hidden". Surface load failures, renderer death, and error-level console lines
+  // go to the main-process stdout (visible when the .app is launched from a terminal).
+  window.webContents.on('did-fail-load', (_event, code, description) =>
+    console.error(`[shell] ${tag} page failed to load: ${code} ${description}`))
+  window.webContents.on('render-process-gone', (_event, details) =>
+    console.error(`[shell] ${tag} renderer gone: ${details.reason} (exitCode ${details.exitCode})`))
+  window.webContents.on('console-message', (details) => {
+    if (details.level === 'error') console.error(`[${tag}] ${details.message} (${details.sourceId}:${details.lineNumber})`)
   })
 
-  restoreHudPosition()
-  // Pass BOTH the engine URL and the configured surface id (ShellConfig.surfaceId, resolved env >
-  // client.json > default surf-openinfo-hud) so the HUD renders the chosen layout — the minimal honest
-  // switch for "point a HUD at a different surface" (PHASE3-NOTES). `outline=1` (ShellConfig.hudOutline,
-  // OPENINFO_HUD_OUTLINE / client.json hudOutline) draws the debug bounds — see surfaces/hud/styles.ts.
-  void hudWindow.loadFile(HUD_HTML, {
+  restoreWindowPosition(window)
+  // Pass the engine URL + the surface id so the renderer fetches + renders THIS surface's layout (the same
+  // per-window binding the single HUD always had). `outline=1` (ShellConfig.hudOutline) draws debug bounds.
+  void window.loadFile(HUD_HTML, {
     search: new URLSearchParams({
       engine: cfg.engineUrl,
-      surface: cfg.surfaceId,
+      surface: surfaceId,
       ...(cfg.hudOutline ? { outline: '1' } : {}),
     }).toString(),
   })
-  hudWindow.on('moved', scheduleSavePosition) // OS-level moves; the custom drag also persists on drag-end
+  window.on('moved', () => scheduleSaveWindowPosition(window)) // OS-level moves; the custom drag also persists on drag-end
+  return window
+}
+
+/** Create the singular default HUD window (boot behavior unchanged: one HUD, ShellConfig.surfaceId). */
+const createHudWindow = (): void => {
+  hudWindow = createSurfaceWindow(cfg.surfaceId, { chrome: 'hud', isDefaultHud: true, startVisible: false })
   hudWindow.on('closed', () => (hudWindow = undefined))
 }
 
-/** Open where we last left the HUD — but only if that spot is still on a connected display, else center. */
-const restoreHudPosition = (): void => {
-  if (!hudWindow) return
-  const { width, height } = hudWindow.getBounds()
-  const displays = screen.getAllDisplays().map((d) => d.workArea)
-  const start = resolveStartupPosition(readSavedPosition(app.getPath('userData')), { width, height }, displays)
-  if (start) {
-    hudWindow.setPosition(start.x, start.y)
-    console.log(`[shell] HUD position restored to ${start.x},${start.y}`)
-  } else {
-    hudWindow.center()
-    console.log('[shell] no usable saved HUD position — centered')
+/**
+ * The multi-window app registry (#19) — every surface window BEYOND the default HUD, keyed by surface id.
+ * `create` builds a window with the surface's declared chrome (configForSurface); `focus` reveals it
+ * (a HUD-style window shows without stealing focus — a glance; a framed app takes focus like a real
+ * window); `close` closes it, and the window's `closed` event calls `retire` so no orphan entry lingers.
+ */
+const appRegistry = new WindowRegistry<BrowserWindow>({
+  create: (surfaceId) => {
+    const chrome = configForSurface(surfaceId).chrome
+    const window = createSurfaceWindow(surfaceId, { chrome, isDefaultHud: false, startVisible: true })
+    window.on('closed', () => {
+      appSaveTimers.delete(window)
+      appRegistry.retire(surfaceId, window)
+      if (shuttingDown) return // quit teardown — keep the persisted open-set so it reopens next launch (#19)
+      persistOpenApps()
+      refreshTray()
+    })
+    window.showInactive()
+    return window
+  },
+  focus: (window) => {
+    const meta = windowMeta.get(window)
+    if (meta?.chrome === 'hud') window.showInactive() // a glance — never steal focus
+    else {
+      window.show()
+      window.focus()
+    }
+  },
+  close: (window) => window.close(),
+  isAlive: (window) => !window.isDestroyed(),
+})
+
+/** Open (or focus) a surface's window. The default HUD is the singular anchor — its "open" is Show HUD. */
+const openApp = (surfaceId: string): void => {
+  if (surfaceId === cfg.surfaceId) return showHud() // the default HUD is not in the registry — reveal it
+  appRegistry.openOrFocus(surfaceId)
+  persistOpenApps()
+  refreshTray()
+}
+
+/** Close a surface's window. Closing the default HUD's surface HIDES it (the anchor persists, like ⌘\). */
+const closeApp = (surfaceId: string): void => {
+  if (surfaceId === cfg.surfaceId) return hideHud()
+  appRegistry.close(surfaceId) // the window's `closed` handler retires + persists + repaints
+}
+
+/** Flip a surface's favorite (client-side, #98) so it floats to the top of the Apps folder; repaint. */
+const toggleFavorite = (surfaceId: string): void => {
+  appState = { ...appState, favorites: toggleInList(appState.favorites, surfaceId) }
+  writeAppState(app.getPath('userData'), appState)
+  refreshTray()
+}
+
+/** Persist the set of open app windows (#19) so they reopen next launch. The default HUD always reopens. */
+const persistOpenApps = (): void => {
+  appState = { ...appState, openApps: appRegistry.openSurfaceIds() }
+  writeAppState(app.getPath('userData'), appState)
+}
+
+/**
+ * Reopen the app windows that were open at last quit (#19 — "config persists the set of open surfaces
+ * across restart"). The default HUD surface is skipped: it is the singular anchor, always created
+ * directly by createHudWindow. A stale id whose surface the engine no longer serves still opens a window
+ * that shows the renderer's honest boot-status text rather than failing invisibly — harmless.
+ */
+const reopenPersistedApps = (): void => {
+  for (const surfaceId of appState.openApps) {
+    if (surfaceId === cfg.surfaceId) continue
+    appRegistry.openOrFocus(surfaceId)
   }
 }
 
-/** Persist the current origin, debounced so a drag (many move events) writes once it settles. */
-const scheduleSavePosition = (): void => {
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    saveTimer = undefined
-    if (!hudWindow) return
-    const { x, y } = hudWindow.getBounds()
-    savePosition(app.getPath('userData'), { x, y })
-  }, 400)
+/**
+ * Restore a window to where we last left it — the default HUD from its own long-standing store
+ * (window-store.ts, unchanged), an app window from the per-surface Apps state (#20). Only if the spot is
+ * still on a connected display; otherwise center (the same isPositionUsable guard both share).
+ */
+const restoreWindowPosition = (window: BrowserWindow): void => {
+  const meta = windowMeta.get(window)
+  const { width, height } = window.getBounds()
+  const displays = screen.getAllDisplays().map((d) => d.workArea)
+  const saved = meta?.isDefaultHud
+    ? readSavedPosition(app.getPath('userData'))
+    : meta
+      ? appState.positions[meta.surfaceId]
+      : undefined
+  const start = resolveStartupPosition(saved, { width, height }, displays)
+  if (start) {
+    window.setPosition(start.x, start.y)
+    console.log(`[shell] ${meta?.isDefaultHud ? 'HUD' : `app ${meta?.surfaceId}`} position restored to ${start.x},${start.y}`)
+  } else {
+    window.center()
+  }
 }
 
-/** Begin following the cursor: capture the grab offset now, then move the window each tick to keep it. */
-const startWindowDrag = (): void => {
-  if (!hudWindow || dragTimer) return
-  const { x, y } = hudWindow.getBounds()
+/** Persist a window's current origin, debounced so a drag (many move events) writes once it settles (#20). */
+const scheduleSaveWindowPosition = (window: BrowserWindow): void => {
+  const existing = appSaveTimers.get(window)
+  if (existing) clearTimeout(existing)
+  appSaveTimers.set(
+    window,
+    setTimeout(() => {
+      appSaveTimers.delete(window)
+      if (window.isDestroyed()) return
+      const meta = windowMeta.get(window)
+      const { x, y } = window.getBounds()
+      if (meta?.isDefaultHud) {
+        savePosition(app.getPath('userData'), { x, y }) // the default HUD's own store — unchanged behavior
+      } else if (meta) {
+        appState = { ...appState, positions: { ...appState.positions, [meta.surfaceId]: { x, y } } }
+        writeAppState(app.getPath('userData'), appState)
+      }
+    }, 400),
+  )
+}
+
+/** Begin following the cursor for a HUD-style window: capture the grab offset, then ride the cursor. */
+const startWindowDrag = (window: BrowserWindow): void => {
+  if (dragTimer) return
+  draggingWindow = window
+  const { x, y } = window.getBounds()
   dragOffset = grabOffset(screen.getCursorScreenPoint(), { x, y })
   dragTimer = setInterval(() => {
-    if (!hudWindow || !dragOffset) return
+    if (!draggingWindow || draggingWindow.isDestroyed() || !dragOffset) return
     const next = draggedOrigin(screen.getCursorScreenPoint(), dragOffset)
-    hudWindow.setPosition(next.x, next.y)
+    draggingWindow.setPosition(next.x, next.y)
   }, 16)
 }
 
@@ -355,26 +509,30 @@ const endWindowDrag = (): void => {
     dragTimer = undefined
   }
   dragOffset = undefined
-  scheduleSavePosition()
+  const dragged = draggingWindow
+  draggingWindow = undefined
+  if (dragged && !dragged.isDestroyed()) scheduleSaveWindowPosition(dragged)
 }
 
 /**
- * Content-size the frameless HUD to the panel the renderer just measured (hud:resize, from
+ * Content-size a HUD-style window to the panel the renderer just measured (hud:resize, from
  * auto-resize.ts). The transparent window is otherwise a fixed frame whose empty lower portion blocks
  * clicks; sizing it to content removes that dead zone. `measured` is CONTENT height, so setContentSize
  * (not setSize). Top-left origin is left untouched, so the window grows/shrinks downward — drag/position
- * persistence is unaffected. Capped at the display work-area so a runaway panel never grows off-screen,
- * floored at HUD_MIN_HEIGHT (the empty-state bar). Unchanged heights are skipped to avoid churn.
+ * persistence is unaffected. Capped at the display work-area, floored at HUD_MIN_HEIGHT. Only HUD-chrome
+ * windows are content-sized; a normal framed app window is left to the user's own resize (its resize IPC
+ * is ignored here). Unchanged heights are skipped to avoid churn.
  */
-const resizeHudToContent = (measured: number): void => {
-  if (!hudWindow) return
-  const max = screen.getDisplayMatching(hudWindow.getBounds()).workArea.height
+const resizeWindowToContent = (window: BrowserWindow, measured: number): void => {
+  if (window.isDestroyed()) return
+  if (windowMeta.get(window)?.chrome !== 'hud') return // framed app windows size themselves
+  const max = screen.getDisplayMatching(window.getBounds()).workArea.height
   const height = resolveHudHeight(measured, { min: HUD_MIN_HEIGHT, max })
-  const [w = 0, currentHeight = 0] = hudWindow.getContentSize()
+  const [w = 0, currentHeight = 0] = window.getContentSize()
   if (height === currentHeight) return
-  hudWindow.setContentSize(w, height)
+  window.setContentSize(w, height)
   if (cfg.hudOutline) {
-    const b = hudWindow.getBounds()
+    const b = window.getBounds()
     console.log(`[shell] hud:resize measured=${measured} → content ${w}×${height} · bounds ${b.width}×${b.height} @ ${b.x},${b.y}`)
   }
 }
@@ -800,6 +958,9 @@ const connectEvents = (): void => {
       const parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
       if (typeof parsed.name !== 'string') return
       if (liveState.applyEvent({ name: parsed.name, payload: parsed.payload })) refreshTray()
+      // A surface was created/renamed/edited (PUT /layouts/surfaces/:id) — refresh the Apps folder list
+      // so a new mini app appears (or a rename shows) without a restart (#98).
+      if (parsed.name === 'surface.updated') void refreshSurfaces()
       // The live fabric changed (activate / PUT /fabric / active-profile edit) — recompute whether
       // the "Set up models…" nudge should be prominent, without a refetch (the event carries the map).
       if (parsed.name === 'fabric.changed' && parsed.payload) {
@@ -942,6 +1103,26 @@ const refreshSenses = async (): Promise<void> => {
   }
 }
 
+/**
+ * Fetch the app surfaces the engine serves (GET /layouts/surfaces) for the tray Apps folder (#98). Runs
+ * at seed and on the WS `surface.updated` event (a new/renamed/cloned surface should appear in the
+ * folder). Best-effort: an unreachable/old engine leaves the last-known list, so the folder simply isn't
+ * shown until we learn one — no engine contract change (this route already exists).
+ */
+const refreshSurfaces = async (): Promise<void> => {
+  try {
+    const res = await fetch(`${cfg.engineUrl}/layouts/surfaces`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const list = (await res.json()) as Array<{ id?: unknown; name?: unknown }>
+    appSurfaces = list
+      .filter((s): s is { id: string; name: string } => typeof s.id === 'string' && typeof s.name === 'string')
+      .map((s) => ({ id: s.id, name: s.name }))
+    refreshTray()
+  } catch (err) {
+    console.error('[shell] could not read /layouts/surfaces for the Apps folder:', err)
+  }
+}
+
 const seedSessionState = async (): Promise<void> => {
   try {
     liveState.seed(await session.liveSession(cfg.workspace))
@@ -962,6 +1143,8 @@ const seedSessionState = async (): Promise<void> => {
   // Seed the per-sense gate verdicts (issue #7) so the capture-status readout names the engine-side
   // blocking gate too. Best-effort: an old/unreachable engine just leaves the engine-side gates absent.
   await refreshSenses()
+  // Seed the Apps folder's surface list (#98) — best-effort, so the folder appears once we reach the engine.
+  await refreshSurfaces()
   // Seed focus watching from the engine's route.detect flag (best-effort — a failure just leaves focus
   // idle rather than crashing). The WS `flag.changed` handler keeps it fresh after this.
   try {
@@ -994,10 +1177,23 @@ app.whenReady().then(async () => {
     refreshTray()
     applyCaptureLifecycle(live)
   })
-  ipcMain.on('hud:drag-start', () => startWindowDrag())
+  // Drag + resize IPC are routed by `event.sender` to the exact window that sent them (#19: N windows,
+  // one shell). Custom cursor-follow drag is for FRAMELESS HUD-style windows only — a framed app window
+  // drags via its native titlebar, so its drag IPC is ignored here.
+  ipcMain.on('hud:drag-start', (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (window && windowMeta.get(window)?.chrome === 'hud') startWindowDrag(window)
+  })
   ipcMain.on('hud:drag-end', () => endWindowDrag())
-  ipcMain.on('hud:resize', (_event, height: number) => resizeHudToContent(height))
+  ipcMain.on('hud:resize', (event, height: number) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (window) resizeWindowToContent(window, height)
+  })
+  // Load the Apps-folder state (favorites + open set + per-app positions) before creating windows so a
+  // reopened app restores its saved position (#19/#20/#98). Best-effort — a missing file reads as empty.
+  appState = readAppState(app.getPath('userData'))
   createHudWindow()
+  reopenPersistedApps() // reopen the app windows that were open at last quit (the default HUD always opens)
   createCaptureWindow()
   createTray()
   setupCapture()
@@ -1020,6 +1216,9 @@ app.on('window-all-closed', () => {
 })
 // Guards the one-shot async quit path below so preventDefault → endSession → quit does not loop.
 let quitFinalizing = false
+app.on('before-quit', () => {
+  shuttingDown = true // freeze the persisted open-set: the app-window teardown below must not clear it (#19)
+})
 app.on('before-quit', (event) => {
   micController?.shutdown() // stop all capture cleanly if quitting mid-capture
   systemController?.shutdown()
