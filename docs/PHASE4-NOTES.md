@@ -3056,6 +3056,82 @@ v0's gate is the minChars length check only) · a per-field cadence distinct fro
 rides the SAME cadence-released batch) · surfacing `distill.fields` in the Settings → Features section
 (left to the settings-copy owner; the flag ships in `flag.examples.json` and toggles over PUT /flags).
 
+## Slice: #62 — judge stage: dual-input review (source + fast-result set) with overrule-in-place (2026-07-10)
+
+The pass that fills the gap #61 disclosed ("judge tier bindable but unscheduled — that is why every value
+is provisional"). The fast tier is fast and shallow: it can misread specialized content, and a judge that
+saw only the fast tier's OUTPUT could not catch what the fast tier missed. So this judge takes the SAME
+source the fast tier saw (the recent transcript window) AND the fast tier's result set, judges on both
+together, and confirms / corrects (overrules the value in place) / flags each field — lifting it off
+`provisional` into the #66 dot's `confirmed`/`corrected`/`flagged`. Builds on #61 (the fast-field substrate
++ FieldValueStore it overrules), #66 (the micro-state dot consumes the new states), #23 (the judge prompt is
+a document over GET/PUT /templates), and #58 (rides the SAME cadence-released batch — the source seam).
+
+### 1 — contracts (append-only)
+- `JudgeReview` record: the overrule stamp — `templateId` (which judge doc), `endpoint`/`model` (which
+  judge), `verdict`, `priorValue` (the overruled value, on a correct) + `priorState` ("what changed"),
+  `note`, `judgedAt`. Added as optional `judge` on `FieldValueProvenance` — it ANNOTATES the fast producer's
+  lineage (top-level provenance keeps naming `llm.fast`), it does not erase it. A why-line can read
+  `via llm.fast · corrected by <judge model>`.
+- `FastFieldBinding` gains optional `reviews` (the fast fieldIds a judge reviews; absent ⇒ all fast fields
+  in scope) and `cadenceMs` (the judge's re-review floor, decoupled from the fast fan-out). Optional, so the
+  #61 fast documents are byte-for-byte unchanged. `FieldValue.state` doc extended with the judge vocabulary.
+- `distill.judge` flag (T2, default OFF) + `fieldValue.corrected.json` / `promptTemplate.judge.json` examples.
+
+### 2 — the judge scheduler (`distill/judge.ts` `JudgeScheduler`)
+`runJudge(chunks)` reads `docs.judgeTemplates()`; for each, gathers the reviewed fast values for the session,
+builds the source window the SAME way `fields.ts` does (speaker-labeled recent transcript, tail-capped at
+8000 chars — wider than fast, since the judge sees a lower-cadence batch), interpolates the standardized
+`{{source}}`/`{{results}}` body, invokes, and applies each parsed verdict by persisting a NEW version of the
+SAME FieldValue (deterministic id ⇒ overrule in place) + republishing `field.updated`. Honesty: a `correct`
+with no replacement value, or a verdict for an unreviewed field, is skipped-with-log — never fabricated; a
+judge invoke failure is caught per document. TIER-GATE: `hasJudgeEndpoint()` looks for an `llm`-slot endpoint
+named `llm.judge` (the `llm.<tier>` convention the mode's `use:'llm.fast'` established; OPENINFO_JUDGE_ENDPOINT
+overrides). The default invoke routes to THAT endpoint in a one-endpoint sub-fabric, so invokeLlm's fallback
+order can never spill the judge onto the fast endpoint. No judge endpoint ⇒ logged no-op, fields stay
+provisional (degradation, not failure).
+
+### 3 — wiring + cadence decoupling (`api/http.ts`)
+The judge rides the SAME released batch the fast fan-out does (so it judges the SAME source), but through its
+OWN `DistillCadence` buffer (`judgeCadence`, default 4× the distill cadence = ~60s span, OPENINFO_JUDGE_
+CADENCE_MS override) — accumulating fast-tier batches and releasing a wider window only when its span crosses
+the larger threshold. `runJudgePass` is best-effort (a review error never sinks the drain), gated per-drain
+by `distill.judge` (hot-flippable), and runs on both the throttled path and the session-end flush (bypassing
+the cadence so a short session's tail is still judged). Reuses the existing `field.updated` bus→WS broadcast.
+
+### Tests + verification (green in isolation)
+- **Contracts 70 → 72 (+2):** `fieldValue.corrected.json` (a judged/corrected value validates, incl. the
+  `provenance.judge` block) + `promptTemplate.judge.json` (a judge-tier binding validates).
+- **Engine 540 → 549 (+9):** NEW `distill/judge.test.ts` (8) — tier-gate no-op leaves fields provisional (no
+  invoke); confirm→`confirmed` with the judge stamp and fast lineage preserved; correct→value overruled in
+  place with `priorValue` recorded; flag→`flagged` with the note; the DUAL-INPUT proof (the prompt carries
+  both the source transcript and the fast result set); no-fabrication (a valueless correct + an unknown-field
+  verdict are ignored); invoke-failure isolation; explainable-empty when there is nothing to review. NEW
+  served e2e in `api/http.test.ts` (+1, DRIVEN per the QA rule): boot the real engine, configure BOTH an
+  `llm.fast` and an `llm.judge` endpoint (separate fake servers), flip distill.enabled/fields/judge with
+  OPENINFO_JUDGE_CADENCE_MS=0, stream two mic chunks spanning >15s → assert `field-topic` hydrates as
+  `corrected` with the judge correction value, `provenance.judge.endpoint === 'llm.judge'` (routed to the
+  judge lane, not the fast one), `priorValue` recorded, the fast lineage preserved, AND a corrected
+  `field.updated` fired on the bus (the WS broadcast seam).
+- **Full `pnpm -r test`:** contracts 72, engine 549, client 298 — green. KNOWN FLAKE CLASS: under one
+  parallel run the client's `seam streams, spools while engine is down, then flushes exactly once in order`
+  failed once (the EngineLink/spool wall-clock timing flake, untouched by this engine-only slice); 298/298
+  green when the client suite is re-run in isolation.
+
+### Deferred / disclosed (out of this v0, by scope)
+- **Source = the transcript window (text), not raw screen frames.** The fast tier's source IS the utf8
+  transcript window (fast fields exclude base64 frames), so the judge honestly sees the SAME source. Screen
+  frames become OCR text upstream (`screen.ocr`) and are not fed raw into the judge in this slice — a raw-
+  frame/VLM judge input is a later enhancement, not a fabricated capability here.
+- **Judge-endpoint designation is by NAME (`llm.judge`).** A richer fabric "judge lane" slot is deferred;
+  the name convention is the honest v0 tier-gate and mirrors the mode's existing `use:'llm.fast'`.
+- **Cadence is time-buffer decoupling, not a full scheduler.** The judge accumulates fast batches and
+  releases on a wider span; a per-judge-document independent scheduler/timer is deferred (`cadenceMs` rides
+  in the contract for when it lands).
+- **Surfacing `distill.judge` in Settings → Features** is left to the settings-copy owner (the flag ships in
+  `flag.examples.json` and toggles over PUT /flags). No new render surface — the #66 dot already consumes
+  the state, and `field.updated` already carries it to the HUD.
+
 ## Slice: Token accounting in provenance + the Audit-ledger surface  *(M5, #65, branch feat/65-token-audit-ledger, 2026-07-10)*
 
 Provenance is stamped on records throughout the pipeline but rendered almost nowhere; this slice adds the

@@ -44,7 +44,7 @@ import { PinChunk } from './records/pinChunk.js'
 import { TeachSignal, TeachSignalKind } from './records/teach.js'
 import { Commitment, Watcher } from './records/commitment.js'
 import { ItemSignal, ItemSignalKind } from './records/signal.js'
-import { FieldValue, FieldValueProvenance } from './records/fieldValue.js'
+import { FieldValue, FieldValueProvenance, JudgeReview } from './records/fieldValue.js'
 import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './config/voice.js'
 import { Surface, Block, BlockQuery, Action, BlockTypeName } from './config/surface.js'
 import { Mode } from './config/mode.js'
@@ -62,7 +62,7 @@ import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarS
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
   InvokeUsage,
-  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance,
+  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, FastFieldBinding, Fabric, Endpoint, LocalRuntime, FabricProfile,

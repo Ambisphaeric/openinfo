@@ -135,6 +135,42 @@ export const defaultWorkItemsField: PromptTemplate = {
 export const defaultFieldTemplates: readonly PromptTemplate[] = [defaultTopicField, defaultEntitiesField, defaultWorkItemsField]
 
 /**
+ * The shipped judge prompt document (#62) — the dual-input review the larger-model, lower-cadence judge
+ * tier runs. It is a `field`-kind PromptTemplate with a `judge`-tier binding (the append-only #61
+ * extension), so it seeds and edits over the SAME GET/PUT /templates routes the fast documents do.
+ *
+ * The body is the STANDARDIZED dual-input contract: every judge prompt takes `{{source}}` (the same
+ * transcript window the fast tier saw) and `{{results}}` (the fast tier's current field values), and
+ * emits a strict JSON array of per-field verdicts — confirm / correct (value overruled in place) /
+ * flag. `reviews` is omitted, so it reviews every fast-tier field in its scope; `cadenceMs` sets its
+ * re-review floor decoupled from the fast fan-out. It ALSO carries the orientation duty (topic shift /
+ * missed implication) into a flag. Deliberately demands only what the source supports — the judge is a
+ * corrector, never a fabricator.
+ */
+export const defaultJudgeTemplate: PromptTemplate = {
+  id: 'tpl-judge-default',
+  name: 'judge-default',
+  kind: 'field',
+  slot: 'llm',
+  builtin: true,
+  description: 'judge (#62): dual-input review of the fast-field result set against the source transcript window — confirm/correct/flag with overrule in place',
+  field: { fieldId: 'judge-default', tier: 'judge', trigger: { kind: 'transcript', minChars: 80 }, scope: 'session', cadenceMs: 60_000 },
+  body:
+    'You are a JUDGE reviewing a fast, shallow tier that watched the same meeting you are about to see. ' +
+    "The fast tier is quick but can misread specialized content — your job is to catch what it missed.\n" +
+    'You receive TWO inputs: the SOURCE (the transcript window the fast tier saw) and RESULTS (the fast ' +
+    "tier's current field values). For EACH result field, judge its value against the source and return a verdict:\n" +
+    '- "confirm": the value is correct and supported by the source.\n' +
+    '- "correct": the value is wrong or imprecise — supply the fixed value in "value".\n' +
+    '- "flag": the value is questionable, or the source shifted topic / carries an implication the value missed — explain in "note".\n' +
+    'Return ONLY a JSON array, no prose, no code fences. Each element: ' +
+    '{"fieldId": string, "verdict": "confirm"|"correct"|"flag", "value": string (REQUIRED for correct), "note": string (optional)}.\n' +
+    'Judge only what the source supports; invent nothing. Omit a field you cannot judge from the source.\n\n' +
+    'SOURCE (transcript window {{windowStart}} -> {{windowEnd}}):\n{{source}}\n\n' +
+    'RESULTS (the fast tier\'s current fields):\n{{results}}\n\nJSON array of verdicts:',
+}
+
+/**
  * The default meeting mode — window config lives here (mode document owns merge windows, per
  * ARCHITECTURE §7). Mirrors shared/contracts/examples/mode.meeting.json; the distiller reads only
  * distill.mergeWindow + distill.tokenBudget from it in this slice.

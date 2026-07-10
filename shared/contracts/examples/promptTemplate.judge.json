@@ -1,0 +1,16 @@
+{
+  "id": "tpl-judge-default",
+  "name": "judge-default",
+  "kind": "field",
+  "slot": "llm",
+  "builtin": true,
+  "description": "judge (#62): dual-input review of the fast-field result set against the source transcript window — confirm/correct/flag with overrule in place",
+  "body": "You are a JUDGE reviewing a fast, shallow tier that watched the same meeting you are about to see. You receive TWO inputs: the SOURCE (the transcript window the fast tier saw) and RESULTS (the fast tier's current field values). For EACH result field, judge its value against the source. Return ONLY a JSON array, no prose, no code fences. Each element: {\"fieldId\": string, \"verdict\": \"confirm\"|\"correct\"|\"flag\", \"value\": string (REQUIRED for correct — the fixed value), \"note\": string (optional rationale)}.\n\nSOURCE (transcript window {{windowStart}} -> {{windowEnd}}):\n{{source}}\n\nRESULTS:\n{{results}}\n\nJSON array of verdicts:",
+  "field": {
+    "fieldId": "judge-default",
+    "tier": "judge",
+    "trigger": { "kind": "transcript", "minChars": 80 },
+    "scope": "session",
+    "cadenceMs": 60000
+  }
+}
