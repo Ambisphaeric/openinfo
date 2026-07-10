@@ -104,13 +104,6 @@ export const defaultFieldsSurface: Surface = {
   ],
 }
 
-/**
- * The surfaces SEEDED into a workspace's _meta.db on boot (ensureDefaults) and always enumerated by list()
- * — the shipped apps the tray Apps folder shows out of the box. Append a const here to ship a new default
- * surface (one line); each is seeded ONLY when absent, so a user's edits are never clobbered. Glass Minimal
- * is deliberately NOT here — it is a cloneable TEMPLATE (templates/glass-minimal), not a seeded default.
- */
-export const SEEDED_SURFACES: readonly Surface[] = [defaultHudSurface, defaultFieldsSurface, defaultDiagnosticsSurface]
 
 /**
  * Template #3 — "Glass Minimal", the floor (design/renderings/hud-v2.html: the two-line whisper, not
@@ -153,3 +146,11 @@ export const defaultDiagnosticsSurface: Surface = {
     { block: 'queue', show: 'always', query: { source: 'queue', params: {}, top: 1 } },
   ],
 }
+
+/**
+ * The surfaces SEEDED into a workspace's _meta.db on boot (ensureDefaults) and always enumerated by list()
+ * — the shipped apps the tray Apps folder shows out of the box. Append a const here to ship a new default
+ * surface (one line); each is seeded ONLY when absent, so a user's edits are never clobbered. Glass Minimal
+ * is deliberately NOT here — it is a cloneable TEMPLATE (templates/glass-minimal), not a seeded default.
+ */
+export const SEEDED_SURFACES: readonly Surface[] = [defaultHudSurface, defaultFieldsSurface, defaultDiagnosticsSurface]
