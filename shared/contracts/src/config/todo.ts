@@ -30,6 +30,12 @@ export const TodoItem = Type.Object(
     done: Type.Optional(Type.Boolean({ description: 'user checked it off; extraction never sets this' })),
     provenance: Type.Optional(TodoProvenance),
     createdAt: IsoTime,
+    state: Type.Optional(
+      Type.String({
+        description:
+          'field micro-state / judge tier — provisional | confirmed | corrected (shipped default vocab), document-configurable per surface. ABSENT until a judge stamps it: no dot renders for a stateless item (nothing pretends to be reviewed). No judge exists yet, so this is the carrier primitive, not fabricated data.',
+      }),
+    ),
   },
   { $id: 'TodoItem', additionalProperties: false },
 )

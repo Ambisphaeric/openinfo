@@ -67,6 +67,26 @@ body{margin:0;background:var(--page-bg);
 .mini.copied{border-color:rgba(77,164,122,.55);color:#7cc4a0;background:rgba(77,164,122,.14)}
 .mini.copyfail{border-color:rgba(224,106,60,.6);color:#e0865c;background:rgba(224,106,60,.14)}
 
+/* Field micro-state dot (#66): a dot-scale, colour-coded judge tier — provisional/confirmed/corrected by
+   default, document-configurable per surface. A few px, inline before the row title. Renders ONLY when an
+   item carries a state (the honesty rule: nothing pretends to be reviewed; no judge stamps one yet). */
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:middle;background:var(--s-faint)}
+.dot.provisional{background:var(--m-quest)}
+.dot.confirmed{background:var(--m-decide)}
+.dot.corrected{background:var(--m-artifact)}
+.dot.unknown{background:var(--s-faint)}
+
+/* Glyph verb strip (#66): a compact ~60px reserve fitting three ~15px glyph buttons per row (default
+   dismiss/pin/mark-for-follow-up). dismiss has a real write path; pin and mark-for-follow-up are
+   honestly inert (.ghost) this slice. Success/failure paints via the shared .copied/.copyfail flip. */
+.glyphs{display:inline-flex;gap:6px;align-items:center}
+.gverb{width:18px;height:18px;padding:0;display:inline-flex;align-items:center;justify-content:center;
+  font-size:12px;line-height:1;border-radius:5px;border:1px solid var(--s-line);color:var(--s-ink);
+  background:rgba(27,31,40,.9);cursor:pointer}
+.gverb.ghost{background:transparent;color:var(--s-faint);cursor:default}
+.gverb.copied{border-color:rgba(77,164,122,.55);color:#7cc4a0;background:rgba(77,164,122,.14)}
+.gverb.copyfail{border-color:rgba(224,106,60,.6);color:#e0865c;background:rgba(224,106,60,.14)}
+
 .mk.a{color:var(--m-artifact)} .mk.c{color:var(--m-commit)} .mk.q{color:var(--m-quest)}
 .mk.d{color:var(--m-decide)} .mk.p{color:var(--s-muted)}
 

@@ -336,6 +336,13 @@ export const QueryResult = Type.Object(
     items: Type.Array(Type.Unknown(), { description: 'hydrated rows; element shape is keyed by `source`' }),
     top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
     truncated: Type.Boolean({ description: 'true when more rows existed than were returned under `top`' }),
+    suppressed: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description:
+          'how many rows a user DISMISSED were excluded from these results (#66). Present only when > 0, so a block that emptied purely via suppression can disclose it in its empty-state — explainable, not mysterious.',
+      }),
+    ),
   },
   { $id: 'QueryResult', additionalProperties: false },
 )

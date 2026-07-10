@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { TodoList, WorkspaceHints } from '@openinfo/contracts'
 import { wireActions, type ActionHandlers, type MountTarget } from '../block-renderer/index.js'
-import { markTodoDone, acceptHintCandidate } from './dev-entry.js'
+import { markTodoDone, acceptHintCandidate, dismissItem } from './dev-entry.js'
 
 /**
  * The FIRST driven coverage over the wired action verbs (#15): mark-done and accept. Two layers —
@@ -105,12 +105,41 @@ test('accept click calls its handler with the workspace + pattern payload, and a
   assert.equal(bad.textContent, 'Failed')
 })
 
-// ---- served e2e: a live throwaway engine implementing the two write routes over real fetch ----
+test('dismiss click calls its handler with the item payload, and a rejected write paints failure (#66)', async () => {
+  const calls: Array<{ workspaceId: string; source: string; itemId: string }> = []
+  const { target, clickButton } = makeStage()
+  wireActions(target, { copy: () => undefined, dismiss: async (payload) => void calls.push(payload) })
+
+  const glyph = makeButton(
+    { 'data-verb': 'dismiss', 'data-workspace': 'ws', 'data-source': 'todos', 'data-item': 't1' }, '✕', 'gverb',
+  )
+  clickButton(glyph)
+  await flush()
+  assert.deepEqual(calls, [{ workspaceId: 'ws', source: 'todos', itemId: 't1' }]) // exact payload off the glyph
+  assert.equal(glyph.textContent, '✓')
+
+  // an inert dismiss glyph (no data-item — pin/follow-up or an unaddressable row) never calls the handler
+  clickButton(makeButton({ 'data-verb': 'dismiss', 'data-workspace': 'ws', 'data-source': 'todos' }, '✕', 'gverb ghost'))
+  await flush()
+  assert.equal(calls.length, 1) // unchanged — honestly inert, not a silent misfire
+
+  const failStage = makeStage()
+  wireActions(failStage.target, { copy: () => undefined, dismiss: async () => Promise.reject(new Error('boom')) })
+  const bad = makeButton({ 'data-verb': 'dismiss', 'data-workspace': 'ws', 'data-source': 'todos', 'data-item': 't1' }, '✕', 'gverb')
+  failStage.clickButton(bad)
+  await flush()
+  assert.equal(bad.textContent, '!')
+  assert.match(bad.className, /\bcopyfail\b/)
+})
+
+// ---- served e2e: a live throwaway engine implementing the write routes over real fetch ----
+interface StoredSignal { workspaceId: string; source: string; itemId: string; kind: string; at: string }
 interface FakeEngine {
   baseUrl: string
   todos: Map<string, TodoList>
   hints: Map<string, WorkspaceHints>
-  putStatus: number // the status the PUT routes return (200 = success; set to 500 to force failure)
+  signals: StoredSignal[]
+  putStatus: number // the status the PUT/POST write routes return (200 = success; set to 500 to force failure)
   close: () => Promise<void>
 }
 const readBody = async (req: IncomingMessage): Promise<string> => {
@@ -119,7 +148,7 @@ const readBody = async (req: IncomingMessage): Promise<string> => {
   return body
 }
 const startFakeEngine = async (): Promise<FakeEngine> => {
-  const engine: Partial<FakeEngine> = { todos: new Map(), hints: new Map(), putStatus: 200 }
+  const engine: Partial<FakeEngine> = { todos: new Map(), hints: new Map(), signals: [], putStatus: 200 }
   const send = (res: ServerResponse, status: number, payload: unknown): void => {
     res.writeHead(status, { 'content-type': 'application/json' })
     res.end(JSON.stringify(payload))
@@ -148,6 +177,13 @@ const startFakeEngine = async (): Promise<FakeEngine> => {
         const doc = JSON.parse(await readBody(req)) as WorkspaceHints
         engine.hints!.set(decodeURIComponent(hint[1]!), doc)
         return send(res, 200, doc)
+      }
+      if (req.method === 'POST' && url.pathname === '/item-signals') {
+        if (engine.putStatus !== 200) return send(res, engine.putStatus!, { error: 'forced failure' })
+        const body = JSON.parse(await readBody(req)) as Omit<StoredSignal, 'at'>
+        const stamped: StoredSignal = { ...body, at: new Date().toISOString() } // engine stamps `at`
+        engine.signals!.push(stamped)
+        return send(res, 200, stamped)
       }
       send(res, 404, { error: 'not found' })
     })()
@@ -202,6 +238,44 @@ test('served e2e: an accept click appends the candidate pattern to the workspace
     await eventually(() => assert.equal(button.textContent, 'Accepted'))
     const doc = engine.hints.get('sales')!
     assert.deepEqual(doc, { workspaceId: 'sales', patterns: [pattern] }) // pattern applied over the wire
+  } finally {
+    await engine.close()
+  }
+})
+
+test('served e2e: a dismiss click writes a suppression record to the live server and paints success (#66)', async () => {
+  const engine = await startFakeEngine()
+  try {
+    const { target, clickButton } = makeStage()
+    wireActions(target, { copy: () => undefined, dismiss: dismissItem(engine.baseUrl) })
+
+    const glyph = makeButton(
+      { 'data-verb': 'dismiss', 'data-workspace': 'sales', 'data-source': 'todos', 'data-item': 't1' }, '✕', 'gverb',
+    )
+    clickButton(glyph)
+
+    await eventually(() => assert.equal(glyph.textContent, '✓')) // real round-trip resolved → success paint
+    assert.equal(engine.signals.length, 1)
+    assert.deepEqual(
+      { workspaceId: engine.signals[0]!.workspaceId, source: engine.signals[0]!.source, itemId: engine.signals[0]!.itemId, kind: engine.signals[0]!.kind },
+      { workspaceId: 'sales', source: 'todos', itemId: 't1', kind: 'dismiss' }, // the suppression record persisted over the wire
+    )
+  } finally {
+    await engine.close()
+  }
+})
+
+test('served e2e: a failed dismiss (HTTP 500) surfaces as visible failure — never a silent swallow (#66)', async () => {
+  const engine = await startFakeEngine()
+  try {
+    engine.putStatus = 500
+    const { target, clickButton } = makeStage()
+    wireActions(target, { copy: () => undefined, dismiss: dismissItem(engine.baseUrl) })
+    const glyph = makeButton({ 'data-verb': 'dismiss', 'data-workspace': 'ws', 'data-source': 'todos', 'data-item': 't1' }, '✕', 'gverb')
+    clickButton(glyph)
+    await eventually(() => assert.equal(glyph.textContent, '!'))
+    assert.match(glyph.className, /\bcopyfail\b/)
+    assert.equal(engine.signals.length, 0) // nothing persisted on a failed write
   } finally {
     await engine.close()
   }

@@ -14,7 +14,7 @@ import { renderQueue } from './queue.js'
 import { renderCustom } from './custom.js'
 
 export { momentGlyph, entityGlyph } from './glyphs.js'
-export { actionButtons } from './actions.js'
+export { actionButtons, glyphStrip, rowAffordances, GLYPH_VERBS, type ActionPayload } from './actions.js'
 
 /**
  * The built-in block registry — one renderer per BlockTypeName (append-only). `custom` doubles as the

@@ -53,6 +53,14 @@
         {
           "const": "accept",
           "type": "string"
+        },
+        {
+          "const": "pin",
+          "type": "string"
+        },
+        {
+          "const": "mark-for-follow-up",
+          "type": "string"
         }
       ]
     },

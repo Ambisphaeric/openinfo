@@ -91,6 +91,10 @@
             "format": "date-time",
             "description": "ISO-8601 timestamp",
             "type": "string"
+          },
+          "state": {
+            "description": "field micro-state / judge tier — provisional | confirmed | corrected (shipped default vocab), document-configurable per surface. ABSENT until a judge stamps it: no dot renders for a stateless item (nothing pretends to be reviewed). No judge exists yet, so this is the carrier primitive, not fabricated data.",
+            "type": "string"
           }
         }
       }

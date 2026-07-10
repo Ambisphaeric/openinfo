@@ -2,6 +2,7 @@ import type { BlockQuery, QueryResult, QueueStatus } from '@openinfo/contracts'
 import { relevantNow } from '../index/index.js'
 import { TeachStore, deriveHintCandidates } from '../teach/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
+import { ItemSignalStore } from './signals.js'
 
 /** BlockQuery.top has a schema max of 50; the same cap bounds the superset we fetch for truncation. */
 const MAX_ROWS = 50
@@ -51,29 +52,58 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
   const known = store.all().some((ws) => ws.id === workspaceId)
   const top = query.top
 
-  const cap = <T>(rows: T[]): QueryResult => ({
+  // Suppression (#66): the `${source}:${itemId}` keys this workspace has DISMISSED, honored below so a
+  // dismissed row stays gone across reloads. Read once (empty ⇒ the filter is a no-op). The signal store
+  // is a document store over _meta.db, so it is constructed ad-hoc here exactly as the teach arm does.
+  const dismissed = new ItemSignalStore(store).dismissedKeys(workspaceId)
+
+  const cap = <T>(rows: T[], suppressed = 0): QueryResult => ({
     source: query.source,
     items: top !== undefined ? rows.slice(0, top) : rows,
     ...(top !== undefined ? { top } : {}),
     truncated: top !== undefined && rows.length > top,
+    // Disclosed, not mysterious: a block emptied purely by suppression can say "N dismissed" (#66).
+    ...(suppressed > 0 ? { suppressed } : {}),
   })
+
+  /**
+   * Drop the rows this workspace dismissed (matched by the source's stable id), then cap. `idOf` reads the
+   * id the dismiss glyph recorded — a top-level `id` for most sources, `entity.id` for the relevant-now join.
+   * The suppressed COUNT rides through to the QueryResult so the client can disclose an all-suppressed empty.
+   */
+  const capSuppressed = <T>(rows: T[], idOf: (row: T) => string | undefined): QueryResult => {
+    if (dismissed.size === 0) return cap(rows)
+    let suppressed = 0
+    const kept = rows.filter((row) => {
+      const id = idOf(row)
+      if (id !== undefined && dismissed.has(`${query.source}:${id}`)) {
+        suppressed += 1
+        return false
+      }
+      return true
+    })
+    return cap(kept, suppressed)
+  }
 
   switch (query.source) {
     case 'relevant-now':
-      return cap(known ? relevantNow(store, workspaceId, { ...(sessionId !== undefined ? { sessionId } : {}), limit: MAX_ROWS, now }) : [])
+      return capSuppressed(
+        known ? relevantNow(store, workspaceId, { ...(sessionId !== undefined ? { sessionId } : {}), limit: MAX_ROWS, now }) : [],
+        (row) => row.entity.id,
+      )
     case 'moments': {
       const moments = known ? store.listMoments(workspaceId, sessionId) : []
       // store returns moments oldest-first (by `at`); the stream reads newest-first (hud-v2.html).
-      return cap([...moments].sort((a, b) => b.at.localeCompare(a.at)))
+      return capSuppressed([...moments].sort((a, b) => b.at.localeCompare(a.at)), (m) => m.id)
     }
     case 'sessions':
       return cap(known ? store.listSessions(workspaceId) : [])
     case 'entities':
-      return cap(known ? store.listEntities(workspaceId) : [])
+      return capSuppressed(known ? store.listEntities(workspaceId) : [], (e) => e.id)
     case 'pins':
       // Pinned canon (P4D): workspace-level records, most-recently-created first (listPins mirrors
       // listEntities — unknown workspace reads as [], never an error).
-      return cap(known ? store.listPins(workspaceId) : [])
+      return capSuppressed(known ? store.listPins(workspaceId) : [], (p) => p.id)
     case 'todos': {
       // Accumulated follow-ups (task-extract, P4): the to-do documents live in the global _meta.db
       // keyed by session; the store filters them to the resolved workspace (and session, when the
@@ -83,7 +113,7 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // a to-do document exists without a workspace DB (PUT /todos writes the document, not a
       // workspace), and listTodos filters by the body's workspaceId — an unknown workspace / no
       // extraction yet already reads as [], explainable-empty, never an error.
-      return cap(store.listTodos(workspaceId, sessionId).flatMap((list) => list.items))
+      return capSuppressed(store.listTodos(workspaceId, sessionId).flatMap((list) => list.items), (item) => item.id)
     }
     case 'drafts': {
       // Prepared follow-up drafts (Act pass, P2): workspace-level records in the workspace DB, so this
@@ -92,7 +122,7 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // wants the freshest prepared draft on top, so reverse to newest-first (like moments/pins) before
       // `cap` takes top-K. Each row is a Draft — body + provenance/why-line — rendered client-side.
       const drafts = known ? store.listDrafts(workspaceId, sessionId) : []
-      return cap([...drafts].reverse())
+      return capSuppressed([...drafts].reverse(), (d) => d.id)
     }
     case 'queue': {
       // Honest backlog telemetry (P4A queue): the per-kind depth, ETA, overflow state, and last drain
@@ -116,7 +146,7 @@ export const compileQuery = (store: WorkspaceRegistry, query: BlockQuery, now: D
       // arm's ordering — hud-v2.html's stream), so reverse before `cap` takes top-K. Each row is a
       // Distillate — window text + timestamp + endpoint provenance — rendered client-side.
       const distillates = known ? store.listDistillates(workspaceId, sessionId) : []
-      return cap([...distillates].reverse())
+      return capSuppressed([...distillates].reverse(), (d) => d.id)
     }
     case 'teach': {
       // SUGGESTED attribution-hint candidates (teach loop, P4D): the review half of the flywheel. The
