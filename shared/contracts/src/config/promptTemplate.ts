@@ -13,20 +13,28 @@ import { Id, SlotName } from '../common.js'
  * - `fieldId` is the surface field this prompt writes (a `fields` query source renders the field's
  *   latest value with provenance).
  * - `tier` is the model lane: `fast` runs at seconds-scale/event-driven cadence on the high-throughput
- *   small model (the only tier that RUNS in v0); `judge` is reserved for the confirm pass (a later
- *   issue) — a `judge` binding is a valid document but is not scheduled yet.
+ *   small model; `judge` (#62) is the dual-input review pass — it runs on a LARGER model at a LOWER
+ *   cadence, receives the SAME source the fast tier saw PLUS the fast result set, and confirms/corrects/
+ *   flags each reviewed field in place. A judge binding is tier-gated on fabric contents: with no
+ *   judge-capable endpoint configured it never schedules and the fields simply stay provisional.
  * - `trigger.kind: 'transcript'` fires the field on newly transcribed material; `minChars` is the
  *   inexpensive relevance gate — the field is SKIPPED when the new material is shorter than this, so a
  *   field that needs substance does not burn an invoke on a one-word window (routing sophistication is
  *   deliberately minimal in v0 — the workflow engine owns richer routing).
  * - `scope` is where the field value lives: `session` (per live session) or `workspace` (across
  *   sessions, e.g. accumulated domain vocabulary).
+ * - `reviews` (judge tier only, #62) names the fast fieldIds this judge reviews — the fast-result set it
+ *   judges against the source. Absent ⇒ it reviews every `fast`-tier field in its scope. Ignored for a
+ *   `fast` binding (which writes its own `fieldId`).
+ * - `cadenceMs` (judge tier only, #62) is the judge's minimum re-review interval — its cadence is
+ *   DECOUPLED from the fast fan-out (which runs every distill batch). Absent ⇒ the engine's judge
+ *   cadence default. Ignored for a `fast` binding.
  */
 export const FastFieldBinding = Type.Object(
   {
     fieldId: Id,
     tier: Type.Union(['fast', 'judge'].map((t) => Type.Literal(t)), {
-      description: 'model lane: fast runs event-driven on the small model (the only tier scheduled in v0); judge is the reserved confirm pass',
+      description: 'model lane: fast runs event-driven on the small model; judge (#62) is the dual-input review pass on a larger model at a lower cadence',
     }),
     trigger: Type.Object(
       {
@@ -40,6 +48,14 @@ export const FastFieldBinding = Type.Object(
     scope: Type.Union(['session', 'workspace'].map((s) => Type.Literal(s)), {
       description: 'where the field value lives: per live session, or across sessions for the workspace',
     }),
+    reviews: Type.Optional(
+      Type.Array(Id, {
+        description: 'judge tier only (#62): the fast fieldIds this judge reviews; absent ⇒ every fast field in scope',
+      }),
+    ),
+    cadenceMs: Type.Optional(
+      Type.Integer({ minimum: 0, description: 'judge tier only (#62): minimum re-review interval, decoupled from the fast fan-out; absent ⇒ engine default' }),
+    ),
   },
   { $id: 'FastFieldBinding', additionalProperties: false },
 )
