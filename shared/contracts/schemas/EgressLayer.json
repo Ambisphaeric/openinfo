@@ -1,0 +1,30 @@
+{
+  "$id": "EgressLayer",
+  "description": "which of the four layers decided (or `default` = no denial, `endpoint` = destination-classification decided)",
+  "anyOf": [
+    {
+      "const": "endpoint",
+      "type": "string"
+    },
+    {
+      "const": "prompt",
+      "type": "string"
+    },
+    {
+      "const": "mode",
+      "type": "string"
+    },
+    {
+      "const": "workspace",
+      "type": "string"
+    },
+    {
+      "const": "content-class",
+      "type": "string"
+    },
+    {
+      "const": "default",
+      "type": "string"
+    }
+  ]
+}

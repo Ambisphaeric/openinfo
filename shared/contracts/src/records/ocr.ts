@@ -1,5 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Id, IsoTime, Confidence, InvokeUsage } from '../common.js'
+import { EgressDecision } from '../config/egress.js'
 
 /**
  * The output of one screen-understanding pass — the OCR/VLM analogue of a Distillate (P4B;
@@ -64,6 +65,9 @@ export const OcrResult = Type.Object(
         endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this' }),
         model: Type.Optional(Type.String()),
         usage: Type.Optional(InvokeUsage),
+        // #64: screen-derived content is content-class `screen` and NEVER egresses, so this decision is
+        // reach:'local'/allowed:false/decidedBy:'content-class' whenever recorded. Append-only/optional.
+        egress: Type.Optional(EgressDecision),
       },
       { additionalProperties: false },
     ),

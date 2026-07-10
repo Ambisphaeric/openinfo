@@ -1,6 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Id } from '../common.js'
 import { DriftConfig } from './voice.js'
+import { EgressPolicy } from './egress.js'
 
 export const SourceConfig = Type.Object(
   {
@@ -60,6 +61,9 @@ export const Mode = Type.Object(
         description: 'capability-ladder floor (docs/DESIGN-CRITIQUE.md §1)',
       }),
     ),
+    // Layer 3 of the egress-consent policy (#64): a mode may deny egress wholesale. Append-only/optional —
+    // absent ⇒ the mode does not deny (it defers to the other layers).
+    egress: Type.Optional(EgressPolicy),
   },
   { $id: 'Mode', additionalProperties: false },
 )
