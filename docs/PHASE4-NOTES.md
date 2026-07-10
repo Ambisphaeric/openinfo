@@ -4218,3 +4218,51 @@ no-voice-vocab guard. `pipeline.test.ts` / `index/extract.test.ts` voice-resolut
 from "dial reached the prompt text" to the resolved-dials-on-provenance + a no-dial-line prompt guard
 (the neutral body no longer carries the numbers; resolution is still proven). Suites at the PR:
 contracts 81 / client 363 / engine 691.
+
+## #117 — human why-lines on HUD-tier blocks (strip endpoint/model ids)
+
+The HUD-tier why-line said `via <endpoint> · <model> · <window clock>` — it named the machine that
+produced a mention (e.g. `via distill-fast · qwen3-4b · 2:46p`). The HUD's job is to say WHY an item is
+relevant to a HUMAN, not which model named it: the owner already knows what model they run. This strips
+the endpoint/model/template id from the HUD-tier why-lines and states the human slice instead.
+
+### The change (why-line rendering only)
+`apps/client/src/surfaces/blocks/relevant-now.ts` `provenanceWhy` — the ONLY HUD-tier renderer that
+carried the pattern — no longer builds a `via <endpoint> · <model>` string. A recorded-provenance row
+now reads **source kind + recency**:
+- **source kind** — the most recent typed `sighting` on the entity: `heard` / `on screen` (seen) /
+  `from calendar`. When the entity carries no sightings it defaults to `heard` — the honest default,
+  since the only live producer of a recorded provenance trail today is the heard (ASR → distill)
+  pipeline. NEVER derived from the fabric `slot` (`llm`/`stt`/…), which is a machine capability name,
+  not how a human encountered the item.
+- **recency** — the provenance window end (`windowEnd ?? windowStart`) as a wall-clock label, falling
+  back to the entity's `lastSeen`; a row with a trail but no usable time states its source kind alone.
+
+Resulting copy: `heard · 2:46p`, `on screen · 2:44p`, `from calendar · 2:44p`. The Phase-0 heuristic
+fallback (`Referenced N× · <latest moment>`) was already human and is unchanged. Copy/dismiss/clarify
+affordances unchanged. No contract change — it reads existing `Entity.sightings` / provenance fields.
+
+### Sweep of the HUD-tier blocks (the file-boundary set)
+- **relevant-now.ts** — the offender. Fixed (above).
+- **moments.ts** — renders the typed-event stream (time · glyph · speaker · text). No provenance,
+  no endpoint/model ever. Untouched.
+- **now.ts** — the context line + heartbeat; its header already states "no mode chips, no engine
+  labels". No endpoint/model. Untouched.
+- **#75 clarify ask** (`clarify.ts`) — already human copy from birth (heard form + entity names, no
+  model/endpoint/template id). Left as-is per the issue.
+
+### DIAGNOSTICS-tier surfaces KEEP their density (deliberately not touched)
+- **fields.ts** — `via <endpoint> · <model> · <template id>`: product principle 1, every rendered
+  value inspectable back to the exact prompt+endpoint. That density is its job.
+- **transcript-inspector.ts** — the current stt slot as `<endpoint> · <model>`.
+- **The audit ledger** (#65, `settings/sections/ledger.ts`) — the full per-hop trail
+  (when·stage·endpoint/model·tokens·guard·egress) remains the reachable provenance of record.
+
+### Tests / green (served/driven per the QA rule)
+`apps/client/src/surfaces/block-renderer/renderer.test.ts` — the existing served renderer test
+`relevant-now why line (#117): …` (renderToHtml over renderSurface) now asserts the new human copy
+(`class="why">heard · 2:46p`, `on screen · 2:44p`) AND the #117 regression: the HUD render
+`doesNotMatch` any of `distill-fast|qwen3-4b|ocr-local|florence-2` and `class="why">via `. A seen-entity
+row was added to prove the sighting-driven source kind; the display-rule-#1 drop and card count updated
+(three whyable rows). Full `pnpm -r build` green; suites at the PR: contracts 81 / client 363 /
+engine 693 (client re-run isolated — the known client seam flake did not recur).

@@ -132,15 +132,16 @@ test('a pinned-doc block renders the hydrated pin from the store, and hides (on-
   assert.doesNotMatch(empty, /Pinned/)
 })
 
-test('relevant-now why line: recorded provenance is preferred, else the mention/moment heuristic, and a why-less row renders no card', () => {
+test('relevant-now why line (#117): recorded provenance renders a HUMAN source+recency why (no endpoint/model), else the mention/moment heuristic, and a why-less row renders no card', () => {
   // A block over relevant-now with no cap — one card per row that can state a why.
   const surface: Surface = {
     id: 's', name: 's', context: 'meeting', version: 1,
     stack: [{ block: 'relevant-now', show: 'always', query: { source: 'relevant-now', params: {} } }],
   }
 
-  // Row 1: the pipeline RECORDED provenance on the entity (which endpoint/model/window named it) → the
-  // why line derives from that trail, NOT from a re-guessed mention count.
+  // Row 1: the pipeline RECORDED provenance on the entity (endpoint/model/window in the DATA) → the HUD
+  // why line derives from that trail but states only the human slice: source kind (heard) + when. It must
+  // NOT leak the endpoint or model id (#117) and must NOT re-guess a mention count.
   const withProvenance: RelevantEntity = {
     entity: { ...entity('person', 'Dana', 9), provenance: [
       { slot: 'llm', endpoint: 'distill-fast', model: 'qwen3-4b', windowStart: '2026-07-07T14:40:00Z', windowEnd: '2026-07-07T14:43:00Z' },
@@ -148,24 +149,37 @@ test('relevant-now why line: recorded provenance is preferred, else the mention/
     ] },
     score: 1, moments: [moment('question', 'guarantee 30-day deletion?', '2026-07-07T14:45:00Z')],
   }
-  // Row 2: no recorded trail anywhere (Phase-0 row) → falls back to the mention + latest-moment heuristic.
+  // Row 2: a SEEN entity — its typed sighting names the source kind ("on screen"), recency from its trail.
+  const seenEntity: RelevantEntity = {
+    entity: { ...entity('artifact', 'dashboard.png', 2),
+      sightings: [{ via: 'seen', at: '2026-07-07T14:44:00Z' }],
+      provenance: [{ slot: 'vlm', endpoint: 'ocr-local', model: 'florence-2', windowEnd: '2026-07-07T14:44:00Z' }] },
+    score: 1, moments: [],
+  }
+  // Row 3: no recorded trail anywhere (Phase-0 row) → falls back to the mention + latest-moment heuristic.
   const withoutProvenance = rel(entity('artifact', 'SOC 2 report', 3), [moment('artifact', 'SOC 2 referenced again', '2026-07-07T14:41:00Z')])
-  // Row 3: no provenance, no mentions, no moments, an UNPARSEABLE lastSeen → can state no why → no card.
+  // Row 4: no provenance, no mentions, no moments, an UNPARSEABLE lastSeen → can state no why → no card.
   const whyless: RelevantEntity = { entity: { ...entity('topic', 'ghost', 0), lastSeen: 'not-a-date' }, score: 0, moments: [] }
 
   const html = renderToHtml(renderSurface(
-    { surface, now, results: [result('relevant-now', [withProvenance, withoutProvenance, whyless])] },
+    { surface, now, results: [result('relevant-now', [withProvenance, seenEntity, withoutProvenance, whyless])] },
     defaultBlockRegistry,
   ))
 
-  // recorded-provenance path: endpoint · model · most-recent window end (2:46p), and NO mention-count phrasing
-  assert.match(html, /via distill-fast · qwen3-4b · 2:46p/)
+  // recorded-provenance path: human source kind + most-recent window end (2:46p), NO mention-count phrasing
+  assert.match(html, /class="why">heard · 2:46p<\/span>/)
+  // seen path: the typed sighting drives "on screen" + its recency
+  assert.match(html, /class="why">on screen · 2:44p<\/span>/)
   assert.doesNotMatch(html, /Referenced 9×/)
+  // #117 REGRESSION: the HUD-tier render must not leak any endpoint, model id, or template id, nor the
+  // old `via …` machine phrasing — the full trail stays on diagnostics surfaces + the ledger, not here.
+  assert.doesNotMatch(html, /distill-fast|qwen3-4b|ocr-local|florence-2/)
+  assert.doesNotMatch(html, /class="why">via /)
   // heuristic fallback path for the row with no recorded trail
   assert.match(html, /Referenced 3× · SOC 2 referenced again/)
-  // display rule #1: the why-less row is DROPPED, only the two whyable rows render cards
+  // display rule #1: the why-less row is DROPPED, only the three whyable rows render cards
   assert.doesNotMatch(html, /ghost<\/span>/)
-  assert.equal((html.match(/class="rel"/g) ?? []).length, 2)
+  assert.equal((html.match(/class="rel"/g) ?? []).length, 3)
 })
 
 test('relevant-now #66 state dot (#73): renders ONLY for an entity carrying a resolution `state`, none otherwise', () => {
