@@ -171,6 +171,204 @@
           "format": "date-time",
           "description": "ISO-8601 timestamp",
           "type": "string"
+        },
+        "confidence": {
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        },
+        "state": {
+          "description": "resolution/micro-state (#66/#73): a user override stamps `confirmed`; the resolver (#72) will stamp `provisional`/`confirmed`/`corrected`. Read by the #66 micro-state dot — absent ⇒ no dot (nothing pretends to be resolved). Document-configurable vocab per surface; never fabricated.",
+          "type": "string"
+        },
+        "ambiguity": {
+          "$id": "EntityAmbiguity",
+          "additionalProperties": false,
+          "type": "object",
+          "properties": {
+            "rivalId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "rivalName": {
+              "type": "string"
+            },
+            "margin": {
+              "description": "score margin of this entity over the rival — small ⇒ genuinely ambiguous",
+              "type": "number"
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        },
+        "heardAs": {
+          "description": "source-/confidence-typed ASR variants that resolved to this entity (accumulates as evidence)",
+          "type": "array",
+          "items": {
+            "$id": "HeardAs",
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "text"
+            ],
+            "properties": {
+              "text": {
+                "minLength": 1,
+                "description": "the surface form (ASR variant) that resolved to this entity",
+                "type": "string"
+              },
+              "source": {
+                "description": "fabric capability slot",
+                "anyOf": [
+                  {
+                    "const": "stt",
+                    "type": "string"
+                  },
+                  {
+                    "const": "tts",
+                    "type": "string"
+                  },
+                  {
+                    "const": "llm",
+                    "type": "string"
+                  },
+                  {
+                    "const": "vlm",
+                    "type": "string"
+                  },
+                  {
+                    "const": "ocr",
+                    "type": "string"
+                  },
+                  {
+                    "const": "embed",
+                    "type": "string"
+                  }
+                ]
+              },
+              "confidence": {
+                "minimum": 0,
+                "maximum": 1,
+                "type": "number"
+              },
+              "at": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "sightings": {
+          "description": "typed, append-only evidence trail: heard/seen/calendar sightings with timestamps",
+          "type": "array",
+          "items": {
+            "$id": "Sighting",
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "via",
+              "at"
+            ],
+            "properties": {
+              "via": {
+                "description": "the sense that produced this sighting: heard (ASR), seen (screen), or calendar",
+                "anyOf": [
+                  {
+                    "const": "heard",
+                    "type": "string"
+                  },
+                  {
+                    "const": "seen",
+                    "type": "string"
+                  },
+                  {
+                    "const": "calendar",
+                    "type": "string"
+                  }
+                ]
+              },
+              "at": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              },
+              "distillateId": {
+                "minLength": 1,
+                "description": "opaque identifier",
+                "type": "string"
+              },
+              "detail": {
+                "description": "optional human-readable note about the sighting (never a secret value)",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "overrides": {
+          "description": "user corrections as first-class, append-only data that outrank scores (sovereign)",
+          "type": "array",
+          "items": {
+            "$id": "EntityOverride",
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "at"
+            ],
+            "properties": {
+              "at": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              },
+              "by": {
+                "description": "who made the correction — the user",
+                "type": "string"
+              },
+              "pinnedName": {
+                "description": "surface form pinned to this entity — future mentions of it resolve here",
+                "type": "string"
+              },
+              "rejectedRivalId": {
+                "minLength": 1,
+                "description": "opaque identifier",
+                "type": "string"
+              },
+              "rejectedRivalName": {
+                "type": "string"
+              },
+              "note": {
+                "description": "the correction's rationale (never a secret value)",
+                "type": "string"
+              }
+            }
+          }
+        },
+        "external": {
+          "$id": "EntityExternal",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "system",
+            "ref"
+          ],
+          "properties": {
+            "system": {
+              "minLength": 1,
+              "description": "external system name, e.g. github",
+              "type": "string"
+            },
+            "ref": {
+              "minLength": 1,
+              "description": "opaque external identifier, e.g. owner/repo",
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          }
         }
       }
     },

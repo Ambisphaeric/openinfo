@@ -1,0 +1,54 @@
+{
+  "$id": "HeardAs",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "text"
+  ],
+  "properties": {
+    "text": {
+      "minLength": 1,
+      "description": "the surface form (ASR variant) that resolved to this entity",
+      "type": "string"
+    },
+    "source": {
+      "description": "fabric capability slot",
+      "anyOf": [
+        {
+          "const": "stt",
+          "type": "string"
+        },
+        {
+          "const": "tts",
+          "type": "string"
+        },
+        {
+          "const": "llm",
+          "type": "string"
+        },
+        {
+          "const": "vlm",
+          "type": "string"
+        },
+        {
+          "const": "ocr",
+          "type": "string"
+        },
+        {
+          "const": "embed",
+          "type": "string"
+        }
+      ]
+    },
+    "confidence": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "at": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

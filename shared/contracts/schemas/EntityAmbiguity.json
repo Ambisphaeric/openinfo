@@ -1,0 +1,22 @@
+{
+  "$id": "EntityAmbiguity",
+  "additionalProperties": false,
+  "type": "object",
+  "properties": {
+    "rivalId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "rivalName": {
+      "type": "string"
+    },
+    "margin": {
+      "description": "score margin of this entity over the rival — small ⇒ genuinely ambiguous",
+      "type": "number"
+    },
+    "note": {
+      "type": "string"
+    }
+  }
+}

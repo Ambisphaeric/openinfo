@@ -32,7 +32,7 @@ export * from './api/payloads.js'
 
 import { InvokeUsage } from './common.js'
 import { Moment, MomentKind } from './records/moment.js'
-import { Entity } from './records/entity.js'
+import { Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal } from './records/entity.js'
 import { Distillate } from './records/distillate.js'
 import { ScreenFrameMeta } from './records/screen.js'
 import { OcrResult } from './records/ocr.js'
@@ -62,7 +62,7 @@ import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarS
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
   InvokeUsage,
-  Moment, MomentKind, Entity, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview,
+  Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName,
   Mode, PromptTemplate, FastFieldBinding, Fabric, Endpoint, LocalRuntime, FabricProfile,

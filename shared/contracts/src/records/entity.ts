@@ -1,7 +1,116 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Id, IsoTime, SlotName } from '../common.js'
+import { Confidence, Id, IsoTime, SlotName } from '../common.js'
 
 export const EntityKind = Type.Union(['person', 'artifact', 'topic'].map((k) => Type.Literal(k)))
+
+/**
+ * Entity contract v2 (#73) — the additive evidence-and-resolution surface the resolver (#72, not yet
+ * built) and its UX require. Every field added below is OPTIONAL with a store-supplied default, so
+ * existing Phase-0/v1 entity rows keep validating and loading untouched (migration-safe by omission —
+ * the record body is stored as JSON, so an absent field simply reads as absent). Resolution quality
+ * compounds only if evidence accumulates ON the record, and user corrections must be durable and
+ * sovereign — hence sightings/heardAs (evidence) and overrides (sovereign correction) are first-class,
+ * append-only data, never derived-and-forgotten.
+ */
+
+/**
+ * One typed piece of evidence that this entity was encountered — the append-only evidence trail the
+ * resolver scores over and the UX can inspect. `via` is the sense that produced it: `heard` (an ASR
+ * transcript window named it — the only live producer today, via the distill pipeline), `seen` (a
+ * screen-understanding pass recognized it — awaiting the screen→entity path), or `calendar` (a calendar
+ * signal named it — awaiting the calendar→entity path). `at` is when it was sighted. `distillateId`
+ * (when `heard`) ties the sighting back to the exact window, so the trail is inspectable to source.
+ */
+export const Sighting = Type.Object(
+  {
+    via: Type.Union(['heard', 'seen', 'calendar'].map((v) => Type.Literal(v)), {
+      description: 'the sense that produced this sighting: heard (ASR), seen (screen), or calendar',
+    }),
+    at: IsoTime,
+    distillateId: Type.Optional(Id),
+    detail: Type.Optional(Type.String({ description: 'optional human-readable note about the sighting (never a secret value)' })),
+  },
+  { $id: 'Sighting', additionalProperties: false },
+)
+export type Sighting = Static<typeof Sighting>
+
+/**
+ * A source- and confidence-typed surface form (ASR variant) that SUCCESSFULLY RESOLVED to this entity —
+ * the accumulating "we have heard this name these ways" record the resolver uses to match future noisy
+ * mentions. `text` is the surface form as produced; `source` is the slot that produced it (`stt` today —
+ * the distill pipeline's transcript). `confidence` is the per-variant ASR confidence WHERE THE PIPELINE
+ * SURFACES IT — today the STT stage does not expose a per-variant score, so it is left undefined rather
+ * than fabricated (disclosed limitation; the resolver #72 populates it once the pipeline carries it).
+ * `at` is when the variant was last heard.
+ */
+export const HeardAs = Type.Object(
+  {
+    text: Type.String({ minLength: 1, description: 'the surface form (ASR variant) that resolved to this entity' }),
+    source: Type.Optional(SlotName),
+    confidence: Type.Optional(Confidence),
+    at: Type.Optional(IsoTime),
+  },
+  { $id: 'HeardAs', additionalProperties: false },
+)
+export type HeardAs = Static<typeof HeardAs>
+
+/**
+ * A user correction, recorded as FIRST-CLASS, APPEND-ONLY data that OUTRANKS any score (product
+ * principle: user overrides are sovereign and durable). When the user pins a mention to this entity,
+ * `pinnedName` records the surface form they pinned — future mentions of that form resolve HERE
+ * (store `findEntity` honors it deterministically over any rival). When the correction was made against
+ * a plausible rival, `rejectedRivalId`/`rejectedRivalName` name it, so the resolver (#72) can
+ * short-circuit — never re-ask about, nor re-score against, the rejected rival. `at`/`by` stamp the
+ * correction's provenance (`by` is the actor — "the user"; never a machine, since an override is by
+ * definition a human decision). `note` is the optional rationale.
+ */
+export const EntityOverride = Type.Object(
+  {
+    at: IsoTime,
+    by: Type.Optional(Type.String({ description: 'who made the correction — the user' })),
+    pinnedName: Type.Optional(Type.String({ description: 'surface form pinned to this entity — future mentions of it resolve here' })),
+    rejectedRivalId: Type.Optional(Id),
+    rejectedRivalName: Type.Optional(Type.String()),
+    note: Type.Optional(Type.String({ description: "the correction's rationale (never a secret value)" })),
+  },
+  { $id: 'EntityOverride', additionalProperties: false },
+)
+export type EntityOverride = Static<typeof EntityOverride>
+
+/**
+ * A plausible-rival marker (#73) — set when resolution was NOT clean: another entity was a credible
+ * match. It is the "this could also be …" the UX surfaces so a user can correct it. `rivalId`/
+ * `rivalName` name the rival; `margin` is the score gap over it (small ⇒ genuinely ambiguous), where the
+ * resolver reports it. Cleared (absent) once a user override settles the question. Populated by the
+ * resolver (#72); left absent by plain extraction today (nothing scores rivals yet).
+ */
+export const EntityAmbiguity = Type.Object(
+  {
+    rivalId: Type.Optional(Id),
+    rivalName: Type.Optional(Type.String()),
+    margin: Type.Optional(Type.Number({ description: 'score margin of this entity over the rival — small ⇒ genuinely ambiguous' })),
+    note: Type.Optional(Type.String()),
+  },
+  { $id: 'EntityAmbiguity', additionalProperties: false },
+)
+export type EntityAmbiguity = Static<typeof EntityAmbiguity>
+
+/**
+ * Optional linkage to an identity in an EXTERNAL system (e.g. a code-host repo, a CRM record) — the
+ * hook by which an entity can be tied to a durable external id without the resolver owning that
+ * system's schema. `system` names it (e.g. `github`), `ref` is the opaque external identifier (e.g.
+ * `owner/repo`), `url` is an optional canonical link. Never populated automatically today (no external
+ * linker exists yet); shipped so a future linker and the resolver have a stable contract to write to.
+ */
+export const EntityExternal = Type.Object(
+  {
+    system: Type.String({ minLength: 1, description: 'external system name, e.g. github' }),
+    ref: Type.String({ minLength: 1, description: 'opaque external identifier, e.g. owner/repo' }),
+    url: Type.Optional(Type.String()),
+  },
+  { $id: 'EntityExternal', additionalProperties: false },
+)
+export type EntityExternal = Static<typeof EntityExternal>
 
 /**
  * Where an entity mention came from — the distillate/window it was resolved over and the
@@ -47,6 +156,30 @@ export const Entity = Type.Object(
     ),
     firstSeen: IsoTime,
     lastSeen: IsoTime,
+    // ── Contract v2 (#73): confidence, resolution state, evidence, sovereign overrides. All optional
+    // and append-only — existing rows without them still validate; the resolver (#72) and its UX
+    // populate/read them. State/confidence are LEFT ABSENT by plain extraction today (no resolver
+    // scores them yet); they are stamped by a user override (confirmed) and, later, by the resolver.
+    confidence: Type.Optional(
+      Confidence,
+    ),
+    state: Type.Optional(
+      Type.String({
+        description:
+          'resolution/micro-state (#66/#73): a user override stamps `confirmed`; the resolver (#72) will stamp `provisional`/`confirmed`/`corrected`. Read by the #66 micro-state dot — absent ⇒ no dot (nothing pretends to be resolved). Document-configurable vocab per surface; never fabricated.',
+      }),
+    ),
+    ambiguity: Type.Optional(EntityAmbiguity),
+    heardAs: Type.Optional(
+      Type.Array(HeardAs, { description: 'source-/confidence-typed ASR variants that resolved to this entity (accumulates as evidence)' }),
+    ),
+    sightings: Type.Optional(
+      Type.Array(Sighting, { description: 'typed, append-only evidence trail: heard/seen/calendar sightings with timestamps' }),
+    ),
+    overrides: Type.Optional(
+      Type.Array(EntityOverride, { description: 'user corrections as first-class, append-only data that outrank scores (sovereign)' }),
+    ),
+    external: Type.Optional(EntityExternal),
   },
   { $id: 'Entity', additionalProperties: false },
 )

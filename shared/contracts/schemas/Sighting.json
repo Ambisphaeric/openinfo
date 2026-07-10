@@ -1,0 +1,42 @@
+{
+  "$id": "Sighting",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "via",
+    "at"
+  ],
+  "properties": {
+    "via": {
+      "description": "the sense that produced this sighting: heard (ASR), seen (screen), or calendar",
+      "anyOf": [
+        {
+          "const": "heard",
+          "type": "string"
+        },
+        {
+          "const": "seen",
+          "type": "string"
+        },
+        {
+          "const": "calendar",
+          "type": "string"
+        }
+      ]
+    },
+    "at": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "distillateId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "detail": {
+      "description": "optional human-readable note about the sighting (never a secret value)",
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,27 @@
+{ "id": "ent-sam",
+  "workspaceId": "ws-eng",
+  "kind": "person",
+  "name": "Sam Rivera",
+  "aliases": ["Sam", "Samuel Rivera"],
+  "momentRefs": ["mom-9"],
+  "outboundCount": 1,
+  "mentions": 4,
+  "provenance": [
+    { "distillateId": "dst-y", "windowStart": "2026-07-08T09:10:00Z", "windowEnd": "2026-07-08T09:12:00Z", "slot": "llm", "endpoint": "llm.fast", "model": "llama-3.2-3b" }
+  ],
+  "firstSeen": "2026-07-08T09:00:00Z",
+  "lastSeen": "2026-07-08T09:12:00Z",
+  "confidence": 1,
+  "state": "confirmed",
+  "heardAs": [
+    { "text": "Sam", "source": "stt", "at": "2026-07-08T09:12:00Z" },
+    { "text": "Sammy", "source": "stt" }
+  ],
+  "sightings": [
+    { "via": "heard", "at": "2026-07-08T09:12:00Z", "distillateId": "dst-y" }
+  ],
+  "overrides": [
+    { "at": "2026-07-08T10:00:00Z", "by": "the user", "pinnedName": "Sam", "rejectedRivalId": "ent-sam-lee", "rejectedRivalName": "Sam Lee", "note": "Sam here is Sam Rivera, not Sam Lee" }
+  ],
+  "external": { "system": "github", "ref": "acme/widgets", "url": "https://github.com/acme/widgets" }
+}

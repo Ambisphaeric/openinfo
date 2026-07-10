@@ -1,0 +1,24 @@
+{
+  "$id": "EntityExternal",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "system",
+    "ref"
+  ],
+  "properties": {
+    "system": {
+      "minLength": 1,
+      "description": "external system name, e.g. github",
+      "type": "string"
+    },
+    "ref": {
+      "minLength": 1,
+      "description": "opaque external identifier, e.g. owner/repo",
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    }
+  }
+}
