@@ -3194,3 +3194,69 @@ went where, how much, and what filtered it.
 - **Pre-existing, NOT mine:** `tools/schema-gen` regeneration shows drift in 9 UNRELATED schemas (Endpoint, Fabric,
   Health, etc. — committed schemas are stale vs source, e.g. `auth`/`chatTemplateKwargs` missing). Reverted from this
   branch to keep scope clean; belongs on the board as a "regenerate stale schemas" chore.
+
+## Slice: Entity contract v2 — confidence, state, heard-as, sightings, sovereign overrides  *(M5, #73, branch feat/73-entity-contract, 2026-07-10)*
+
+Slice 1 of the entity-mapping arc (#72–#76). The resolver (#72) DOES NOT EXIST YET; this ships the honest
+substrate it and its UX will consume: the contract, storage, upsert population from the signals we genuinely
+have, and the override short-circuit as store/query semantics.
+
+### 1 — contract (append-only, `shared/contracts/src/records/entity.ts`)
+- Added OPTIONAL fields to `Entity`: `confidence` (0..1), `state` (resolution/micro-state string — the #66 dot
+  reads it), `ambiguity` (plausible-rival marker), `heardAs[]` (source-/confidence-typed ASR variants that
+  resolved here), `sightings[]` (typed heard/seen/calendar evidence trail), `overrides[]` (first-class user
+  corrections that outrank scores), `external` (code-host/CRM linkage). New sub-schemas `Sighting`, `HeardAs`,
+  `EntityOverride`, `EntityAmbiguity`, `EntityExternal`, all registered in `AllSchemas`.
+- **Every field optional ⇒ migration-safe by omission.** The entity body is stored as JSON, so a v1 row without
+  these fields simply reads them as absent and re-validates. The UNCHANGED `entity.person.json` example (no v2
+  fields) proves it; the new `entity.resolved.json` example exercises the full v2 surface.
+- **Ran `pnpm gen`** in `shared/contracts` and committed the regenerated schemas (5 new JSONs + Entity/RelevantEntity)
+  — per issue #87, this slice does NOT skip regeneration.
+
+### 2 — store (`apps/engine/src/store/workspaces.ts`)
+- `EntityUpsert` gains optional `sighting`/`heardAs`; `upsertEntity` seeds them on create and `mergeEntity` APPENDS
+  them (sightings dedup by (via, at, distillateId); heardAs dedup by (normalized text, source)) — append-only and
+  idempotent on a re-run. `mergeEntity` carries every v2 field forward via `...existing`, so a confirmed record
+  STAYS confirmed through subsequent mentions (reads honor the override).
+- **`overrideEntity(ws, id, override)` — the sovereign write path:** appends the `EntityOverride`, stamps
+  `state:'confirmed'` + `confidence:1` (a user decision outranks any machine score), and pins the corrected
+  surface form as an alias. `findEntity` now PREFERS an entity whose `overrides[].pinnedName` matches one of the
+  wanted keys, over the ordinary name/alias scan — so an overridden mapping resolves deterministically and is never
+  re-decided against a rival the user already settled. This is the store half of the resolver short-circuit; #72
+  will additionally honor `rejectedRivalId` to skip re-asking/re-scoring.
+
+### 3 — populate + render
+- **Live producer:** `distill/distiller.ts` records a `via:'heard'` sighting (tied to the distillate) and a `stt`
+  heardAs (the extracted surface form) per resolved mention — the signal the transcript window genuinely carries.
+- **State dot (#66):** `client/.../blocks/relevant-now.ts` threads `entity.state` through the existing micro-state
+  carrier — a dot renders ONLY when the entity carries a state (a user override), none otherwise. No new renderer.
+
+### Rule-7 check (definition of done)
+- Contract + store columns (JSON body, no column migration) + migration-safe defaults ✅ · upsert paths populate
+  sightings/heardAs ✅ · overrides short-circuit resolution (findEntity honors the pin) ✅ · query sources expose the
+  new fields (raw Entity JSON already served) so the #66 dot lights up ✅ · `pnpm gen` committed ✅ · CODE_MAP rows +
+  this entry ✅.
+
+### Tests + verification (all green in isolation)
+- **Contracts 72 → 73:** +1 `entity.resolved.json` v2 example; the v1 example still validates (migration proof).
+- **Engine 560 → 563:** store tests — evidence accumulation + idempotent dedup, the sovereign override short-circuit
+  (rival A/B, pin outranks in findEntity, confirmed survives later mentions), and v1→v2 migration (a fieldless row
+  loads, merges, and overrides cleanly).
+- **Client 298 → 299:** relevant-now renders the confirmed dot for a stated entity and NONE for an unresolved one.
+- **Full `pnpm -r test`:** contracts 73, engine 563, client 299 — green. KNOWN FLAKE (documented, untouched by this
+  slice): one parallel `pnpm -r` run showed a single engine failure (port-probe/parallel-timing class); both isolated
+  re-runs were 563/563 green.
+
+### Deferred / disclosed (awaiting #72 or later)
+- **state/confidence left ABSENT by plain extraction** — no resolver scores them yet; only a user override stamps
+  them today. Nothing fakes a "provisional" everywhere (that would light every dot as decoration).
+- **Per-variant ASR confidence not surfaced by the STT pipeline** — `heardAs.confidence` is left undefined rather
+  than fabricated; the resolver #72 populates it once the pipeline carries the signal.
+- **Only `via:'heard'` sightings are live** — `seen` (screen→entity) and `calendar` (calendar→entity) await those
+  producers; the contract is ready for them.
+- **`external` and `ambiguity` have no auto-populator** — shipped as stable contracts for #72/a future linker.
+- **`overrideEntity` is a store primitive, not yet an HTTP route/correction UI** — the DoD asks for store/query
+  semantics ready for #72; the correction surface (and honoring `rejectedRivalId` in the resolver) is #72's scope.
+- **`moveSession` does not migrate the v2 evidence trail** — the moved-entity `Contribution` carries only
+  kind/name/aliases/provenance/momentRefs; the destination's own sightings/heardAs/overrides are preserved via
+  `...base`, but moved sightings are not subtracted from the source (evidence trail is append-only; acceptable).
