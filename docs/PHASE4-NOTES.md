@@ -4218,3 +4218,68 @@ no-voice-vocab guard. `pipeline.test.ts` / `index/extract.test.ts` voice-resolut
 from "dial reached the prompt text" to the resolved-dials-on-provenance + a no-dial-line prompt guard
 (the neutral body no longer carries the numbers; resolution is still proven). Suites at the PR:
 contracts 81 / client 363 / engine 691.
+
+## Slice: the meeting note-taker app — three-zone Meetily-shape exemplar  *(M5→apps, #133, branch feat/133-notetaker, 2026-07-10)*
+
+The mainstream look-and-speed EXEMPLAR the substrate needed: `surf-openinfo-notetaker`, a Meetily-class
+meeting note-taker (feature parity, NOT pixel parity — the owner's binding spec update). Like every other
+app it is a PURE DOCUMENT composing the SHIPPED block types + query sources; unlike the HUD/fields/
+diagnostics it is a three-COLUMN layout, and the slice's real question was how to get columns without a new
+block type, a contract change, or a branch in the one document-driven renderer every surface shares.
+
+### The layout mechanism — document-expressed columns, generic renderer untouched
+`renderSurface` stacks a flat block list vertically into one `.hud` panel; it has no notion of zones, and
+teaching it zones (or adding a `zone` field to the `Block` contract) would put layout back in code. Instead
+the note-taker expresses its layout IN the document: every block declares its column through its `id`
+PREFIX — `nt-left-*` / `nt-center-*` / `nt-right-*`. The new client module `hud/notetaker-layout.ts`
+(`renderNotetaker`, signature-compatible with `renderSurface`) partitions the flat stack (and its parallel
+hydrated-results array) by that prefix, renders EACH zone's sub-stack through the SAME `renderSurface`
+(so every block hydrates/acts/empties exactly as on the HUD), and composes the three panels into a CSS-grid
+frame with the app chrome. An unprefixed block falls to the center, so a document is never un-renderable.
+The controller stays layout-agnostic: `HudOptions.renderSurface` is now INJECTABLE (default `renderSurface`),
+and `dev-entry` selects `renderNotetaker` by surface id — no branch in `Hud`, no touch to the block renderers.
+
+### Zone composition (all EXISTING blocks + sources)
+- **LEFT rail**: `pinned-doc` (source `pins`) = the Pins/Favorites list; the home button, feature nav, and
+  Meetings/Archives folder headers are app CHROME in `notetaker-layout.ts`, not blocks.
+- **CENTER canvas**: `now` (meeting context + heartbeat) · `moments` (the live typed-note stream) ·
+  `distillates` (the running AI summary — the persisted distillate stream, #12).
+- **RIGHT sidebar (enrichments)**: `distillates` AGAIN, framed as the ROLLING SUMMARY (the owner's
+  pickle-glass rolling transcript summary, rebuilt on our primitives) · `todos` (action items) · `fields`
+  (the #61 fast-field enrichments, `on-match`).
+- The #58 live-transcript strip is NOT a stack block — the Hud controller composes it onto every surface it
+  renders, so the note-taker inherits the ~1-2s transcript feed for free; the CSS parks it as a full-width
+  ticker across the bottom of the frame (grid area `strip`).
+
+### Record affordance (relocated — flagged for the owner's first-render review)
+The issue relocates the record affordance (the original placement was disliked). Chosen placement: the
+CENTER canvas header, top-right — the most prominent, most Meetily-natural spot. It ships as an honest,
+visibly-INERT placeholder (`.nt-record.pending`, dashed, muted), NOT a fake-live button: capture start/stop
+is the tray's session control today (consent boundary #41 — a window launches STOPPED), and an in-window
+button needs the #136 session-control block, which is NOT built. The placeholder's title links that gap.
+
+### Window px + tray
+Framed `app` chrome at width 960 (`window-options.ts` `SURFACE_WINDOW_CONFIG`) — a full workspace app you
+WORK in and screenshot for the look-and-speed review, resizable/focusable/in the app switcher, NOT the
+always-on-top glass HUD (the inverse of the #100 fields panel's glass choice, both stated in the file). It
+appears in the tray Apps folder automatically (GET /layouts/surfaces enumerates the seeded set) and
+instantiates per-repo with a bound workspace via the existing #99 `POST …/instantiate` — zero client change.
+
+### Tests (driven, per the served-UI-must-be-driven QA rule)
+- `hud/notetaker-layout.test.ts` (new, 3): loads the SHIPPED `templates/openinfo-notetaker/surface.json`
+  (the mirror of the seeded const, pinned by the engine documents test) and drives it through
+  `renderNotetaker` + `defaultBlockRegistry` — asserts the id-prefix zone convention (`zoneOf`/
+  `partitionZones`), that each block lands in the CORRECT column (a pin only in the left, the rolling summary
+  only in the right, the center summary NOT leaking into the right), the relocated Record placeholder + its
+  #136 gap note, and the honest empty state (always-visible summary/rolling explain themselves; the on-match
+  fields block stays hidden). If the document or any renderer drifts, this breaks — the point.
+- Seeded-list assertions trued up in `surfaces/documents.test.ts` + `api/http.test.ts` (the 4th seeded app).
+
+### Disclosed gaps / follow-ups
+- **No `sessions`-list block type**: the left-rail Meetings/Archives FOLDERS are honest chrome placeholders
+  ("session-list block pending"); the `sessions` query source already exists, so a future `sessions`/folders
+  block would light them up with no layout change. Similarly a distinct favorites view is folded into pins.
+- **In-window record needs #136** (session-control block) — the placeholder stands in for it honestly.
+- The zone prefix is a client convention today (like the #20 per-surface window config), not a contract
+  field; promoting it onto the `Block`/`Surface` document is a later, deliberate choice.
+- Suites at the PR: contracts 81 / client 366 / engine 693.

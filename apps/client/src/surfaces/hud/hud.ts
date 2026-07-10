@@ -1,5 +1,5 @@
 import type { CaptureSource, Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
-import { renderSurface, clockLabel, elapsedLabel, type BlockRegistry, type NowContext, type VElement } from '../block-renderer/index.js'
+import { renderSurface, clockLabel, elapsedLabel, type BlockRegistry, type NowContext, type SurfaceRenderInput, type VElement } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
 import { pruneTranscript, renderLiveTranscript, type TranscriptLine } from './live-transcript.js'
 import type { HudTransport } from './transport.js'
@@ -25,6 +25,13 @@ export interface HudOptions {
   surfaceId?: string
   workspace?: string
   registry?: BlockRegistry
+  /**
+   * The surface renderer. Defaults to the generic `renderSurface`; a surface with a bespoke layout (the
+   * #133 note-taker three-zone frame) injects its own signature-compatible renderer here (dev-entry picks
+   * it by surface id). Kept injectable rather than branched in the controller so the controller stays
+   * layout-agnostic — it still renders(document) and live-updates identically, whatever the layout.
+   */
+  renderSurface?: (input: SurfaceRenderInput, registry: BlockRegistry) => VElement
   /** injectable clock so the Now-line elapsed is testable */
   now?: () => Date
   /**
@@ -50,6 +57,7 @@ export class Hud {
   private readonly surfaceId: string
   private readonly workspace: string
   private readonly registry: BlockRegistry
+  private readonly renderSurface: (input: SurfaceRenderInput, registry: BlockRegistry) => VElement
   private readonly clock: () => Date
 
   private readonly onError: ((error: unknown) => void) | undefined
@@ -81,6 +89,7 @@ export class Hud {
     this.surfaceId = options.surfaceId ?? DEFAULT_SURFACE_ID
     this.workspace = options.workspace ?? 'default'
     this.registry = options.registry ?? defaultBlockRegistry
+    this.renderSurface = options.renderSurface ?? renderSurface
     this.clock = options.now ?? (() => new Date())
     this.onError = options.onError
   }
@@ -199,7 +208,7 @@ export class Hud {
     if (!this.surface) return
     const now = this.buildNow()
     const clarify = { suppressed: this.clarifySuppressed, ...(this.clarifyExpanded !== undefined ? { expanded: this.clarifyExpanded } : {}) }
-    const panel = renderSurface({ surface: this.surface, now, results: this.results, clarify }, this.registry)
+    const panel = this.renderSurface({ surface: this.surface, now, results: this.results, clarify }, this.registry)
     // Compose the event-fed live-transcript feed onto the query-rendered panel (#58). Pruned here so the
     // feed self-expires on every repaint; appended LAST so the distilled blocks keep primacy and the raw
     // live strip reads as a distinct layer beneath them. Absent (idle, nothing to say) ⇒ panel unchanged.
