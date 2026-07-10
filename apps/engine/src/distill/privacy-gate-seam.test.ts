@@ -259,6 +259,41 @@ test('seam: a never-egress PROMPT denies the window (layer 2) — decidedBy prom
   }
 })
 
+test('seam: a WORKSPACE deny holds the egress hop (layer 3) — egress endpoint untouched, decidedBy workspace on provenance', async () => {
+  const rig = await setup()
+  const restore = installEgressRewrite()
+  const egress = await startChat(llmReply) // listed FIRST — would answer every call IF the workspace deny were dropped
+  const local = await startChat(llmReply)
+  try {
+    // The regression this closes: the workspace-level deny lives on the persisted Workspace row, and used to
+    // be dropped by WorkspaceRegistry.fromRow — so `workspace.egress?.deny` read undefined and the layer
+    // never fired at the distiller seam (#128). Mode is left at its default (allow), so the deciding layer
+    // must be the workspace, not mode.
+    rig.store.setEgressPolicy('default', { deny: true })
+    saveFabric(rig, {
+      llm: [
+        { kind: 'http', name: 'llm.hosted', url: `http://llm.egress.test:${egress.port}`, api: 'openai-compat' },
+        { kind: 'http', name: 'llm.local', url: `http://127.0.0.1:${local.port}`, api: 'openai-compat' },
+      ],
+    })
+    const distiller = new Distiller({ ...rig })
+    const produced = await distiller.distillChunks(window(), { extractMoments: true, extractEntities: true })
+
+    assert.equal(produced.length, 1)
+    assert.equal(egress.hits(), 0, 'the workspace deny held the egress endpoint on every one of the 3 calls')
+    assert.equal(local.hits(), 3, 'all three calls fell through to the local endpoint')
+    const decision = produced[0]!.provenance.egress
+    assert.equal(decision?.reach, 'local')
+    assert.equal(decision?.allowed, false)
+    assert.equal(decision?.decidedBy, 'workspace', 'the workspace is recorded as the deciding layer on provenance')
+  } finally {
+    await stopChat(egress)
+    await stopChat(local)
+    restore()
+    await teardown(rig)
+  }
+})
+
 // ── #63 egress GUARD at the seam (driven end-to-end through runEgressGuard) ───────────────────────────
 
 test('seam: an ALLOWED egress hop runs the guard on EVERY call — clean verdict rides provenance, content left', async () => {

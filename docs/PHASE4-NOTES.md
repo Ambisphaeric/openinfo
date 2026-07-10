@@ -4040,12 +4040,12 @@ seams production uses (`guardEnabled`, the fabric guard slot, `publishHold`).
   the `pnpm -r` run cleared on an isolated rerun (known flake class); engine + contracts stable.
 
 ### Disclosed
-- **Workspace-layer deny (#64 layer 3) is not reachable at this seam through the real store.** The
-  distiller reads `store.all().find(...).egress?.deny`, but `WorkspaceRegistry.fromRow` reconstructs a
-  `Workspace` from fixed columns (id/name/dbFile/color/retentionDays/createdAt) and DROPS `egress` — no
-  store path persists it. So `workspace.egress` is always `undefined` there today; the mode and prompt
-  layers (fully wired) carry the deny coverage. Not fixed here (store/ is another agent's surface, and
-  the tests don't need it) — flagged for a follow-up if workspace-scoped deny is meant to be live.
+- **Workspace-layer deny (#64 layer 3) was not reachable at this seam through the real store — FIXED in #128.**
+  The distiller reads `store.all().find(...).egress?.deny`, but `WorkspaceRegistry.fromRow` reconstructed a
+  `Workspace` from fixed columns (id/name/dbFile/color/retentionDays/createdAt) and DROPPED `egress` — no
+  store path persisted it, so `workspace.egress` was always `undefined` there and the layer never fired
+  (mode and prompt layers carried the deny coverage). #128 persists + rehydrates `Workspace.egress` through
+  the meta-DB row and adds the fourth-layer seam case; see the #128 slice below.
 - These tests complement `distill/guard.test.ts` (injected-invoke unit of the distiller's hold
   bookkeeping) and `distill/correlate-e2e.test.ts` (injected-invoke #74) by driving the SAME seam
   through the real `invokeLlm` HTTP path the production drain uses.
@@ -4134,3 +4134,38 @@ AllSchemas · shape (≥1 input, ≥1 output, description, emits∉outputs) · e
 step has ports · pipeline coherence (each drain step in the seeded default can consume an upstream
 output or the drain batch — the exact connection check a graph editor performs, pinned against the
 shipped document so table and document cannot drift).
+
+## Slice: workspace egress-deny layer made enforceable — persist Workspace.egress through the store  *(M5 #128, branch fix/128-workspace-egress-deny, 2026-07-10)*
+The privacy-critical fix for the gap the #91 seam QA disclosed: the #64 egress consent resolves four
+layers, but the WORKSPACE layer (layer 3) could never fire at the distiller seam. `WorkspaceRegistry`
+persisted a `Workspace` to a fixed meta-DB column set and `fromRow` reconstructed it from those columns
+only, DROPPING `Workspace.egress` — the write side never stored it and the read side never read it, so
+`store.all().find(...).egress?.deny` was always `undefined`. A user's workspace-level egress deny was
+silently unenforced (mode + prompt layers carried the live coverage).
+
+### What changed
+- **Root cause: both sides.** `store/workspaces.ts` never persisted `egress` on write AND dropped it in
+  `fromRow` on read. Fixed both: additive `egress` TEXT column (JSON-serialized `EgressPolicy`) on the
+  `workspaces` meta table, threaded through the `all()`/`ensureWorkspace` selects + insert, rehydrated in
+  `fromRow` (mirrors how `color`/`retentionDays` survive — absent ⇒ omitted, so the field stays optional).
+- **Migration:** older `_meta.db` files predate the column — `createMetaTables` runs an idempotent,
+  `pragma table_info`-guarded `ALTER TABLE workspaces ADD COLUMN egress text` (the store's first in-place
+  column migration; entity v2 rode a JSON body blob, but the workspaces table uses discrete columns).
+- **Write path:** there was NO way to set a workspace's egress policy — added the minimal store method
+  `setEgressPolicy(id, policy)` (ensure-on-demand + row UPDATE + round-tripped read-back; `undefined`
+  clears it). No UI — a Settings toggle stays a later slice (mirrors the #64 "no UI for egress.deny yet"
+  disclosure). No contract change: `Workspace.egress` already existed.
+
+### Tests / green
+- `store/workspaces.test.ts` +1: a workspace deny survives the row round-trip (set → `all()`/
+  `ensureWorkspace` rehydrate → durable across a fresh registry over the same dir → clearing reads absent).
+- `distill/privacy-gate-seam.test.ts` +1 (the fourth-layer case, the test that would have caught this):
+  a workspace deny holds the egress hop end-to-end at the real distiller seam — the egress-first endpoint
+  gets ZERO hits across summary+moments+entities, the local fallback answers all three, and the produced
+  provenance stamps `decidedBy:'workspace'` (mode left at its default so the workspace is the deciding
+  layer). Follows the existing tests' fake-endpoint rig exactly.
+- `pnpm -r build` + `pnpm -r test` green (the known client seam-timing flake noted where it applies).
+
+### Disclosed
+- No Settings UI to SET a workspace egress deny yet — `setEgressPolicy` is the engine write path; the
+  toggle is a recorded later slice. The layer is now fully enforceable end-to-end once a policy is set.
