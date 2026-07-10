@@ -631,10 +631,16 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && hintsDoc?.[1]) return getHints(res, ctx, decodeURIComponent(hintsDoc[1]))
   if (req.method === 'PUT' && hintsDoc?.[1]) return putHints(req, res, ctx, decodeURIComponent(hintsDoc[1]))
   if (req.method === 'GET' && url.pathname === '/layouts/surfaces') return send(res, 200, ctx.surfaces.list())
+  // #99: instantiate a new app instance from a template surface (server-side deep-clone + workspace bind).
+  // Matched BEFORE the bare /:id route so the trailing segment is the verb, not a surface id.
+  const instantiate = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)\/instantiate$/)
+  if (req.method === 'POST' && instantiate?.[1]) return instantiateSurface(req, res, ctx, decodeURIComponent(instantiate[1]))
   const surface = url.pathname.match(/^\/layouts\/surfaces\/([^/]+)$/)
   if (req.method === 'GET' && surface?.[1]) return getSurface(res, ctx, decodeURIComponent(surface[1]))
   if (req.method === 'PUT' && surface?.[1]) return putSurface(req, res, ctx, decodeURIComponent(surface[1]))
-  if (req.method === 'POST' && url.pathname === '/query') return runQuery(req, res, ctx)
+  // #99: `?surface=<id>` names the app instance a query runs under — its bound workspace becomes the query's
+  // DEFAULT (an explicit params.workspace still wins). Absent ⇒ unchanged 'default' behavior.
+  if (req.method === 'POST' && url.pathname === '/query') return runQuery(req, res, ctx, url.searchParams.get('surface'))
   // #66: dismiss / mark-for-follow-up write a per-item signal. Dismiss is the SUPPRESSION record that
   // runQuery above then honors (dismissed rows excluded). Self-contained: one POST over the store seam.
   if (req.method === 'POST' && url.pathname === '/item-signals') return postItemSignal(req, res, ctx)
@@ -1476,17 +1482,73 @@ async function putSurface(req: IncomingMessage, res: ServerResponse, ctx: Handle
  * decision — the query is compiled server-side, so a custom block can never reach past what the
  * engine allows). This is how every block hydrates: GET the surface for the layout, POST /query per
  * block for its data. Session `current` binds to the workspace's live session at query time.
+ *
+ * APP INSTANCES (#99): `?surface=<id>` names the app instance this query runs under. When that surface
+ * carries a `workspaceId` binding, it becomes the DEFAULT workspace for the query — so a context-agnostic
+ * block reads the instance's OWN silo without the block naming a workspace. An explicit `params.workspace`
+ * still wins (resolveScope). An unknown / unbound surface id is ignored (falls back to 'default') — the
+ * binding is an optional convenience, never a hard dependency, so a plain block query is unchanged.
  */
-async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, surfaceId: string | null): Promise<void> {
   const body = await readJson(req)
   const errors = validationErrors('BlockQuery', body)
   if (errors.length > 0) return send(res, 400, { error: 'invalid BlockQuery', details: errors })
   const query = body as BlockQuery
+  const boundWorkspace = surfaceId !== null ? ctx.surfaces.get(surfaceId)?.workspaceId : undefined
   // The `queue` source is operational engine state (the live backlog/ETA/last-failure), not a store
   // record, so inject the queue's status() snapshot for that source; every other source reads through
   // store/ (see compileQuery / QuerySources). status() is async, so it is awaited only when needed.
   const sources = query.source === 'queue' ? { queueStatus: await ctx.queue.status() } : {}
-  send(res, 200, compileQuery(ctx.store, query, new Date(), sources))
+  send(res, 200, compileQuery(ctx.store, query, new Date(), sources, boundWorkspace))
+}
+
+/**
+ * Instantiate an app INSTANCE from a template surface (#99): server-side deep-clone of the source doc's
+ * blocks into a NEW surface with a fresh id and a bound workspace silo — so "the HUD for repo X" is one
+ * call, and the instance's block queries read its own workspace (POST /query?surface=<newId>). Body (all
+ * optional): `{ newId?, workspaceId?, title? }`. Defaults: `newId` is generated (`surf-<uuid>`); `title`
+ * is "<source name> (copy)"; `workspaceId` is a slug derived from the title (`ws-<slug>`), else generated.
+ * The bound workspace is ensureWorkspace'd so the silo is concrete (lazy-create means seeding would make it
+ * anyway; binding it up front makes the instance immediately queryable). Version resets to 1 (a fresh doc,
+ * not a version bump of the template). 404 unknown source; 409 if the chosen/generated newId already exists
+ * (never silently clobber a surface). The cloned doc is contract-validated before write (last line of
+ * defense). Publishes surface.updated so a subscribed shell sees the new instance without a restart.
+ */
+async function instantiateSurface(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, sourceId: string): Promise<void> {
+  const source = ctx.surfaces.get(sourceId)
+  if (!source) return send(res, 404, { error: `no such surface: ${sourceId}` })
+  const body = (await readJson(req)) as { newId?: unknown; workspaceId?: unknown; title?: unknown }
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined)
+
+  const newId = str(body.newId) ?? `surf-${randomUUID()}`
+  if (ctx.surfaces.get(newId)) return send(res, 409, { error: `surface id already exists: ${newId}` })
+  const title = str(body.title) ?? `${source.name} (copy)`
+  const workspaceId = str(body.workspaceId) ?? workspaceSlug(title)
+
+  const instance: Surface = {
+    ...structuredClone(source),
+    id: newId,
+    name: title,
+    version: 1,
+    workspaceId,
+  }
+  const errors = validationErrors('Surface', instance)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid Surface', details: errors })
+
+  ctx.store.ensureWorkspace({ id: workspaceId, name: title })
+  const saved = ctx.surfaces.save(instance)
+  await ctx.bus.publish('surface.updated', saved)
+  send(res, 201, saved)
+}
+
+/**
+ * A stable, readable workspace id from an instance title (#99): `ws-<slug>` where the slug is the title
+ * lowercased, non-alphanumerics collapsed to single hyphens, trimmed. An empty slug (a title of only
+ * punctuation) falls back to a uuid so the id is always non-empty (the Id contract requires minLength 1).
+ */
+function workspaceSlug(title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  return `ws-${slug.length > 0 ? slug : randomUUID()}`
 }
 
 /**

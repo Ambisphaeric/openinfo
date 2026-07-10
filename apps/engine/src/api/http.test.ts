@@ -506,6 +506,86 @@ test('e2e: a pinned-doc surface hydrates its pins block from the store over POST
   }
 })
 
+test('e2e (#99): instantiate one template TWICE with different workspaces; each instance queries ONLY its own silo', async () => {
+  // The DoD: an app INSTANCE is a template surface bound to a workspace silo. Instantiate the shipped HUD
+  // twice for two "repos", seed DIFFERENT moments into each instance's workspace, then hydrate each
+  // instance's moments block over POST /query?surface=<id> — each returns ONLY its silo's data, with the
+  // SAME context-agnostic block document (its query names no workspace; the instance binding scopes it).
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-instances-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // author a TEMPLATE surface whose moments block names NO workspace (context-agnostic)
+    const template: Surface = {
+      id: 'surf-repo-hud', name: 'Repo HUD', context: 'deep-work', version: 1,
+      stack: [{ block: 'now' }, { block: 'moments', query: { source: 'moments', params: {}, top: 10 } }],
+    }
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-repo-hud`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(template),
+    })).status, 200)
+
+    // instantiate it TWICE, each bound to its own workspace (one call per repo)
+    const instantiate = async (body: unknown): Promise<{ status: number; surface: Surface }> => {
+      const res = await fetch(`${base}/layouts/surfaces/surf-repo-hud/instantiate`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+      return { status: res.status, surface: (await res.json()) as Surface }
+    }
+    const a = await instantiate({ newId: 'surf-repo-a', workspaceId: 'ws-repo-a', title: 'HUD — repo A' })
+    const b = await instantiate({ newId: 'surf-repo-b', workspaceId: 'ws-repo-b', title: 'HUD — repo B' })
+    assert.equal(a.status, 201)
+    assert.equal(b.status, 201)
+    // each instance is a FRESH doc: version 1, its own binding, cloned blocks, distinct title
+    assert.equal(a.surface.version, 1)
+    assert.equal(a.surface.workspaceId, 'ws-repo-a')
+    assert.equal(b.surface.workspaceId, 'ws-repo-b')
+    assert.deepEqual(a.surface.stack.map((s) => s.block), ['now', 'moments'])
+
+    // both instances appear in the listing (the tray Apps folder reads this), each carrying its binding
+    const listed = (await (await fetch(`${base}/layouts/surfaces`)).json()) as Surface[]
+    const byId = new Map(listed.map((s) => [s.id, s]))
+    assert.equal(byId.get('surf-repo-a')?.workspaceId, 'ws-repo-a')
+    assert.equal(byId.get('surf-repo-b')?.workspaceId, 'ws-repo-b')
+
+    // seed DIFFERENT data into each silo (store-level seeding is fine per the DoD)
+    app.store.saveMoment({ id: 'mom-a', sessionId: 'ses-a', workspaceId: 'ws-repo-a', at: '2026-07-07T14:00:00Z', kind: 'decision', text: 'repo A decision', refs: [], source: 'mic', confidence: 0.9 })
+    app.store.saveMoment({ id: 'mom-b', sessionId: 'ses-b', workspaceId: 'ws-repo-b', at: '2026-07-07T14:05:00Z', kind: 'decision', text: 'repo B decision', refs: [], source: 'mic', confidence: 0.9 })
+
+    // hydrate each instance's moments block over POST /query?surface=<id> — the SAME block query, no workspace named
+    const blockQuery = a.surface.stack.find((s) => s.block === 'moments')!.query
+    const queryFor = async (surfaceId: string): Promise<QueryResult> =>
+      (await (await fetch(`${base}/query?surface=${surfaceId}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(blockQuery),
+      })).json()) as QueryResult
+
+    // THE PROOF: each instance returns ONLY its silo's moment — the binding siloed the reads
+    const resA = await queryFor('surf-repo-a')
+    const resB = await queryFor('surf-repo-b')
+    assert.deepEqual((resA.items as Moment[]).map((m) => m.text), ['repo A decision'])
+    assert.deepEqual((resB.items as Moment[]).map((m) => m.text), ['repo B decision'])
+
+    // 404 unknown source; 409 on an id collision (never clobber an existing surface)
+    assert.equal((await fetch(`${base}/layouts/surfaces/surf-nope/instantiate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })).status, 404)
+    assert.equal((await instantiate({ newId: 'surf-repo-a' })).status, 409)
+
+    // defaults: no body ⇒ generated id + slugged workspace ("HUD for X" is one call) + "(copy)" title
+    const dflt = await instantiate({})
+    assert.equal(dflt.status, 201)
+    assert.match(dflt.surface.id, /^surf-/)
+    assert.equal(dflt.surface.name, 'Repo HUD (copy)')
+    assert.ok((dflt.surface.workspaceId ?? '').startsWith('ws-'))
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('e2e: a todos surface hydrates its todos block from the store over POST /query', async () => {
   // The data path the HUD drives for the todos block (#9): author a to-do list over the real served
   // write (PUT /todos/:sessionId), author a surface carrying a todos block whose query is
