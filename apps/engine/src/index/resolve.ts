@@ -18,12 +18,19 @@ import { nameSimilarity, normalizeForm } from './phonetic.js'
  *    easier to hit again (the store writes the heard form back on a successful match).
  *  - `corpusPrior` ∈ [1, 1+establishmentBoost] — how ESTABLISHED the entity is (sighting/mention count ×
  *    recency). It ONLY boosts (never penalizes) and is deliberately bounded small, so an established
- *    entity edges out an equally-fuzzy stranger WITHOUT the prior ever dragging an exact match below the
- *    auto band or shoving a weak partial across a band boundary. Neutral 1.0 for a fresh record.
- *  - `crossSourceCorroboration` / `personAffinity` — INPUT MULTIPLIERS, default the neutral 1.0. #74's
- *    cross-sense correlator and a real entity graph will feed them; NO producer feeds them today, so they
- *    are honestly left at 1.0 (never fabricated). The parameter seam is typed + documented so wiring a
- *    producer later is a one-line pass-through.
+ *    entity edges out an equally-fuzzy stranger. What the math GUARANTEES: because it only multiplies UP,
+ *    it can never drag an exact match (fuzzy 1.0) below the auto band. What it does NOT guarantee: a
+ *    multiplicative boost >1 CAN lift a weak partial across a band boundary — e.g. a fuzzy 0.8256 partial
+ *    against a heavily-established record is boosted past `autoBand` and auto-links silently. That is by
+ *    design (an established entity SHOULD win a near-tie) but is bounded by `establishmentBoost`, not
+ *    forbidden. Neutral 1.0 for a fresh record. See `establishmentBoost` for the exact bound.
+ *  - `crossSourceCorroboration` / `personAffinity` — INPUT MULTIPLIERS, default the neutral 1.0, CLAMPED to
+ *    a documented range at the resolver boundary (see `clampSignal`). #74's cross-sense correlator and a
+ *    real entity graph will feed them; NO producer feeds them today, so they are honestly left at 1.0
+ *    (never fabricated). The parameter seam is typed + documented so wiring a producer later is a one-line
+ *    pass-through. The clamp BOUNDS a single signal's pull to at most 1.5× — enough to break a near-tie,
+ *    not enough to override the phonetic evidence wholesale (a 5× that silently auto-links a 0.2 fuzzy).
+ *    It is NOT band-preserving for every score (1.5× still shifts a score near a band edge — by design).
  *
  * Bands (on the final, clamped score):
  *  - `≥ autoBand` (~0.85) → auto-link, SILENT — unless a rival makes it ambiguous (below).
@@ -63,7 +70,13 @@ export interface ResolverConfig {
   provisionalBand: number
   /** a rival (itself ≥ provisionalBand) within this gap of the winner marks the resolution ambiguous. */
   ambiguityMargin: number
-  /** the maximum establishment boost corpusPrior can add (bounded so it never crosses a band boundary alone). */
+  /**
+   * The maximum establishment boost corpusPrior can add — the score is multiplied by at most
+   * `1 + establishmentBoost`. Bounded small so an established entity edges out an equally-fuzzy stranger
+   * without swamping the phonetic signal. NOTE (probed #72): a multiplicative boost is NOT band-preserving
+   * — a partial within `establishmentBoost` of `autoBand`/`provisionalBand` CAN be lifted across it. The
+   * guarantee is only that it never drags an exact match DOWN (it only multiplies up).
+   */
   establishmentBoost: number
   /** mentions at which the establishment boost effectively saturates. */
   establishmentSaturation: number
@@ -110,21 +123,50 @@ export interface Resolution {
   margin?: number
 }
 
-const clamp01 = (n: number): number => Math.max(0, Math.min(1, n))
+/** [0,1] clamp that also FLOORS non-finite input to 0 — a NaN score must never survive to the sort/band. */
+const clamp01 = (n: number): number => (Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0)
+
+/** Sort key that treats a non-finite score as 0, so a corrupt-row NaN can never win the NaN-unstable `<`. */
+const finiteScore = (n: number): number => (Number.isFinite(n) ? n : 0)
+
+/**
+ * The documented clamp range for the not-yet-produced input multipliers (`crossSourceCorroboration`,
+ * `personAffinity`). A producer (#74) that emitted an extreme value (say 5×) would otherwise turn a ~0.2
+ * fuzzy score into a 1.0 auto-link, silently overriding the phonetic evidence. Clamping at the resolver
+ * boundary BOUNDS any single signal's pull to at most 1.5× — enough to break a near-tie, not enough to
+ * override the evidence wholesale. It bounds the pull; it does NOT make the multiplier band-preserving for
+ * every score (a 1.5× still shifts a score sitting right at a band edge).
+ */
+export const SIGNAL_MULTIPLIER_MIN = 0.5
+export const SIGNAL_MULTIPLIER_MAX = 1.5
+
+/** Clamp an input signal multiplier into [SIGNAL_MULTIPLIER_MIN, SIGNAL_MULTIPLIER_MAX]; non-finite → neutral 1. */
+const clampSignal = (n: number): number =>
+  Number.isFinite(n) ? Math.max(SIGNAL_MULTIPLIER_MIN, Math.min(SIGNAL_MULTIPLIER_MAX, n)) : 1
 
 /**
  * The corpus prior — how established this entity is. Establishment climbs with mention/sighting count
  * (log-damped, saturating) and is softened (never zeroed) by recency decay on `lastSeen`. Returns a
  * multiplier in [1, 1+establishmentBoost]; ONLY boosts, so it can never pull an exact match below auto.
+ * HARDENED (#94): every input is finite-guarded — a corrupt/unparseable `lastSeen` (NaN) drops recency to
+ * fully-decayed rather than poisoning the product, a non-finite mention count reads as 0, and the return
+ * is finite-guarded to the neutral 1.0. A corrupt DB row can no longer produce a NaN score that wins the
+ * sort and persists as a NaN confidence.
  */
 export const corpusPrior = (entity: Entity, now: Date, config: ResolverConfig = DEFAULT_RESOLVER_CONFIG): number => {
-  const mentions = Math.max(0, entity.mentions ?? entity.sightings?.length ?? 0)
+  const rawMentions = entity.mentions ?? entity.sightings?.length ?? 0
+  const mentions = Number.isFinite(rawMentions) ? Math.max(0, rawMentions) : 0
   if (mentions <= 0) return 1
   const established = Math.min(1, Math.log2(1 + mentions) / Math.log2(1 + config.establishmentSaturation))
-  const ageHours = Math.max(0, now.getTime() - new Date(entity.lastSeen).getTime()) / MS_PER_HOUR
-  const recency = 0.5 ** (ageHours / config.halfLifeHours) // 1 (just now) → 0 (long ago)
+  const lastSeenMs = new Date(entity.lastSeen).getTime()
+  // A corrupt/unparseable lastSeen (NaN) must NOT poison the score — treat recency as fully decayed
+  // (the neutral, least-boosting fallback) rather than propagating NaN through the product.
+  const recency = Number.isFinite(lastSeenMs)
+    ? 0.5 ** (Math.max(0, now.getTime() - lastSeenMs) / MS_PER_HOUR / config.halfLifeHours) // 1 (just now) → 0 (long ago)
+    : 0
   const weight = established * (0.5 + 0.5 * recency) // recency never zeroes an established entity
-  return 1 + config.establishmentBoost * weight
+  const prior = 1 + config.establishmentBoost * weight
+  return Number.isFinite(prior) ? prior : 1
 }
 
 /** All surface forms a heard mention can match on: its name + any aliases the model offered. */
@@ -167,8 +209,8 @@ export const scoreCandidate = (
 ): ScoredCandidate => {
   const fuzzy = phoneticFuzzy(heard, entity)
   const prior = corpusPrior(entity, now, config)
-  const cross = signals.crossSourceCorroboration ?? 1
-  const affinity = signals.personAffinity ?? 1
+  const cross = clampSignal(signals.crossSourceCorroboration ?? 1)
+  const affinity = clampSignal(signals.personAffinity ?? 1)
   const score = clamp01(fuzzy * prior * cross * affinity)
   return { entity, score, phoneticFuzzy: fuzzy, corpusPrior: prior }
 }
@@ -188,8 +230,9 @@ export const resolveEntity = (input: {
 }): Resolution => {
   const config = input.config ?? DEFAULT_RESOLVER_CONFIG
   const signals = input.signals ?? {}
-  const cross = signals.crossSourceCorroboration ?? 1
-  const affinity = signals.personAffinity ?? 1
+  // Clamp here too so the components recorded on the resolution match what scoreCandidate actually applied.
+  const cross = clampSignal(signals.crossSourceCorroboration ?? 1)
+  const affinity = clampSignal(signals.personAffinity ?? 1)
 
   // Honor rejectedRivalId: a candidate that a user override (pinning ANY of the heard forms) already
   // rejected must never win — the user settled that question.
@@ -206,7 +249,12 @@ export const resolveEntity = (input: {
   const scored = input.candidates
     .filter((c) => !rejected.has(c.id))
     .map((c) => scoreCandidate(input.heard, c, input.now, signals, config))
-    .sort((a, b) => b.score - a.score || b.entity.lastSeen.localeCompare(a.entity.lastSeen) || a.entity.name.localeCompare(b.entity.name))
+    .sort(
+      (a, b) =>
+        finiteScore(b.score) - finiteScore(a.score) ||
+        b.entity.lastSeen.localeCompare(a.entity.lastSeen) ||
+        a.entity.name.localeCompare(b.entity.name),
+    )
 
   const winner = scored[0]
   const runnerUp = scored[1]

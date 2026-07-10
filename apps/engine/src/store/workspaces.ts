@@ -5,9 +5,19 @@ import Database from 'better-sqlite3'
 import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
 import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
-import { resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
+import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
 import { LayoutStore } from './layouts.js'
 import { resolveDataDir } from './paths.js'
+
+/**
+ * Create-marking policy (#94, owner-reviewed rule). A `new`-band create is stamped `provisional` ONLY when
+ * the best same-kind rival landed NEAR the provisional band — i.e. its score ≥ `provisionalBand − margin`.
+ * The old rule marked provisional whenever ANY same-kind record existed, so after the first record per kind
+ * a clean create (rival score 0.0) was almost never silent. The near-band rule keeps the review dot for the
+ * genuine near-namesake collisions it was meant to catch and lets an unrelated create (e.g. a CJK name vs an
+ * existing Latin entity, rival ≈0) stay silent.
+ */
+const CREATE_PROVISIONAL_MARGIN = 0.1
 
 /**
  * Normalize an entity name for the v0 resolution match key: trim, lowercase, collapse internal
@@ -303,9 +313,11 @@ export class WorkspaceRegistry {
    * refs, grow the sighting + heardAs trails. On CREATE: store-stamp id + firstSeen. EVERY resolution (link
    * or create) appends an `EntityResolution` (score + band + components + rival, if any) to the record —
    * the inspectable "why did this land here" trail. A provisional/ambiguous resolution stamps `state:
-   * 'provisional'` + `confidence` + `ambiguity` (the #66 micro-state); a clean auto-link and a first-of-its-
-   * kind create stay SILENT (state absent), matching pre-resolver behavior. A user-confirmed record is
-   * never downgraded. The merged record is contract-validated before write. Only this path writes entities.
+   * 'provisional'` + `confidence` + `ambiguity` (the #66 micro-state); a NEW create is stamped provisional
+   * only when its best same-kind rival landed near the provisional band (#94 create-marking rule); a clean
+   * auto-link, a first-of-its-kind create, and an unrelated create with no near rival stay SILENT (state
+   * absent). A user-confirmed record is never downgraded. The merged record is contract-validated before
+   * write. Only this path writes entities.
    */
   upsertEntity(input: EntityUpsert): Entity {
     this.ensureWorkspace({ id: input.workspaceId, name: input.workspaceId })
@@ -724,8 +736,9 @@ export class WorkspaceRegistry {
    *  - a clean AUTO link → SILENT (no state/confidence — pre-resolver behavior, keeps exact matches identical);
    *  - a PROVISIONAL link, or an AUTO link a rival made AMBIGUOUS → `state:'provisional'` + `confidence` +
    *    `ambiguity` (the reviewable #66 micro-state the clarify affordance #75 keys off);
-   *  - a NEW entity created while a same-kind corpus existed → `state:'provisional'` (a near-namesake was
-   *    present); a first-of-its-kind create stays silent.
+   *  - a NEW entity whose best same-kind rival landed NEAR the provisional band (#94 create-marking rule,
+   *    `CREATE_PROVISIONAL_MARGIN`) → `state:'provisional'` (a genuine near-namesake was present); a
+   *    first-of-its-kind create, or one whose only rivals scored far below the band, stays silent.
    * A record already `confirmed` (a sovereign user override) is NEVER downgraded, and an override-pinned
    * resolution never re-stamps state (the override already settled it).
    */
@@ -765,8 +778,16 @@ export class WorkspaceRegistry {
         }
       }
     } else if (!linked && hadCandidates) {
-      // A fresh entity spawned amid a same-kind corpus is provisional (a near-namesake existed).
-      next.state = 'provisional'
+      // #94 create-marking rule: a fresh entity is provisional ONLY when the best same-kind rival landed
+      // NEAR the provisional band (score ≥ provisionalBand − CREATE_PROVISIONAL_MARGIN). For a `new`-band
+      // resolution, `resolution.score` IS the best near-miss score. An unrelated create (rival ≈0, e.g. a
+      // CJK name against an existing Latin corpus) stays silent instead of being marked provisional merely
+      // because some same-kind record happened to exist.
+      const config = input.resolverConfig ?? DEFAULT_RESOLVER_CONFIG
+      const bestRivalScore = resolution.rival?.score ?? resolution.score
+      if (bestRivalScore >= config.provisionalBand - CREATE_PROVISIONAL_MARGIN) {
+        next.state = 'provisional'
+      }
     }
     return next
   }
