@@ -1,4 +1,4 @@
-import type { Fabric, Flag, QueueFailure } from '@openinfo/contracts'
+import type { Endpoint, Fabric, Flag, QueueFailure } from '@openinfo/contracts'
 import type { EndpointHealth } from '../../fabric/health.js'
 
 /**
@@ -81,7 +81,7 @@ const SENSE_LABEL: Record<CaptureSense, string> = { mic: 'Microphone', 'sys-audi
  * endpoint name matches one of the slot's endpoints — never re-implementing a health check.
  */
 const slotHealthFailure = (
-  endpoints: Fabric['slots'][keyof Fabric['slots']],
+  endpoints: readonly Endpoint[],
   input: SenseGateInput,
 ): { fix: string; detail: string } | undefined => {
   const names = new Set(endpoints.map((e) => e.name))

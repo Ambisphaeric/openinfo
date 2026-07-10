@@ -1,8 +1,9 @@
-import type { EgressDecision, EgressReach, Endpoint, Fabric, InvokeUsage, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
+import type { EgressDecision, EgressReach, Endpoint, Fabric, GuardVerdict, InvokeUsage, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
 import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
 import { classifyEndpoint, egressDecision, type EgressConsent } from './egress.js'
+import { runEgressGuard, type GuardOptions } from './guard.js'
 import {
   AggregateInvokeError,
   InvokeError,
@@ -119,6 +120,9 @@ export interface LlmResult {
   usage?: InvokeUsage
   /** the resolved egress decision this invoke ran under (#64) — present only when consent was supplied. */
   egress?: EgressDecision
+  /** the egress guard verdict (#63) — present only when this invoke ran through an egress hop with the
+   * guard active (clean / redacted / unguarded). A local hop never runs the guard, so it is absent. */
+  guard?: GuardVerdict
 }
 
 /** The OpenAI-compatible `usage` block (all optional — servers vary; some omit it entirely, some report only a total). */
@@ -177,6 +181,15 @@ export interface InvokeOptions {
    * the caller can stamp it on provenance. Absent ⇒ egress is not evaluated (no decision is stamped).
    */
   egress?: EgressConsent
+  /**
+   * The egress GUARD config (#63). When present, an ALLOWED egress hop (`reach:'egress'`) runs the guard
+   * on the outbound content BEFORE any bytes leave: redact-and-continue masks flagged spans and proceeds;
+   * hold-and-surface (or a fail-closed empty slot) THROWS GuardHeldError to suspend the hop. Absent ⇒ the
+   * guard does not run (pre-#63 behavior). Local hops never invoke it (no egress). Only invokeLlm (the
+   * text-egress path) applies it — screen (ocr/vlm) content never egresses and stt audio is not a
+   * text-span filter (disclosed).
+   */
+  guard?: GuardOptions
 }
 
 interface ChatChoice {
@@ -286,6 +299,19 @@ export const invokeLlm = async (
     }
     const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
     if (!gate.allow) continue
+    // #63 GUARD SLOT HOOK: on an ALLOWED EGRESS hop, run the content/PII guard on the outbound messages
+    // BEFORE any bytes leave. redact-and-continue masks flagged spans (outbound is the masked copy);
+    // hold-and-surface / a fail-closed empty slot THROWS GuardHeldError, a HARD STOP for this invoke (the
+    // held content must not silently reroute to a local endpoint — it surfaces for release/deny). This
+    // runs OUTSIDE the per-endpoint try so a held throw propagates out of invokeLlm rather than falling
+    // through. A local hop never enters this branch (reach !== 'egress'), so it is never guarded.
+    let outbound = messages
+    let guardVerdict: GuardVerdict | undefined
+    if (gate.reach === 'egress' && opts.guard !== undefined) {
+      const guarded = await runEgressGuard(messages, { endpoint: endpoint.name, url: endpoint.kind === 'http' ? endpoint.url : `${endpoint.kind}:${endpoint.name}` }, opts.guard)
+      outbound = guarded.messages
+      guardVerdict = guarded.verdict
+    }
     try {
       // A local endpoint's spawned runtime is resolved to a localhost http server, then called
       // exactly like an http one (the engine owns its lifecycle; the protocol is identical).
@@ -294,10 +320,11 @@ export const invokeLlm = async (
         lines.push(`${endpoint.name}: unsupported api "${http.api}"`)
         continue
       }
-      const { text, usage } = await callHttp(http, messages, opts)
+      const { text, usage } = await callHttp(http, outbound, opts)
       const result: LlmResult = { text, endpoint: endpoint.name, slot: 'llm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
+      if (guardVerdict !== undefined) result.guard = guardVerdict
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())

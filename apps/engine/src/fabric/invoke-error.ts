@@ -19,6 +19,7 @@ export type InvokeErrorClass =
   | 'bad-response'
   | 'reasoning-exhausted'
   | 'egress-denied'
+  | 'guard-held'
 
 /** What we were calling when it failed — the endpoint, named (never a secret value). */
 export interface InvokeCtx {
@@ -64,6 +65,8 @@ const hintFor = (cls: InvokeErrorClass, ctx: InvokeCtx): string => {
       return `model ${ctx.model !== undefined ? `"${ctx.model}" ` : ''}spent its entire token budget thinking and returned no output — use a non-reasoning instruct model for this slot, or raise the mode's token budget`
     case 'egress-denied':
       return `endpoint "${ctx.endpoint}" is egress-capable but this content may not leave the machine — add or keep a local endpoint for this slot, or lift the egress denial (mode/workspace/prompt) in Settings`
+    case 'guard-held':
+      return `the egress guard suspended this hop before it reached "${ctx.endpoint}" — review the held item and release or deny it, add a guard endpoint, or switch the guard policy to redact-and-continue in Settings`
   }
 }
 

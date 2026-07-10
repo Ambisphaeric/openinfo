@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
+import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
@@ -32,6 +33,9 @@ export interface EngineApp {
   server: ReturnType<typeof createServer>
   bus: EventBus<EngineEvents>
   store: WorkspaceRegistry
+  /** The egress guard held-hops store (#63) — exposed so a suspended hop can be seeded/inspected (tests,
+   * and any embedder that wants the durable audit of blocks). */
+  guardHolds: GuardHoldStore
   /** The context-switch router (route.detect). Exposed so the engine-side calendar collector, mounted
    * POST-createEngineApp by startCalendarCollector (P4C), feeds the SAME detector buffer the focus drain
    * feeds — mirroring how wireScreenOcr reaches the screen processor from main.ts. */
@@ -65,6 +69,8 @@ interface HandlerContext {
   voice: VoiceDocuments
   surfaces: SurfaceDocuments
   distill: DistillDocuments
+  guardDocs: GuardDocuments
+  guardHolds: GuardHoldStore
   todos: TodoDocuments
   workflow: WorkflowDocuments
   hints: HintsDocuments
@@ -88,6 +94,11 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const resolveKey = (ref: string): string | undefined => secrets.resolve(ref)
   const voice = new VoiceDocuments(store)
   const distillDocs = new DistillDocuments(store)
+  // Egress guard (#63): the verdict→behavior policy document + the held-hops audit store. The guard runs
+  // on egress-marked hops during distill (gated by the guard.egress flag); a suspended hop lands in
+  // guardHolds with its verdict (span descriptors, never the raw value) and surfaces in the audit ledger.
+  const guardDocs = new GuardDocuments(store)
+  const guardHolds = new GuardHoldStore(store)
   const actDocs = new ActDocuments(store)
   const todoDocs = new TodoDocuments(store)
   const hintsDocs = new HintsDocuments(store)
@@ -110,6 +121,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   })
   ensureDefaultFlags(store)
   fabric.ensureDefaults()
+  guardDocs.ensureDefaults()
   voice.ensureDefaults()
   distillDocs.ensureDefaults()
   actDocs.ensureDefaults()
@@ -126,6 +138,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     docs: distillDocs,
     resolveKey,
     runtimeManager: runtime,
+    guardDocs,
+    guardHolds,
+    guardEnabled: () => isFlagEnabled(store, 'guard.egress'),
+    publishHold: (hold) => bus.publish('guard.hold.updated', hold),
     publish: (distillate) => bus.publish('distillate.updated', distillate),
     publishMoment: (moment) => bus.publish('moment.created', moment),
     publishEntity: (entity) => bus.publish('entity.updated', entity),
@@ -484,9 +500,12 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
   bus.subscribe('surface.updated', (surface) => ws.broadcast('surface.updated', surface))
+  // Egress guard (#63): rebroadcast a suspended/resolved hop so a subscribed surface refreshes its held
+  // indicator + release/deny affordance. Payload carries span descriptors, never the raw value.
+  bus.subscribe('guard.hold.updated', (hold) => ws.broadcast('guard.hold.updated', hold))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, todos: todoDocs, workflow, hints: hintsDocs, queue, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, hints: hintsDocs, queue, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -500,6 +519,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     server,
     bus,
     store,
+    guardHolds,
     attributor,
     close: async () => {
       ws.close()
@@ -618,6 +638,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   // #66: dismiss / mark-for-follow-up write a per-item signal. Dismiss is the SUPPRESSION record that
   // runQuery above then honors (dismissed rows excluded). Self-contained: one POST over the store seam.
   if (req.method === 'POST' && url.pathname === '/item-signals') return postItemSignal(req, res, ctx)
+  // #63 egress guard: the held-hops audit + the guard policy document.
+  if (req.method === 'GET' && url.pathname === '/guard-holds') return send(res, 200, ctx.guardHolds.list(url.searchParams.get('workspace') ?? 'default'))
+  if (req.method === 'POST' && url.pathname === '/guard-holds/resolve') return resolveGuardHold(req, res, ctx)
+  if (req.method === 'GET' && url.pathname === '/guard/policy') return send(res, 200, ctx.guardDocs.policy())
+  if (req.method === 'PUT' && url.pathname === '/guard/policy') return saveGuardPolicy(req, res, ctx)
   if (req.method === 'GET' && url.pathname.startsWith('/contracts/')) return sendContract(url, res)
   if (req.method === 'PUT' && url.pathname.startsWith('/flags/')) return saveFlag(req, res, ctx, decodeURIComponent(url.pathname.slice(7)))
   const capture = url.pathname.match(/^\/capture\/([^/]+)$/)
@@ -705,6 +730,9 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
   // section stays free of the read, mirroring the discovery-only-when-relevant discipline above.
   if (active.id === 'ledger') {
     data.ledger = buildLedger(ctx.store.listDistillates('default'), ctx.store.listOcrResults('default'))
+    // #63: held egress hops (a durable audit of every guard block) surface as their own held rows with a
+    // release/deny affordance — kept separate from the completed-pass trail (they produced no distillate).
+    data.guardHolds = ctx.guardHolds.list('default')
   }
 
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
@@ -1477,6 +1505,36 @@ async function postItemSignal(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const errors = validationErrors('ItemSignal', stamped)
   if (errors.length > 0) return send(res, 400, { error: 'invalid ItemSignal', details: errors })
   send(res, 200, new ItemSignalStore(ctx.store).add(stamped as ItemSignal))
+}
+
+/**
+ * POST /guard-holds/resolve — RELEASE (let it proceed) or DENY (drop) a suspended egress hop (#63). Body:
+ * `{ workspaceId, id, action: 'release'|'deny' }`. The status transition is stamped and the updated hold is
+ * published on guard.hold.updated so the ledger's held indicator refreshes. This is the release/deny
+ * affordance's HTTP action; automatically RE-DRIVING the exact held pass on release is deferred (the raw
+ * content is not retained — fail closed), so release marks the hold resolved and surfaces it as such.
+ */
+async function resolveGuardHold(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = (await readJson(req)) as { workspaceId?: unknown; id?: unknown; action?: unknown }
+  const workspaceId = typeof body.workspaceId === 'string' && body.workspaceId !== '' ? body.workspaceId : 'default'
+  const id = body.id
+  const action = body.action
+  if (typeof id !== 'string' || id === '') return send(res, 400, { error: 'guard-hold resolve requires an id' })
+  if (action !== 'release' && action !== 'deny') return send(res, 400, { error: "guard-hold resolve requires action 'release' or 'deny'" })
+  const status = action === 'release' ? 'released' : 'denied'
+  const updated = ctx.guardHolds.resolve(workspaceId, id, status, new Date().toISOString())
+  if (updated === undefined) return send(res, 404, { error: `no held hop "${id}" in workspace "${workspaceId}"` })
+  await ctx.bus.publish('guard.hold.updated', updated)
+  send(res, 200, updated)
+}
+
+/** PUT /guard/policy — edit the egress-guard verdict→behavior policy document (#63). Contract-validated,
+ * version-bumped append-only via GuardDocuments; mirrors PUT /flags and saveFabric. */
+async function saveGuardPolicy(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('GuardPolicy', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid GuardPolicy', details: errors })
+  send(res, 200, ctx.guardDocs.savePolicy(body as GuardPolicy))
 }
 
 function readFlags(store: WorkspaceRegistry): Flag[] {

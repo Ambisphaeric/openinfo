@@ -86,12 +86,52 @@ test('renderLedger: an estimated pass is MARKED est (a measurement is never impe
   assert.match(html, /some estimated/)
 })
 
-test('renderLedger: guard stays an honest absence; a pre-#64 record with no egress decision renders the local default', () => {
+test('renderLedger: a local pass shows "— no guard" (no egress ⇒ no filter) and the local egress default', () => {
   const passes = buildLedger([distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z' })], [])
   const html = renderLedger(withLedger(passes))
   assert.match(html, /no guard/i)
   assert.match(html, /class="ldg-local"[^>]*>local</)
-  assert.match(html, /Guard verdicts \(#63\)/)
+  assert.match(html, /guard column \(#63\)/)
+})
+
+test('renderLedger: a redacted guard verdict lights up the guard column (span count, never the raw value)', () => {
+  const passes = buildLedger(
+    [
+      distillate({
+        id: 'd1',
+        createdAt: '2026-07-10T10:00:00Z',
+        provenance: {
+          slot: 'llm',
+          endpoint: 'hosted',
+          egress: { reach: 'egress', allowed: true, decidedBy: 'default', reason: 'content left the machine (no layer denied egress)' },
+          guard: { behavior: 'redact-and-continue', outcome: 'redacted', guarded: true, maskedSpanCount: 2, spans: [{ kind: 'card-number', start: 0, length: 16 }, { kind: 'email', start: 30, length: 12 }], reason: 'masked 2' },
+        },
+      }),
+    ],
+    [],
+  )
+  const html = renderLedger(withLedger(passes))
+  assert.match(html, /redacted · 2/)
+  assert.match(html, /class="ldg-egress"/)
+})
+
+test('renderLedger: a held egress hop surfaces in the held block with a release/deny affordance', () => {
+  const data = withLedger([])
+  data.guardHolds = [
+    {
+      id: 'h1',
+      workspaceId: 'default',
+      stage: 'distill',
+      verdict: { behavior: 'hold-and-surface', outcome: 'held', guarded: true, maskedSpanCount: 1, spans: [{ kind: 'card-number', start: 0, length: 16 }], reason: 'strict mode suspended the hop' },
+      status: 'held',
+      createdAt: '2026-07-10T10:05:00Z',
+    },
+  ]
+  const html = renderLedger(data)
+  assert.match(html, /held by the guard/i)
+  assert.match(html, /data-guard-hold="h1"[^>]*data-guard-action="release"/)
+  assert.match(html, /data-guard-action="deny"/)
+  assert.match(html, /kinds: card-number/)
 })
 
 test('buildLedger: carries the recorded egress decision onto the hop', () => {

@@ -1,4 +1,4 @@
-import type { Distillate, EgressDecision, InvokeUsage, OcrResult } from '@openinfo/contracts'
+import type { Distillate, EgressDecision, GuardHold, GuardVerdict, InvokeUsage, OcrResult } from '@openinfo/contracts'
 import { escapeHtml, type SetupData } from '../../setup/view.js'
 
 /**
@@ -36,6 +36,8 @@ export interface LedgerHop {
   usage?: InvokeUsage
   /** the resolved egress decision this hop ran under (#64), when it was recorded. */
   egress?: EgressDecision
+  /** the egress guard verdict this hop ran under (#63), when it was recorded — clean/redacted/unguarded. */
+  guard?: GuardVerdict
 }
 
 /** One pipeline pass — today a single record ⇒ a single-hop trail; ready for multi-hop (the judge, #62). */
@@ -74,6 +76,7 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
           ...(d.provenance.model !== undefined ? { model: d.provenance.model } : {}),
           ...(d.provenance.usage !== undefined ? { usage: d.provenance.usage } : {}),
           ...(d.provenance.egress !== undefined ? { egress: d.provenance.egress } : {}),
+          ...(d.provenance.guard !== undefined ? { guard: d.provenance.guard } : {}),
         },
       ],
     })
@@ -131,6 +134,25 @@ const egressCell = (egress: EgressDecision | undefined): string => {
   return '<span class="ldg-local" title="egress was allowed; a local endpoint answered">local</span>'
 }
 
+/**
+ * The guard cell for a hop (#63), rendered from the recorded verdict:
+ *  - no verdict (a local hop, or a record predating #63) ⇒ the honest "— no guard" absence;
+ *  - `clean` ⇒ the guard ran and flagged nothing;
+ *  - `redacted` ⇒ N spans masked before the content left (the span kinds on hover — never the raw value);
+ *  - `unguarded` ⇒ no guard was active and egress proceeded under an explicit acknowledgment (flagged distinctly).
+ */
+const guardCell = (guard: GuardVerdict | undefined): string => {
+  if (guard === undefined) return '<span class="ldg-absent" title="no guard verdict for this hop (local hop, or predates #63)">— no guard</span>'
+  const spanKinds = guard.spans && guard.spans.length > 0 ? guard.spans.map((s) => s.kind).join(', ') : ''
+  if (guard.outcome === 'redacted') {
+    return `<span class="ldg-guard-redacted" title="${escapeHtml(guard.reason)}${spanKinds ? ` — kinds: ${escapeHtml(spanKinds)}` : ''}">redacted · ${guard.maskedSpanCount}</span>`
+  }
+  if (guard.outcome === 'unguarded') {
+    return `<span class="ldg-guard-unguarded" title="${escapeHtml(guard.reason)}">unguarded</span>`
+  }
+  return `<span class="ldg-guard-clean" title="${escapeHtml(guard.reason)}">clean</span>`
+}
+
 /** Totals across all passes' hops: in/out token sums, whether any count was estimated, and egress-hop count. */
 const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEstimated: boolean; hops: number; egressed: number } => {
   let inTok = 0
@@ -161,18 +183,67 @@ const rowHtml = (pass: LedgerPass): string =>
         `<td class="ldg-stage">${escapeHtml(hop.stage)}</td>` +
         `<td class="ldg-ep">${escapeHtml(hop.endpoint)}${hop.model ? ` <span class="ldg-model">${escapeHtml(hop.model)}</span>` : ''}</td>` +
         `<td>${tokensCell(hop.usage)}</td>` +
-        '<td class="ldg-absent" title="no guard slot yet (#63)">— no guard</td>' +
+        `<td>${guardCell(hop.guard)}</td>` +
         `<td>${egressCell(hop.egress)}</td>` +
         '</tr>',
     )
     .join('')
 
+/** One held egress hop (#63): when · stage · reason (+ masked-span kinds, never the raw value) · a
+ * release/deny affordance while still held, else the resolved status. */
+const heldRow = (h: GuardHold): string => {
+  const kinds = h.verdict.spans && h.verdict.spans.length > 0 ? ` (kinds: ${escapeHtml(h.verdict.spans.map((s) => s.kind).join(', '))})` : ''
+  const controls =
+    h.status === 'held'
+      ? `<button type="button" class="ldg-held-act" data-guard-hold="${escapeHtml(h.id)}" data-guard-action="release">Release</button>` +
+        `<button type="button" class="ldg-held-act deny" data-guard-hold="${escapeHtml(h.id)}" data-guard-action="deny">Deny</button>`
+      : `<span class="ldg-held-status">${escapeHtml(h.status)}</span>`
+  return (
+    '<div class="ldg-held-row">' +
+    `<span class="ldg-held-when">${escapeHtml(h.createdAt)}</span>` +
+    `<span class="ldg-stage">${escapeHtml(h.stage)}</span>` +
+    `<span class="ldg-guard-held">held</span>` +
+    `<span class="ldg-held-reason">${escapeHtml(h.verdict.reason)}${kinds}</span>` +
+    controls +
+    '</div>'
+  )
+}
+
+/** The client wiring for the release/deny buttons — a POST /guard-holds/resolve then reload. Inline in the
+ * section (the Settings surface is server-rendered per request, so this executes on load). */
+const HELD_SCRIPT =
+  '<script>(function(){' +
+  "document.querySelectorAll('.ldg-held-act').forEach(function(b){b.addEventListener('click',function(){" +
+  "var id=b.getAttribute('data-guard-hold');var action=b.getAttribute('data-guard-action');b.disabled=true;" +
+  "fetch('/guard-holds/resolve',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceId:'default',id:id,action:action})})" +
+  '.then(function(r){if(r.ok){location.reload();}else{b.disabled=false;}}).catch(function(){b.disabled=false;});' +
+  '});});})();</script>'
+
 /**
- * The Audit-ledger section body. Pure — reads only `data.ledger` (assembled by the settings route from the
- * default workspace's persisted records). Empty ⇒ an honest "nothing recorded yet" card, never a blank.
+ * The held-egress-hops block (#63) — a durable audit of every hop the guard SUSPENDED, each with its
+ * verdict (span descriptors, never the raw value) and, while still held, a release/deny affordance. Empty
+ * ⇒ '' (nothing held). Kept SEPARATE from the completed-pass table (a held hop produced no distillate).
+ */
+const heldBlock = (holds: readonly GuardHold[]): string => {
+  if (holds.length === 0) return ''
+  const active = holds.filter((h) => h.status === 'held').length
+  return (
+    '<div class="ldg-held">' +
+    `<div class="ldg-held-title">${active > 0 ? `${fmt(active)} egress hop${active === 1 ? '' : 's'} held by the guard — release or deny` : 'held egress hops (resolved)'}</div>` +
+    holds.map(heldRow).join('') +
+    '</div>' +
+    HELD_SCRIPT
+  )
+}
+
+/**
+ * The Audit-ledger section body. Pure — reads `data.ledger` (completed passes) and `data.guardHolds` (held
+ * egress hops), assembled by the settings route from the default workspace. Empty of both ⇒ an honest
+ * "nothing recorded yet" card, never a blank.
  */
 export const renderLedger = (data: SetupData): string => {
   const passes = data.ledger ?? []
+  const held = heldBlock(data.guardHolds ?? [])
   const intro =
     '<div class="sub">Every pass the pipeline ran, newest first — the hop trail already stamped in each ' +
     'record’s provenance: stage → endpoint → model → tokens in/out → guard verdict → egress. ' +
@@ -181,6 +252,7 @@ export const renderLedger = (data: SetupData): string => {
   if (passes.length === 0) {
     return (
       intro +
+      held +
       '<div class="card"><div class="stat-title">Audit ledger</div>' +
       '<div class="stat-note">No passes recorded yet in this workspace. Run a distill pass (Try it, or start a ' +
       'session and speak) and every invoke’s token accounting and hop trail appears here.</div></div>' +
@@ -206,13 +278,17 @@ export const renderLedger = (data: SetupData): string => {
     passes.map(rowHtml).join('') +
     '</tbody></table></div>'
 
-  return intro + summary + table + footerNote()
+  return intro + held + summary + table + footerNote()
 }
 
 /** The honest disclosure footer — what each column carries, and this ledger's scope. */
 const footerNote = (): string =>
-  '<div class="ldg-note">Guard verdicts (#63) are not built yet, so that column renders honestly as absent — ' +
-  'no guard is configured. The egress column (#64) renders from each pass’s recorded decision: a hop shows ' +
+  '<div class="ldg-note">The guard column (#63) renders from each pass’s recorded verdict: ' +
+  '<span class="ldg-guard-clean">clean</span> (guard ran, nothing flagged), ' +
+  '<span class="ldg-guard-redacted">redacted · N</span> (N spans masked before the content left — kinds on hover, never the raw value), ' +
+  '<span class="ldg-guard-unguarded">unguarded</span> (no guard active, egress acknowledged), or “— no guard” for a local hop (no egress ⇒ no filter). ' +
+  'A SUSPENDED egress hop (strict mode, or a fail-closed empty guard slot) surfaces in the held block above with a release/deny affordance. ' +
+  'The egress column (#64) renders from each pass’s recorded decision: a hop shows ' +
   '<span class="ldg-egress">egress</span> only when content actually left the machine, and “local · &lt;layer&gt;” ' +
   'when it stayed local because a layer (mode / workspace / prompt / content-class) denied egress. A fresh ' +
   'install has no egress-capable endpoint configured, so nothing can leave — the column stays local, truthfully ' +
