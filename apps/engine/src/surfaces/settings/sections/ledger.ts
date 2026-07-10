@@ -9,7 +9,8 @@ import { escapeHtml, type SetupData } from '../../setup/view.js'
  * (#65) completes it and this surface makes it visible and auditable.
  *
  * HONEST ABSENCES, not fabricated data:
- *  - GUARD: no guard slot exists yet (#63). The column renders "—" ("no guard configured") for every hop.
+ *  - GUARD (#63, now BUILT): renders each hop's recorded verdict — clean · redacted·N · unguarded — and
+ *    "—" ("no guard configured") only for hops that genuinely carry no guard verdict (local, or pre-#63).
  *  - EGRESS (#64): the egress column now renders from REAL decision provenance when a record carries it —
  *    "local" (with the deciding layer when it stayed local BY POLICY) or "egress → endpoint" when content
  *    actually left. A record predating #64 has no decision, so it falls back to the honest local default
