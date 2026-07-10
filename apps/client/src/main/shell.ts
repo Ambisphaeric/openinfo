@@ -23,6 +23,7 @@ import { readSavedPosition, savePosition } from './window-store.js'
 import { EngineLink } from '../engine-link/index.js'
 import { CaptureController, type CaptureState } from '../capture/capture-controller.js'
 import { CAPTURE_CHANNELS, type CaptureSourceKind, type CaptureStatus, type RawSegment } from '../capture/protocol.js'
+import { startScreenCadence, type ScreenCadenceHandle } from '../capture/screen-source.js'
 import { CaptureConsent } from './capture-consent.js'
 import { CaptureDispatcher, type DispatchChannel } from './capture-dispatcher.js'
 import { createClientLog, type ClientLog } from './client-log.js'
@@ -112,7 +113,9 @@ let captureRendererCrashed = false
 // process (desktopCapturer, below) rather than the hidden audio renderer, but rides the same controller +
 // session lifecycle + EngineLink spool. Opt-IN (cfg.screenEnabled default OFF) — see config.ts.
 let screenController: CaptureController | undefined
-let screenTimer: ReturnType<typeof setInterval> | undefined
+// The screen cadence loop's handle (issue #4) — startScreenCadence drives the grab timer at the
+// config-resolved, 3–6s-clamped cfg.screenIntervalMs; this holds the running loop so stopScreenLoop can end it.
+let screenCadence: ScreenCadenceHandle | undefined
 // The focus (foreground-window context) poller — main-process, session-INDEPENDENT, gated on the
 // engine's route.detect flag + the local OPENINFO_FOCUS opt-out. `focusActive` mirrors whether it is
 // currently watching, for the tray's quiet "· watching context" tooltip.
@@ -536,11 +539,15 @@ const captureScreenFrame = async (): Promise<void> => {
   }
 }
 
-/** control.start for screen: grab a frame now (so the first isn't a full interval away), then on cadence. */
+/**
+ * control.start for screen: drive the cadence loop via startScreenCadence (grabs a frame now, then on the
+ * config-resolved cfg.screenIntervalMs — clamped into the 3–6s band by resolveScreenIntervalMs). The loop
+ * mechanics live in capture/screen-source.ts so the "screen source honours the configured cadence"
+ * behaviour is unit-tested with a fake timer (issue #4).
+ */
 const startScreenLoop = (): void => {
-  if (screenTimer) return
-  void captureScreenFrame()
-  screenTimer = setInterval(() => void captureScreenFrame(), cfg.screenIntervalMs)
+  if (screenCadence) return
+  screenCadence = startScreenCadence({ intervalMs: cfg.screenIntervalMs, grab: () => void captureScreenFrame() })
 }
 
 /**
@@ -550,10 +557,8 @@ const startScreenLoop = (): void => {
  * we defer it via setImmediate to mirror the audio path's asynchronous `stopped` signal.
  */
 const stopScreenLoop = (): void => {
-  if (screenTimer) {
-    clearInterval(screenTimer)
-    screenTimer = undefined
-  }
+  screenCadence?.stop()
+  screenCadence = undefined
   setImmediate(() => void screenController?.onCaptureStopped())
 }
 

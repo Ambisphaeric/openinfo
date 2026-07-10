@@ -3,7 +3,15 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { resolveShellConfig, parseClientConfigFile, loadClientConfigFile, clientConfigPath } from './config.js'
+import {
+  resolveShellConfig,
+  parseClientConfigFile,
+  loadClientConfigFile,
+  clientConfigPath,
+  SENSE_DEFAULTS,
+  SCREEN_INTERVAL_MIN_MS,
+  SCREEN_INTERVAL_MAX_MS,
+} from './config.js'
 
 test('defaults to localhost:8787 and the meeting mode when the env is empty', () => {
   const cfg = resolveShellConfig({})
@@ -68,12 +76,31 @@ test('screen capture is opt-IN: default OFF, enabled only by an explicit truthy 
   assert.equal(empty.screenEnabled, false)
 })
 
-test('screen cadence defaults to 5000ms and is overridable; junk/non-positive falls back to the default', () => {
-  assert.equal(resolveShellConfig({}).screenIntervalMs, 5000)
-  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '2000' }).screenIntervalMs, 2000)
+test('screen cadence defaults to 5000ms (in the 3–6s band) and honours an in-band override; junk falls back (#4)', () => {
+  assert.equal(resolveShellConfig({}).screenIntervalMs, 5000) // the in-band default
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '4000' }).screenIntervalMs, 4000) // in band → honoured verbatim
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '3000' }).screenIntervalMs, 3000) // floor edge
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '6000' }).screenIntervalMs, 6000) // ceiling edge
   for (const bad of ['0', '-5', 'nope', '']) {
-    assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: bad }).screenIntervalMs, 5000)
+    assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: bad }).screenIntervalMs, 5000) // non-positive/garbage ⇒ default
   }
+})
+
+test('screen cadence is CLAMPED into [3000,6000] so a bad value can never spin capture too hot or dead (#4)', () => {
+  assert.equal(SCREEN_INTERVAL_MIN_MS, 3000)
+  assert.equal(SCREEN_INTERVAL_MAX_MS, 6000)
+  // Below the floor (would flood the CPU with full-display JPEG encodes) snaps UP to the floor.
+  for (const hot of ['1', '50', '500', '2999']) {
+    assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: hot }).screenIntervalMs, SCREEN_INTERVAL_MIN_MS)
+  }
+  // Above the ceiling (effectively dead while still reading "on") snaps DOWN to the ceiling.
+  for (const cold of ['6001', '10000', '3600000']) {
+    assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: cold }).screenIntervalMs, SCREEN_INTERVAL_MAX_MS)
+  }
+  // A file value is clamped the same way (env absent), and a fractional value is rounded to whole ms.
+  assert.equal(resolveShellConfig({}, { screenIntervalMs: 1000 }).screenIntervalMs, SCREEN_INTERVAL_MIN_MS)
+  assert.equal(resolveShellConfig({}, { screenIntervalMs: 99999 }).screenIntervalMs, SCREEN_INTERVAL_MAX_MS)
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '4500.7' }).screenIntervalMs, 4501)
 })
 
 test('audio segment cadence defaults to 1000ms and is overridable; junk/non-positive falls back (#57)', () => {
@@ -137,8 +164,21 @@ test('file can opt IN to screen and set the cadence; env still wins (opt-in prec
   assert.equal(resolveShellConfig({}, { screen: true }).screenEnabled, true) // file can enable the opt-in
   assert.equal(resolveShellConfig({ OPENINFO_SCREEN: '0' }, { screen: true }).screenEnabled, false) // env disables
   assert.equal(resolveShellConfig({}, {}).screenEnabled, false) // absent everywhere ⇒ default OFF
-  assert.equal(resolveShellConfig({}, { screenIntervalMs: 3000 }).screenIntervalMs, 3000) // file cadence honoured
-  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '1500' }, { screenIntervalMs: 3000 }).screenIntervalMs, 1500) // env wins
+  assert.equal(resolveShellConfig({}, { screenIntervalMs: 4000 }).screenIntervalMs, 4000) // in-band file cadence honoured
+  assert.equal(resolveShellConfig({ OPENINFO_SCREEN_INTERVAL_MS: '3500' }, { screenIntervalMs: 4000 }).screenIntervalMs, 3500) // env wins (both in band)
+})
+
+test('the senses-on defaults are pinned: mic/system-audio/focus ON, screen OFF out of the box (#4)', () => {
+  const cfg = resolveShellConfig({}) // empty env, no file — the out-of-the-box defaults
+  assert.equal(cfg.micEnabled, SENSE_DEFAULTS.mic)
+  assert.equal(cfg.systemAudioEnabled, SENSE_DEFAULTS.systemAudio)
+  assert.equal(cfg.focusEnabled, SENSE_DEFAULTS.focus)
+  assert.equal(cfg.screenEnabled, SENSE_DEFAULTS.screen)
+  // The intended shape, spelled out so a change to the privacy posture trips this test.
+  assert.deepEqual(
+    { mic: cfg.micEnabled, systemAudio: cfg.systemAudioEnabled, focus: cfg.focusEnabled, screen: cfg.screenEnabled },
+    { mic: true, systemAudio: true, focus: true, screen: false },
+  )
 })
 
 test('parseClientConfigFile keeps valid fields and drops junk/wrong types (never crashes the shell)', () => {

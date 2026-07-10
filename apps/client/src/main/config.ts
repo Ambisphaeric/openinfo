@@ -69,9 +69,13 @@ export interface ShellConfig {
   screenEnabled: boolean
   /**
    * How often (ms) to grab a screen still frame while capturing — cadence-based, NOT continuous video.
-   * Default 5000 (~5s): frequent enough to follow what's on screen, rare enough that each full-display
-   * capture + JPEG encode is cheap. Only meaningful when `screenEnabled`. Override with
-   * OPENINFO_SCREEN_INTERVAL_MS or `"screenIntervalMs"`; a non-positive/garbage value falls back to the default.
+   * The owner's target cadence for the screenshot stream is the **3–6s band** (issue #4): frequent enough
+   * to follow what's on screen, rare enough that each full-display capture + JPEG encode is cheap. Default
+   * 5000 (~5s, in band). Only meaningful when `screenEnabled`. Override with OPENINFO_SCREEN_INTERVAL_MS or
+   * `"screenIntervalMs"`, but the resolved value is **clamped into [3000, 6000]** so no configuration can
+   * spin capture too hot (a sub-second flood of full-display JPEG encodes) or so slow the stream is
+   * effectively dead: an out-of-band value snaps to the nearest bound, and a non-positive/garbage value
+   * falls back to the default. See SCREEN_INTERVAL_MIN_MS / SCREEN_INTERVAL_MAX_MS and resolveScreenIntervalMs.
    */
   screenIntervalMs: number
   /**
@@ -127,6 +131,33 @@ const DEFAULTS = {
   segmentMs: 1000,
 } as const
 
+/**
+ * The senses-on defaults — which capture senses are ENABLED out of the box (issue #4). This is the single
+ * source of truth for "which senses are on" so the story is first-class and pinned by a test, not scattered
+ * across the resolver helpers. It governs what captures ONCE A SESSION IS LIVE — nothing captures before the
+ * tray's Start Session (the session itself is the consent gesture; see capture-consent.ts and applyCaptureLifecycle).
+ * - mic / systemAudio / focus default **ON** — and each is safe on: system-audio is a silent no-op without a
+ *   BlackHole-class loopback device, and focus is a no-op unless the engine's route.detect flag is also on.
+ * - screen defaults **OFF** — strictly opt-in. The asymmetry is deliberate: screen capture is privacy-heavy
+ *   (it can see anything on screen), triggers the macOS Screen-Recording TCC prompt, and matches the
+ *   `capture.camera` posture — nothing is captured unless the user explicitly turns it on. See screenEnabled.
+ */
+export const SENSE_DEFAULTS = {
+  mic: true,
+  systemAudio: true,
+  focus: true,
+  screen: false,
+} as const
+
+/**
+ * The screen-capture cadence band (ms), issue #4 — the owner's stated target for the screenshot stream is
+ * 3–6s, so a resolved `screenIntervalMs` is clamped into [MIN, MAX]. The FLOOR stops a bad value spinning
+ * capture too hot (a sub-second flood of full-display JPEG encodes); the CEILING stops a value so large the
+ * stream is effectively dead while the sense still reads as "on". DEFAULTS.screenIntervalMs (5000) sits in band.
+ */
+export const SCREEN_INTERVAL_MIN_MS = 3000
+export const SCREEN_INTERVAL_MAX_MS = 6000
+
 /** OPENINFO_MIC / OPENINFO_SYSTEM_AUDIO / OPENINFO_FOCUS are opt-OUT: only an explicit falsy token disables. */
 const isFalsyToken = (raw: string): boolean => ['0', 'false', 'off', 'no'].includes(raw.trim().toLowerCase())
 
@@ -134,25 +165,27 @@ const isFalsyToken = (raw: string): boolean => ['0', 'false', 'off', 'no'].inclu
 const isTruthyToken = (raw: string): boolean => ['1', 'true', 'on', 'yes'].includes(raw.trim().toLowerCase())
 
 /**
- * Resolve a default-ON boolean across the three sources: an explicit env token wins (opt-out), else the
- * file value if present, else the built-in default (ON). This is how env keeps beating client.json for
- * the capture toggles, mirroring the string/url precedence.
+ * Resolve an opt-OUT (default-ON) boolean across the three sources: an explicit env token wins (only a
+ * falsy one disables), else the file value if present, else the passed default (the senses-on default —
+ * ON — from SENSE_DEFAULTS). This is how env keeps beating client.json for the capture toggles, mirroring
+ * the string/url precedence.
  */
-const resolveEnabled = (envRaw: string | undefined, fileVal: boolean | undefined): boolean => {
+const resolveEnabled = (envRaw: string | undefined, fileVal: boolean | undefined, def: boolean): boolean => {
   if (envRaw !== undefined) return !isFalsyToken(envRaw)
   if (fileVal !== undefined) return fileVal
-  return true
+  return def
 }
 
 /**
- * The opt-IN mirror of resolveEnabled for screen capture: an explicit env token wins (only a truthy one
- * enables), else the file value if present, else the built-in default (OFF). Same env > file > default
- * precedence — just flipped so nothing captures the screen unless explicitly asked. See screenEnabled.
+ * The opt-IN mirror of resolveEnabled: an explicit env token wins (only a truthy one enables), else the
+ * file value if present, else the passed default (OFF for screen — SENSE_DEFAULTS.screen — and for the
+ * hudOutline debug chrome). Same env > file > default precedence — just flipped so nothing turns on unless
+ * explicitly asked. See screenEnabled.
  */
-const resolveOptIn = (envRaw: string | undefined, fileVal: boolean | undefined): boolean => {
+const resolveOptIn = (envRaw: string | undefined, fileVal: boolean | undefined, def: boolean): boolean => {
   if (envRaw !== undefined) return isTruthyToken(envRaw)
   if (fileVal !== undefined) return fileVal
-  return false
+  return def
 }
 
 /** Resolve a positive-integer ms interval: env token (if a valid positive number) > file value > default. */
@@ -161,6 +194,19 @@ const resolveIntervalMs = (envRaw: string | undefined, fileVal: number | undefin
   if (fromEnv !== undefined && Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv
   if (fileVal !== undefined && Number.isFinite(fileVal) && fileVal > 0) return fileVal
   return def
+}
+
+/**
+ * Resolve the screen-capture cadence (issue #4): the same env > file > default precedence as
+ * resolveIntervalMs, but the chosen value is rounded to a whole ms and **clamped into the target band
+ * [SCREEN_INTERVAL_MIN_MS, SCREEN_INTERVAL_MAX_MS]** — an out-of-band value snaps to the nearest bound so
+ * no configuration can spin capture too hot or so slow the stream is dead, and a non-positive/garbage value
+ * falls back to the default (itself in band). Separate from resolveIntervalMs because segmentMs is a
+ * different cadence with its own, un-clamped band (its default is 1000 and larger values are legitimate).
+ */
+const resolveScreenIntervalMs = (envRaw: string | undefined, fileVal: number | undefined, def: number): number => {
+  const chosen = resolveIntervalMs(envRaw, fileVal, def)
+  return Math.min(Math.max(Math.round(chosen), SCREEN_INTERVAL_MIN_MS), SCREEN_INTERVAL_MAX_MS)
 }
 
 /** Trim a trailing slash so `${engineUrl}${path}` never doubles up. */
@@ -226,8 +272,10 @@ export const loadClientConfigFile = (filePath: string = clientConfigPath()): Cli
  * - engineUrl: `OPENINFO_ENGINE_URL` wins; else `OPENINFO_ENGINE_HOST`/`OPENINFO_PORT` compose one (if
  *   either is set); else the file's `engineUrl`; else `http://127.0.0.1:8787`.
  * - workspace/modeId/surfaceId: the env var, else the file value, else the default.
- * - the audio/focus toggles: an explicit env token (opt-out), else the file boolean, else ON.
- * - screen: an explicit env token (opt-IN), else the file boolean, else OFF; screenIntervalMs: env/file/5000.
+ * - the audio/focus toggles: an explicit env token (opt-out), else the file boolean, else the senses-on
+ *   default (ON — SENSE_DEFAULTS).
+ * - screen: an explicit env token (opt-IN), else the file boolean, else OFF (SENSE_DEFAULTS.screen);
+ *   screenIntervalMs: env/file/5000, then clamped into the 3–6s band (issue #4 — see resolveScreenIntervalMs).
  * - segmentMs: a valid positive env number, else the file value, else 1000 (~1s) — the capture cadence (#57).
  */
 export const resolveShellConfig = (
@@ -248,12 +296,12 @@ export const resolveShellConfig = (
     workspace: env['OPENINFO_WORKSPACE'] ?? file?.workspace ?? DEFAULTS.workspace,
     modeId: env['OPENINFO_MODE'] ?? file?.modeId ?? DEFAULTS.modeId,
     surfaceId: env['OPENINFO_SURFACE'] ?? file?.surfaceId ?? DEFAULTS.surfaceId,
-    micEnabled: resolveEnabled(env['OPENINFO_MIC'], file?.mic),
-    systemAudioEnabled: resolveEnabled(env['OPENINFO_SYSTEM_AUDIO'], file?.systemAudio),
-    focusEnabled: resolveEnabled(env['OPENINFO_FOCUS'], file?.focus),
-    screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen),
-    screenIntervalMs: resolveIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),
+    micEnabled: resolveEnabled(env['OPENINFO_MIC'], file?.mic, SENSE_DEFAULTS.mic),
+    systemAudioEnabled: resolveEnabled(env['OPENINFO_SYSTEM_AUDIO'], file?.systemAudio, SENSE_DEFAULTS.systemAudio),
+    focusEnabled: resolveEnabled(env['OPENINFO_FOCUS'], file?.focus, SENSE_DEFAULTS.focus),
+    screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen, SENSE_DEFAULTS.screen),
+    screenIntervalMs: resolveScreenIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),
     segmentMs: resolveIntervalMs(env['OPENINFO_SEGMENT_MS'], file?.segmentMs, DEFAULTS.segmentMs),
-    hudOutline: resolveOptIn(env['OPENINFO_HUD_OUTLINE'], file?.hudOutline),
+    hudOutline: resolveOptIn(env['OPENINFO_HUD_OUTLINE'], file?.hudOutline, false),
   }
 }
