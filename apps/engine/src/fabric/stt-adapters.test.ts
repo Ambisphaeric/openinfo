@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Endpoint } from '@openinfo/contracts'
-import { STT_ADAPTERS, selectSttAdapter } from './stt-adapters.js'
+import { STT_ADAPTERS, selectSttAdapter, dropSilentSegments, DEFAULT_NO_SPEECH_THRESHOLD } from './stt-adapters.js'
 
 // --- canonical normalization: every flavor maps its wire body to the ONE TranscriptResult shape ---
 
@@ -51,6 +51,91 @@ test('whisper-server adapter converts CENTISECOND t0/t1 segments to canonical se
 
 test('whisper-server adapter tolerates the plain {text} /inference?response_format=json shape', () => {
   assert.deepEqual(STT_ADAPTERS['whisper-server'].normalize({ text: 'fake transcript' }), { text: 'fake transcript' })
+})
+
+// --- no-speech signal (#69): verbose_json carries a per-segment no_speech_prob the adapter surfaces ---
+
+test('openai adapter carries per-segment no_speech_prob (verbose_json) as canonical noSpeechProb', () => {
+  const body = {
+    text: ' you',
+    language: 'en',
+    duration: 1.2,
+    segments: [
+      { id: 0, start: 0.0, end: 0.6, text: ' Okay.', no_speech_prob: 0.05 },
+      { id: 1, start: 0.6, end: 1.2, text: ' you', no_speech_prob: 0.93 },
+    ],
+  }
+  assert.deepEqual(STT_ADAPTERS.openai.normalize(body), {
+    text: ' you',
+    language: 'en',
+    durationSec: 1.2,
+    segments: [
+      { text: ' Okay.', startSec: 0.0, endSec: 0.6, noSpeechProb: 0.05 },
+      { text: ' you', startSec: 0.6, endSec: 1.2, noSpeechProb: 0.93 },
+    ],
+  })
+})
+
+test('openai/omlx adapters request verbose_json so no_speech_prob is returned', () => {
+  assert.equal(STT_ADAPTERS.openai.request.responseFormat, 'verbose_json')
+  assert.equal(STT_ADAPTERS.omlx.request.responseFormat, 'verbose_json')
+})
+
+// --- dropSilentSegments (#69): filter no-speech/hallucinated segments, rebuild from the survivors ---
+
+test('dropSilentSegments drops whisper-class segments at/above the threshold and rebuilds the transcript', () => {
+  const result = {
+    text: ' We ship Thursday. Thank you.',
+    segments: [
+      { text: ' We ship Thursday.', noSpeechProb: 0.02 },
+      { text: ' Thank you.', noSpeechProb: 0.97 }, // classic hallucination on trailing silence
+    ],
+  }
+  assert.deepEqual(dropSilentSegments(result), { text: 'We ship Thursday.', dropped: 1, total: 2 })
+})
+
+test('dropSilentSegments: an all-silence window rebuilds to "" (contributes nothing) and counts every drop', () => {
+  const result = {
+    text: ' Thank you. Bye.',
+    segments: [
+      { text: ' Thank you.', noSpeechProb: 0.95 },
+      { text: ' Bye.', noSpeechProb: 0.99 },
+    ],
+  }
+  assert.deepEqual(dropSilentSegments(result), { text: '', dropped: 2, total: 2 })
+})
+
+test('dropSilentSegments: a segment exactly at the threshold is dropped; just below is kept', () => {
+  const result = {
+    text: 'ab',
+    segments: [
+      { text: 'a', noSpeechProb: DEFAULT_NO_SPEECH_THRESHOLD }, // == 0.8 ⇒ silence
+      { text: 'b', noSpeechProb: DEFAULT_NO_SPEECH_THRESHOLD - 0.0001 }, // just under ⇒ speech
+    ],
+  }
+  assert.deepEqual(dropSilentSegments(result), { text: 'b', dropped: 1, total: 2 })
+})
+
+test('dropSilentSegments: threshold is configurable (a stricter bar keeps a mid-confidence segment)', () => {
+  const result = { text: 'maybe', segments: [{ text: 'maybe', noSpeechProb: 0.7 }] }
+  assert.deepEqual(dropSilentSegments(result, 0.6), { text: '', dropped: 1, total: 1 }) // 0.7 ≥ 0.6 ⇒ drop
+  assert.deepEqual(dropSilentSegments(result, 0.9), { text: 'maybe', dropped: 0, total: 1 }) // 0.7 < 0.9 ⇒ keep
+})
+
+test('dropSilentSegments: parakeet-class (no noSpeechProb) drops only empty/whitespace segments', () => {
+  const result = {
+    text: 'real words',
+    segments: [
+      { text: 'real words' }, // kept — no signal, non-empty
+      { text: '   ' }, // dropped — whitespace only
+    ],
+  }
+  assert.deepEqual(dropSilentSegments(result), { text: 'real words', dropped: 1, total: 2 })
+})
+
+test('dropSilentSegments: a flavor with no segments (plain {text}) passes its transcript through untouched', () => {
+  assert.deepEqual(dropSilentSegments({ text: '  shipped Thursday  ' }), { text: 'shipped Thursday', dropped: 0, total: 0 })
+  assert.deepEqual(dropSilentSegments({ text: '' }), { text: '', dropped: 0, total: 0 })
 })
 
 // --- flavor selection: one place chooses the adapter by endpoint kind / api / runtime ---

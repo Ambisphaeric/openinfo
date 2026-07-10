@@ -2475,3 +2475,85 @@ land on a slower cadence.
 - Contracts 67 → 68: `transcriptUpdate.live.json` example validates against `TranscriptUpdate`.
 - KNOWN FLAKE CLASS under parallel load: all suites verified green both via `pnpm -r test` and per-file in
   isolation.
+
+## Slice: #69 — silence filter (drop no-speech/hallucinated segments before accumulation)
+
+Near-silent capture windows come back from STT as plausible-looking stock phrases (a known failure mode of
+speech models on silence — "Thank you.", "Bye.", foreign-language filler), and the distill pass then
+narrates them as real conversation — a fictional exchange from an empty room. This drops those segments
+BEFORE any text enters the distill accumulator, so silence produces no distillate and no live-strip line.
+ENGINE-SIDE ONLY — the optional client-side energy gate the issue also mentions is a separate slice
+(another agent's territory) and is NOT in this change; it is the real defense for parakeet-class
+hallucinations that survive the segment filter (see the disclosed weakness below).
+
+### The signal (append-only on the canonical transcript)
+- `TranscriptSegment.noSpeechProb?: number` (`fabric/stt-adapters.ts`) — the whisper-class per-segment
+  no-speech probability (0..1), append-only + optional so a consumer that does not care never sees it. The
+  OpenAI/omlx normalizer now lifts each segment's `no_speech_prob` into it.
+- The openai/omlx adapters now request **`verbose_json`** (was plain `json`) so the response actually
+  CARRIES `no_speech_prob` per segment — plain json returns only `{text}`. The normalizer already tolerated
+  the verbose shape (and still tolerates plain `{text}`), so a host that ignores the field degrades to
+  no-filtering rather than breaking. whisper-server (`/inference`) is unchanged — it does not emit
+  no_speech_prob, and its plain-`{text}` responses fall through the filter untouched.
+
+### The filter (pure, one home)
+`dropSilentSegments(result, threshold)` (`stt-adapters.ts`) rebuilds the transcript from the SURVIVING
+segments and reports `{ text, dropped, total }`:
+- **whisper-class**: a segment with `noSpeechProb >= threshold` is silence → dropped.
+- **parakeet-class** (no `noSpeechProb`): the only HONEST per-segment signal is empty/whitespace text, so
+  that is all it drops for those flavors. DISCLOSED WEAKNESS: a parakeet hallucination with non-empty text
+  is NOT caught here — the real defense there is the out-of-scope client energy gate (never ships the
+  window). Duration-coverage heuristics were considered and rejected as speculative without a real
+  parakeet fixture to tune against; kept the heuristic honest rather than invented.
+- **no segments at all** (plain `{text}`): whole transcript passes through unchanged; pure `''` silence is
+  still caught by the caller's existing empty-text check.
+
+### Threshold chosen: 0.8 (default), configurable
+`DEFAULT_NO_SPEECH_THRESHOLD = 0.8`. Whisper's own decoder defaults `no_speech_threshold` to 0.6 but only
+acts on it in COMBINATION with `avg_logprob`; using `no_speech_prob` as the SOLE gate, 0.6 alone would be
+too aggressive, so the bar is raised to 0.8 — the observed hallucination-on-silence failure mode sits well
+above 0.9 in practice, comfortably above 0.8, while genuinely quiet speech is spared. Within the issue's
+stated 0.6–0.8 range (at the conservative end). Configurable two ways: `TranscribeDeps.noSpeechThreshold`
+(per-call), and `OPENINFO_NO_SPEECH_THRESHOLD` (a finite 0..1 env override, resolved once at wiring time in
+`api/http.ts`) — tunable without a rebuild, no settings-surface change.
+
+### Where it filters + accounting
+`transcribeChunks` (`distill/transcribe.ts`) applies the filter right after `invoke`, on the boundary into
+the accumulator:
+- A window filtered to nothing contributes NOTHING — no text chunk (so nothing distills) and NO
+  `onTranscribed` call (so a hallucination never reaches the `transcript.updated` live strip, the whole
+  point). An empty `''` transcript keeps the existing silence log; a filtered-to-nothing one logs as
+  skipped-as-silence.
+- Partial filtering (a hallucinated tail dropped, real speech kept) emits only the surviving text.
+- ACCOUNTING: a new `onSilenceSkipped(chunk, { dropped, total, windowSkipped })` deps hook (mirroring the
+  #58 `onTranscribed` idiom — a callback, no return-type change to ripple through the executor seam). The
+  `api/http.ts` wiring aggregates it per drain into a log line: dropped-segment count + skipped-window
+  count. DEVIATION (disclosed per the issue): the counter is a **log line + the callback's returned
+  metadata**, NOT a QueueStatus field — QueueStatus was deliberately not redesigned for this slice; a
+  natural place to surface it can be added when the queue-status shape is next revisited.
+
+### Tests + verification (all green in isolation; full suites green)
+- Engine 493 → 505 (+12).
+  - `fabric/stt-adapters.test.ts` (+8): openai adapter lifts per-segment `no_speech_prob` from a
+    verbose_json body; openai/omlx request `verbose_json`; `dropSilentSegments` drops at/above threshold and
+    rebuilds the transcript, an all-silence window rebuilds to `''` (counts every drop), the threshold
+    boundary (`== 0.8` drops, just-below keeps), threshold configurability (0.6 vs 0.9 flip a 0.7 segment),
+    parakeet-class whitespace-only drop, and plain-`{text}` passthrough.
+  - `distill/transcribe.test.ts` (+4): a silent fixture (all segments no-speech) → zero accumulated chunks,
+    zero `onTranscribed` events, one skipped-as-silence accounting record; a speech fixture (low
+    no_speech_prob) is UNAFFECTED; partial filter keeps the speech and drops the tail (windowSkipped:false);
+    threshold configurability (0.6 drops / 0.9 keeps the same 0.7 fixture).
+  - The existing STT e2e/adapter tests are unchanged — the fake stt servers return plain `{text}`, which
+    passes the filter untouched, and `stt.test.ts`'s `response_format` assertion (`/json/`) still matches
+    `verbose_json`.
+- Full `pnpm -r test`: contracts 68, client 269, engine 505, workbench (no tests) — all green. The KNOWN
+  FLAKE CLASS (fabric scan port-probe ECONNRESET / timing) did not surface this run.
+
+### Incidental cleanup (disclosed): a stray NUL made transcribe.ts a binary blob
+`buildTranscriptUpdates` (#58) keyed its per-(session,source) group Map with a LITERAL NUL byte delimiter
+(`` `${sessionId}\x00${source}` ``), which had been committed as a raw `0x00` in the source. That single
+byte made git classify the whole file as BINARY (`Bin` in `--stat`, `Binary files differ`) — so this
+slice's transcribe.ts changes would not render as a reviewable diff. Replaced the raw byte with the `\u0000`
+ESCAPE in source: byte-identical runtime key (still a NUL-delimited group key, zero behavior change), but
+the file is now valid UTF-8 text and diffs render. Verified: the #58 transcript-fastpath grouping test
+still passes unchanged.

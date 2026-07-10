@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk, Distillate, Fabric } from '@openinfo/contracts'
-import { FabricDocuments, defaultFabric, invokeStt } from '../fabric/index.js'
+import { FabricDocuments, defaultFabric, invokeStt, type TranscriptSegment } from '../fabric/index.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments } from '../voice/index.js'
@@ -81,6 +81,75 @@ test('transcribeChunks propagates transport failure (so the drain re-queues)', a
     throw new Error('stt endpoint down')
   }
   await assert.rejects(() => transcribeChunks([audioChunk('a', 'mic', 0)], { invoke }), /stt endpoint down/)
+})
+
+// ---- silence filter (#69): no-speech/hallucinated segments never enter the accumulator ----
+
+/** A fake stt returning a verbose result with per-segment no_speech_prob (whisper-class shape). */
+const fakeSttSegments = (text: string, segments: TranscriptSegment[]): SttInvoke => async () => ({
+  text,
+  segments,
+  endpoint: 'fake-stt',
+  slot: 'stt',
+})
+
+test('silence fixture: a window whose segments are all no-speech contributes NOTHING (no chunk, no event)', async () => {
+  let transcribed = 0
+  const skips: { dropped: number; total: number; windowSkipped: boolean }[] = []
+  const out = await transcribeChunks([audioChunk('a', 'mic', 0)], {
+    invoke: fakeSttSegments(' Thank you. Bye.', [
+      { text: ' Thank you.', noSpeechProb: 0.96 },
+      { text: ' Bye.', noSpeechProb: 0.99 },
+    ]),
+    onTranscribed: () => {
+      transcribed += 1
+    },
+    onSilenceSkipped: (_chunk, info) => skips.push(info),
+  })
+  assert.deepEqual(out, []) // zero accumulated text
+  assert.equal(transcribed, 0) // NO transcript.updated feed for a hallucinated window
+  assert.deepEqual(skips, [{ dropped: 2, total: 2, windowSkipped: true }]) // accounted, not vanished
+})
+
+test('speech fixture is UNAFFECTED: low no_speech_prob segments pass through, transcript emitted', async () => {
+  let transcribed = ''
+  let skipped = 0
+  const out = await transcribeChunks([audioChunk('a', 'system-audio', 0)], {
+    invoke: fakeSttSegments(' We should ship Thursday.', [{ text: ' We should ship Thursday.', noSpeechProb: 0.03 }]),
+    onTranscribed: (_chunk, text) => {
+      transcribed = text
+    },
+    onSilenceSkipped: () => {
+      skipped += 1
+    },
+  })
+  assert.equal(out.length, 1)
+  assert.equal(out[0]!.data, 'We should ship Thursday.')
+  assert.equal(transcribed, 'We should ship Thursday.')
+  assert.equal(skipped, 0)
+})
+
+test('partial filter: a hallucinated tail segment is dropped, the real speech survives', async () => {
+  const skips: { windowSkipped: boolean }[] = []
+  const out = await transcribeChunks([audioChunk('a', 'mic', 0)], {
+    invoke: fakeSttSegments(' We ship Thursday. Thank you.', [
+      { text: ' We ship Thursday.', noSpeechProb: 0.04 },
+      { text: ' Thank you.', noSpeechProb: 0.98 },
+    ]),
+    onSilenceSkipped: (_chunk, info) => skips.push({ windowSkipped: info.windowSkipped }),
+  })
+  assert.equal(out.length, 1)
+  assert.equal(out[0]!.data, 'We ship Thursday.') // only the speech survives
+  assert.deepEqual(skips, [{ windowSkipped: false }]) // dropped a segment, but the window was not skipped
+})
+
+test('threshold is configurable: a stricter bar drops a mid-confidence segment a lenient bar keeps', async () => {
+  const seg: TranscriptSegment[] = [{ text: ' maybe words', noSpeechProb: 0.7 }]
+  const strict = await transcribeChunks([audioChunk('a', 'mic', 0)], { invoke: fakeSttSegments(' maybe words', seg), noSpeechThreshold: 0.6 })
+  assert.deepEqual(strict, []) // 0.7 ≥ 0.6 ⇒ dropped as silence
+  const lenient = await transcribeChunks([audioChunk('a', 'mic', 0)], { invoke: fakeSttSegments(' maybe words', seg), noSpeechThreshold: 0.9 })
+  assert.equal(lenient.length, 1) // 0.7 < 0.9 ⇒ kept
+  assert.equal(lenient[0]!.data, 'maybe words')
 })
 
 // ---- e2e: fake stt + fake llm chained through the real queue drain processor ----

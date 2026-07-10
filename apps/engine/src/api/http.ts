@@ -6,7 +6,7 @@ import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type 
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
-import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, type SecretStore } from '../fabric/index.js'
+import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
@@ -157,13 +157,31 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // drain — the instant transcription succeeds, BEFORE the throttled distill pass. This is the live
   // feed the HUD renders within one WS hop; it is never persisted (durable records still come only from
   // distill). Shared by both the legacy drain and the executor's transcribe seam, so both paths emit it.
+  // Silence filter threshold (#69): near-silent windows hallucinate stock phrases; transcribeChunks drops
+  // segments whose no_speech_prob is at/above this bar BEFORE they enter the distill accumulator. Default
+  // is DEFAULT_NO_SPEECH_THRESHOLD (0.8); OPENINFO_NO_SPEECH_THRESHOLD overrides it (a finite 0..1 value),
+  // so the filter is tunable without a rebuild. Resolved once at wiring time.
+  const noSpeechThreshold = ((): number => {
+    const raw = Number(process.env['OPENINFO_NO_SPEECH_THRESHOLD'])
+    return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_NO_SPEECH_THRESHOLD
+  })()
   const runTranscribe = async (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> => {
     const segments: { sessionId: string; source: CaptureChunk['source']; text: string; capturedAt: string }[] = []
+    // Skipped-as-silence accounting (#69): count windows fully filtered to nothing and total segments
+    // dropped across the drain, so filtered content is VISIBLE in a log line rather than silently vanished.
+    let skippedWindows = 0
+    let droppedSegments = 0
     const ready = await transcribeChunks(chunks, {
       invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }),
       onTranscribed: (chunk, text) => segments.push({ sessionId: chunk.sessionId, source: chunk.source, text, capturedAt: chunk.capturedAt }),
+      onSilenceSkipped: (_chunk, info) => {
+        droppedSegments += info.dropped
+        if (info.windowSkipped) skippedWindows += 1
+      },
+      noSpeechThreshold,
       log,
     })
+    if (droppedSegments > 0) log(`transcribe: silence filter dropped ${droppedSegments} no-speech segment(s); ${skippedWindows} window(s) skipped as silence this drain`)
     for (const update of buildTranscriptUpdates(segments)) await bus.publish('transcript.updated', update)
     return ready
   }
