@@ -130,6 +130,14 @@ export interface SurfaceWindowConfig {
 export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   'surf-openinfo-hud': { chrome: 'hud' },
   'surf-glass-minimal': { chrome: 'hud', width: 520 },
+  // The #100 fields app: a companion panel that lives BESIDE the HUD. It carries the same sensitive
+  // meeting content the HUD does (the live fields, the raw distillate stream), so it takes the inherited
+  // Glass chrome — frameless, transparent, always-on-top, content-PROTECTED (invisible to screen-share),
+  // content-sized, a glance that never steals focus — deliberately NOT the framed `app` chrome (that is
+  // for a diagnostics app you WANT in screenshots). Narrower than the HUD (480 vs the 660+margin panel) so
+  // the two sit side-by-side without overlap. Glass chrome also means it renders through the SAME HUD
+  // controller (hud.ts), so it inherits the event-fed live-transcript strip (#58) for free.
+  'surf-openinfo-fields': { chrome: 'hud', width: 480 },
   // The #101 diagnostics app: deliberately the FRAMED `app` chrome, not glass — a debugger is a tool the
   // user wants visible in screenshots/screen-share (no content protection), resizable, and focusable while
   // they poke at the pipeline; it must NOT float always-on-top over the app it is diagnosing.

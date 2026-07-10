@@ -1,34 +1,37 @@
 import type { Surface } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { defaultHudSurface, defaultDiagnosticsSurface } from './defaults.js'
+import { defaultHudSurface, SEEDED_SURFACES } from './defaults.js'
 
 const SURFACE_KIND = 'surface'
 
 /**
  * Store-backed surface (HUD layout) documents, consistent with DistillDocuments/VoiceDocuments:
  * versioned records in _meta.db via LayoutStore (CODE_MAP homes "layouts (P2)" under store/). Seeds
- * the shipped openinfo HUD only when absent, so a user's edited layout is never clobbered. Surfaces
- * are the first UI's single source of truth — the client fetches one and renders it.
+ * every shipped default surface (SEEDED_SURFACES — the HUD + the #100 fields app) ONLY when absent, so a
+ * user's edited layout is never clobbered. Surfaces are the first UI's single source of truth — the client
+ * fetches one and renders it, and the tray Apps folder lists them (GET /layouts/surfaces → list()).
  */
 export class SurfaceDocuments {
   constructor(private readonly store: WorkspaceRegistry) {}
 
   ensureDefaults(): void {
-    for (const doc of [defaultHudSurface, defaultDiagnosticsSurface]) {
-      if (!this.store.layouts.getLatest<Surface>(SURFACE_KIND, doc.id)) {
-        this.store.layouts.put(SURFACE_KIND, doc.id, doc)
+    for (const surface of SEEDED_SURFACES) {
+      if (!this.store.layouts.getLatest<Surface>(SURFACE_KIND, surface.id)) {
+        this.store.layouts.put(SURFACE_KIND, surface.id, surface)
       }
     }
   }
 
   /**
-   * Every surface document (latest version of each), for the editor's enumeration. The shipped HUD is
-   * always seeded (ensureDefaults), so it appears alongside any user-created/cloned surfaces; the
-   * defensive unshift keeps it listed even against a store that was somehow never seeded.
+   * Every surface document (latest version of each), for the editor's enumeration and the tray Apps folder.
+   * The shipped defaults are always seeded (ensureDefaults), so they appear alongside any user-created/cloned
+   * surfaces; the defensive unshift keeps any seeded default listed even against a store somehow never seeded.
    */
   list(): Surface[] {
     const stored = this.store.layouts.latestOfKind<Surface>(SURFACE_KIND).map((doc) => doc.body)
-    if (!stored.some((s) => s.id === defaultHudSurface.id)) stored.unshift(defaultHudSurface)
+    for (const seeded of SEEDED_SURFACES) {
+      if (!stored.some((s) => s.id === seeded.id)) stored.unshift(seeded)
+    }
     return stored
   }
 

@@ -3735,6 +3735,38 @@ show duplicated overlap text (there is no overlap). The engine queue files (para
 - The harness manual-gate release-checklist row (#31) is documented, not yet wired into a script gate.
 - overlap+merge and streaming STT remain future candidates; the harness measures both against the same WER.
 
+## Slice: the fields-panel app — the fast-fields canon as a seeded surface  *(M5→apps, #100, branch feat/100-fields-app, 2026-07-10)*
+
+The second real app in the Apps folder: `surf-openinfo-fields`, the fast-fields substrate made
+visible as its own mini app instead of rows riding the default HUD.
+
+### What shipped
+- **Seeded surface** (`surfaces/defaults.ts` + `templates/openinfo-fields/surface.json`): three
+  always-visible fields blocks bound to the seeded fast-field prompts (topic / entities-mentioned
+  / work-items) + the live-transcript strip, seeded by `ensureDefaults` (seeds-if-absent — user
+  edits never clobbered; proven in documents tests).
+- **Window px** (`main/window-options.ts`): `surf-openinfo-fields` takes the GLASS chrome at
+  width 480 — deliberately NOT the framed `app` chrome: it carries the same sensitive meeting
+  content as the HUD (live fields, distillate stream), so it inherits frameless/transparent/
+  always-on-top/content-PROTECTED (invisible to screen share), and sits BESIDE the default HUD
+  without overlap. Glass chrome also means it renders through the same HUD controller, so the
+  event-fed transcript strip works unchanged.
+- **Fields block affordances** (`blocks/fields.ts`): rows upgraded from text-only verbs to the
+  full #66 `rowAffordances` — `dismiss` is LIVE (carries the fields-source suppression payload:
+  workspace + `fields:<fieldId>`), pin/follow-up stay honestly-inert glyphs.
+- **Honest empty state**: an empty fields panel now NAMES the enabling flag and its fix
+  ("fast fields need distill.fields ON (Settings → Features)") instead of a vague fill-later
+  line — `distill.fields` defaults OFF, so the flag is the most likely reason a fresh panel is
+  empty. The renderer is pure (cannot read runtime flags), so the line names the enablement path
+  in every non-suppressed empty rather than falsely asserting off vs on.
+
+### Disclosed
+- The app shares the default workspace until the user instantiates it with a binding (#99's
+  route makes `POST /layouts/surfaces/surf-openinfo-fields/instantiate` a one-call per-repo
+  clone — that flow is the intended power-user path, not pre-built instances).
+- Slice finished inline after the implementing agent hit the org spend limit mid-slice 3
+  (committed: seeding; finished inline: window px, block affordances, empty-state + test).
+
 ## Slice: the diagnostics app — transcription inspector + gate chains on a seeded surface  *(M5→apps+qa, #101, branch feat/101-diagnostics-app, 2026-07-10)*
 
 The HUD-as-testing-tool v0: `surf-openinfo-diagnostics`, a debugger app the user runs BESIDE a

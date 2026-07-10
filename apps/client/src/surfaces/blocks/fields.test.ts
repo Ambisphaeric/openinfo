@@ -65,7 +65,9 @@ test('empty is EXPLAINABLE, not silent: an always-visible fields block renders a
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([])] }, defaultBlockRegistry))
   assert.match(html, /Fields · fast/)
   assert.match(html, /No fields yet/)
-  assert.match(html, /fields fill as fast-field prompts run/)
+  // #100: the empty state names the enabling flag + its fix (distill.fields defaults OFF)
+  assert.match(html, /distill\.fields ON \(Settings → Features\)/)
+  assert.match(html, /fields fill as prompts run/)
 })
 
 test('an all-dismissed empty discloses the suppressed count (#66), and an on-match empty stays hidden', () => {

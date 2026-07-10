@@ -2,7 +2,7 @@ import type { Block, FieldValue } from '@openinfo/contracts'
 import { h, type VNode } from '../block-renderer/vnode.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
 import { stateDot, resolveStateVocab, type StateVocab } from '../block-renderer/micro-state.js'
-import { actionButtons } from './actions.js'
+import { rowAffordances } from './actions.js'
 
 type Actions = NonNullable<Block['actions']>
 
@@ -38,14 +38,28 @@ const fieldRow = (value: FieldValue, actions: Actions, vocab: StateVocab): VNode
       h('span', { class: 'ttl' }, stateDot(value.state, vocab), value.value),
       h('span', { class: 'why' }, whyLine(value)),
     ),
-    h('span', { class: 'go' }, ...actionButtons(actions, value.value)),
+    // The full #66 affordance: text verbs (copy) as `.mini` buttons + glyph verbs (dismiss/pin/follow-up)
+    // as the compact glyph strip. `dismiss` renders LIVE only when we hand it the suppression payload the
+    // fields source keys on (workspace + `fields:<fieldId>`); pin / follow-up are honestly-inert glyphs.
+    h(
+      'span',
+      { class: 'go' },
+      ...rowAffordances(actions, value.value, {
+        dismiss: { workspaceId: value.workspaceId, source: 'fields', itemId: value.fieldId },
+      }),
+    ),
   )
 
 const emptyRow = (suppressed: number): VNode => {
+  // Honest, not silent: name the flag AND its fix rather than an opaque "nothing here". Fast fields only
+  // exist when distill.fields is ON (it defaults OFF), so an empty panel most often means the flag is off —
+  // the message points at the exact toggle either way (it is still accurate when the flag is on but no
+  // session/material has produced a field yet). The renderer is pure and cannot read the runtime flag, so
+  // it names the enablement path in every non-suppressed empty rather than falsely asserting off vs on.
   const why =
     suppressed > 0
       ? `${suppressed} field${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`
-      : 'fields fill as fast-field prompts run over this session'
+      : 'fast fields need distill.fields ON (Settings → Features); then fields fill as prompts run this session'
   return h(
     'div',
     { class: 'rel' },

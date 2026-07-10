@@ -278,9 +278,9 @@ test('GET /layouts/surfaces lists surfaces (seeded + user), and PUT emits surfac
     assert.ok(address && typeof address === 'object')
     const base = `http://127.0.0.1:${address.port}`
 
-    // the list starts with the seeded surfaces (the HUD + the #101 diagnostics app)
+    // the list starts with the seeded default surfaces (the HUD + the #100 fields app + the #101 diagnostics app)
     const initial = (await (await fetch(`${base}/layouts/surfaces`)).json()) as Surface[]
-    assert.deepEqual(initial.map((s) => s.id).sort(), ['surf-openinfo-diagnostics', 'surf-openinfo-hud'])
+    assert.deepEqual(initial.map((s) => s.id).sort(), ['surf-openinfo-diagnostics', 'surf-openinfo-fields', 'surf-openinfo-hud'])
 
     // clone a user surface via PUT (there is no clone endpoint — the editor PUTs a copy under a new id)
     const hud = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
@@ -295,9 +295,9 @@ test('GET /layouts/surfaces lists surfaces (seeded + user), and PUT emits surfac
     assert.equal(updates[0]?.id, 'surf-mine')
     assert.equal(updates[0]?.version, 1)
 
-    // the list now enumerates both, sorted by key
+    // the list now enumerates the seeded defaults plus the user clone, sorted by key
     const after = (await (await fetch(`${base}/layouts/surfaces`)).json()) as Surface[]
-    assert.deepEqual(after.map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-diagnostics', 'surf-openinfo-hud'])
+    assert.deepEqual(after.map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-diagnostics', 'surf-openinfo-fields', 'surf-openinfo-hud'])
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })
