@@ -76,3 +76,66 @@ test('off macOS the media senses read as unsupported (no false TCC claims)', () 
   assert.equal(bySense(linux, 'screen').level, 'unsupported')
   assert.equal(bySense(linux, 'mic').fixCommand, undefined)
 })
+
+// --- issue #7: the end-to-end blocking-gate chain --------------------------------------------------
+// A "clear" baseline for the audio path: mic granted, session live, engine reachable, no engine gate.
+const clearAudio = { micAccess: 'granted' as const, engineReachable: true, sessionLive: true }
+
+test('sense toggled off is the first gate — named, never a bare silence', () => {
+  const mic = bySense(run({ ...clearAudio, micEnabled: false }), 'mic')
+  assert.equal(mic.blocking?.gate, 'sense-off')
+  assert.match(mic.blocking!.reason, /Microphone is turned off/)
+  assert.match(mic.blocking!.fix!, /OPENINFO_MIC/)
+})
+
+test('OS permission is the gate when granted-config but the OS blocks; carries the Settings fix command', () => {
+  const mic = bySense(run({ micAccess: 'denied', engineReachable: true, sessionLive: true }), 'mic')
+  assert.equal(mic.blocking?.gate, 'os-permission')
+  assert.equal(mic.blocking?.fixCommand, 'open-mic-settings')
+})
+
+test('engine unreachable is the gate once the OS layer is clear', () => {
+  const mic = bySense(run({ micAccess: 'granted', engineReachable: false, sessionLive: true }), 'mic')
+  assert.equal(mic.blocking?.gate, 'engine-unreachable')
+  assert.match(mic.blocking!.fix!, /engine/i)
+})
+
+test('no live session is the gate once engine is reachable', () => {
+  const mic = bySense(run({ micAccess: 'granted', engineReachable: true, sessionLive: false }), 'mic')
+  assert.equal(mic.blocking?.gate, 'no-session')
+  assert.match(mic.blocking!.fix!, /Start a session/)
+})
+
+test('the engine-side verdict is chained LAST — its gate id + fix pass through verbatim', () => {
+  const engineGates = [{ sense: 'mic' as const, blocking: { id: 'distill.transcribe', label: 'Transcribe audio', fix: 'Enable distill.transcribe' } }]
+  const mic = bySense(run({ ...clearAudio, engineGates }), 'mic')
+  assert.equal(mic.blocking?.gate, 'distill.transcribe')
+  assert.equal(mic.blocking?.reason, 'Transcribe audio')
+  assert.equal(mic.blocking?.fix, 'Enable distill.transcribe')
+})
+
+test('precedence: a client gate ALWAYS wins over the engine verdict (sense-off beats distill.transcribe)', () => {
+  const engineGates = [{ sense: 'mic' as const, blocking: { id: 'distill.transcribe', label: 'Transcribe audio' } }]
+  const mic = bySense(run({ ...clearAudio, micEnabled: false, engineGates }), 'mic')
+  assert.equal(mic.blocking?.gate, 'sense-off') // the earliest closed gate is the named blocker
+})
+
+test('fully clear ⇒ no blocking gate (a sense that will actually produce output reads clean)', () => {
+  const engineGates = [{ sense: 'mic' as const }] // engine reports the sense clear
+  const mic = bySense(run({ ...clearAudio, micEnabled: true, engineGates }), 'mic')
+  assert.equal(mic.blocking, undefined)
+})
+
+test('unknown client state is not asserted as a block (engineReachable/sessionLive undefined ⇒ skipped)', () => {
+  // Only OS state known (granted), everything else undefined — no false "unreachable"/"no session" claim.
+  const mic = bySense(run({ micAccess: 'granted' }), 'mic')
+  assert.equal(mic.blocking, undefined)
+})
+
+test('system-audio: a missing loopback device is the OS-layer block; present + clear reads clean', () => {
+  const missing = bySense(run({ sysAudio: 'missing-device', engineReachable: true, sessionLive: true }), 'sys-audio')
+  assert.equal(missing.blocking?.gate, 'os-permission')
+
+  const present = bySense(run({ sysAudio: 'present', engineReachable: true, sessionLive: true }), 'sys-audio')
+  assert.equal(present.blocking, undefined)
+})

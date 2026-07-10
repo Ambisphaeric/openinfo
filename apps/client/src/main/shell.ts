@@ -15,7 +15,7 @@ import { settingsUrlFor, isLanEngine } from './permission-help.js'
 import { ContextHealthTracker } from './context-health.js'
 import { shouldOpenSetup, shouldPromptMic } from './first-run.js'
 import { readFirstRunState, markFirstRunShown, markMicPrompted } from './first-run-store.js'
-import { captureStatuses, type MediaAccessStatus, type SysAudioPresence } from './capture-status.js'
+import { captureStatuses, type MediaAccessStatus, type SysAudioPresence, type EngineSenseVerdict } from './capture-status.js'
 import { EngineSessionClient, SessionLiveState, needsModelSetup } from './engine-session.js'
 import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './tray-icon.js'
 import { grabOffset, draggedOrigin, resolveStartupPosition, type ScreenPoint } from './window-position.js'
@@ -89,6 +89,11 @@ let systemSilent = false
 // Whether the live fabric's llm slot is empty — drives the tray's prominent "⚠ Set up models…"
 // first-run nudge. Undefined until the fabric is fetched, so the tray stays quiet before we know.
 let needsSetup: boolean | undefined
+// The engine-side per-sense gate verdicts (GET /senses, issue #7) — the deeper "why is this sense silent"
+// gates (processing flags, stt/ocr slot, endpoint health) the client cannot see itself. Fed into the
+// capture-status readout so the tray names the FIRST blocking gate across the whole chain. Undefined until
+// fetched (engine unreachable / old engine) — then the tray simply shows the client-side gates it knows.
+let senseGates: EngineSenseVerdict[] | undefined
 // The mic-capture pipeline is built in whenReady (EngineLink needs app.getPath, the controller needs
 // the capture window). EngineLink is the capture path (POST /capture/mic + the offline spool); the
 // tray keeps its own tiny EngineSessionClient — EngineLink is introduced here only because capture spools.
@@ -148,6 +153,14 @@ const captureStatusInput = () => {
     ...(screenAccess !== undefined ? { screenAccess } : {}),
     sysAudio: sysAudioPresence(),
     screenEnabled: cfg.screenEnabled,
+    // issue #7: the client-side gates the readout chains in front of the engine-side verdict — sense
+    // toggled off (config), engine reachability, and whether a session is live (nothing captures without
+    // one). engineGates is the engine's half (GET /senses), undefined until fetched.
+    micEnabled: cfg.micEnabled,
+    systemAudioEnabled: cfg.systemAudioEnabled,
+    engineReachable: connected,
+    sessionLive: liveState.live,
+    ...(senseGates !== undefined ? { engineGates: senseGates } : {}),
   }
 }
 
@@ -787,12 +800,18 @@ const connectEvents = (): void => {
       if (parsed.name === 'fabric.changed' && parsed.payload) {
         needsSetup = needsModelSetup(parsed.payload as Fabric)
         refreshTray()
+        // The fabric's slots drive the engine-side sense gates (an stt/ocr endpoint added or removed) —
+        // re-evaluate so the capture readout's blocking gate stays accurate (issue #7).
+        void refreshSenses()
       }
       // The route.detect flag was flipped (PUT /flags/route.detect) — start/stop focus watching live,
       // without a refetch (the event carries the Flag; its `default` is the effective value).
       if (parsed.name === 'flag.changed' && parsed.payload) {
         const flag = parsed.payload as Flag
         if (flag.key === ROUTE_DETECT_FLAG) applyDetectFlag(flag.default)
+        // A processing flag flipped (distill.enabled/transcribe, screen.ocr) — the engine-side sense gates
+        // may have opened/closed, so refresh the capture readout (issue #7).
+        void refreshSenses()
       }
     } catch {
       /* ignore malformed frames */
@@ -903,6 +922,21 @@ const ensureEngine = async (): Promise<void> => {
   }
 }
 
+/**
+ * Refresh the engine-side per-sense gate verdicts (GET /senses, issue #7) and repaint the tray. The
+ * verdicts change when a flag flips or the fabric changes (a slot gains/loses an endpoint), so this runs
+ * on the WS flag.changed / fabric.changed events as well as at seed. Best-effort — an unreachable or old
+ * engine leaves `senseGates` as-is (the tray falls back to the client-side gates it always knows).
+ */
+const refreshSenses = async (): Promise<void> => {
+  try {
+    senseGates = await session.senses()
+    refreshTray()
+  } catch (err) {
+    console.error('[shell] could not read /senses for the capture readout:', err)
+  }
+}
+
 const seedSessionState = async (): Promise<void> => {
   try {
     liveState.seed(await session.liveSession(cfg.workspace))
@@ -920,6 +954,9 @@ const seedSessionState = async (): Promise<void> => {
   } catch (err) {
     console.error('[shell] could not read fabric for setup nudge:', err)
   }
+  // Seed the per-sense gate verdicts (issue #7) so the capture-status readout names the engine-side
+  // blocking gate too. Best-effort: an old/unreachable engine just leaves the engine-side gates absent.
+  await refreshSenses()
   // Seed focus watching from the engine's route.detect flag (best-effort — a failure just leaves focus
   // idle rather than crashing). The WS `flag.changed` handler keeps it fresh after this.
   try {

@@ -14,7 +14,8 @@ import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
-import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, type SetupData } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, type SetupData } from '../surfaces/index.js'
+import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
@@ -400,6 +401,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
   if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, await ctx.queue.status())
+  if (req.method === 'GET' && url.pathname === '/senses') return getSenses(res, ctx)
   if (url.pathname === '/screen' || url.pathname.startsWith('/screen/')) return handleScreen(req, res, ctx) // P4B: screen-OCR results + status (router owned by screen/)
   // /setup is the former name of the Settings surface — 301 to /settings, preserving any subpath +
   // query (?edit=, ?surface=, ?discover=). The old URL must keep working (README/skills/first-run).
@@ -558,6 +560,37 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
 
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
   res.end(renderSettingsPage(data, active.id))
+}
+
+/**
+ * GET /senses (issue #7) — the per-sense gate-chain verdict as JSON, for a support flow AND the client
+ * tray's blocking-gate line. Composes the EXISTING signals into one named "what is blocking this sense"
+ * answer: the live flags, the live fabric's slots, the queue's last classified drain failure, and a LIVE
+ * checkEndpoint probe of the configured stt/ocr endpoints (the route can afford the probe the pure
+ * Status render cannot). Append-only, read-only; reuses checkEndpoint/EndpointHealth rather than
+ * re-implementing any health logic. The CLIENT-side gates (sense off, OS permission, engine reachable)
+ * chain in FRONT of this on the tray — the engine cannot see those.
+ */
+async function getSenses(res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const fabric = ctx.fabric.load()
+  const queue = await ctx.queue.status()
+  // Probe the stt + ocr endpoints so the health gate reflects a live check (deduped by name). Best-effort:
+  // a probe that throws is caught inside checkEndpoint and returns ok:false with its error.
+  const probeSlots = [...fabric.slots.stt, ...fabric.slots.ocr]
+  const seen = new Set<string>()
+  const health: Record<string, EndpointHealth> = {}
+  for (const endpoint of probeSlots) {
+    if (seen.has(endpoint.name)) continue
+    seen.add(endpoint.name)
+    health[endpoint.name] = await checkEndpoint(endpoint, 2_000, (ref) => ctx.secrets.resolve(ref), ctx.runtime)
+  }
+  const chains = evaluateSenseGates({
+    flags: readFlags(ctx.store),
+    fabric,
+    ...(queue.lastFailure ? { lastFailure: queue.lastFailure } : {}),
+    health,
+  })
+  send(res, 200, chains)
 }
 
 /**

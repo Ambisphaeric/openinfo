@@ -1,5 +1,6 @@
 import type { Fabric } from '@openinfo/contracts'
 import { ALL_SLOTS, escapeHtml, type SetupData } from '../../setup/view.js'
+import { evaluateSenseGates, type SenseGate, type SenseGateChain } from '../sense-gates.js'
 
 /**
  * The Status section — an at-a-glance readout of the live engine, assembled ENTIRELY from data the
@@ -41,6 +42,42 @@ const card = (title: string, rows: string): string =>
 
 const row = (label: string, value: string): string =>
   `<div class="stat-row"><span class="stat-key">${escapeHtml(label)}</span><span class="stat-val">${value}</span></div>`
+
+/**
+ * The per-sense capture-gate readout (issue #7): for each sense, the ORDERED engine-side gates a
+ * captured segment must clear to become something, with the FIRST closed gate named as the blocker and
+ * a one-step fix — so a sense never reads as generically dead when a specific gate is the cause. Pure:
+ * assembled from flags + live fabric slots + the queue's last classified failure (no probe in the render
+ * path — the GET /senses route is where a live health check rides). The client-side gates that precede
+ * these (sense toggled off, OS permission, engine reachable) are the tray's; this is the engine's honest
+ * half ("given capture is flowing, would a transcript / OCR read come out?").
+ */
+const gateDot = (gate: SenseGate, isBlocker: boolean): string =>
+  isBlocker ? '<span class="stat-dot off">●</span>' : gate.pass ? '<span class="stat-dot on">●</span>' : '<span class="stat-dot off">○</span>'
+
+const senseChainHtml = (chain: SenseGateChain): string => {
+  const dots = chain.gates
+    .map((g) => `<span class="gate ${g.pass ? 'ok' : chain.blocking?.id === g.id ? 'block' : 'off'}">${gateDot(g, chain.blocking?.id === g.id)}${escapeHtml(g.label)}</span>`)
+    .join('')
+  const verdict = chain.blocking
+    ? `<span class="stat-fail-class">blocked</span> at ${escapeHtml(chain.blocking.label)}`
+    : `${dot(true)} clear`
+  const fix = chain.blocking?.fix ? `<div class="stat-row"><span class="stat-key">what to do</span><span class="stat-hint">${escapeHtml(chain.blocking.fix)}</span></div>` : ''
+  return (
+    `<div class="stat-slots"><div class="stat-slot"><span class="stat-slot-key">${escapeHtml(chain.label)}</span>` +
+    `<span class="stat-slot-detail">${verdict}</span></div>` +
+    `<div class="gate-chain">${dots}</div>${fix}</div>`
+  )
+}
+
+const captureChainCard = (data: SetupData): string =>
+  card(
+    'Capture pipeline',
+    '<div class="stat-note">Each sense in order — the first closed gate is what blocks it (a session and OS permission come first, on the client).</div>' +
+      evaluateSenseGates({ flags: data.flags ?? [], fabric: data.liveFabric, ...(data.queue?.lastFailure ? { lastFailure: data.queue.lastFailure } : {}) })
+        .map(senseChainHtml)
+        .join(''),
+  )
 
 /** The Status section body. Pure — reads only fields the shell already assembled. */
 export const renderStatus = (data: SetupData): string => {
@@ -104,6 +141,7 @@ export const renderStatus = (data: SetupData): string => {
     featuresCard +
     sessionCard +
     queueCard +
+    captureChainCard(data) +
     '</div>' +
     '<div class="stat-defer">Per-source capture ingress (mic / system-audio / focus, "last heard Ns ago") is a ' +
     'follow-up — the queue exposes only aggregate counts today, so a per-source readout needs engine plumbing. ' +
