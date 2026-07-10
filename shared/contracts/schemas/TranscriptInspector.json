@@ -1,0 +1,121 @@
+{
+  "$id": "TranscriptInspector",
+  "additionalProperties": false,
+  "description": "the transcript-inspector snapshot (#101): recent ephemeral transcript chunks + the current stt slot config. Per-chunk stt endpoint/model is NOT recorded (#65 gap); sttSlot is the current configuration, not a per-chunk claim.",
+  "type": "object",
+  "required": [
+    "chunks",
+    "sttSlot",
+    "ringLimit"
+  ],
+  "properties": {
+    "chunks": {
+      "description": "recent transcript updates, newest-first, from the in-memory ring — NOT persisted",
+      "type": "array",
+      "items": {
+        "$id": "TranscriptUpdate",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "sessionId",
+          "source",
+          "text",
+          "capturedAtRange"
+        ],
+        "properties": {
+          "sessionId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "source": {
+            "$id": "CaptureSource",
+            "description": "mic = the user; system-audio = the far side of a call (loopback) — the free me/them split; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript",
+            "anyOf": [
+              {
+                "const": "mic",
+                "type": "string"
+              },
+              {
+                "const": "screen",
+                "type": "string"
+              },
+              {
+                "const": "calendar",
+                "type": "string"
+              },
+              {
+                "const": "repo",
+                "type": "string"
+              },
+              {
+                "const": "camera",
+                "type": "string"
+              },
+              {
+                "const": "system-audio",
+                "type": "string"
+              },
+              {
+                "const": "focus",
+                "type": "string"
+              }
+            ]
+          },
+          "text": {
+            "description": "raw transcribed text for this drain window — a live feed, never persisted",
+            "type": "string"
+          },
+          "capturedAtRange": {
+            "additionalProperties": false,
+            "description": "the capturedAt span of the chunks aggregated into this update",
+            "type": "object",
+            "required": [
+              "start",
+              "end"
+            ],
+            "properties": {
+              "start": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              },
+              "end": {
+                "format": "date-time",
+                "description": "ISO-8601 timestamp",
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "sttSlot": {
+      "description": "the CURRENT stt slot endpoints (endpoint · model). NOT per-chunk provenance — per-chunk stt provenance is the disclosed #65 gap",
+      "type": "array",
+      "items": {
+        "$id": "SttSlotEndpoint",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "endpoint"
+        ],
+        "properties": {
+          "endpoint": {
+            "description": "the stt endpoint name (never a secret)",
+            "type": "string"
+          },
+          "model": {
+            "description": "the model the endpoint serves, when it names one",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ringLimit": {
+      "minimum": 1,
+      "description": "how many recent updates the ephemeral ring retains for this process (retention disclosure)",
+      "type": "integer"
+    }
+  }
+}

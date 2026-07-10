@@ -62,6 +62,14 @@
           "type": "string"
         },
         {
+          "const": "transcript-inspector",
+          "type": "string"
+        },
+        {
+          "const": "sense-gates",
+          "type": "string"
+        },
+        {
           "const": "custom",
           "type": "string"
         }
@@ -129,6 +137,14 @@
             },
             {
               "const": "queue",
+              "type": "string"
+            },
+            {
+              "const": "transcript",
+              "type": "string"
+            },
+            {
+              "const": "senses",
               "type": "string"
             }
           ]

@@ -117,9 +117,18 @@ body{margin:0;background:var(--page-bg);
    blocks. Sits at the bottom of the panel; a subtle top rule + monospace text mark it as the raw live
    layer. Oldest lines carry .fade as they age toward dropping. Honestly labeled "raw, not saved". */
 .lt{margin:6px 18px 12px;padding-top:9px;border-top:1px solid var(--s-line-soft)}
+/* Header row (#96): the "raw, not saved" label + the system-stream mute toggle, spaced apart. */
+.lt-head{display:flex;align-items:baseline;justify-content:space-between;gap:9px}
+/* System-stream mute toggle (#96): a quiet text affordance, not a loud button — hides the system-audio
+   lane from THIS strip (capture keeps running). The .on class marks the muted state. */
+.lt-mute{background:transparent;border:0;padding:0;cursor:pointer;font-family:var(--s-mono);font-size:9.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--s-faint);white-space:nowrap}
+.lt-mute:hover{color:var(--s-fg,#d8dce4)}
+.lt-mute.on{color:var(--m-quest)}
+/* Disclosure of what the mute is hiding — honest about the hidden count and that capture continues. */
+.lt-muted-note{font-size:10px;color:var(--s-faint);font-style:italic;padding:2px 0 4px}
 .lt-empty{font-size:11.5px;color:var(--s-faint);font-style:italic;padding:4px 0 2px}
 .lt-rows{display:flex;flex-direction:column;gap:3px;max-height:132px;overflow:hidden}
-.lt-line{display:grid;grid-template-columns:40px 1fr;gap:9px;align-items:baseline;font-size:11.5px;line-height:1.45;transition:opacity .4s ease}
+.lt-line{display:grid;grid-template-columns:62px 1fr;gap:9px;align-items:baseline;font-size:11.5px;line-height:1.45;transition:opacity .4s ease}
 .lt-line .lt-who{font-family:var(--s-mono);font-size:9.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--s-faint);text-align:right}
 .lt-line.me .lt-who{color:var(--m-artifact)}
 .lt-line.them .lt-who{color:var(--m-quest)}

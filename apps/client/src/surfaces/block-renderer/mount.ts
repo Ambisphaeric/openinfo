@@ -48,6 +48,12 @@ export interface ActionHandlers {
   accept?: (payload: { workspaceId: string; pattern: string }) => Promise<void>
   /** dismiss an item → POST /item-signals (a suppression record; queries then exclude it) — #66. */
   dismiss?: (payload: { workspaceId: string; source: string; itemId: string }) => Promise<void>
+  /**
+   * Toggle the live strip's system-audio mute (#96) — a client-local DISPLAY filter, not a write path,
+   * so it does NOT go through paintFeedback (there is no success/failure outcome to report): it flips a
+   * bit of client state and the ensuing re-render reflects the new state on the button itself.
+   */
+  muteSystemStream?: () => void
 }
 
 /** Replace the target's content with a freshly rendered VNode (called on every live update). */
@@ -131,6 +137,12 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
       const itemId = el.getAttribute('data-item')
       if (workspaceId === null || source === null || itemId === null) return // inert glyph — no addressable item
       paintFeedback(el, handlers.dismiss({ workspaceId, source, itemId }), { ok: '✓', fail: '!' })
+      return
+    }
+    if (verb === 'mute-system-stream' && handlers.muteSystemStream) {
+      // #96: a client-local display toggle, not a write. No paintFeedback — the re-render it triggers
+      // repaints the button in its new state (label flips hide↔show), which IS the feedback.
+      handlers.muteSystemStream()
       return
     }
     // every other verb (pin, mark-for-follow-up, open, navigate, run-mode, draft-with) is visible-but-inert

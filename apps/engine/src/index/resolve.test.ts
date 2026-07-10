@@ -125,6 +125,42 @@ test('input signals are pass-through multipliers, default neutral 1.0, recorded 
   assert.equal(lifted.components.crossSourceCorroboration, 1.2)
 })
 
+test('#94 NaN guard: a corrupt lastSeen cannot poison corpusPrior or win the sort with a NaN score', () => {
+  // A corrupt DB row: mentions>0 but an unparseable lastSeen. Pre-fix corpusPrior → NaN → NaN score,
+  // which (NaN-unstable) could win the sort and persist as a NaN confidence.
+  const corrupt = ent({ id: 'e-corrupt', kind: 'topic', name: 'renewal', mentions: 40, lastSeen: 'not-a-date' })
+  const prior = corpusPrior(corrupt, NOW)
+  assert.ok(Number.isFinite(prior), `corpusPrior finite, got ${prior}`)
+  assert.ok(prior >= 1 && prior <= 1 + DEFAULT_RESOLVER_CONFIG.establishmentBoost, `prior in range, got ${prior}`)
+
+  // Exact match to a CLEAN record must still win over the corrupt row; the corrupt score is never NaN.
+  const clean = ent({ id: 'e-clean', kind: 'topic', name: 'renewal', mentions: 1, lastSeen: NOW.toISOString() })
+  const r = resolveEntity({ heard: { name: 'renewal' }, candidates: [corrupt, clean], now: NOW })
+  assert.ok(Number.isFinite(r.score), `resolution score finite, got ${r.score}`)
+  assert.ok(r.match !== undefined, 'links, not NaN-drops to new')
+  assert.equal(r.band, 'auto')
+  // The corrupt row, if it is the winner, still carries a finite score/components (no NaN persists).
+  assert.ok(Number.isFinite(r.components.corpusPrior), 'corpusPrior component finite')
+})
+
+test('#94 signal clamp: an extreme input multiplier cannot override the phonetic evidence to flip a band', () => {
+  // A weak partial (fuzzy ≈0.23) that scores in the NEW band on its own — well below the link floor.
+  const cand = ent({ id: 'e-weak', kind: 'topic', name: 'planning' })
+  const weakHeard = { name: 'plad' } // phonetic near-miss, fuzzy ≈0.23
+  const base = resolveEntity({ heard: weakHeard, candidates: [cand], now: NOW })
+  assert.equal(base.band, 'new', `precondition: weak match is a new (got ${base.band} @ ${base.score.toFixed(3)})`)
+
+  // An over-eager producer emits 5× — unclamped that is fuzzy·prior·5 > 1 ⇒ a silent AUTO-link, overriding
+  // the phonetic evidence. Clamped to ≤1.5 the score cannot reach even the provisional floor: it stays new.
+  const extreme = resolveEntity({ heard: weakHeard, candidates: [cand], now: NOW, signals: { crossSourceCorroboration: 5 } })
+  assert.equal(extreme.band, 'new', `clamp holds the band (got ${extreme.band} @ ${extreme.score.toFixed(3)})`)
+  assert.equal(extreme.components.crossSourceCorroboration, 1.5, 'multiplier recorded clamped to the documented ceiling')
+
+  // The floor also holds and is recorded: a 0.01 multiplier is lifted to the documented 0.5 floor.
+  const exact = resolveEntity({ heard: { name: 'planning' }, candidates: [cand], now: NOW, signals: { personAffinity: 0.01 } })
+  assert.equal(exact.components.personAffinity, 0.5, 'clamped to the documented floor')
+})
+
 test('rejectedRivalId is honored: a candidate a matching override rejected never wins', () => {
   // The user pinned "Sam" → rivera, rejecting lee. A later "Sam" must not resolve to lee even if lee scores.
   const lee = ent({ id: 'e-lee', kind: 'person', name: 'Sam' })

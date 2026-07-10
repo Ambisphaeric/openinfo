@@ -3785,3 +3785,142 @@ visible as its own mini app instead of rows riding the default HUD.
 - Slice finished inline after the implementing agent hit the org spend limit mid-slice 3
   (committed: seeding; finished inline: window px, block affordances, empty-state + test), then the
   agent resumed and completed the driven-render tests + docs.
+
+## Slice: the diagnostics app — transcription inspector + gate chains on a seeded surface  *(M5→apps+qa, #101, branch feat/101-diagnostics-app, 2026-07-10)*
+
+The HUD-as-testing-tool v0: `surf-openinfo-diagnostics`, a debugger app the user runs BESIDE a
+real app (the multi-window Apps folder). The transcript-garbage QA round was diagnosable only
+over ssh; this surface puts the exact probes on a surface.
+
+### What shipped
+- **Transcription inspector** (the headline): contract `TranscriptInspector` + `SttSlotEndpoint`
+  (api/payloads.ts, schemas regenerated); an in-memory `TranscriptRing` in the engine fed off the
+  SAME `transcript.updated` bus event as the WS fast-path (process-scoped, last-N, cleared on
+  restart — no new persistence path); the `transcript` query source injects the ring + the
+  CURRENT stt slot config via the /query route (the `queue` operational-state pattern, now
+  factored as `buildQuerySources`); the client `transcript-inspector` block renders newest-first
+  chunk rows (clock · stream mic=me/sys=them · duration · raw text) plus a labelled stt-slot
+  line and a retention disclosure. HONESTY RULE HELD: per-chunk stt provenance is NOT recorded
+  anywhere (the disclosed #65 gap) — the block renders the slot as CURRENT CONFIG, never a
+  per-chunk claim, and says so in text.
+- **Sense-gates block**: the #7 per-sense gate chain as a block — the `senses` query source
+  injects the SAME `evaluateSenseGates` verdict GET /senses serves, WITHOUT the live endpoint
+  probe (the block re-hydrates often; health leans on the queue's last classified failure,
+  disclosed in a scope line). Client block renders per sense: all-clear with the chain
+  summarized, or the FIRST blocking gate + its one-step fix.
+- **Seeded surface** (`defaults.ts` + ensureDefaults + editor defaults): inspector (top 12) +
+  sense-gates + the queue/lag block. Window px: deliberately the FRAMED `app` chrome — a
+  debugger is a tool the user wants in screenshots/screen-share (no content protection),
+  resizable, NOT floating always-on-top over the app it diagnoses (the exact inverse of the
+  #100 fields panel's glass choice, both stated in window-options.ts).
+- Block union grew `transcript-inspector` + `sense-gates` (+ editor defaultBlockFor arms +
+  enumeration test); sources grew `transcript` + `senses` (query.ts arms explainable-empty when
+  uninjected).
+
+### Disclosed
+- The ring is a glance, not a log: last N per process, not persisted; the durable stream stays
+  the distillate block.
+- Sense gates on the surface skip the live endpoint probe GET /senses affords (stated in the
+  block's scope line).
+- The implementing agent hit the org spend limit mid-slice; finished inline (editor arms +
+  enumeration, sense-gates renderer + tests, seeded surface, window px, list-test updates, docs).
+
+## Slice: live-strip stream attribution + system-stream mute  *(#96, branch fix/96-strip-attribution, 2026-07-10)*
+
+Live-owner QA: with system-audio capture on and media playing (watching videos while talking),
+the media's transcribed audio interleaved with the user's mic speech in the SAME live-strip — read
+as "random words thrown into the transcript ALL the time". The owner's recorded audio-pipeline
+decision is that the two capture streams (mic, system-audio) stay SEPARATE end-to-end, merged ONLY
+when an ongoing conversation actually spans them — ambient media is exactly the case that must NOT
+blend. This slice makes that separation VISIBLE at the strip and gives a one-click escape hatch.
+
+### What shipped (client-only — hud/ + block-renderer)
+- **Source-stream attribution per fragment** (`live-transcript.ts`): every line now carries its
+  SOURCE-STREAM label using the SAME idiom the transcript-inspector coined (#101) — `mic · me` /
+  `sys · them` (`streamLabel`), so the strip and the diagnostics surface speak one vocabulary. The
+  me/them color lanes are unchanged (`speakerClass`); the label text is the new attribution. Never
+  an undifferentiated interleave — each fragment says which stream it came from.
+- **System-stream mute** (a strip-level toggle, `mute-system-stream` verb): a quiet text affordance
+  in the strip header hides the system-audio lane from THIS strip. It is a DISPLAY filter only —
+  capture keeps running, the transcript-inspector still shows the system stream, distill still
+  receives it. When muted, a disclosure line states the hidden count ("system audio hidden · N
+  lines not shown (still captured)") and a system-only window explains itself rather than looking
+  empty. Wired through the existing delegated-action seam: `ActionHandlers.muteSystemStream`
+  (mount.ts, NOT through paintFeedback — it is a state toggle, the re-render IS the feedback) →
+  `Hud.toggleSystemStream()` flips a client-local bit and re-paints (dev-entry.ts injects it).
+- **The merge rule, STATED at the join point** (`live-transcript.ts` header comment): the two
+  streams arrive as SEPARATE `transcript.updated` events and are ATTRIBUTED/FILTERED here, never
+  merged into one line. WEAVING two streams into one conversational thread is downstream
+  distill-accumulator territory, gated on real conversation-span detection — deliberately NOT built
+  here. The blend case is covered by a DRIVEN test (below).
+
+### Tests (all client, green isolated)
+- `live-transcript.test.ts` (new, 6): stream labels; both streams render as distinct labelled lanes;
+  muting hides system-audio while keeping mic (the blend is gone) + hidden-count disclosure; toggle
+  presence + state reflection; system-only-muted explainable state; idle/live-silent empty states.
+- `hud.test.ts` (+1 DRIVEN, per the served/driven QA rule): instantiates a real `Hud`, fires mic +
+  system `transcript.updated` events, mounts through the REAL `mountSurface`/`wireActions` seam, then
+  dispatches an actual click at the `mute-system-stream` button — asserts the system line disappears
+  while mic stays (the blend prevented), the disclosure paints, and un-muting brings it back
+  (capture was never disabled). Existing me/them test strengthened to assert the `mic · me` / `sys ·
+  them` labels.
+
+### Disclosed / deferred
+- **Mute state is client-local and session-EPHEMERAL** — it lives on the `Hud` controller; a reload
+  starts unmuted. The smallest honest choice for an ephemeral display strip; a persisted default
+  (client.json / a surface config) is a later choice, not built here.
+- **Conversation-span detection is NOT built** (design-session territory): the strip attributes and
+  filters, it does not decide when two streams belong to one thread. The merge rule is only STATED
+  at the strip today.
+- The standing "should ambient media enter the record at all" relevance question (mode/feature
+  territory from the issue) is untouched — this slice is display-layer only.
+- Full-suite flakes observed and confirmed pre-existing (pass isolated, untouched by this client-only
+  change): `engine-link/seam.test.ts` ("client seam"), `queue/spool.test.ts` (fs-timing under load).
+
+## Slice: resolver hardening — NaN guards, signal clamps, honest band docs, create-marking rule  *(#94, branch fix/94-resolver-hardening, 2026-07-10)*
+
+Four findings from the #72 spot-verification probe (all functional claims held; these are hardening
+gaps that should die before #74/#75/#76 wire real producers onto the resolver seam). Engine-internal;
+no contract change.
+
+### What shipped
+- **NaN-proof corpusPrior** (`index/resolve.ts`): a corrupt DB row (unparseable `lastSeen`) made
+  `corpusPrior` return NaN → a NaN score that (NaN-unstable `<`) could WIN the sort and persist as a NaN
+  confidence in band `provisional`. Now every input is finite-guarded — a non-parseable `lastSeen` drops
+  recency to fully-decayed (the neutral, least-boosting fallback) instead of poisoning the product, a
+  non-finite mention count reads 0, and the return is finite-guarded to neutral 1.0. `clamp01` floors
+  non-finite → 0, and the winner sort uses a `finiteScore` key so a non-finite score sorts as 0. Regression
+  seeds a corrupt `lastSeen`.
+- **Signal clamps** (`index/resolve.ts`): `crossSourceCorroboration`/`personAffinity` are clamped to a
+  documented `[0.5, 1.5]` (`SIGNAL_MULTIPLIER_MIN/MAX`) at the resolver boundary — both in `scoreCandidate`
+  and in the recorded `components` so the trail matches the applied factor. A future #74 producer emitting
+  5× can no longer silently auto-link a ~0.2 fuzzy over the phonetic evidence. Test proves the extreme
+  multiplier cannot flip the band and the floor/ceiling are recorded.
+- **Honest band docstrings** (`index/resolve.ts`): the probe found FALSE the claim that the establishment
+  boost "never crosses a band boundary alone" — mathematically impossible for a multiplicative boost (a
+  fuzzy 0.8256 partial against a 1000-mention record is lifted provisional→auto). Corrected to what the
+  math GUARANTEES: it only multiplies up, so it never drags an exact match DOWN below auto; it CAN lift a
+  partial across a band edge (by design, bounded by `establishmentBoost`). **Decision: honesty-by-comment,
+  not band-aware capping.** Band-aware capping (cap the boosted score below the next edge unless fuzzy alone
+  crosses) is the stronger property but changes recorded scores and resolution behavior on the core scoring
+  seam the whole ambient-entity story sits on — it warrants its own slice + fixture pass, and the boost's
+  small bound (0.1) plus the provisional/ambiguity review already limit the blast radius. Documented the
+  guarantee accurately instead of asserting a false one; the signal-clamp docs likewise state the clamp
+  BOUNDS the pull (≤1.5×) rather than being band-preserving for every score.
+
+### Owner call — create-marking rule (implemented recommended rule; flagged for owner review)
+- **Rule:** a `new`-band create is stamped `state:'provisional'` ONLY when its best same-kind rival landed
+  NEAR the provisional band — `bestRivalScore ≥ provisionalBand − CREATE_PROVISIONAL_MARGIN` (margin 0.1,
+  so ≥0.4 at the default band 0.5). Previously ANY same-kind record present stamped the create provisional,
+  so after the first record per kind a clean create (rival 0.0) was almost never silent — the review dot
+  fired on non-collisions. The near-band rule keeps the dot for the genuine near-namesake collisions it was
+  meant to catch and lets an unrelated create stay silent. Constant `CREATE_PROVISIONAL_MARGIN` in
+  `store/workspaces.ts`, documented at the def.
+- **Regression:** a CJK name (`田中太郎`) created amid a Latin same-kind corpus (rival ≈0) stays SILENT (was
+  provisional); a near-namesake (`Sam Lee` vs existing `Sam Rivera`, rival ≈0.42) is STILL stamped
+  provisional; a distant near-miss (`Dana Kim` vs `Dana Cruz`, rival ≈0.34) stays silent.
+
+### Tests / green
+- `index/resolve.test.ts` +2 (NaN guard, signal clamp); `store/workspaces.test.ts` +2 (create-marking
+  silent + still-provisional). `pnpm -r build` + engine suite 643/643 green (known load-flakes re-run
+  isolated).
