@@ -1,7 +1,8 @@
-import type { Endpoint, Fabric, InvokeUsage, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
+import type { EgressDecision, EgressReach, Endpoint, Fabric, InvokeUsage, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
 import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
+import { classifyEndpoint, egressDecision, type EgressConsent } from './egress.js'
 import {
   AggregateInvokeError,
   InvokeError,
@@ -48,6 +49,46 @@ const ctxOf = (endpoint: HttpEndpoint): InvokeCtx => ({
   ...(endpoint.auth?.keyRef !== undefined ? { keyRef: endpoint.auth.keyRef } : {}),
 })
 
+/** A classification context for ANY endpoint kind (the egress gate runs before an endpoint is resolved to
+ * http) — a pseudo-url names a cloud provider / a spawned-local runtime so a skip line stays informative. */
+const ctxForGate = (endpoint: Endpoint): InvokeCtx =>
+  endpoint.kind === 'http'
+    ? { endpoint: endpoint.name, url: endpoint.url, ...(endpoint.model !== undefined && endpoint.model !== '' ? { model: endpoint.model } : {}) }
+    : endpoint.kind === 'cloud'
+      ? { endpoint: endpoint.name, url: `cloud:${endpoint.provider}`, ...(endpoint.model !== undefined && endpoint.model !== '' ? { model: endpoint.model } : {}) }
+      : { endpoint: endpoint.name, url: `local:${endpoint.runtime}` }
+
+type EgressGate = { allow: true; reach: EgressReach } | { allow: false }
+
+/**
+ * The egress ENFORCEMENT + guard (#63) decision point, run for each candidate endpoint BEFORE any bytes
+ * leave (#64). Combines layer 1 (the endpoint's reach) with the resolved content-side consent:
+ *  - a `local` endpoint is ALWAYS allowed — nothing leaves the machine;
+ *  - an `egress` endpoint is allowed ONLY when consent permits egress; otherwise it is SKIPPED here and a
+ *    classified `egress-denied` failure is recorded, so the invoke falls through to a local endpoint (or,
+ *    if none remains, degrades with a visible reason — never a silent skip).
+ *
+ * >>> GUARD SLOT HOOK (#63): a `{ allow:true, reach:'egress' }` return is precisely where the egress guard
+ * (#63) will INTERCEPT the outbound content, AFTER consent allowed egress and BEFORE the endpoint call
+ * sends the body. A DENIAL short-circuits HERE, before the guard ever runs — #63 hooks between this gate
+ * allowing an egress reach and the callHttp/callVlmHttp/postTranscription that follows.
+ */
+const egressGate = (
+  endpoint: Endpoint,
+  consent: EgressConsent | undefined,
+  classified: ClassifiedFailure[],
+  lines: string[],
+): EgressGate => {
+  const reach = classifyEndpoint(endpoint)
+  if (reach === 'local' || consent === undefined || consent.allowed) return { allow: true, reach }
+  const err = new InvokeError('egress-denied', ctxForGate(endpoint), {
+    hint: `${consent.reason} — egress-capable endpoint "${endpoint.name}" was skipped (${consent.decidedBy})`,
+  })
+  classified.push(err.toFailure())
+  lines.push(`${endpoint.name}: egress denied by ${consent.decidedBy} (${consent.reason})`)
+  return { allow: false }
+}
+
 /**
  * Build the Authorization header for an http endpoint that declares `auth.keyRef` — injected ONLY
  * here, at invoke time, from the secret store (never in documents/logs). Choice of header: a bearer
@@ -76,6 +117,8 @@ export interface LlmResult {
   slot: 'llm'
   /** token accounting for this invoke (#65) — measured from the API `usage` block or estimated + marked. */
   usage?: InvokeUsage
+  /** the resolved egress decision this invoke ran under (#64) — present only when consent was supplied. */
+  egress?: EgressDecision
 }
 
 /** The OpenAI-compatible `usage` block (all optional — servers vary; some omit it entirely, some report only a total). */
@@ -128,6 +171,12 @@ export interface InvokeOptions {
    */
   chatTemplateKwargs?: Record<string, unknown>
   responseFormat?: unknown
+  /**
+   * The resolved content-side egress consent (#64). When present and `allowed:false`, egress-capable
+   * endpoints are filtered out before any request leaves; the result carries the fused EgressDecision so
+   * the caller can stamp it on provenance. Absent ⇒ egress is not evaluated (no decision is stamped).
+   */
+  egress?: EgressConsent
 }
 
 interface ChatChoice {
@@ -235,6 +284,8 @@ export const invokeLlm = async (
       lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
+    const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
+    if (!gate.allow) continue
     try {
       // A local endpoint's spawned runtime is resolved to a localhost http server, then called
       // exactly like an http one (the engine owns its lifecycle; the protocol is identical).
@@ -246,6 +297,7 @@ export const invokeLlm = async (
       const { text, usage } = await callHttp(http, messages, opts)
       const result: LlmResult = { text, endpoint: endpoint.name, slot: 'llm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
@@ -276,6 +328,8 @@ export interface SttResult extends TranscriptResult {
   endpoint: string
   model?: string
   slot: 'stt'
+  /** the resolved egress decision this invoke ran under (#64) — present only when consent was supplied. */
+  egress?: EgressDecision
 }
 
 export interface SttOptions {
@@ -287,6 +341,8 @@ export interface SttOptions {
   resolveKey?: SecretResolver
   /** manages `local` endpoints' spawned runtimes (tier zero); absent ⇒ local endpoints are skipped. */
   runtimeManager?: LocalRuntimeManager
+  /** resolved content-side egress consent (#64) — see InvokeOptions.egress. */
+  egress?: EgressConsent
 }
 
 /** audio/<subtype> → a filename the transcriber can sniff a container from; defaults to audio.bin. */
@@ -372,6 +428,8 @@ export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOption
       )
       continue
     }
+    const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
+    if (!gate.allow) continue
     try {
       let transcript: TranscriptResult
       if (endpoint.kind === 'local') {
@@ -391,6 +449,7 @@ export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOption
       }
       const result: SttResult = { ...transcript, endpoint: endpoint.name, slot: 'stt' }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
@@ -432,6 +491,9 @@ export interface ScreenTextResult {
    * estimate (only the text prompt is) — the estimated flag makes that honest; a paddle-serving OCR
    * reports no usage, so its counts are a chars/4 estimate over the recognized text. */
   usage?: InvokeUsage
+  /** the resolved egress decision this invoke ran under (#64) — present only when consent was supplied.
+   * Screen content is content-class `screen`, so consent always denies egress and this is reach:'local'. */
+  egress?: EgressDecision
 }
 
 /** Shared invoke options for the screen slots — the image + timeout ride the contract params, so these
@@ -441,6 +503,8 @@ export interface ScreenInvokeOptions {
   resolveKey?: SecretResolver
   /** manages `local` endpoints' spawned runtimes (tier zero); absent ⇒ local endpoints are skipped. */
   runtimeManager?: LocalRuntimeManager
+  /** resolved content-side egress consent (#64) — see InvokeOptions.egress. Screen content denies egress. */
+  egress?: EgressConsent
 }
 
 /** A base64 image + its mime as an OpenAI-compat `image_url` data URI (`data:<mime>;base64,<bytes>`). */
@@ -520,6 +584,8 @@ export const invokeVlm = async (
       lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
+    const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
+    if (!gate.allow) continue
     try {
       const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint
       if (http.api !== 'openai-compat') {
@@ -529,6 +595,7 @@ export const invokeVlm = async (
       const { text, usage } = await callVlmHttp(http, params, opts)
       const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'vlm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
@@ -673,6 +740,8 @@ export const invokeOcr = async (
       lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
+    const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
+    if (!gate.allow) continue
     try {
       const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint
       let text: string
@@ -694,6 +763,7 @@ export const invokeOcr = async (
       const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'ocr', usage }
       if (blocks !== undefined) result.blocks = blocks
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())

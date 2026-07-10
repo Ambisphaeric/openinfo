@@ -1,4 +1,4 @@
-import type { Distillate, InvokeUsage, OcrResult } from '@openinfo/contracts'
+import type { Distillate, EgressDecision, InvokeUsage, OcrResult } from '@openinfo/contracts'
 import { escapeHtml, type SetupData } from '../../setup/view.js'
 
 /**
@@ -10,9 +10,11 @@ import { escapeHtml, type SetupData } from '../../setup/view.js'
  *
  * HONEST ABSENCES, not fabricated data:
  *  - GUARD: no guard slot exists yet (#63). The column renders "—" ("no guard configured") for every hop.
- *  - EGRESS: no egress marking exists yet (#64). Every invoke in this build is local, so egress renders
- *    "local" and the footer states "no egress hops recorded — all invokes local." The COLUMNS are here so
- *    the day #63/#64 land they light up with no new surface.
+ *  - EGRESS (#64): the egress column now renders from REAL decision provenance when a record carries it —
+ *    "local" (with the deciding layer when it stayed local BY POLICY) or "egress → endpoint" when content
+ *    actually left. A record predating #64 has no decision, so it falls back to the honest local default
+ *    (every invoke in that era was local). With a factory posture (no egress endpoint configured) nothing
+ *    can leave, so the column stays "local" — but truthfully, from data, not hardcoded.
  *  - Token counts are shown with an `est` marker when the server reported no usage and the invoke layer
  *    estimated them (chars/4) — a measurement is never impersonated.
  *
@@ -32,6 +34,8 @@ export interface LedgerHop {
   model?: string
   /** token accounting for this invoke, when it was recorded (#65). */
   usage?: InvokeUsage
+  /** the resolved egress decision this hop ran under (#64), when it was recorded. */
+  egress?: EgressDecision
 }
 
 /** One pipeline pass — today a single record ⇒ a single-hop trail; ready for multi-hop (the judge, #62). */
@@ -69,6 +73,7 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
           endpoint: d.provenance.endpoint,
           ...(d.provenance.model !== undefined ? { model: d.provenance.model } : {}),
           ...(d.provenance.usage !== undefined ? { usage: d.provenance.usage } : {}),
+          ...(d.provenance.egress !== undefined ? { egress: d.provenance.egress } : {}),
         },
       ],
     })
@@ -84,6 +89,7 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
           endpoint: o.provenance.endpoint,
           ...(o.provenance.model !== undefined ? { model: o.provenance.model } : {}),
           ...(o.provenance.usage !== undefined ? { usage: o.provenance.usage } : {}),
+          ...(o.provenance.egress !== undefined ? { egress: o.provenance.egress } : {}),
         },
       ],
     })
@@ -105,15 +111,37 @@ const tokensCell = (usage: InvokeUsage | undefined): string => {
   return `<span class="ldg-tok">${fmt(inTok)} in · ${fmt(outTok)} out</span>${est}${dur}`
 }
 
-/** Totals across all passes' hops: in/out token sums and whether any count was estimated. */
-const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEstimated: boolean; hops: number } => {
+/**
+ * The egress cell for a hop (#64), rendered from the recorded decision:
+ *  - no decision (a record predating #64) ⇒ the honest local default;
+ *  - `reach:'egress'` ⇒ content LEFT the machine — flagged distinctly (`ldg-egress`), with the reason on hover;
+ *  - `reach:'local'` and denied ⇒ "local · <layer>" so the WHY-it-stayed-local is visible;
+ *  - `reach:'local'` and allowed ⇒ plain "local".
+ */
+const egressCell = (egress: EgressDecision | undefined): string => {
+  if (egress === undefined) {
+    return '<span class="ldg-local" title="no egress decision recorded for this hop — it ran locally">local</span>'
+  }
+  if (egress.reach === 'egress') {
+    return `<span class="ldg-egress" title="${escapeHtml(egress.reason)}">egress</span>`
+  }
+  if (!egress.allowed) {
+    return `<span class="ldg-local" title="${escapeHtml(egress.reason)}">local <span class="ldg-model">· ${escapeHtml(egress.decidedBy)}</span></span>`
+  }
+  return '<span class="ldg-local" title="egress was allowed; a local endpoint answered">local</span>'
+}
+
+/** Totals across all passes' hops: in/out token sums, whether any count was estimated, and egress-hop count. */
+const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEstimated: boolean; hops: number; egressed: number } => {
   let inTok = 0
   let outTok = 0
   let anyEstimated = false
   let hops = 0
+  let egressed = 0
   for (const pass of passes) {
     for (const hop of pass.hops) {
       hops++
+      if (hop.egress?.reach === 'egress') egressed++
       if (hop.usage) {
         inTok += hop.usage.promptTokens ?? 0
         outTok += hop.usage.completionTokens ?? 0
@@ -121,7 +149,7 @@ const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEs
       }
     }
   }
-  return { in: inTok, out: outTok, anyEstimated, hops }
+  return { in: inTok, out: outTok, anyEstimated, hops, egressed }
 }
 
 const rowHtml = (pass: LedgerPass): string =>
@@ -134,7 +162,7 @@ const rowHtml = (pass: LedgerPass): string =>
         `<td class="ldg-ep">${escapeHtml(hop.endpoint)}${hop.model ? ` <span class="ldg-model">${escapeHtml(hop.model)}</span>` : ''}</td>` +
         `<td>${tokensCell(hop.usage)}</td>` +
         '<td class="ldg-absent" title="no guard slot yet (#63)">— no guard</td>' +
-        '<td class="ldg-local" title="no egress marking yet (#64) — this invoke ran locally">local</td>' +
+        `<td>${egressCell(hop.egress)}</td>` +
         '</tr>',
     )
     .join('')
@@ -167,6 +195,7 @@ export const renderLedger = (data: SetupData): string => {
     `<span><span class="n">${fmt(t.hops)}</span> hop${t.hops === 1 ? '' : 's'}</span>` +
     `<span><span class="n">${fmt(t.in)}</span> tokens in</span>` +
     `<span><span class="n">${fmt(t.out)}</span> tokens out</span>` +
+    `<span><span class="n">${fmt(t.egressed)}</span> egress hop${t.egressed === 1 ? '' : 's'}</span>` +
     (t.anyEstimated ? '<span class="ldg-est">some estimated</span>' : '') +
     '</div>'
 
@@ -180,10 +209,12 @@ export const renderLedger = (data: SetupData): string => {
   return intro + summary + table + footerNote()
 }
 
-/** The honest disclosure footer — what the columns will carry once #63/#64 land, and this ledger's scope. */
+/** The honest disclosure footer — what each column carries, and this ledger's scope. */
 const footerNote = (): string =>
-  '<div class="ldg-note">Guard verdicts (#63) and egress marking (#64) are not built yet, so those columns ' +
-  'render honestly as absent: no guard is configured, and no egress hops are recorded — every invoke in ' +
-  'this build is local. The columns are here so they light up when those slots land. Token counts marked ' +
-  '<span class="ldg-est">est</span> were estimated (chars/4) because the server reported no usage. This view ' +
-  'reads the default workspace’s recorded passes (most recent 100).</div>'
+  '<div class="ldg-note">Guard verdicts (#63) are not built yet, so that column renders honestly as absent — ' +
+  'no guard is configured. The egress column (#64) renders from each pass’s recorded decision: a hop shows ' +
+  '<span class="ldg-egress">egress</span> only when content actually left the machine, and “local · &lt;layer&gt;” ' +
+  'when it stayed local because a layer (mode / workspace / prompt / content-class) denied egress. A fresh ' +
+  'install has no egress-capable endpoint configured, so nothing can leave — the column stays local, truthfully ' +
+  'from data. Token counts marked <span class="ldg-est">est</span> were estimated (chars/4) because the server ' +
+  'reported no usage. This view reads the default workspace’s recorded passes (most recent 100).</div>'

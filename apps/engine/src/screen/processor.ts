@@ -16,6 +16,8 @@ import {
   invokeOcr,
   invokeVlm,
   describeInvokeFailure,
+  resolveEgress,
+  type EgressConsent,
   type LocalRuntimeManager,
   type ScreenInvokeOptions,
   type ScreenTextResult,
@@ -63,6 +65,14 @@ export interface ScreenOcrProcessorDeps {
 }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+/**
+ * Screen-derived content is content-class `screen` — layer 4 of the egress-consent policy (#64), which
+ * NEVER egresses. Resolved ONCE (it is a constant for this pipeline): egress-capable endpoints are filtered
+ * out of every screen invoke, so recognized screen text can only ever be produced locally. The decision is
+ * stamped on both records so the ledger shows the screen pass stayed local BY POLICY, not by accident.
+ */
+const SCREEN_EGRESS: EgressConsent = resolveEgress({ contentClass: 'screen' })
 
 /**
  * The screen-OCR processor (P4B slice 4). It subscribes to `capture.received` and, gated on the
@@ -154,6 +164,7 @@ export class ScreenOcrProcessor {
     return {
       ...(this.resolveKey ? { resolveKey: this.resolveKey } : {}),
       ...(this.runtimeManager ? { runtimeManager: this.runtimeManager } : {}),
+      egress: SCREEN_EGRESS, // #64: screen content never egresses — filters egress endpoints, stamps the decision
     }
   }
 
@@ -245,6 +256,9 @@ export class ScreenOcrProcessor {
       // #65: carry the invoke's token accounting (estimated for a screen invoke — see invoke.ts) onto both
       // the OcrResult and the mirror Distillate so the audit ledger renders this screen pass's consumption.
       ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      // #64: carry the egress decision (always reach:'local'/decidedBy:'content-class' for screen) onto both
+      // records so the ledger shows this screen pass stayed local by policy.
+      ...(result.egress !== undefined ? { egress: result.egress } : {}),
     }
     const ocr: OcrResult = {
       id: this.newId(),

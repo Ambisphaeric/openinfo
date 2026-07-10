@@ -4,6 +4,8 @@ import assert from 'node:assert/strict'
 import type { Fabric } from '@openinfo/contracts'
 import { defaultFabric } from './document.js'
 import { invokeLlm } from './invoke.js'
+import { resolveEgress } from './egress.js'
+import { AggregateInvokeError } from './invoke-error.js'
 
 interface FakeServer {
   server: Server
@@ -266,5 +268,76 @@ test('invokeLlm ESTIMATES usage (chars/4) and marks it when the server reports n
     assert.equal(result.usage?.totalTokens, 3)
   } finally {
     await stop(fake)
+  }
+})
+
+/* ---------- #64 egress enforcement at the endpoint-choice seam ---------- */
+
+test('egress-denied consent SKIPS an egress endpoint and falls through to a local one (no bytes leave)', async () => {
+  const local = await startFakeLlm('answered locally')
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [
+          // an egress-capable endpoint FIRST — it must be skipped before any fetch (an attempt would fail/hang)
+          { kind: 'http', name: 'hosted', url: 'https://api.example.com', api: 'openai-compat' },
+          { kind: 'http', name: 'loopback', url: local.url, api: 'openai-compat' },
+        ],
+      },
+    }
+    const egress = resolveEgress({ contentClass: 'transcript', workspaceDenies: true }) // denied by workspace
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { egress })
+    assert.equal(result.endpoint, 'loopback')
+    assert.equal(result.text, 'answered locally')
+    assert.equal(result.egress?.reach, 'local')
+    assert.equal(result.egress?.allowed, false)
+    assert.equal(result.egress?.decidedBy, 'workspace')
+  } finally {
+    await stop(local)
+  }
+})
+
+test('egress-denied with ONLY egress endpoints degrades explainably (egress-denied classified failure)', async () => {
+  const fabric: Fabric = {
+    slots: {
+      ...defaultFabric().slots,
+      llm: [{ kind: 'http', name: 'hosted', url: 'https://api.example.com', api: 'openai-compat' }],
+    },
+  }
+  const egress = resolveEgress({ contentClass: 'screen' }) // screen never egresses
+  await assert.rejects(
+    invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { egress }),
+    (err: unknown) => {
+      assert.ok(err instanceof AggregateInvokeError)
+      assert.equal(err.failures.length, 1)
+      assert.equal(err.failures[0]?.class, 'egress-denied')
+      assert.equal(err.failures[0]?.endpoint, 'hosted')
+      return true
+    },
+  )
+})
+
+test('egress ALLOWED + a local endpoint answers ⇒ decision reach:local, allowed:true, decidedBy:default', async () => {
+  const local = await startFakeLlm('ok')
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'loopback', url: local.url, api: 'openai-compat' }] } }
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { egress: resolveEgress({ contentClass: 'transcript' }) })
+    assert.equal(result.egress?.reach, 'local')
+    assert.equal(result.egress?.allowed, true)
+    assert.equal(result.egress?.decidedBy, 'default')
+  } finally {
+    await stop(local)
+  }
+})
+
+test('no egress consent supplied ⇒ no decision stamped (honest absence, unchanged legacy behavior)', async () => {
+  const local = await startFakeLlm('ok')
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'loopback', url: local.url, api: 'openai-compat' }] } }
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }])
+    assert.equal(result.egress, undefined)
+  } finally {
+    await stop(local)
   }
 })

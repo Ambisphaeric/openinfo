@@ -11,7 +11,14 @@
  * guessing. NO secret VALUE ever appears here — an auth failure names the keyRef, never its value.
  */
 
-export type InvokeErrorClass = 'unreachable' | 'timeout' | 'auth' | 'model-load' | 'bad-response' | 'reasoning-exhausted'
+export type InvokeErrorClass =
+  | 'unreachable'
+  | 'timeout'
+  | 'auth'
+  | 'model-load'
+  | 'bad-response'
+  | 'reasoning-exhausted'
+  | 'egress-denied'
 
 /** What we were calling when it failed — the endpoint, named (never a secret value). */
 export interface InvokeCtx {
@@ -55,6 +62,8 @@ const hintFor = (cls: InvokeErrorClass, ctx: InvokeCtx): string => {
       return 'the server responded in an unexpected way — check the URL points at an OpenAI-compatible server'
     case 'reasoning-exhausted':
       return `model ${ctx.model !== undefined ? `"${ctx.model}" ` : ''}spent its entire token budget thinking and returned no output — use a non-reasoning instruct model for this slot, or raise the mode's token budget`
+    case 'egress-denied':
+      return `endpoint "${ctx.endpoint}" is egress-capable but this content may not leave the machine — add or keep a local endpoint for this slot, or lift the egress denial (mode/workspace/prompt) in Settings`
   }
 }
 
