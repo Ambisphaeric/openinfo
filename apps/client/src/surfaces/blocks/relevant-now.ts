@@ -1,7 +1,8 @@
-import type { EntityProvenance, MomentProvenance, RelevantEntity } from '@openinfo/contracts'
+import type { Block, EntityProvenance, MomentProvenance, RelevantEntity } from '@openinfo/contracts'
 import { h, type VNode } from '../block-renderer/vnode.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
 import { clockLabel } from '../block-renderer/format.js'
+import { stateDot, resolveStateVocab, type StateVocab } from '../block-renderer/micro-state.js'
 import { entityGlyph } from './glyphs.js'
 import { rowAffordances, type ActionPayload } from './actions.js'
 
@@ -65,8 +66,9 @@ type DismissBase = { workspaceId: string; source: string }
 
 const renderRow = (
   row: RelevantEntity,
-  actions: NonNullable<import('@openinfo/contracts').Block['actions']>,
+  actions: NonNullable<Block['actions']>,
   dismissBase: DismissBase,
+  vocab: StateVocab,
 ): VNode | undefined => {
   const line = whyLine(row)
   if (!line) return undefined // no why sentence → no card (display rule #1)
@@ -75,7 +77,8 @@ const renderRow = (
   const ext = `${row.entity.kind}${(row.entity.mentions ?? 0) > 0 ? ` · ${row.entity.mentions}×` : ''}`
   // dismiss (#66): suppress this entity from the join — addressable by its stable id + source + workspace,
   // so the glyph is live wherever the block configures a `dismiss` action (pin / mark-for-follow-up stay
-  // inert this slice). No micro-state dot here: an Entity carries no judge `state` field (nothing to show).
+  // inert this slice). The #66 micro-state dot now renders the entity's resolution `state` (#73) — absent
+  // ⇒ no dot (nothing pretends to be resolved), present (a user override stamps `confirmed`) ⇒ a real dot.
   const dismiss: ActionPayload['dismiss'] = { ...dismissBase, itemId: row.entity.id }
   return h(
     'div',
@@ -84,7 +87,7 @@ const renderRow = (
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, row.entity.name, ' ', h('span', { class: 'ext' }, ext)),
+      h('span', { class: 'ttl' }, stateDot(row.entity.state, vocab), row.entity.name, ' ', h('span', { class: 'ext' }, ext)),
       h('span', { class: 'why' }, why),
     ),
     h('span', { class: 'go' }, ...rowAffordances(actions, `${row.entity.name} — ${text}`, { dismiss })),
@@ -97,10 +100,11 @@ export const renderRelevantNow: BlockRenderer = ({ block, result }) => {
   const workspaceParam = block.query?.params?.['workspace']
   const workspaceId = typeof workspaceParam === 'string' ? workspaceParam : 'default'
   const dismissBase: DismissBase = { workspaceId, source }
+  const vocab = resolveStateVocab(block.states)
   const all = (result?.items ?? []) as RelevantEntity[]
   const rows = block.top !== undefined ? all.slice(0, block.top) : all
   const cards = rows
-    .map((row) => renderRow(row, block.actions ?? [], dismissBase))
+    .map((row) => renderRow(row, block.actions ?? [], dismissBase, vocab))
     .filter((card): card is VNode => card !== undefined)
   return h(
     'div',
