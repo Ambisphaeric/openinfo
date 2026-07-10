@@ -21,3 +21,6 @@ docs/local/
 docs/NEXT.md
 docs/RETRO.md
 docs/research/
+
+# agent worktrees (session-local, never tracked)
+.claude/
