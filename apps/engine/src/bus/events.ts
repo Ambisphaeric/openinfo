@@ -1,4 +1,4 @@
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, Flag, Moment, OcrResult, QueueStatus, Session, Surface, TranscriptUpdate } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FieldValue, Flag, Moment, OcrResult, QueueStatus, Session, Surface, TranscriptUpdate } from '@openinfo/contracts'
 
 export interface EngineEvents {
   'capture.received': CaptureChunk
@@ -15,6 +15,9 @@ export interface EngineEvents {
   'ocr.completed': OcrResult
   'moment.created': Moment
   'entity.updated': Entity
+  // Fast-field fan-out (#61): a field's latest value landed. Published immediately (mirrors
+  // transcript.updated) AND persisted as a FieldValue — the ephemeral-then-durable substrate.
+  'field.updated': FieldValue
   'session.started': Session
   'session.ended': Session
   'session.switched': Session

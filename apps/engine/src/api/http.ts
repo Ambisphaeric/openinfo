@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller, DistillCadence, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
+import { DistillDocuments, Distiller, DistillCadence, FieldValueStore, FastFieldScheduler, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
@@ -131,6 +131,24 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     publishEntity: (entity) => bus.publish('entity.updated', entity),
     log,
   })
+  // Fast-field fan-out (#61): the substrate that grows surface fields from prompt documents. It rides
+  // the SAME accumulation seam the distiller does (the cadence-released batch, below), reading every
+  // fast-field prompt document (distillDocs.fieldTemplates), running the triggered ones CONCURRENTLY
+  // against the llm slot, then publishing field.updated + persisting each field's latest value. Gated by
+  // distill.fields (default OFF) — a new engine-processing behavior gets its own flag (CONTRIBUTING rule
+  // 3). It EXTENDS distill (does not replace it): the distiller still produces the monolithic distillate.
+  const fieldValues = new FieldValueStore(store)
+  const fieldScheduler = new FastFieldScheduler({
+    store,
+    voice,
+    fabric,
+    docs: distillDocs,
+    values: fieldValues,
+    resolveKey,
+    runtimeManager: runtime,
+    publish: (value) => bus.publish('field.updated', value),
+    log,
+  })
   // Seam (see PHASE2-NOTES): distill rides the queue drain, gated on distill.enabled (OFF by
   // default). Flag off → the drain stays the Phase 1 no-op GC; on → each drained file distills.
   // Moments extraction (distill.moments) and entity indexing (distill.index) are further opt-ins
@@ -207,13 +225,31 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // When true, the distill seam BYPASSES the throttle and distills immediately — used only while flushing
   // the accumulated tail (below), so the released batch is not re-buffered.
   let flushing = false
+  // Run the fast-field fan-out over the SAME released batch the distiller just saw (#61). Best-effort and
+  // gated by distill.fields (read per-drain, hot-flippable): fields are a distinct pass, so a fan-out
+  // error must not sink the drain — the scheduler already catches per-field invoke failures, and this
+  // catch guards the whole pass. Nothing text-bearing in the batch ⇒ the scheduler returns [] (no-op).
+  const runFastFields = async (batch: readonly CaptureChunk[]): Promise<void> => {
+    if (batch.length === 0 || !isFlagEnabled(store, 'distill.fields')) return
+    try {
+      await fieldScheduler.runFields(batch)
+    } catch (error) {
+      log(`fast-field fan-out failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   const distillThrottled = async (chunks: readonly CaptureChunk[], opts: DistillOptions): Promise<void> => {
     if (flushing) {
-      if (chunks.length > 0) await distiller.distillChunks(chunks, opts)
+      if (chunks.length > 0) {
+        await distiller.distillChunks(chunks, opts)
+        await runFastFields(chunks)
+      }
       return
     }
     const due = cadence.offer(chunks)
-    if (due.length > 0) await distiller.distillChunks(due, opts)
+    if (due.length > 0) {
+      await distiller.distillChunks(due, opts)
+      await runFastFields(due)
+    }
   }
   // Session-end flush: distill the accumulated sub-threshold tail so the record — and any follow-up draft —
   // reflects the whole session. Routed through the SAME drain pipeline the throttle wraps, so the drain
@@ -227,8 +263,16 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     if (remainder.length === 0) return
     flushing = true
     try {
-      if (isFlagEnabled(store, 'workflow.enabled')) await executor.runDrain(remainder)
-      else await distiller.distillChunks(remainder, currentDistillOpts())
+      if (isFlagEnabled(store, 'workflow.enabled')) {
+        // Executor path: its `distill` seam IS distillThrottled, which already fans out fast fields on the
+        // flushing bypass — so the tail's fields land here without a second call.
+        await executor.runDrain(remainder)
+      } else {
+        // Legacy path distills the tail DIRECTLY (bypassing the throttle), so fan out fast fields over the
+        // same flushed batch explicitly — otherwise a short (sub-cadence) session's fields would strand (#61).
+        await distiller.distillChunks(remainder, currentDistillOpts())
+        await runFastFields(remainder)
+      }
     } finally {
       flushing = false
     }
@@ -386,6 +430,9 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('transcript.updated', (update) => ws.broadcast('transcript.updated', update))
   bus.subscribe('moment.created', (moment) => ws.broadcast('moment.created', moment))
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
+  // Fast-field fan-out (#61): rebroadcast a field's latest value the instant it lands (mirrors the #58
+  // transcript.updated pattern). Unlike that ephemeral feed, the value is ALSO persisted (FieldValue).
+  bus.subscribe('field.updated', (value) => ws.broadcast('field.updated', value))
   bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
   bus.subscribe('session.switched', (session) => ws.broadcast('session.switched', session))

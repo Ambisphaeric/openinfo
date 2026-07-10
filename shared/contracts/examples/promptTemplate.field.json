@@ -1,0 +1,15 @@
+{
+  "id": "tpl-field-work-items",
+  "name": "work-items",
+  "kind": "field",
+  "slot": "llm",
+  "builtin": true,
+  "description": "fast field: the concrete work items / action items mentioned in the recent transcript",
+  "body": "From the recent meeting transcript below, list the concrete work items or action items mentioned — one per line, short imperative phrases. If none are mentioned, reply exactly \"none yet\". No preamble.\n\nTranscript:\n{{transcript}}\n\nWork items:",
+  "field": {
+    "fieldId": "field-work-items",
+    "tier": "fast",
+    "trigger": { "kind": "transcript", "minChars": 80 },
+    "scope": "session"
+  }
+}

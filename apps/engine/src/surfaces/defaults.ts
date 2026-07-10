@@ -41,6 +41,18 @@ export const defaultHudSurface: Surface = {
       collapsed: false,
       query: { source: 'moments', params: { session: 'current' }, top: 20 },
     },
+    // Fast fields (#61): the fan-out substrate's surface. `on-match` so the card is invisible until the
+    // fast fields have produced values (distill.fields is OFF by default), then it renders each field's
+    // current value with a provenance why-line and a provisional micro-state dot. This is the shipped
+    // default bundle demonstrating the ≥3 concurrent fields (topic / entities-mentioned / work-items)
+    // rendering on a surface. `copy` is the wired verb (the app prepares; verbs never send).
+    {
+      block: 'fields',
+      show: 'on-match',
+      top: 8,
+      query: { source: 'fields', params: { session: 'current' }, top: 8 },
+      actions: [{ id: 'act-copy-field', label: 'Copy', verb: 'copy', params: {} }],
+    },
   ],
 }
 

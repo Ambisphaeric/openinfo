@@ -16,7 +16,7 @@ test('SurfaceDocuments seeds the openinfo HUD and serves it by id', async () => 
     const hud = docs.get(defaultHudSurface.id)
     assert.ok(hud)
     assert.equal(hud.name, 'openinfo HUD')
-    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'relevant-now', 'moments'])
+    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'relevant-now', 'moments', 'fields'])
     assert.equal(hud.stack.find((b) => b.block === 'relevant-now')?.top, 4)
     // unknown id ⇒ undefined (the route turns this into a 404)
     assert.equal(docs.get('surf-nope'), undefined)
@@ -53,12 +53,12 @@ test('SurfaceDocuments.save bumps the version and never clobbers a user edit on 
     const edited = { ...defaultHudSurface, stack: defaultHudSurface.stack.filter((b) => b.block !== 'moments') }
     const saved = docs.save(edited)
     assert.equal(saved.version, 2)
-    assert.deepEqual(saved.stack.map((b) => b.block), ['now', 'relevant-now'])
+    assert.deepEqual(saved.stack.map((b) => b.block), ['now', 'relevant-now', 'fields'])
 
     // a fresh ensureDefaults must NOT clobber the edit
     new SurfaceDocuments(store).ensureDefaults()
     const reloaded = docs.get(defaultHudSurface.id)
-    assert.deepEqual(reloaded?.stack.map((b) => b.block), ['now', 'relevant-now'])
+    assert.deepEqual(reloaded?.stack.map((b) => b.block), ['now', 'relevant-now', 'fields'])
     assert.equal(reloaded?.version, 2)
   } finally {
     store.close()

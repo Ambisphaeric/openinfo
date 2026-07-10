@@ -1,7 +1,18 @@
 export { Distiller, type DistillerDeps, type DistillOptions, type LlmInvoke } from './distiller.js'
 export { bucketIntoWindows, type MergeWindow, type MergeWindowConfig } from './merge.js'
 export { DistillDocuments } from './documents.js'
-export { defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultMeetingMode } from './defaults.js'
+export {
+  defaultDistillTemplate,
+  defaultEntitiesTemplate,
+  defaultExtractTemplate,
+  defaultMeetingMode,
+  defaultTopicField,
+  defaultEntitiesField,
+  defaultWorkItemsField,
+  defaultFieldTemplates,
+} from './defaults.js'
+export { FieldValueStore } from './field-values.js'
+export { FastFieldScheduler, type FastFieldSchedulerDeps } from './fields.js'
 export {
   extractMoments,
   parseMomentCandidates,

@@ -78,6 +78,63 @@ export const defaultEntitiesTemplate: PromptTemplate = {
 }
 
 /**
+ * The shipped fast-field prompt bundle (#61) — three small, specialized prompt DOCUMENTS, each bound to
+ * a surface field via `field`. They are the composition units of the fan-out substrate: on newly
+ * transcribed material the scheduler runs every triggered `fast`-tier binding CONCURRENTLY against the
+ * llm slot (distill/fields.ts) and lands each result in its bound field, published as `field.updated`
+ * AND persisted as the field's latest value. Prompts are deliberately TINY (one job, tight output) —
+ * fast fields run at seconds-scale on a small model. Each carries a `trigger.minChars` relevance gate so
+ * a sub-threshold window skips the field rather than burning an invoke. Adapted from the distill/entities
+ * prompt content so the defaults read as a coherent family. Mirrors shared/contracts/examples/
+ * promptTemplate.field.json.
+ */
+export const defaultTopicField: PromptTemplate = {
+  id: 'tpl-field-topic',
+  name: 'topic',
+  kind: 'field',
+  slot: 'llm',
+  builtin: true,
+  description: 'fast field: the current topic of discussion, in one short phrase',
+  field: { fieldId: 'field-topic', tier: 'fast', trigger: { kind: 'transcript', minChars: 40 }, scope: 'session' },
+  body:
+    'In ONE short phrase (max ~8 words), name the current topic of discussion in the recent meeting transcript below. ' +
+    'No sentence, no preamble. If the transcript is too thin to tell, reply exactly "unclear".\n\n' +
+    'Transcript:\n{{transcript}}\n\nTopic:',
+}
+
+export const defaultEntitiesField: PromptTemplate = {
+  id: 'tpl-field-entities',
+  name: 'entities-mentioned',
+  kind: 'field',
+  slot: 'llm',
+  builtin: true,
+  description: 'fast field: the people, artifacts, and topics named in the recent transcript',
+  field: { fieldId: 'field-entities', tier: 'fast', trigger: { kind: 'transcript', minChars: 60 }, scope: 'session' },
+  body:
+    'List the named entities — people, artifacts, and topics — mentioned in the recent meeting transcript below, ' +
+    'as a short comma-separated list. Name only what the transcript supports; invent nothing. ' +
+    'If none are named, reply exactly "none yet". No preamble.\n\n' +
+    'Transcript:\n{{transcript}}\n\nEntities:',
+}
+
+export const defaultWorkItemsField: PromptTemplate = {
+  id: 'tpl-field-work-items',
+  name: 'work-items',
+  kind: 'field',
+  slot: 'llm',
+  builtin: true,
+  description: 'fast field: the concrete work items / action items mentioned in the recent transcript',
+  field: { fieldId: 'field-work-items', tier: 'fast', trigger: { kind: 'transcript', minChars: 80 }, scope: 'session' },
+  body:
+    'From the recent meeting transcript below, list the concrete work items or action items mentioned — one per line, ' +
+    'short imperative phrases. If none are mentioned, reply exactly "none yet". No preamble.\n\n' +
+    'Transcript:\n{{transcript}}\n\nWork items:',
+}
+
+/** The shipped fast-field bundle, in seed order — ≥3 concurrent fields (#61 default document bundle). */
+export const defaultFieldTemplates: readonly PromptTemplate[] = [defaultTopicField, defaultEntitiesField, defaultWorkItemsField]
+
+/**
  * The default meeting mode — window config lives here (mode document owns merge windows, per
  * ARCHITECTURE §7). Mirrors shared/contracts/examples/mode.meeting.json; the distiller reads only
  * distill.mergeWindow + distill.tokenBudget from it in this slice.

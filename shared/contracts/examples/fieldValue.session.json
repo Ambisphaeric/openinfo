@@ -1,0 +1,19 @@
+{
+  "id": "fv:default:sess-1:field-work-items",
+  "fieldId": "field-work-items",
+  "workspaceId": "default",
+  "sessionId": "sess-1",
+  "label": "work-items",
+  "value": "Send the Q3 deck to Priya\nSchedule the vendor review for next week",
+  "state": "provisional",
+  "provenance": {
+    "templateId": "tpl-field-work-items",
+    "slot": "llm",
+    "endpoint": "this-mac",
+    "model": "qwen2.5-7b-instruct",
+    "windowStart": "2026-07-09T12:00:00.000Z",
+    "windowEnd": "2026-07-09T12:00:30.000Z"
+  },
+  "updatedAt": "2026-07-09T12:00:31.000Z",
+  "schemaVersion": 1
+}

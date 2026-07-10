@@ -1,0 +1,64 @@
+{
+  "$id": "FieldValueProvenance",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "templateId",
+    "slot",
+    "endpoint"
+  ],
+  "properties": {
+    "templateId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "slot": {
+      "description": "fabric capability slot",
+      "anyOf": [
+        {
+          "const": "stt",
+          "type": "string"
+        },
+        {
+          "const": "tts",
+          "type": "string"
+        },
+        {
+          "const": "llm",
+          "type": "string"
+        },
+        {
+          "const": "vlm",
+          "type": "string"
+        },
+        {
+          "const": "ocr",
+          "type": "string"
+        },
+        {
+          "const": "embed",
+          "type": "string"
+        }
+      ]
+    },
+    "endpoint": {
+      "description": "the fabric endpoint name that produced the value (never a secret value)",
+      "type": "string"
+    },
+    "model": {
+      "description": "the model that answered, when the endpoint names one",
+      "type": "string"
+    },
+    "windowStart": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "windowEnd": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}
