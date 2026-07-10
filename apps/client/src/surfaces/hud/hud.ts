@@ -61,6 +61,10 @@ export class Hud {
   // client-side; the engine never persists it. Pruned on every repaint and reset on session boundaries.
   private transcriptLines: TranscriptLine[] = []
   private transcriptSeq = 0
+  // #96: hide the system-audio stream from the live strip WITHOUT disabling capture. Client-local and
+  // session-ephemeral (a reload starts unmuted) — a display filter over the strip, never a capture change.
+  // The two streams stay separate here and are only ATTRIBUTED/FILTERED, never merged (see live-transcript.ts).
+  private systemStreamMuted = false
   private unsubscribe: (() => void) | undefined
   private refreshing = false
   private dirty = false
@@ -114,6 +118,17 @@ export class Hud {
     this.unsubscribe = undefined
   }
 
+  /**
+   * Toggle whether the system-audio stream is shown in the live strip (#96). This is a DISPLAY filter
+   * only — capture, the transcript-inspector, and distill are untouched; the state is client-local and
+   * session-ephemeral. Wired from the strip's `mute-system-stream` verb (see dev-entry.ts / mount.ts);
+   * flips the flag and re-paints synchronously (no query, no re-hydrate — the live-feed discipline).
+   */
+  toggleSystemStream(): void {
+    this.systemStreamMuted = !this.systemStreamMuted
+    this.render()
+  }
+
   /** Re-derive the live session and re-hydrate every block query, then render. */
   async refresh(): Promise<void> {
     if (!this.surface) return
@@ -152,7 +167,7 @@ export class Hud {
     // live strip reads as a distinct layer beneath them. Absent (idle, nothing to say) ⇒ panel unchanged.
     const nowMs = this.clock().getTime()
     this.transcriptLines = pruneTranscript(this.transcriptLines, nowMs)
-    const feed = renderLiveTranscript(this.transcriptLines, { live: now.live, nowMs })
+    const feed = renderLiveTranscript(this.transcriptLines, { live: now.live, nowMs, systemMuted: this.systemStreamMuted })
     this.onRender(feed ? { ...panel, children: [...panel.children, feed] } : panel)
   }
 

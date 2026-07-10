@@ -273,7 +273,9 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     ...(resolvedSurfaceId !== undefined ? { surfaceId: resolvedSurfaceId } : {}),
     onRender: (node) => {
       if (!mounted) {
-        mountSurface(panel, node, { copy, markDone, accept, dismiss })
+        // #96: the system-stream mute is a client-local display toggle — flips Hud state + re-paints,
+        // no network. The delegated listener lives on the container, so it survives every re-render.
+        mountSurface(panel, node, { copy, markDone, accept, dismiss, muteSystemStream: () => hud.toggleSystemStream() })
         mounted = true
       } else {
         renderInto(panel, node)
