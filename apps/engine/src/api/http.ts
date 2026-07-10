@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type Pin, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, type DistillOptions } from '../distill/index.js'
+import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
@@ -15,7 +15,7 @@ import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
-import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
@@ -75,6 +75,8 @@ interface HandlerContext {
   workflow: WorkflowDocuments
   hints: HintsDocuments
   queue: CaptureQueue
+  /** In-memory ring of recent ephemeral transcript updates (#101) — the diagnostics inspector's honest v0 source. */
+  transcripts: TranscriptRing
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
   models: LocalModelStore
@@ -488,6 +490,11 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
   // Ephemeral transcript fast-path (#58): rebroadcast the live feed to WS clients. Never persisted.
   bus.subscribe('transcript.updated', (update) => ws.broadcast('transcript.updated', update))
+  // Diagnostics inspector (#101): remember the last N ephemeral updates in an in-memory ring so the
+  // diagnostics app's transcription inspector can render the recent feed on a surface (it was ssh-only).
+  // Fed off the SAME bus event — no new persistence path; the ring is process-scoped and cleared on restart.
+  const transcripts = new TranscriptRing()
+  bus.subscribe('transcript.updated', (update) => transcripts.record(update))
   bus.subscribe('moment.created', (moment) => ws.broadcast('moment.created', moment))
   bus.subscribe('entity.updated', (entity) => ws.broadcast('entity.updated', entity))
   // Fast-field fan-out (#61): rebroadcast a field's latest value the instant it lands (mirrors the #58
@@ -505,7 +512,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('guard.hold.updated', (hold) => ws.broadcast('guard.hold.updated', hold))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, hints: hintsDocs, queue, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, hints: hintsDocs, queue, transcripts, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -1495,11 +1502,47 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
   if (errors.length > 0) return send(res, 400, { error: 'invalid BlockQuery', details: errors })
   const query = body as BlockQuery
   const boundWorkspace = surfaceId !== null ? ctx.surfaces.get(surfaceId)?.workspaceId : undefined
-  // The `queue` source is operational engine state (the live backlog/ETA/last-failure), not a store
-  // record, so inject the queue's status() snapshot for that source; every other source reads through
-  // store/ (see compileQuery / QuerySources). status() is async, so it is awaited only when needed.
-  const sources = query.source === 'queue' ? { queueStatus: await ctx.queue.status() } : {}
+  // Injected sources are operational/computed engine state, NOT store records (the `queue` pattern): built
+  // by the route and handed to compileQuery for exactly the source that needs them. status() and the ring
+  // are cheap, but async status() is awaited only when needed. Every other source reads through store/.
+  const sources = await buildQuerySources(query, ctx)
   send(res, 200, compileQuery(ctx.store, query, new Date(), sources, boundWorkspace))
+}
+
+/**
+ * The stt slot as the inspector's SttSlotEndpoint list — the CURRENT config (endpoint · model), the honest
+ * separate line the inspector renders since per-chunk stt provenance is not recorded (#65). Empty stt slot
+ * ⇒ [] (the block renders "stt slot: none configured"). Reads only endpoint name + model — never a secret.
+ */
+function sttSlotEndpoints(fabric: Fabric): SttSlotEndpoint[] {
+  return fabric.slots.stt.map((e) => ({ endpoint: e.name, ...(e.model !== undefined && e.model !== '' ? { model: e.model } : {}) }))
+}
+
+/**
+ * Build the injected QuerySources for a query, per source (the `queue` operational-state pattern extended to
+ * #101's `transcript` inspector + `senses` gate chains). Each arm is operational/computed engine state, not a
+ * store record, so the route composes it and compileQuery just wraps it into the QueryResult. A source that
+ * needs no injection returns {} (unchanged behavior).
+ */
+async function buildQuerySources(query: BlockQuery, ctx: HandlerContext): Promise<QuerySources> {
+  if (query.source === 'queue') return { queueStatus: await ctx.queue.status() }
+  if (query.source === 'transcript') {
+    return { transcript: { chunks: ctx.transcripts.recent(), sttSlot: sttSlotEndpoints(ctx.fabric.load()), ringLimit: ctx.transcripts.capacity } }
+  }
+  if (query.source === 'senses') {
+    // The SAME pure verdict the Status-section render uses (flags + fabric + the queue's last classified
+    // failure), WITHOUT the live checkEndpoint probe GET /senses affords — the block re-hydrates often, so a
+    // per-refresh network probe would be wrong here; the health gate leans on lastFailure alone (disclosed).
+    const status = await ctx.queue.status()
+    return {
+      senseGates: evaluateSenseGates({
+        flags: readFlags(ctx.store),
+        fabric: ctx.fabric.load(),
+        ...(status.lastFailure ? { lastFailure: status.lastFailure } : {}),
+      }),
+    }
+  }
+  return {}
 }
 
 /**

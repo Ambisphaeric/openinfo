@@ -56,6 +56,14 @@
         {
           "const": "queue",
           "type": "string"
+        },
+        {
+          "const": "transcript",
+          "type": "string"
+        },
+        {
+          "const": "senses",
+          "type": "string"
         }
       ]
     },

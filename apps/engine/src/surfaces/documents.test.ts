@@ -32,10 +32,10 @@ test('SurfaceDocuments.list enumerates the seeded HUD plus user surfaces', async
   try {
     const docs = new SurfaceDocuments(store)
     docs.ensureDefaults()
-    assert.deepEqual(docs.list().map((s) => s.id), ['surf-openinfo-hud'])
+    assert.deepEqual(docs.list().map((s) => s.id).sort(), ['surf-openinfo-diagnostics', 'surf-openinfo-hud'])
 
     docs.save({ ...defaultHudSurface, id: 'surf-mine', name: 'My HUD', version: 1 })
-    assert.deepEqual(docs.list().map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-hud'])
+    assert.deepEqual(docs.list().map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-diagnostics', 'surf-openinfo-hud'])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })

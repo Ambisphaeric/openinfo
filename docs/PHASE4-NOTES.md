@@ -3734,3 +3734,42 @@ show duplicated overlap text (there is no overlap). The engine queue files (para
   rotation wiring, but the true getUserMedia/AudioContext path is exercised by the harness + live QA.
 - The harness manual-gate release-checklist row (#31) is documented, not yet wired into a script gate.
 - overlap+merge and streaming STT remain future candidates; the harness measures both against the same WER.
+
+## Slice: the diagnostics app — transcription inspector + gate chains on a seeded surface  *(M5→apps+qa, #101, branch feat/101-diagnostics-app, 2026-07-10)*
+
+The HUD-as-testing-tool v0: `surf-openinfo-diagnostics`, a debugger app the user runs BESIDE a
+real app (the multi-window Apps folder). The transcript-garbage QA round was diagnosable only
+over ssh; this surface puts the exact probes on a surface.
+
+### What shipped
+- **Transcription inspector** (the headline): contract `TranscriptInspector` + `SttSlotEndpoint`
+  (api/payloads.ts, schemas regenerated); an in-memory `TranscriptRing` in the engine fed off the
+  SAME `transcript.updated` bus event as the WS fast-path (process-scoped, last-N, cleared on
+  restart — no new persistence path); the `transcript` query source injects the ring + the
+  CURRENT stt slot config via the /query route (the `queue` operational-state pattern, now
+  factored as `buildQuerySources`); the client `transcript-inspector` block renders newest-first
+  chunk rows (clock · stream mic=me/sys=them · duration · raw text) plus a labelled stt-slot
+  line and a retention disclosure. HONESTY RULE HELD: per-chunk stt provenance is NOT recorded
+  anywhere (the disclosed #65 gap) — the block renders the slot as CURRENT CONFIG, never a
+  per-chunk claim, and says so in text.
+- **Sense-gates block**: the #7 per-sense gate chain as a block — the `senses` query source
+  injects the SAME `evaluateSenseGates` verdict GET /senses serves, WITHOUT the live endpoint
+  probe (the block re-hydrates often; health leans on the queue's last classified failure,
+  disclosed in a scope line). Client block renders per sense: all-clear with the chain
+  summarized, or the FIRST blocking gate + its one-step fix.
+- **Seeded surface** (`defaults.ts` + ensureDefaults + editor defaults): inspector (top 12) +
+  sense-gates + the queue/lag block. Window px: deliberately the FRAMED `app` chrome — a
+  debugger is a tool the user wants in screenshots/screen-share (no content protection),
+  resizable, NOT floating always-on-top over the app it diagnoses (the exact inverse of the
+  #100 fields panel's glass choice, both stated in window-options.ts).
+- Block union grew `transcript-inspector` + `sense-gates` (+ editor defaultBlockFor arms +
+  enumeration test); sources grew `transcript` + `senses` (query.ts arms explainable-empty when
+  uninjected).
+
+### Disclosed
+- The ring is a glance, not a log: last N per process, not persisted; the durable stream stays
+  the distillate block.
+- Sense gates on the surface skip the live endpoint probe GET /senses affords (stated in the
+  block's scope line).
+- The implementing agent hit the org spend limit mid-slice; finished inline (editor arms +
+  enumeration, sense-gates renderer + tests, seeded surface, window px, list-test updates, docs).

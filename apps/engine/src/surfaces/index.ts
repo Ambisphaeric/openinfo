@@ -1,6 +1,6 @@
 export { SurfaceDocuments } from './documents.js'
-export { defaultHudSurface, defaultGlassMinimalSurface } from './defaults.js'
-export { compileQuery } from './query.js'
+export { defaultHudSurface, defaultGlassMinimalSurface, defaultDiagnosticsSurface } from './defaults.js'
+export { compileQuery, type QuerySources } from './query.js'
 export { ItemSignalStore } from './signals.js'
 export { firstRunNotice, type SetupData } from './setup/view.js'
 export { renderSurfaceEditorPage, defaultBlockFor, blockTypeNames, blockRowHtml, type SurfaceEditorData } from './setup/surface-editor.js'

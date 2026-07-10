@@ -12,6 +12,8 @@ import { renderTeach } from './teach.js'
 import { renderDistillates } from './distillates.js'
 import { renderFields } from './fields.js'
 import { renderQueue } from './queue.js'
+import { renderTranscriptInspector } from './transcript-inspector.js'
+import { renderSenseGates } from './sense-gates.js'
 import { renderCustom } from './custom.js'
 
 export { momentGlyph, entityGlyph } from './glyphs.js'
@@ -37,5 +39,7 @@ export const defaultBlockRegistry: BlockRegistry = {
   distillates: renderDistillates,
   fields: renderFields,
   queue: renderQueue,
+  'transcript-inspector': renderTranscriptInspector,
+  'sense-gates': renderSenseGates,
   custom: renderCustom,
 }

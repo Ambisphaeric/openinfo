@@ -3,11 +3,12 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Distillate, Draft, Moment, Pin, QueueStatus, RelevantEntity, Session, TeachSignal, TodoItem, TodoList } from '@openinfo/contracts'
+import type { Distillate, Draft, Moment, Pin, QueueStatus, RelevantEntity, Session, TeachSignal, TodoItem, TodoList, TranscriptInspector } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { TodoDocuments } from '../act/index.js'
 import { TeachStore, type HintCandidate } from '../teach/index.js'
 import { compileQuery } from './query.js'
+import type { SenseGateChain } from './settings/sense-gates.js'
 
 const moment = (id: string, sessionId: string, at: string, refs: string[] = []): Moment => ({
   id, sessionId, workspaceId: 'ws-q', at, kind: 'decision', text: `moment ${id}`, refs, source: 'mic', confidence: 0.8,
@@ -306,6 +307,55 @@ test('compileQuery resolves the queue source from the INJECTED status snapshot (
     const none = compileQuery(store, { source: 'queue', params: {} })
     assert.deepEqual(none.items, [])
     assert.equal(none.truncated, false)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileQuery resolves the transcript source from the INJECTED inspector snapshot (one row), else explainable-empty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-transcript-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // the transcript source is operational/config engine state, not a store record: the route injects the
+    // TranscriptInspector snapshot (recent ephemeral ring + current stt slot) via `sources`. ONE row.
+    const snapshot: TranscriptInspector = {
+      ringLimit: 50,
+      sttSlot: [{ endpoint: 'whisper-cpp', model: 'ggml-base.en' }],
+      chunks: [{ sessionId: 's-1', source: 'mic', text: 'hello there', capturedAtRange: { start: '2026-07-07T14:40:00Z', end: '2026-07-07T14:40:02Z' } }],
+    }
+    const resolved = compileQuery(store, { source: 'transcript', params: {} }, new Date(), { transcript: snapshot })
+    assert.equal(resolved.source, 'transcript')
+    assert.equal(resolved.items.length, 1)
+    assert.deepEqual(resolved.items[0], snapshot) // the whole snapshot round-trips as the single row
+    assert.equal(resolved.truncated, false)
+
+    // no snapshot injected (a unit caller) ⇒ [] explainable-empty, never an error
+    const none = compileQuery(store, { source: 'transcript', params: {} })
+    assert.deepEqual(none.items, [])
+    assert.equal(none.truncated, false)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileQuery resolves the senses source from the INJECTED gate chains, else explainable-empty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-senses-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // the senses source is computed engine state (GET /senses' verdict), not a store record: the route
+    // evaluates the chains from live flags/fabric/last-failure and injects them. One row per sense.
+    const chains: SenseGateChain[] = [
+      { sense: 'mic', label: 'Microphone', gates: [{ id: 'distill.enabled', label: 'Distill enabled', pass: false, fix: 'Enable distill' }], blocking: { id: 'distill.enabled', label: 'Distill enabled', pass: false, fix: 'Enable distill' } },
+      { sense: 'sys-audio', label: 'System audio', gates: [{ id: 'distill.enabled', label: 'Distill enabled', pass: true }] },
+    ]
+    const resolved = compileQuery(store, { source: 'senses', params: {} }, new Date(), { senseGates: chains })
+    assert.equal(resolved.source, 'senses')
+    assert.deepEqual(resolved.items, chains) // one row per sense, in order
+
+    // not injected (a unit caller) ⇒ [] explainable-empty
+    assert.deepEqual(compileQuery(store, { source: 'senses', params: {} }).items, [])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })

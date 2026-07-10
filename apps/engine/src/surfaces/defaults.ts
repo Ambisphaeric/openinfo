@@ -78,3 +78,22 @@ export const defaultGlassMinimalSurface: Surface = {
     },
   ],
 }
+
+/**
+ * The diagnostics app (#101) — the HUD-as-testing-tool v0. The transcript-garbage QA round was diagnosable
+ * only over ssh; this surface puts the exact probes on a surface: the transcription inspector (recent
+ * ephemeral chunks + the CURRENT stt slot, with the #65 per-chunk-provenance gap disclosed), the per-sense
+ * gate chains (#7 as a block), and the queue status/lag block. A debugger the user runs BESIDE a real app
+ * (the multi-window Apps folder, #19/#98).
+ */
+export const defaultDiagnosticsSurface: Surface = {
+  id: 'surf-openinfo-diagnostics',
+  name: 'Diagnostics',
+  context: 'any',
+  version: 1,
+  stack: [
+    { block: 'transcript-inspector', show: 'always', top: 12, query: { source: 'transcript', params: {}, top: 1 } },
+    { block: 'sense-gates', show: 'always', query: { source: 'senses', params: {}, top: 3 } },
+    { block: 'queue', show: 'always', query: { source: 'queue', params: {}, top: 1 } },
+  ],
+}

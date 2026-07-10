@@ -130,6 +130,10 @@ export interface SurfaceWindowConfig {
 export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   'surf-openinfo-hud': { chrome: 'hud' },
   'surf-glass-minimal': { chrome: 'hud', width: 520 },
+  // The #101 diagnostics app: deliberately the FRAMED `app` chrome, not glass — a debugger is a tool the
+  // user wants visible in screenshots/screen-share (no content protection), resizable, and focusable while
+  // they poke at the pipeline; it must NOT float always-on-top over the app it is diagnosing.
+  'surf-openinfo-diagnostics': { chrome: 'app', width: 560 },
 }
 
 /** The window config for a surface id — its explicit entry, else the disclosed `'app'` default. */

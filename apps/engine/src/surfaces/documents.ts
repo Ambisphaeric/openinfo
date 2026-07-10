@@ -1,6 +1,6 @@
 import type { Surface } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { defaultHudSurface } from './defaults.js'
+import { defaultHudSurface, defaultDiagnosticsSurface } from './defaults.js'
 
 const SURFACE_KIND = 'surface'
 
@@ -14,8 +14,10 @@ export class SurfaceDocuments {
   constructor(private readonly store: WorkspaceRegistry) {}
 
   ensureDefaults(): void {
-    if (!this.store.layouts.getLatest<Surface>(SURFACE_KIND, defaultHudSurface.id)) {
-      this.store.layouts.put(SURFACE_KIND, defaultHudSurface.id, defaultHudSurface)
+    for (const doc of [defaultHudSurface, defaultDiagnosticsSurface]) {
+      if (!this.store.layouts.getLatest<Surface>(SURFACE_KIND, doc.id)) {
+        this.store.layouts.put(SURFACE_KIND, doc.id, doc)
+      }
     }
   }
 

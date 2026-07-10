@@ -50,6 +50,10 @@ export const defaultBlockFor = (type: string): Block => {
       return { block: 'fields', show: 'on-match', query: { source: 'fields', params: { session: 'current' }, top: 8 } }
     case 'queue':
       return { block: 'queue', show: 'always', query: { source: 'queue', params: {}, top: 1 } }
+    case 'transcript-inspector':
+      return { block: 'transcript-inspector', show: 'always', query: { source: 'transcript', params: {}, top: 1 } }
+    case 'sense-gates':
+      return { block: 'sense-gates', show: 'always', query: { source: 'senses', params: {}, top: 1 } }
     case 'ask':
       return { block: 'ask' }
     case 'custom':
