@@ -11,7 +11,7 @@ import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
-import { CaptureQueue } from '../queue/spool.js'
+import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
 import { SurfaceDocuments, compileQuery, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, type SetupData } from '../surfaces/index.js'
@@ -166,6 +166,13 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     const raw = Number(process.env['OPENINFO_NO_SPEECH_THRESHOLD'])
     return Number.isFinite(raw) && raw >= 0 && raw <= 1 ? raw : DEFAULT_NO_SPEECH_THRESHOLD
   })()
+  // Age-shed horizon (#70): the queue drops backlog older than this many minutes so a live session renders
+  // the present. Default DEFAULT_MAX_AGE_MINUTES (10); OPENINFO_QUEUE_MAX_AGE_MINUTES overrides it with a
+  // finite >= 0 value (0 disables shedding). Resolved once at wiring time — tunable without a rebuild.
+  const queueMaxAgeMinutes = ((): number => {
+    const raw = Number(process.env['OPENINFO_QUEUE_MAX_AGE_MINUTES'])
+    return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_MAX_AGE_MINUTES
+  })()
   const runTranscribe = async (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> => {
     const segments: { sessionId: string; source: CaptureChunk['source']; text: string; capturedAt: string }[] = []
     // Skipped-as-silence accounting (#69): count windows fully filtered to nothing and total segments
@@ -267,6 +274,15 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
       const policy = raw === 'degrade' ? 'degrade-cadence' : raw === 'drop' ? 'drop' : 'queue-for-idle'
       return { policy, enforced: policy === 'queue-for-idle' }
     },
+    // Freshness-first drain (#70), READ-ONLY like the seams above (zero store import in the queue):
+    // isSessionLive — a live capture session for the default workspace flips the drain to newest-first so
+    // the surface renders the present, not a stalled backlog; at idle it stays oldest-first FIFO. The
+    // 'default' workspace matches every other liveSession call site in this file (the HUD's Now line).
+    () => store.liveSession('default') !== undefined,
+    // maxAgeMinutes — the age-shed horizon: backlog whose newest activity is older than this is dropped
+    // (with accounting), never processed into a live session's past. OPENINFO_QUEUE_MAX_AGE_MINUTES
+    // overrides the default at wiring time (tunable without a rebuild); <= 0 disables shedding entirely.
+    queueMaxAgeMinutes,
   )
 
   // Act v0 (the first Act node): the follow-up draft. It rides session END, not the chunk drain —

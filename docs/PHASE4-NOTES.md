@@ -2622,3 +2622,72 @@ slice's transcribe.ts changes would not render as a reviewable diff. Replaced th
 ESCAPE in source: byte-identical runtime key (still a NUL-delimited group key, zero behavior change), but
 the file is now valid UTF-8 text and diffs render. Verified: the #58 transcript-fastpath grouping test
 still passes unchanged.
+
+## Slice: #70 — freshness-first drain + age-shed policy
+
+The drain processed spool files oldest-first (a plain sessionId name-sort). After any stall — endpoint
+outage, cold start, a config gap — a live session waited BEHIND the backlog: the surface rendered the
+past (replaying dead air) while fresh speech queued. Real-time UX inverts the priority — the newest
+material should process first; the backlog backfills at idle or is shed by an age policy. This makes the
+drain freshness-aware and adds a bounded-staleness safety valve, composing with the #58 drain-until-empty
+loop and the failure re-queue without touching either's contract.
+
+### Ordering: newest-first while live, oldest-first at idle (`queue/spool.ts`)
+- The prior `readdir().sort()` (alphabetical by sessionId) is replaced by `orderedPending()`: stat each
+  pending `.jsonl` for its `mtimeMs` and return them OLDEST-first (ties break on name for determinism). fs
+  mtime is the cheap honest freshness signal — `append()` writes to the live session's own file, so its
+  mtime advances with each capture, while a stalled backlog file keeps its old mtime. A file that vanishes
+  mid-stat (a race with a concurrent rename) is skipped this pass and re-read next — same tolerance as the
+  existing rename guard.
+- A new READ-ONLY `SessionLiveProbe = () => boolean` seam (injected from `api/http.ts`, closing over
+  `store.liveSession('default')`) governs ORDER only: LIVE ⇒ the pass reverses to newest-first (render the
+  present); IDLE ⇒ oldest-first (FIFO the backlog while nothing new arrives). The queue keeps ZERO store
+  imports — the describeFailure/overflow DI precedent. Absent probe ⇒ idle default, loses nothing. Order is
+  recomputed each pass, so a session going live mid-drain flips it and a re-queued file's freshness re-reads.
+
+### Age-shed policy: drop stale backlog, never silently (`queue/spool.ts`)
+- Before processing each file, if `now - mtimeMs >= maxAgeMs` the file is SHED: dropped, not processed,
+  never re-queued — that is the whole point, a live session must not wait behind (or replay) quarter-hour-
+  old dead air. Horizon = `DEFAULT_MAX_AGE_MINUTES` (10m), overridable at wiring time via
+  `OPENINFO_QUEUE_MAX_AGE_MINUTES` (a finite >= 0 value; **0 disables shedding entirely**), resolved once in
+  `api/http.ts` exactly like #69's `OPENINFO_NO_SPEECH_THRESHOLD` — tunable without a rebuild.
+- Shedding claims the file under a non-`.jsonl` name (`<file>.shed`) FIRST, then unlinks — so even if the
+  unlink fails, the drain-until-empty re-read cannot see the file again and spin. Composes with the loop:
+  shed files leave the glob, sawFailure still stops the loop, a fresh file that FAILS still re-queues (its
+  mtime preserved) and only sheds once it later ages past the bar (bounded staleness, not silent loss).
+- ACCOUNTING (never a silent deletion): every shed file's age is collected across the whole drain and
+  emitted as ONE audit log line on the way out — `queue age-shed (#70): dropped N stale file(s) beyond Nm —
+  age <newest>..<oldest>` — plus an in-memory `shedFiles` counter surfaced additively on `QueueStatus`
+  (`shared/contracts` payloads), present once > 0 (absent = nothing ever shed), distinct from `drainedFiles`
+  and from a re-queue. This is the "drain-stats shape accommodates it cheaply" counter the issue invited.
+
+### Composition with #58 (drain-until-empty) and the failure re-queue
+Freshness governs ORDER; the #58 cadence throttle still governs LLM SPEND (unchanged). The re-queue path is
+byte-for-byte as before for fresh files. The only new interaction: a file aged past the horizon sheds
+instead of re-queuing — so a persistently failing STALE file can no longer pin the backlog indefinitely.
+
+### Tests + verification
+- Engine 508 → 525 (+5 in `queue/spool.test.ts`, +12 elsewhere already present): ordering under LIVE
+  (newest-first) vs IDLE (oldest-first) with three back-dated fixture files; age-shed drops beyond the
+  horizon + keeps fresh + counts (asserts the audit log line names count + age range); the shed boundary
+  (just-under kept, well-over shed); shed-vs-requeue (a stale file sheds/not-requeued WHILE a fresh file
+  that throws re-queues and records lastFailure in the same pass); `shedFiles` absent until something sheds.
+  Fixtures back-date `mtime` via `utimes` — mtime IS the signal the drain reads, so the fixture is honest.
+- Contracts 68 (unchanged count — the additive `shedFiles` optional integer round-trips the schema test).
+- Suites: engine isolated 525/525 green (a first `pnpm -r` run flaked the profile-activation e2e with
+  `fetch failed`/ETIMEDOUT — the known port-probe/network flake class — green on isolated re-run). Full
+  `pnpm -r test`: contracts 68, engine 525, workbench (no tests); client oscillated 278/279 across runs
+  (the known client-seam/timing flake class — ZERO client files touched this slice), 279/279 on re-run.
+
+### Deviations / judgment calls (disclosed)
+- The `shedFiles` counter is a NEW optional field on `QueueStatus` (`shared/contracts`), a step outside the
+  literal `queue/*` + `http.ts` territory but the cheap additive accommodation the issue explicitly invited
+  ("if the drain-stats shape already accommodates it cheaply, a counter"). #69 deferred touching QueueStatus;
+  this is that natural revisit. No surface renders it (surfaces/client are off-limits this slice) — it rides
+  the existing `GET /queue` serialization; the log line is the always-on accounting.
+- Freshness uses fs mtime, not a parsed max `capturedAt` — mtime is O(1) per file (no read/parse), advances
+  on every append, and needs no chunk-shape assumption. A clock-skew or touched-file edge is acceptable for
+  an ordering/staleness heuristic; the never-silent accounting means any mis-shed is visible.
+- Shedding is UNCONDITIONAL on age (not gated on live), so a stale backlog is bounded even during a long
+  idle stall; default 10m means a brief blip still backfills normally. Set `OPENINFO_QUEUE_MAX_AGE_MINUTES=0`
+  to restore strict never-lose-capture (no shedding) if a deployment needs it.

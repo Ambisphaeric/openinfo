@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
@@ -161,6 +161,132 @@ test('no overflow provider → the field is absent (additive/optional)', async (
   try {
     const status = await new CaptureQueue(dir).status()
     assert.equal(status.overflow, undefined)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// --- #70 freshness-first drain + age-shed policy -----------------------------------------------
+// A pending spool file for `sessionId` whose last-activity time is `ageMs` in the past. Writing the file
+// then back-dating its mtime is the honest fixture: mtime is exactly the freshness signal the drain reads.
+const seedFile = async (dir: string, sessionId: string, ageMs: number): Promise<void> => {
+  const path = join(dir, `${sessionId}.jsonl`)
+  await writeFile(path, `${JSON.stringify(mk({ id: sessionId, sessionId }))}\n`, 'utf8')
+  const when = new Date(Date.now() - ageMs)
+  await utimes(path, when, when)
+}
+
+test('drain orders newest-first while a session is LIVE, oldest-first at idle (#70)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  try {
+    // maxAgeMinutes 60 so these seconds-old fixtures never shed — this test is about ORDER alone.
+    const seedThree = async () => {
+      await seedFile(dir, 'sess-old', 30_000)
+      await seedFile(dir, 'sess-mid', 20_000)
+      await seedFile(dir, 'sess-new', 10_000)
+    }
+
+    await seedThree()
+    const liveOrder: string[] = []
+    const liveQueue = new CaptureQueue(
+      dir, async (chunks) => { liveOrder.push(String(chunks[0]?.sessionId)) },
+      undefined, undefined, undefined, () => true, 60,
+    )
+    await liveQueue.drainNow(() => undefined)
+    assert.deepEqual(liveOrder, ['sess-new', 'sess-mid', 'sess-old'], 'live → newest first (render the present)')
+
+    await seedThree()
+    const idleOrder: string[] = []
+    const idleQueue = new CaptureQueue(
+      dir, async (chunks) => { idleOrder.push(String(chunks[0]?.sessionId)) },
+      undefined, undefined, undefined, () => false, 60,
+    )
+    await idleQueue.drainNow(() => undefined)
+    assert.deepEqual(idleOrder, ['sess-old', 'sess-mid', 'sess-new'], 'idle → oldest first (FIFO the backlog)')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('age-shed drops backlog beyond the horizon, keeps fresh files, and counts it (#70)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  try {
+    await seedFile(dir, 'stale', 5 * 60_000) // 5m old → beyond the 1m horizon → shed
+    await seedFile(dir, 'fresh', 5_000) // 5s old → processed
+    const processed: string[] = []
+    const logs: string[] = []
+    const queue = new CaptureQueue(
+      dir, async (chunks) => { processed.push(String(chunks[0]?.sessionId)) },
+      undefined, undefined, undefined, () => false, 1,
+    )
+    await queue.drainNow((line) => logs.push(line))
+    assert.deepEqual(processed, ['fresh'], 'only the fresh file is processed; the stale one never reaches the processor')
+    const status = await queue.status()
+    assert.equal(status.shedFiles, 1, 'the stale file is counted as shed')
+    assert.equal(status.drainedFiles, 1)
+    assert.equal(status.pendingFiles, 0, 'the shed file is gone from the spool, not re-queued')
+    assert.ok(
+      logs.some((line) => /age-shed/.test(line) && /dropped 1 stale file\(s\)/.test(line) && /age /.test(line)),
+      `an audit line names the count + age range — got: ${JSON.stringify(logs)}`,
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('age-shed boundary: just-under the horizon is kept, well-over is shed (#70)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  try {
+    await seedFile(dir, 'under', 90_000) // 1.5m < 2m horizon → kept
+    await seedFile(dir, 'over', 180_000) // 3m > 2m horizon → shed
+    const processed: string[] = []
+    const queue = new CaptureQueue(
+      dir, async (chunks) => { processed.push(String(chunks[0]?.sessionId)) },
+      undefined, undefined, undefined, () => false, 2,
+    )
+    await queue.drainNow(() => undefined)
+    assert.deepEqual(processed, ['under'], 'the file just under the horizon is processed')
+    assert.equal((await queue.status()).shedFiles, 1, 'the file over the horizon is shed')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a shed file is NOT re-queued; a fresh file that FAILS still re-queues (#70)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  const failure: QueueFailure = {
+    class: 'model-load',
+    endpoint: 'lm-studio',
+    hint: 'model failed to load — pick a smaller/loaded model',
+    at: '2026-07-09T14:05:00Z',
+  }
+  try {
+    await seedFile(dir, 'stale', 5 * 60_000) // beyond 1m → shed (never re-queued)
+    await seedFile(dir, 'fresh', 5_000) // fresh → processor throws → re-queued
+    const queue = new CaptureQueue(
+      dir,
+      async () => { throw new Error('invoke blew up') },
+      async (_error, at) => ({ ...failure, at }),
+      undefined, undefined, () => false, 1,
+    )
+    await queue.drainNow(() => undefined)
+    const status = await queue.status()
+    assert.equal(status.shedFiles, 1, 'the stale file is shed, not re-queued')
+    assert.equal(status.pendingFiles, 1, 'the fresh file failed and is safe — re-queued')
+    assert.equal(status.drainedFiles, 0)
+    assert.equal(status.lastFailure?.class, 'model-load', 'the fresh failure is still classified')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('shedFiles is absent until something is shed (additive) (#70)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-queue-'))
+  try {
+    const queue = new CaptureQueue(dir, async () => undefined)
+    await queue.append(chunk) // freshly appended → well within the default horizon → never shed
+    await queue.drainNow(() => undefined)
+    assert.equal((await queue.status()).shedFiles, undefined)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
