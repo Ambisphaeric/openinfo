@@ -3924,3 +3924,65 @@ no contract change.
 - `index/resolve.test.ts` +2 (NaN guard, signal clamp); `store/workspaces.test.ts` +2 (create-marking
   silent + still-provisional). `pnpm -r build` + engine suite 643/643 green (known load-flakes re-run
   isolated).
+
+## Slice: split STT and distill onto independent drain tracks  *(#115, branch feat/115-stt-drain-split, 2026-07-10)*
+
+**Problem.** One CaptureQueue with a single-flight drain ran transcribe → distill → moments →
+fields → judge sequentially per pass — once a distill window came due, no new audio could be
+transcribed until the whole LLM chain returned. Cold boot was the worst case (first cadence
+release fires moments+fields+judge against a non-resident model), producing a live-transcript
+freeze, garbled early text distilled into moments, then a backlog dump.
+
+**Design.** Two independent tracks. The audio queue keeps `queue/`; a SECOND CaptureQueue at
+`queue-text/` carries transcribed utf8 CaptureChunks — a transcribed segment already IS a valid
+CaptureChunk, so the persisted text stream reuses all existing spool machinery (per-track
+single-flight, freshness-first ordering, age-shed, overflow/ETA) with zero contract change.
+Audio track: focus-observe + transcribe + the #58 live fast-path + append-to-text-queue; never
+awaits an LLM. Text track: `distillThrottled` (distill/moments/fields/judge) on its own loop;
+`DistillCadence` unchanged. `drainBoth` sequences audio-then-text at session-end flush.
+`surfacedQueueStatus` merges the most-recent `lastFailure` across tracks so distill failures
+still surface on GET /queue, Status, and /senses. The calendar collector's first sample is
+gated behind `firstTranscriptSeen` with a grace-window fallback (cold boot no longer pops
+Calendar.app mid-first-session; the privacy gate still outranks readiness). The
+workflow-executor path (`workflow.enabled`) runs its `runDrain` on the text queue over
+already-transcribed chunks — its transcribe step is a natural passthrough on text.
+
+**Tests.** `api/stt-distill-split.test.ts` — STT keeps flowing while the distill track is
+parked on a gated fake LLM (no shared lock; audio drains to 0, text stays bounded); cold boot
+with a slow model warmup never gaps the live transcript by more than one chunk interval. Both
+drive the real `createEngineApp` drain with fake STT/LLM HTTP servers, no drain mocks.
+`route/calendar.test.ts` +3: readiness gate holds/releases/never-overrides-privacy. Suites at
+the PR: contracts 79 / client 354 / engine 648.
+
+**Deferred.** Full soak stays with #22/#67 (bounded-queue assertions here); per-track retry
+granularity remains the #6 story.
+
+## Slice: cross-source sighting correlation feeds resolver corroboration  *(#74, branch feat/74-cross-source-correlation, 2026-07-10)*
+
+**Problem.** The #72 resolver's `crossSourceCorroboration` was a neutral-1.0 input with no
+producer — heard+seen evidence (the uniquely-openinfo signal) never reached the score.
+
+**Design.** `index/correlate.ts`, a pure windowed correlator: `overlapsWindow` (OCR capture
+instant inside the heard window ± slack, NaN-safe), `ocrForms`/`ocrTextForms` (separator AND
+path-component splitting — "acme/pi.dev" yields "pi.dev"), `correlate`/`correlateWindow`
+(max `nameSimilarity` across heard×OCR forms → the corroboration multiplier at the resolver's
+clamp ceiling + a typed `seen` Sighting). Wired at the distiller upsert seam — reads
+`store.listOcrResults` once per window and passes `signals` + `crossSighting` into
+`upsertEntity`; consumes the PERSISTED OcrResult stream, so it is drain-timing-independent by
+construction (#115-safe). Store side: a corroborated resolver LINK is stamped `confirmed` via
+the `linked && corroborated` branch in `stampResolution` — NOT a resolver band (bands are
+auto/provisional/new); corroboration promotes a genuine link, never a bare create — and the
+heard form is taught to `heardAs` with both sightings recorded, idempotent on replay. Zero
+contract change: entity v2 (#73) already carried Sighting/heardAs/signals.
+
+**Tests.** `index/correlate.test.ts` (9: window in/out/non-finite, form splitting/dedup,
+heard-only/seen-only neutral, same-window boost+sighting, adjacent-outside no boost,
+createdAt fallback); `store/workspaces.test.ts` +2 (provisional→confirmed + alias taught;
+repeat corroboration idempotent — the promotion test tightens autoBand to 0.95 because
+"pie dev"→"pi.dev" ≈0.92 auto-links at default bands without help);
+`distill/correlate-e2e.test.ts` (mangle + same-window OCR → confirmed + taught through the
+real distiller, default bands). Suites at the PR: contracts 79 / client 354 / engine 655.
+
+**Process note (rule 7).** These two rows landed in a follow-up docs commit, not in PRs
+#120/#119 themselves — recorded in RETRO entry 26; the contribution standard requires docs in
+the same change, and the miss was caught by the fresh-eyes verify.
