@@ -111,6 +111,10 @@ test('recognizes a screen frame via the fabric ocr slot → OcrResult + distilla
       assert.equal(stored[0]!.provenance.model, 'pp-ocrv4')
       assert.equal(stored[0]!.blocks?.length, 2)
       assert.deepEqual(stored[0]!.blocks?.[0]?.region, { x: 12, y: 8, width: 168, height: 22 })
+      // #102 keep-time: the record carries the frame's TRUE capture instant, distinct from createdAt
+      // (processing time) — so a direct OcrResult consumer never presents delayed OCR as real-time.
+      assert.equal(stored[0]!.capturedAt, '2026-07-08T10:00:00.000Z', 'capturedAt = the frame capture instant')
+      assert.equal(stored[0]!.createdAt, '2026-07-08T10:00:01.000Z', 'createdAt = when recognition finished (later)')
 
       const distilled = store.listDistillates('default')
       assert.equal(distilled.length, 1)
