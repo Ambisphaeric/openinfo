@@ -3986,3 +3986,66 @@ real distiller, default bands). Suites at the PR: contracts 79 / client 354 / en
 **Process note (rule 7).** These two rows landed in a follow-up docs commit, not in PRs
 #120/#119 themselves — recorded in RETRO entry 26; the contribution standard requires docs in
 the same change, and the miss was caught by the fresh-eyes verify.
+
+## Slice: drive the privacy gate + evidence wiring at the distiller seam  *(M5→qa, #91, branch qa/91-distiller-seam, 2026-07-10)*
+
+A pure QA slice. The #64 egress threading, the #63 guard interception, and the #73/#74 evidence
+population were each tested at the layer BELOW (invoke `egressGate`/`runEgressGuard`; store merge)
+and ABOVE (ledger render), but the DISTILLER SEAM that stitches them — where a new extraction call
+could silently skip the wrapper — had zero pipeline-level coverage. A regression here (a fourth
+extraction call added without `egressInvoke`) would bypass the privacy gate while every existing
+test stayed green. These tests drive the REAL `Distiller` + REAL `invokeLlm` against fake HTTP
+endpoints (no injected invoke, no mocked distiller) and make that regression visible.
+
+### What is now PROVEN (was only code-read at this seam)
+- **Egress consent rides EVERY llm call the window makes.** A denying MODE (layer 3) and a
+  never-egress PROMPT (layer 2) each hold the whole window: an egress-classified endpoint listed
+  FIRST receives ZERO hits across summary + moments + entities while a local fallback answers all
+  three — the sentinel that catches a dropped wrapper on any one call. With no local fallback the
+  pass FAILS CLOSED (no distillate) and the egress endpoint is never contacted. `provenance.egress`
+  records the deciding layer (`decidedBy: 'mode'`/`'prompt'`).
+- **A local hop is neither consent-filtered nor guarded** — guard configured + consent allowed, yet
+  a loopback (`reach:'local'`) endpoint runs zero guard classifies and stamps no guard verdict.
+- **The guard runs end-to-end on every egress hop.** Clean → `provenance.guard.outcome:'clean'`,
+  content left (`reach:'egress'`), guard server hit once per call (3×). Redact-and-continue → a
+  `redacted` verdict rides provenance, content still left. Hold-and-surface → the hop is SUSPENDED
+  (no distillate, egress endpoint untouched), a durable `GuardHold` is recorded + surfaced with span
+  descriptors (never the raw value), and `resolve` release/deny behaves (idempotent). A fail-closed
+  EMPTY guard slot in strict mode HOLDS (honest `guarded:false`).
+- **Entity evidence at the seam.** A resolved mention writes a `heard` sighting tied to the
+  distillate with the WINDOW-derived timestamp (`sighting.at === windowEnd`, not wall-clock) and a
+  `stt` heardAs. The #74 crossSighting path — heard mangle + same-window OCR — records a `seen`
+  sighting, promotes the record to `confirmed`, and teaches the ASR surface as a heardAs alias,
+  driven through the real HTTP invoke.
+- **The ledger renders what the seam produced** (current ledger): a real clean-egress pass renders
+  the `egress` and `clean` columns from provenance, and a real held pass surfaces in the held block
+  with release/deny affordances.
+
+### How driven (mechanism, honest transport)
+Egress REACH is classified from the endpoint DOCUMENT url, so an `*.egress.test` host classifies as
+egress (`classifyEndpoint` reads the doc, not the socket). A test-scoped global-`fetch` shim rewrites
+ONLY that host family to loopback so the real HTTP call lands on a real counting fake server — exactly
+what a DNS entry for a reachable public host would do. Nothing about the distiller, the egress
+resolver, or the guard is stubbed; only the network target of an egress-classified host is steered.
+Restored in teardown. NO src change (no injection hook added) — the distiller already exposes the
+seams production uses (`guardEnabled`, the fabric guard slot, `publishHold`).
+
+### Tests + verification (all green under `pnpm -r build && pnpm -r test`)
+- NEW `distill/privacy-gate-seam.test.ts` (9): local-hop-not-guarded · deny-fails-closed ·
+  consent-rides-all-three (the regression sentinel) · never-egress-prompt · guard-clean-every-call ·
+  redact-and-continue · hold-and-surface + release/deny · fail-closed-empty-slot · seam→ledger render.
+- NEW `distill/evidence-seam.test.ts` (2): heard sighting window-timestamp + stt heardAs · #74
+  crossSighting confirms + teaches through the real HTTP invoke.
+- Suites at the PR: contracts 79 / client 354 / engine 671 (from 660, +11). A client timing flake in
+  the `pnpm -r` run cleared on an isolated rerun (known flake class); engine + contracts stable.
+
+### Disclosed
+- **Workspace-layer deny (#64 layer 3) is not reachable at this seam through the real store.** The
+  distiller reads `store.all().find(...).egress?.deny`, but `WorkspaceRegistry.fromRow` reconstructs a
+  `Workspace` from fixed columns (id/name/dbFile/color/retentionDays/createdAt) and DROPS `egress` — no
+  store path persists it. So `workspace.egress` is always `undefined` there today; the mode and prompt
+  layers (fully wired) carry the deny coverage. Not fixed here (store/ is another agent's surface, and
+  the tests don't need it) — flagged for a follow-up if workspace-scoped deny is meant to be live.
+- These tests complement `distill/guard.test.ts` (injected-invoke unit of the distiller's hold
+  bookkeeping) and `distill/correlate-e2e.test.ts` (injected-invoke #74) by driving the SAME seam
+  through the real `invokeLlm` HTTP path the production drain uses.
