@@ -6,6 +6,7 @@ import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, Entit
 import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
+import { DEFAULT_GAZETTEER, GAZETTEER_KEY, GAZETTEER_KIND, gazetteerRivals, type GazetteerDocument } from '../index/gazetteer.js'
 import { LayoutStore } from './layouts.js'
 import { resolveDataDir } from './paths.js'
 
@@ -783,15 +784,42 @@ export class WorkspaceRegistry {
       return { existing: pinned, resolution, hadCandidates: rows.length > 0, overridePinned: true }
     }
 
-    // 2) Scored resolver over same-kind candidates.
+    // 2) Scored resolver over same-kind candidates, plus the public-name gazetteer's rival candidates
+    // (#143). The gazetteer supplies OUTSIDE rivals (well-known OSS/product names) so a heard form that
+    // links to a corpus entity AND sounds like a famous public name is flagged AMBIGUOUS with that public
+    // name as the rival — the resolver's own band/margin logic decides. Rival-only: the resolver never
+    // links to or creates a gazetteer entry, and ignores them when the band is `new` (gazetteer-only ⇒
+    // silent). Cheap and additive: no gazetteer hit ⇒ empty rivals ⇒ behavior identical to pre-#143.
+    const provisionalBand = (input.resolverConfig ?? DEFAULT_RESOLVER_CONFIG).provisionalBand
+    const rivals = gazetteerRivals([input.name, ...aliases], this.gazetteer(), {
+      kind: input.kind,
+      at: input.seenAt,
+      workspaceId: input.workspaceId,
+      floor: provisionalBand,
+    })
     const resolution = resolveEntity({
       heard: { name: input.name, aliases },
       candidates: rows,
       now: new Date(input.seenAt),
+      rivals,
       ...(input.signals !== undefined ? { signals: input.signals } : {}),
       ...(input.resolverConfig !== undefined ? { config: input.resolverConfig } : {}),
     })
     return { existing: resolution.band === 'new' ? undefined : resolution.match, resolution, hadCandidates: rows.length > 0, overridePinned: false }
+  }
+
+  /**
+   * The public-name gazetteer document (#143), seed-if-absent. Read on the entity-resolution path to
+   * supply outside rival candidates to the clarify gate. Seeded into `_meta.db` (LayoutStore) on first
+   * read exactly like every other config doc, and NEVER clobbered thereafter — a `put` runs ONLY when the
+   * document is absent, so a user's edits to the gazetteer survive every resolution and every restart. The
+   * document is workspace-agnostic (install-wide public names), so it lives in the shared meta store.
+   */
+  gazetteer(): GazetteerDocument {
+    const existing = this.layouts.getLatest<GazetteerDocument>(GAZETTEER_KIND, GAZETTEER_KEY)
+    if (existing) return existing.body
+    this.layouts.put(GAZETTEER_KIND, GAZETTEER_KEY, DEFAULT_GAZETTEER)
+    return DEFAULT_GAZETTEER
   }
 
   /**

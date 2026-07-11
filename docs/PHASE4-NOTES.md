@@ -4266,3 +4266,71 @@ affordances unchanged. No contract change — it reads existing `Entity.sighting
 row was added to prove the sighting-driven source kind; the display-rule-#1 drop and card count updated
 (three whyable rows). Full `pnpm -r build` green; suites at the PR: contracts 81 / client 363 /
 engine 693 (client re-run isolated — the known client seam flake did not recur).
+## Slice: public-name gazetteer — the OSS-collision rival source for the clarify gate  *(#143, branch feat/143-gazetteer, 2026-07-10)*
+
+Entity-mapping board slice 6, the last unfiled piece. The clarify gate (#75) fires when the resolver
+(#72) flags a resolution `ambiguous` — but ambiguity only ever came from a same-corpus runner-up. So the
+collision that most wants a one-tap disambiguation — a corporate repo that reused a famous open-source
+name ("Kubeflow" the internal repo vs Kubeflow the OSS project) — could NEVER trip it: with only one
+same-kind corpus candidate the mention silently auto-links, blind to the outside rival. This slice adds
+the missing rival SOURCE.
+
+### What / where (files owned this slice)
+- **`engine/index/gazetteer-seed.ts`** (new) — the seeded gazetteer DOCUMENT. `DEFAULT_GAZETTEER`: a
+  compact, static v0 list of ~30 broadly-known infra/data/ML OSS projects + platforms with the spoken
+  aliases ASR emits (Kubernetes/`k8s`, Kubeflow, Kafka, PostgreSQL/`postgres`, TensorFlow/`tf`, Redis,
+  Terraform/`tf`, …). Stored under kind `gazetteer`, key `gazetteer-default`. Curation rule: only names
+  broad enough that a same-sounding internal artifact is a genuine collision worth asking about — not
+  obscure names that would only add ≟ noise.
+- **`engine/index/gazetteer.ts`** (new) — the PURE matcher. `gazetteerRivalId(name)` → stable, namespaced
+  synthetic id `gaz:<slug>`. `gazetteerRivals(heardForms, doc, {kind, at, workspaceId, floor})` reuses
+  `nameSimilarity` to build synthetic RIVAL-ONLY `Entity`s for entries whose best similarity clears the
+  floor (default `provisionalBand`). `mentions: 0` is load-bearing — it pins the rival's `corpusPrior` to
+  the neutral 1.0, so a public name is scored on pure phonetic similarity and can never out-boost an
+  established corpus entity: an equally-fuzzy public name TIES (⇒ ambiguous, we ask) rather than winning.
+- **`engine/index/resolve.ts`** (additive hook) — `resolveEntity` gains an optional `rivals` input:
+  candidates scored and eligible to be NAMED as the runner-up (so they can trip ambiguity), but NEVER
+  selected as the winner/match, and consulted ONLY in the link branch. The runner-up is now the strongest
+  of {real #2 candidate, best rival-only candidate}. They honor `rejectedRivalId` exactly like a real
+  candidate. With `rivals` empty/absent the function is byte-identical to pre-#143 (regression-guarded).
+- **`engine/store/workspaces.ts`** (minimal additive hook) — `resolveMention` asks the matcher for the
+  heard form's gazetteer rivals and passes them to the resolver; a new seed-if-absent `gazetteer()`
+  accessor reads/edits the document over the shared `_meta.db` LayoutStore. The `put` runs ONLY when the
+  document is absent, so a user's edit is NEVER clobbered by a later resolution or a restart.
+
+### How the collision flows end-to-end
+Heard "cube flow" with an internal corpus repo named "Kubeflow" and the gazetteer Kubeflow: the resolver
+links to the corpus repo (winner is ALWAYS a real candidate) but the public Kubeflow scores within
+`ambiguityMargin`, so the resolution is `ambiguous` with `ambiguity.rivalId:'gaz:kubeflow'` +
+`rivalName:'Kubeflow'`. The existing ≟ affordance fires and offers both. A `confirm` answer (it IS the
+internal repo) writes the sovereign override exactly as today — pin "cube flow" to the repo, record
+`rejectedRivalId:'gaz:kubeflow'` — and the store's override short-circuit resolves the settled form clean
+forever (the public rival is never re-offered). A gazetteer hit with NO corpus link stays SILENT: the
+resolver's `new` branch ignores rival-only candidates, so a mention that merely sounds like a public name
+neither creates an entity nor asks.
+
+### Decisions / disclosed
+- **Zero contract change.** `EntityAmbiguity`/`EntityResolution` already carry named-rival fields, and
+  `EntityOverride.rejectedRivalId` is an `Id` string that holds the synthetic `gaz:<slug>` fine. No
+  shared/contracts edit was needed.
+- **Rival-only, never a record.** A gazetteer entry is only ever a rival — the resolver never links to it
+  and never creates it. The synthetic `Entity` exists only to satisfy the scorer's shape.
+- **DEFERRED:** a typed GET/PUT `/gazetteer` route (the document is already editable over the generic
+  LayoutStore; a route + contract is a thin follow-up). A `disambiguate` answer that chooses the public
+  project would pin to a non-existent `gaz:` host — semantically "reject the corpus link", which wants a
+  create-bypassing path; the shipped, tested answer is the `confirm` path the DoD names. Static seed only
+  (no auto-population — minimal-dep + deterministic).
+
+### Tests / green
+`index/gazetteer.test.ts` (NEW, 10): stable synthetic id · offers a rival for a public-sounding form ·
+alias match (`k8s`→Kubernetes) · stays quiet for a non-matching form · floor respects the resolver band ·
+CORPUS-vs-GAZETTEER collision ⇒ ambiguous with the public name as the named rival, winner still the corpus
+entity · GAZETTEER-ONLY hit stays silent (no match, no ambiguity, incl. alongside a below-band corpus
+near-miss) · a rejected gazetteer rival is never re-offered · no-rivals regression guard (byte-identical).
+`store/workspaces.test.ts` (+3): the "cube flow"/Kubeflow e2e through the real store (links to the repo,
+stamps provisional + `ambiguity.rivalId:'gaz:kubeflow'`, the confirm-answer override settles it, a later
+mention never re-asks) · a public-sounding mention with no corpus entity creates a plain entity and stays
+silent (never conjures a Kubeflow record) · the seeded gazetteer is seed-if-absent and a user edit
+survives a later resolution AND a reopen. Suites under `pnpm -r build && pnpm -r test`: contracts 81 /
+client 363 / engine 706 (the `apps/client` engine-link `seam.test` timing flake reproduces on the batch
+run and passes isolated + on a clean rerun — unrelated to this slice, which touches no client code).
