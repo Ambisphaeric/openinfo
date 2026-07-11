@@ -27,6 +27,7 @@ import { EngineLink } from '../engine-link/index.js'
 import { CaptureController, type CaptureState } from '../capture/capture-controller.js'
 import { CAPTURE_CHANNELS, type CaptureSourceKind, type CaptureStatus, type RawSegment } from '../capture/protocol.js'
 import { startScreenCadence, type ScreenCadenceHandle } from '../capture/screen-source.js'
+import { FrameDeltaGate, DELTA_PROBE_WIDTH } from '../capture/frame-delta.js'
 import { CaptureConsent } from './capture-consent.js'
 import { CaptureDispatcher, type DispatchChannel } from './capture-dispatcher.js'
 import { createClientLog, type ClientLog } from './client-log.js'
@@ -712,8 +713,15 @@ const requestScreenPermission = async (): Promise<boolean> => {
  * ScreenFrameMeta. An EMPTY image = the Screen-Recording grant hasn't landed yet (macOS returns black/empty
  * until granted) → skip the frame rather than ship a black rectangle. The HUD window is
  * setContentProtection(true)/NSWindowSharingNone, so it excludes ITSELF from the capture.
- * Δ-gating (only keep changed frames) is deliberately future — every cadence tick is kept for now.
+ * Δ-GATE (issue #5): a static screen is not re-sent every tick. Each grab is scored against the last KEPT
+ * frame on a tiny downscaled probe (capture/frame-delta.ts — pure, headless-assertable); an unchanged
+ * frame is skipped ENTIRELY (no JPEG encode, no send, no engine OCR) except the safety heartbeat, and a
+ * kept frame carries the measured score as ScreenFrameMeta.deltaScore. Threshold from config
+ * (cfg.screenDeltaThreshold; 0 = gate off, every tick sends but deltaScore is still stamped).
  */
+// Per-display Δ-gate state (last kept probe + tick counter), reset on each session's loop start so a
+// session's first frame always sends. Keyed by displayId — primary-only today, multi-display free later.
+const frameDeltaGate = new FrameDeltaGate(cfg.screenDeltaThreshold)
 const captureScreenFrame = async (): Promise<void> => {
   const controller = screenController
   if (!controller) return
@@ -728,6 +736,17 @@ const captureScreenFrame = async (): Promise<void> => {
     const source = sources.find((s) => s.display_id === primaryId) ?? sources[0]
     const image = source?.thumbnail
     if (!image || image.isEmpty()) return // no frame yet — Screen-Recording grant likely still pending
+    const displayId = source?.display_id || primaryId
+    // Δ-gate before the expensive steps: the probe (32px-wide resize → raw bitmap) is tiny next to the
+    // full-display JPEG encode + send + engine OCR it saves on every static tick.
+    const verdict = frameDeltaGate.assess(displayId, new Uint8Array(image.resize({ width: DELTA_PROBE_WIDTH }).toBitmap()))
+    if (!verdict.send) {
+      // Throttled skip log: every 5th consecutive skip — the 10-tick heartbeat resets the streak, so a
+      // once-per-10 line would never fire; 5 yields at most one line per heartbeat interval (~25s).
+      if (verdict.skipStreak % 5 === 0)
+        console.log(`[shell] screen Δ-gate: display ${displayId} static for ${verdict.skipStreak} ticks (deltaScore ${verdict.deltaScore.toFixed(4)})`)
+      return
+    }
     const size = image.getSize()
     const jpeg = image.toJPEG(70) // ~0.7 quality — still frames, not video
     // Copy into a fresh, exactly-sized ArrayBuffer (a Node Buffer's .buffer is a shared pool typed
@@ -738,7 +757,7 @@ const captureScreenFrame = async (): Promise<void> => {
       bytes,
       mimeType: 'image/jpeg',
       capturedAt: new Date().toISOString(),
-      screenMeta: { displayId: source?.display_id || primaryId, width: size.width, height: size.height, scale },
+      screenMeta: { displayId, width: size.width, height: size.height, scale, deltaScore: verdict.deltaScore },
     })
   } catch (err) {
     console.error('[shell] screen frame capture failed:', err)
@@ -753,6 +772,7 @@ const captureScreenFrame = async (): Promise<void> => {
  */
 const startScreenLoop = (): void => {
   if (screenCadence) return
+  frameDeltaGate.reset() // fresh session ⇒ no prior probe ⇒ the first frame always sends (#5)
   screenCadence = startScreenCadence({ intervalMs: cfg.screenIntervalMs, grab: () => void captureScreenFrame() })
 }
 
@@ -888,7 +908,7 @@ const setupCapture = (): void => {
   })
   ipcMain.on(CAPTURE_CHANNELS.startAck, (_event, source: CaptureSourceKind) => dispatcher.ackStart(source))
   console.log(
-    `[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} · screen ${cfg.screenEnabled ? `enabled (every ${cfg.screenIntervalMs}ms)` : 'disabled by config (opt-in)'} · audio segments every ${cfg.segmentMs}ms (all follow the session lifecycle)`,
+    `[shell] mic capture ${cfg.micEnabled ? 'enabled' : 'disabled by config'} · system-audio ${cfg.systemAudioEnabled ? 'enabled' : 'disabled by config'} · screen ${cfg.screenEnabled ? `enabled (every ${cfg.screenIntervalMs}ms, Δ-gate ${cfg.screenDeltaThreshold > 0 ? `≥${cfg.screenDeltaThreshold}` : 'off'})` : 'disabled by config (opt-in)'} · audio segments every ${cfg.segmentMs}ms (all follow the session lifecycle)`,
   )
 }
 

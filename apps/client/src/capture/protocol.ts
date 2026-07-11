@@ -112,7 +112,8 @@ export interface RawSegment {
    * ONLY for `source: 'screen'`; when present, the controller emits it as the companion `source:'screen'`
    * utf8/json ScreenFrameMeta CaptureChunk alongside the image chunk (records/screen.ts). Undefined for
    * audio, so the companion-chunk emission is a strict no-op on the mic/system-audio paths. `deltaScore`
-   * is left unset — the Δ-gate that would populate it is future (records/screen.ts).
+   * is the client-side Δ-gate's measured change score (#5, capture/frame-delta.ts) — a gated (static)
+   * frame is never sent at all, so every meta that arrives carries the score of a KEPT frame.
    */
   screenMeta?: ScreenFrameMeta
 }
