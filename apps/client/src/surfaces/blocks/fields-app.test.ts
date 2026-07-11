@@ -17,6 +17,9 @@ import { defaultBlockRegistry } from './index.js'
  * THIS test breaks, which is the point (the served-UI-must-be-driven rule).
  */
 
+// clockLabel renders viewer-local; pin this process to UTC so the clock assertion below is host-stable.
+process.env.TZ = 'UTC'
+
 // dist/surfaces/blocks → dist/surfaces → dist → apps/client → apps → repo root
 const TEMPLATE = join(dirname(fileURLToPath(import.meta.url)), '../../../../..', 'templates/openinfo-fields/surface.json')
 
@@ -77,14 +80,18 @@ test('the SHIPPED fields-app document renders the fast-fields canon through the 
   assert.equal(surface.id, 'surf-openinfo-fields')
   const html = renderToHtml(renderSurface({ surface, now, results: results(seededFields) }, defaultBlockRegistry))
 
-  // every seeded fast field renders: label, value, provenance why-line, provisional micro-state dot
+  // every seeded fast field renders: label, value, human recency why-line, provisional micro-state dot
   assert.match(html, /class="mk t">topic</)
   assert.match(html, /Q3 renewal pricing/)
   assert.match(html, /class="mk t">entities-mentioned</)
   assert.match(html, /Dana, security review doc, SOC 2/)
   assert.match(html, /class="mk t">work-items</)
   assert.match(html, /send updated quote/)
-  assert.match(html, /class="why">via this-mac · qwen2\.5-7b · tpl-field-topic/)
+  assert.match(html, /class="why">updated 12:00p</)
+  // #118 REGRESSION: the app is a human-facing tier — no endpoint, model id, or template id may render,
+  // nor the old `via …` machine phrasing; the full trail stays on diagnostics surfaces + the ledger.
+  assert.doesNotMatch(html, /this-mac|qwen2\.5-7b|tpl-field-/)
+  assert.doesNotMatch(html, /class="why">via /)
   assert.equal((html.match(/class="dot provisional"/g) ?? []).length, 3, 'one provisional dot per field (#66)')
 
   // the glyph verb strip on each field row: dismiss LIVE with the fields-source suppression payload
@@ -95,13 +102,13 @@ test('the SHIPPED fields-app document renders the fast-fields canon through the 
   // copy is live text, carrying the exact field value (the app prepares; verbs never send)
   assert.match(html, /data-copy="Q3 renewal pricing"/)
 
-  // the distillate/transcript stream block renders beneath the fields with its own why-line
+  // the distillate/transcript stream block renders beneath the fields with its own human why-line
   assert.match(html, /Transcript · distillate stream/)
   assert.match(html, /Dana to review the security doc/)
-  assert.match(html, /distilled · via this-mac/)
+  assert.match(html, /distilled from capture/)
 })
 
-test('the shipped fields-app document is honest when distill.fields is OFF: names the flag + fix, never blank', async () => {
+test('the shipped fields-app document is honest when the fields feature is OFF: points at the fix, never blank', async () => {
   const surface = await loadFieldsApp()
   const fieldsBlock = surface.stack.find((b) => b.block === 'fields')
   assert.equal(fieldsBlock?.show, 'always', 'the app must not vanish when empty (unlike the HUD ride-along)')
@@ -109,5 +116,6 @@ test('the shipped fields-app document is honest when distill.fields is OFF: name
   const html = renderToHtml(renderSurface({ surface, now, results: results([]) }, defaultBlockRegistry))
   assert.match(html, /Fields · fast/) // the card is present…
   assert.match(html, /No fields yet/) // …and explains itself…
-  assert.match(html, /distill\.fields ON \(Settings → Features\)/) // …naming the flag AND where to flip it
+  assert.match(html, /turn on Fields in Settings → Features/) // …pointing at the toggle in human terms
+  assert.doesNotMatch(html, /distill\.fields/) // …never the raw flag key (#118)
 })

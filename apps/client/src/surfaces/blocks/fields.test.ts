@@ -4,6 +4,9 @@ import type { FieldValue, QueryResult, Surface } from '@openinfo/contracts'
 import { renderSurface, renderToHtml, type NowContext } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from './index.js'
 
+// clockLabel renders viewer-local; pin this process to UTC so the clock assertion below is host-stable.
+process.env.TZ = 'UTC'
+
 const now: NowContext = { live: true, workspace: 'acme', title: 'Renewal — security review' }
 const result = (items: unknown[], suppressed?: number): QueryResult => ({
   source: 'fields',
@@ -42,15 +45,19 @@ const surface: Surface = {
   ],
 }
 
-test('the fields block renders each field value with its label, value, and a provenance why-line', () => {
+test('the fields block renders each field value with its label, value, and a HUMAN recency why-line', () => {
   const items = [fieldValue('field-topic', 'topic', 'Q3 planning')]
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result(items)] }, defaultBlockRegistry))
 
   assert.match(html, /Fields · fast/) // the block's group label
   assert.match(html, /Q3 planning/) // store-derived field value (only via result.items)
   assert.match(html, /class="mk t">topic/) // the field label
-  // the why-line composed ENTIRELY from provenance: via <endpoint> · <model> · <template id>
-  assert.match(html, /class="why">via this-mac · qwen2\.5-7b · tpl-field-topic/)
+  // the why-line is HUMAN (#117/#118): recency from the value's updatedAt, never the machine trail
+  assert.match(html, /class="why">updated 12:00p</)
+  // #118 REGRESSION: the HUD-tier render must not leak the endpoint, model id, or template id, nor the
+  // old `via …` machine phrasing — the full trail stays on diagnostics surfaces + the ledger, not here.
+  assert.doesNotMatch(html, /this-mac|qwen2\.5-7b|tpl-field-topic/)
+  assert.doesNotMatch(html, /class="why">via /)
   // the copy affordance carries the value (the app prepares; verbs never send)
   assert.match(html, /data-copy="Q3 planning"/)
 })
@@ -65,8 +72,9 @@ test('empty is EXPLAINABLE, not silent: an always-visible fields block renders a
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([])] }, defaultBlockRegistry))
   assert.match(html, /Fields · fast/)
   assert.match(html, /No fields yet/)
-  // #100: the empty state names the enabling flag + its fix (distill.fields defaults OFF)
-  assert.match(html, /distill\.fields ON \(Settings → Features\)/)
+  // #100/#118: the empty state points at the Settings toggle in HUMAN terms — never the raw flag key
+  assert.match(html, /turn on Fields in Settings → Features/)
+  assert.doesNotMatch(html, /distill\.fields/)
   assert.match(html, /fields fill as prompts run/)
 })
 

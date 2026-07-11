@@ -1,6 +1,7 @@
 import type { Block, FieldValue } from '@openinfo/contracts'
 import { h, type VNode } from '../block-renderer/vnode.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
+import { clockLabel } from '../block-renderer/format.js'
 import { stateDot, resolveStateVocab, type StateVocab } from '../block-renderer/micro-state.js'
 import { rowAffordances } from './actions.js'
 
@@ -11,20 +12,24 @@ const LABEL = 'Fields · fast'
 /**
  * The `fields` block — the fan-out substrate's surface (#61). It reads the hydrated `fields` query
  * (`source: 'fields'`, one row per FieldValue, freshest first) and renders each field's CURRENT value
- * with its label, a micro-state dot, and a one-line WHY built ENTIRELY from the value's provenance —
- * `via <endpoint> · <model> · <template id>` (product principle 1: every rendered value is inspectable
- * back to the exact prompt document and endpoint that produced it). Nothing is ever shown without that
- * provenance, so there are no fabricated values.
+ * with its label, a micro-state dot, and a one-line WHY phrased for a HUMAN reading the HUD (#117/#118):
+ * recency — when this value last updated — never the endpoint, model id, or template id that produced
+ * it. The full machine trail stays RECORDED on the value's provenance (product principle 1: every
+ * rendered value is inspectable back to the exact prompt document and endpoint) and remains reachable
+ * on the diagnostics surfaces and the ledger — it is simply not the HUD's job to render it. Nothing is
+ * ever shown without that recorded provenance, so there are no fabricated values.
  *
  * The micro-state dot (#66) renders the field's `state`: fast results are `provisional` by definition
- * (the judge that confirms them is a later issue), so a provisional dot is honest, not decorative. The
- * dot vocabulary is document-configurable via `block.states`. Empty is EXPLAINABLE, never silent: an
- * always-visible block with no field values yet renders a "no fields yet" line rather than a blank card;
- * an `on-match` block simply stays hidden (renderSurface drops it before this runs). `top` caps the list.
+ * (a judge review (#62) moves it to confirmed/corrected/flagged), so the dot — not the why line — is
+ * the judge-tier carrier. The dot vocabulary is document-configurable via `block.states`. Empty is
+ * EXPLAINABLE, never silent: an always-visible block with no field values yet renders a "no fields yet"
+ * line rather than a blank card; an `on-match` block simply stays hidden (renderSurface drops it before
+ * this runs). `top` caps the list.
  */
 const whyLine = (value: FieldValue): string => {
-  const { endpoint, model, templateId } = value.provenance
-  return `via ${[endpoint, model, templateId].filter((p) => p !== undefined && p !== '').join(' · ')}`
+  const window = value.provenance.windowEnd ?? value.provenance.windowStart
+  const when = clockLabel(value.updatedAt) || (window ? clockLabel(window) : '')
+  return when ? `updated ${when}` : 'updated this session'
 }
 
 const fieldRow = (value: FieldValue, actions: Actions, vocab: StateVocab): VNode =>
@@ -51,15 +56,16 @@ const fieldRow = (value: FieldValue, actions: Actions, vocab: StateVocab): VNode
   )
 
 const emptyRow = (suppressed: number): VNode => {
-  // Honest, not silent: name the flag AND its fix rather than an opaque "nothing here". Fast fields only
-  // exist when distill.fields is ON (it defaults OFF), so an empty panel most often means the flag is off —
-  // the message points at the exact toggle either way (it is still accurate when the flag is on but no
-  // session/material has produced a field yet). The renderer is pure and cannot read the runtime flag, so
-  // it names the enablement path in every non-suppressed empty rather than falsely asserting off vs on.
+  // Honest, not silent: point at the fix rather than an opaque "nothing here". Fast fields only exist
+  // when the fields feature (the distill.fields flag) is ON (it defaults OFF), so an empty panel most
+  // often means it is off — the message points at the Settings toggle either way (it is still accurate
+  // when the feature is on but no session/material has produced a field yet). The renderer is pure and
+  // cannot read the runtime flag, so it names the enablement path in every non-suppressed empty rather
+  // than falsely asserting off vs on. HUMAN copy (#118): the toggle's home, never the raw flag key.
   const why =
     suppressed > 0
       ? `${suppressed} field${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`
-      : 'fast fields need distill.fields ON (Settings → Features); then fields fill as prompts run this session'
+      : 'turn on Fields in Settings → Features; fields fill as prompts run this session'
   return h(
     'div',
     { class: 'rel' },
