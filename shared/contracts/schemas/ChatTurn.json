@@ -1,0 +1,27 @@
+{
+  "$id": "ChatTurn",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "role",
+    "content"
+  ],
+  "properties": {
+    "role": {
+      "anyOf": [
+        {
+          "const": "user",
+          "type": "string"
+        },
+        {
+          "const": "assistant",
+          "type": "string"
+        }
+      ]
+    },
+    "content": {
+      "minLength": 1,
+      "type": "string"
+    }
+  }
+}

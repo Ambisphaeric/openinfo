@@ -1,0 +1,54 @@
+{
+  "$id": "ChatRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "message"
+  ],
+  "properties": {
+    "message": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "workspace": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "pinId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "$id": "ChatTurn",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "role": {
+            "anyOf": [
+              {
+                "const": "user",
+                "type": "string"
+              },
+              {
+                "const": "assistant",
+                "type": "string"
+              }
+            ]
+          },
+          "content": {
+            "minLength": 1,
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

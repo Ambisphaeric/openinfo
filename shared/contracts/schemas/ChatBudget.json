@@ -1,0 +1,38 @@
+{
+  "$id": "ChatBudget",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "contextTokens",
+    "maxTokens",
+    "turnsRemaining",
+    "truncated",
+    "note"
+  ],
+  "properties": {
+    "contextTokens": {
+      "minimum": 0,
+      "description": "estimated tokens the assembled context + history occupy (chars/4)",
+      "type": "integer"
+    },
+    "maxTokens": {
+      "minimum": 1,
+      "description": "the max output tokens this invoke ran under",
+      "type": "integer"
+    },
+    "turnsRemaining": {
+      "minimum": 0,
+      "description": "estimated useful turns left at this context rate before the window fills",
+      "type": "integer"
+    },
+    "truncated": {
+      "description": "true ⇒ attached context was capped/dropped to fit — see note",
+      "type": "boolean"
+    },
+    "note": {
+      "minLength": 1,
+      "description": "one-line honest disclosure of the budget/truncation, safe to surface",
+      "type": "string"
+    }
+  }
+}

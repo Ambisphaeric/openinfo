@@ -20,7 +20,19 @@ scripts/agents); the editor uses these exact routes.
    shipped HUD). **Keep this exact document** — it is how you revert (step 6).
 2. Choose a block type. The built-ins are the enum at `GET /contracts/BlockTypeName` (a JSON Schema whose
    members are the valid `block` values: `now` · `moments` · `relevant-now` · `ledger` · `pinned-doc` ·
-   `hint` · `ask` · `custom`). Prefer a built-in over `custom`.
+   `hint` · `ask` · `todos` · `drafts` · `teach` · `distillates` · `fields` · `queue` ·
+   `transcript-inspector` · `sense-gates` · `input` · `custom`). Prefer a built-in over `custom`.
+   - The `input` block (#134) is the text-entry / file-drop PRIMITIVE: instead of a `query` it carries an
+     `input` object — `{ target, submit, mode?: text|file|both, placeholder?, accept?, submitLabel? }`.
+     `target` names what the entry feeds and `submit` is the engine route it POSTs to (e.g. `/chat`), so
+     the same primitive wires to different destinations by document alone. A failed submit paints visible
+     text — never a silent no-op.
+   - A surface can also declare an attached-expansion `panel` (#134) — `{ edge: below|right, collapsed,
+     expanded, reveal: user|event, openOn?, startExpanded? }` — and the shell sizes its window to the
+     collapsed/expanded extent along that edge (`below` ⇒ height, `right` ⇒ width), toggled by the user or,
+     for `reveal:"event"`, opened as a dismissible SUGGESTION on a matching bus event. The seeded
+     `surf-openinfo-chat` (below-HUD chat) and `surf-openinfo-sidebar` (collapsible sidebar) are the two
+     shipped examples — clone one to make your own panel.
 3. Compose the block object and validate it against the `Block` schema — fetch it with
    `GET /contracts/Block` (returns the JSON Schema) — BEFORE writing. A data block needs a `query`
    (`{ source, params, top? }`, where `source` is one of relevant-now/moments/sessions/entities/ledger/

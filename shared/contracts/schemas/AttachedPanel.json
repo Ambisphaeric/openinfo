@@ -1,0 +1,58 @@
+{
+  "$id": "AttachedPanel",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "edge",
+    "collapsed",
+    "expanded",
+    "reveal"
+  ],
+  "properties": {
+    "edge": {
+      "description": "below ⇒ expand height; right ⇒ expand width",
+      "anyOf": [
+        {
+          "const": "below",
+          "type": "string"
+        },
+        {
+          "const": "right",
+          "type": "string"
+        }
+      ]
+    },
+    "collapsed": {
+      "minimum": 0,
+      "description": "window content size (px) along the edge axis when collapsed",
+      "type": "integer"
+    },
+    "expanded": {
+      "minimum": 1,
+      "description": "window content size (px) along the edge axis when expanded",
+      "type": "integer"
+    },
+    "reveal": {
+      "description": "user = manual toggle only; event = also opens as a dismissible suggestion on a matching bus event",
+      "anyOf": [
+        {
+          "const": "user",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "type": "string"
+        }
+      ]
+    },
+    "openOn": {
+      "minLength": 1,
+      "description": "event name (or \"prefix.\" prefix) that SUGGESTS opening when reveal:\"event\"; matched tolerantly — an absent event is a no-op",
+      "type": "string"
+    },
+    "startExpanded": {
+      "description": "initial state; absent ⇒ collapsed",
+      "type": "boolean"
+    }
+  }
+}

@@ -40,6 +40,13 @@ export interface HudOptions {
    * "the HUD disappeared". The dev entry routes this into the boot controller's restart loop.
    */
   onError?: (error: unknown) => void
+  /**
+   * Called with the loaded surface DOCUMENT after start() (and each hot-reload). A seam for shell-side
+   * wiring that keys off the document itself — the #134 attached-panel geometry reads `surface.panel` here
+   * to size the window. Additive/optional: absent ⇒ unchanged behavior. The renderer never fetches; this
+   * simply hands over the doc the Hud already loaded, so no extra request is made.
+   */
+  onSurfaceLoaded?: (surface: Surface) => void
 }
 
 /**
@@ -61,6 +68,7 @@ export class Hud {
   private readonly clock: () => Date
 
   private readonly onError: ((error: unknown) => void) | undefined
+  private readonly onSurfaceLoaded: ((surface: Surface) => void) | undefined
 
   private surface: Surface | undefined
   private results: (QueryResult | undefined)[] = []
@@ -92,11 +100,13 @@ export class Hud {
     this.renderSurface = options.renderSurface ?? renderSurface
     this.clock = options.now ?? (() => new Date())
     this.onError = options.onError
+    this.onSurfaceLoaded = options.onSurfaceLoaded
   }
 
   /** Load the surface document, hydrate + render once, then start listening for live updates. */
   async start(): Promise<void> {
     this.surface = await this.transport.surface(this.surfaceId)
+    this.onSurfaceLoaded?.(this.surface)
     await this.refresh()
     this.unsubscribe = this.transport.subscribe((event) => {
       // A layout edit to THIS surface (surface.updated over the WS, PHASE3-NOTES) hot-reloads the
@@ -125,6 +135,7 @@ export class Hud {
   /** Re-fetch the surface document (a layout edit), then re-hydrate + render through the coalescer. */
   async reloadSurface(): Promise<void> {
     this.surface = await this.transport.surface(this.surfaceId)
+    this.onSurfaceLoaded?.(this.surface)
     await this.scheduleRefresh()
   }
 

@@ -547,6 +547,30 @@ const resizeWindowToContent = (window: BrowserWindow, measured: number): void =>
   }
 }
 
+/**
+ * The attached-expansion-panel geometry (#134). A panel surface reports the collapsed/expanded content
+ * extent along ITS edge — `{height}` for a below-panel (the chat, ~3× its bar), `{width}` for a right
+ * sidebar — and we set EXACTLY that axis via setContentSize, keeping the other axis as-is. Top-left origin
+ * is left untouched, so a below-panel grows downward and a sidebar grows rightward, exactly like the
+ * content-sizer. Each axis is clamped to the display work area. This is the ONE thing only main can do
+ * (change window bounds); the renderer's PanelController owns WHEN to expand/collapse (user or suggestion).
+ * Applies to whatever window sent it — a panel surface installs the panel bridge instead of auto-resize,
+ * so this never fights the content-sizer over an axis.
+ */
+const resizePanelWindow = (window: BrowserWindow, size: { width?: number; height?: number }): void => {
+  if (window.isDestroyed()) return
+  const area = screen.getDisplayMatching(window.getBounds()).workArea
+  const [currentW = 0, currentH = 0] = window.getContentSize()
+  const width = size.width !== undefined ? Math.max(0, Math.min(Math.ceil(size.width), area.width)) : currentW
+  const height = size.height !== undefined ? Math.max(0, Math.min(Math.ceil(size.height), area.height)) : currentH
+  if (width === currentW && height === currentH) return
+  window.setContentSize(width, height)
+  if (cfg.hudOutline) {
+    const b = window.getBounds()
+    console.log(`[shell] hud:panel-size ${JSON.stringify(size)} → content ${width}×${height} · bounds ${b.width}×${b.height} @ ${b.x},${b.y}`)
+  }
+}
+
 const createTray = (): void => {
   const icon = nativeImage.createFromBuffer(trayIconBuffer(TRAY_ICON_TEMPLATE_1X))
   icon.addRepresentation({ scaleFactor: 2, buffer: trayIconBuffer(TRAY_ICON_TEMPLATE_2X) })
@@ -1224,6 +1248,12 @@ app.whenReady().then(async () => {
   ipcMain.on('hud:resize', (event, height: number) => {
     const window = BrowserWindow.fromWebContents(event.sender)
     if (window) resizeWindowToContent(window, height)
+  })
+  // #134: an attached-panel surface reports its collapsed/expanded content extent along its edge; set it
+  // on the exact window that sent it (same event.sender routing as drag/resize).
+  ipcMain.on('hud:panel-size', (event, size: { width?: number; height?: number }) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (window) resizePanelWindow(window, size)
   })
   // Load the Apps-folder state (favorites + open set + per-app positions) before creating windows so a
   // reopened app restores its saved position (#19/#20/#98). Best-effort — a missing file reads as empty.

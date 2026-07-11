@@ -57,6 +57,7 @@ export const Routes: readonly RouteDef[] = [
   { method: 'GET', path: '/workflows/:id', response: 'WorkflowSpec', phase: 4 },
   { method: 'PUT', path: '/workflows/:id', request: 'WorkflowSpec', response: 'WorkflowSpec', phase: 4 },
   { method: 'POST', path: '/query', request: 'BlockQuery', response: 'QueryResult', phase: 2 },
+  { method: 'POST', path: '/chat', request: 'ChatRequest', response: 'ChatReply', phase: 4 },
   { method: 'POST', path: '/item-signals', request: 'ItemSignal', response: 'ItemSignal', phase: 4 },
   { method: 'POST', path: '/recall', request: 'BlockQuery', response: 'QueryResult', phase: 3 },
   { method: 'POST', path: '/sessions/:id/reroute', request: 'RerouteRequest', response: 'Session', phase: 3 },

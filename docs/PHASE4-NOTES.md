@@ -4551,3 +4551,69 @@ instantiates per-repo with a bound workspace via the existing #99 `POST …/inst
 - The zone prefix is a client convention today (like the #20 per-surface window config), not a contract
   field; promoting it onto the `Block`/`Surface` document is a later, deliberate choice.
 - Suites at the PR: contracts 81 / client 366 / engine 693.
+## #134 — input blocks + attached expansion panels (the two missing surface primitives)
+
+### What / where
+The surface substrate was read-mostly and windows were fixed shapes. #134 adds the two primitives every
+wanted interactive surface is a configuration of, then ships two concrete shells over them:
+- **`input` block type** (`shared/contracts/config/surface.ts`; renderer `apps/client/.../blocks/input.ts`
+  + registry line). Text-entry / file-drop as a DOCUMENT field: `Block.input = { target, submit, mode
+  text|file|both, placeholder?, accept?, submitLabel? }`. `target` names what the entry feeds and `submit`
+  is the engine route it POSTs to — so the same primitive wires to a chat / entity-map / pins destination
+  by document alone. The renderer is a pure structure; the imperative wiring is `surfaces/hud/input-submit.ts`.
+- **`Surface.panel` (AttachedPanel)** — `{ edge below|right, collapsed, expanded, reveal user|event, openOn?,
+  startExpanded? }`. The attached-expansion-panel geometry: the shell sizes the window to the collapsed or
+  expanded content extent along the edge (`below` ⇒ HEIGHT, `right` ⇒ WIDTH). Controller `surfaces/hud/panel.ts`
+  (`panelSize`/`matchesTrigger` pure + `PanelController` state machine) reports the extent over a new
+  preload `panel` bridge → shell `hud:panel-size` → `setContentSize` (mirrors the content-sizer, top-left
+  anchored). A panel surface installs the PanelController INSTEAD of auto-resize, so nothing fights over an axis.
+- **Two seeded shells** (`apps/engine/src/surfaces/panel-surfaces.ts`, its own module so `SEEDED_SURFACES`
+  gains one import + one spread): `surf-openinfo-chat` (below-HUD chat, edge:below 120→432, an `input` block
+  wired to POST /chat, mode:both) and `surf-openinfo-sidebar` (collapsible sidebar, edge:right 0→320,
+  reveal:event openOn `entity.updated`, a relevant-now cheat-sheet). Client `SURFACE_WINDOW_CONFIG` gives
+  both Glass chrome (content-protected, floats beside the HUD).
+
+### Chat route (POST /chat, `api/chat.ts`)
+Owner-decided: the chat is answered by the LLM slot WITH THE CORPUS IN HAND, not vanilla completion.
+`runChat` reads relevant entities (relevantNow) + the attached pin's page-anchored chunks (pins/ingest
+substrate — REUSED, not reinvented), assembles a DISTILLED/CHUNKED context (cited excerpts up to a
+~6k-char cap, each labeled `[p.N]`/`[#N]`), and invokes the llm slot EGRESS-GATED (resolveEgress
+content-class `typed` + the #63 guard, exactly like a distill hop). The reply carries the answer, the
+page-anchored citations, and an HONEST VISIBLE turn/context budget: estimated context tokens, an
+estimated turns-remaining against a conservative 8k-token window, and a disclosed `truncated` flag with a
+human note naming how many chunks were dropped — never a silent trim (the owner's small-local-model
+constraint: a Gemma-12B gets ~3-4 useful turns on a big doc, so truncation must be visible). A failure
+(empty llm slot / guard hold / transport) THROWS → the route returns 502 whose `error` the input block
+paints as visible text (the QA doctrine: a failed submit paints text).
+
+### File upload
+The dropped/picked file's local `File.path` (Electron) becomes a Pin `uri`; the client runs the EXISTING
+`POST /pins` + `POST /pins/:id/ingest` lifecycle and lands the extract (title + page count) in the chat's
+context area, so it becomes citable context on the next turn. A plain browser (no `File.path`) or a v0
+`.pdf` (the engine's honest ingest stub) surfaces the real reason — no new engine capability was added.
+
+### Suggestion pattern (never modal)
+A `reveal:"event"` panel subscribes to the transport event feed; a matching `openOn` (exact or `prefix.`
+prefix, tolerant of an unlanded name so the parallel orientation trigger #131 is a no-op-until-present)
+opens it AT MOST ONCE as a dismissible suggestion, and a user dismiss suppresses further suggestions this
+session (the clarify-dismiss precedent). A user expand/collapse is always authoritative.
+
+### Deferred (frontends design session, per the issue)
+Animation, exact geometry, the polished conversation styling, and the user-facing expand/collapse
+affordance (today the shell exposes the control seam `window.openinfoPanel` — toggle/expand/collapse/
+dismissSuggestion/state — which a keyboard shortcut / on-focus affordance will bind to). Multi-turn
+conversation persistence beyond the session-ephemeral in-controller log. The orientation trigger event is
+#131's; the sidebar wires to `entity.updated` today and will gain/replace `openOn` when #131 lands.
+
+### Tests / green
+`shared/contracts` — two example surfaces (`surface.chat-panel.json`, `surface.sidebar.json`) exercise the
+new `input` + `panel` fields through `contracts.test`. `apps/engine` — `api/chat.test.ts` (7:
+assembleContext cites + truncates honestly, computeBudget discloses, runChat answers over a throwaway
+openai-compat server with the corpus in the system prompt, runChat throws on an empty slot) +
+`api/http.test.ts` (POST /chat validates 400 / honest 502; the two panel surfaces are seeded + served).
+`apps/client` — `blocks/input.test.ts` (renderer + registry), `hud/panel.test.ts` (panelSize/matchesTrigger
++ the full PanelController incl. the dismissible suggestion), `hud/input-submit.test.ts` (submit paints
+both turns + budget, a FAILED submit paints the reason, file-drop attaches + cites, repaint survives a
+destructive re-render). Driven Electron e2e `scripts/panel-bounds-e2e.mjs` (`test:e2e:panel`, GUI-only like
+hud-bounds): real window bounds follow user expand/collapse AND an event-suggestion + dismiss (verified 0
+→ 320 → suggested 320 → 0). Suites at the PR: contracts 83 / client 383 / engine 702.

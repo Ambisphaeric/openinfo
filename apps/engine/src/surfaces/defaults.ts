@@ -1,5 +1,6 @@
 import type { Surface } from '@openinfo/contracts'
 import { defaultNotetakerSurface } from './notetaker.js'
+import { PANEL_SURFACES } from './panel-surfaces.js'
 
 /**
  * The shipped openinfo HUD surface — template #1 (the launch anchor). A versioned, cloneable
@@ -154,4 +155,4 @@ export const defaultDiagnosticsSurface: Surface = {
  * surface (one line); each is seeded ONLY when absent, so a user's edits are never clobbered. Glass Minimal
  * is deliberately NOT here — it is a cloneable TEMPLATE (templates/glass-minimal), not a seeded default.
  */
-export const SEEDED_SURFACES: readonly Surface[] = [defaultHudSurface, defaultFieldsSurface, defaultDiagnosticsSurface, defaultNotetakerSurface]
+export const SEEDED_SURFACES: readonly Surface[] = [defaultHudSurface, defaultFieldsSurface, defaultDiagnosticsSurface, defaultNotetakerSurface, ...PANEL_SURFACES]

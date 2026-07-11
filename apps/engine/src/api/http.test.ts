@@ -280,7 +280,7 @@ test('GET /layouts/surfaces lists surfaces (seeded + user), and PUT emits surfac
 
     // the list starts with the seeded default surfaces (the HUD + #100 fields + #101 diagnostics + #133 note-taker)
     const initial = (await (await fetch(`${base}/layouts/surfaces`)).json()) as Surface[]
-    assert.deepEqual(initial.map((s) => s.id).sort(), ['surf-openinfo-diagnostics', 'surf-openinfo-fields', 'surf-openinfo-hud', 'surf-openinfo-notetaker'])
+    assert.deepEqual(initial.map((s) => s.id).sort(), ['surf-openinfo-chat', 'surf-openinfo-diagnostics', 'surf-openinfo-fields', 'surf-openinfo-hud', 'surf-openinfo-notetaker', 'surf-openinfo-sidebar'])
 
     // clone a user surface via PUT (there is no clone endpoint — the editor PUTs a copy under a new id)
     const hud = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
@@ -297,7 +297,7 @@ test('GET /layouts/surfaces lists surfaces (seeded + user), and PUT emits surfac
 
     // the list now enumerates the seeded defaults plus the user clone, sorted by key
     const after = (await (await fetch(`${base}/layouts/surfaces`)).json()) as Surface[]
-    assert.deepEqual(after.map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-diagnostics', 'surf-openinfo-fields', 'surf-openinfo-hud', 'surf-openinfo-notetaker'])
+    assert.deepEqual(after.map((s) => s.id).sort(), ['surf-mine', 'surf-openinfo-chat', 'surf-openinfo-diagnostics', 'surf-openinfo-fields', 'surf-openinfo-hud', 'surf-openinfo-notetaker', 'surf-openinfo-sidebar'])
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })
@@ -3606,6 +3606,57 @@ test('POST /teach/entity: a disambiguate verdict pins the rival and settles the 
 
     const entities = (await (await fetch(`${base}/entities?workspace=ws-d`)).json()) as Entity[]
     assert.equal(entities.find((e) => e.id === primary.id)?.ambiguity, undefined) // the once-linked row is settled too
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /chat validates the body (400) and surfaces an honest failure with no llm slot (502)', async () => {
+  // The served-route proof (#134): validation happens before any model is touched, and an empty llm slot
+  // comes back as a 502 whose `error` the input block paints — never a silent success. (A green happy-path
+  // over the REAL invoke lives in chat.test.ts against a throwaway openai-compat server.)
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${(address as { port: number }).port}`
+
+    const bad = await fetch(`${base}/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) })
+    assert.equal(bad.status, 400)
+    assert.match(((await bad.json()) as { error: string }).error, /invalid ChatRequest/)
+
+    const empty = await fetch(`${base}/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'hello' }) })
+    assert.equal(empty.status, 502)
+    assert.match(((await empty.json()) as { error: string }).error, /llm/i) // the honest reason, verbatim
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the two #134 panel surfaces are seeded and served with their panel + input primitives', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${(address as { port: number }).port}`
+
+    const chat = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-chat`)).json()) as Surface
+    assert.equal(chat.panel?.edge, 'below')
+    assert.equal(chat.panel?.expanded, 432)
+    const input = chat.stack.find((b) => b.block === 'input')
+    assert.equal(input?.input?.submit, '/chat')
+    assert.equal(input?.input?.mode, 'both')
+
+    const sidebar = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-sidebar`)).json()) as Surface
+    assert.equal(sidebar.panel?.edge, 'right')
+    assert.equal(sidebar.panel?.reveal, 'event')
+    assert.equal(sidebar.panel?.openOn, 'entity.updated')
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })

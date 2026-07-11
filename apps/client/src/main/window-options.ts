@@ -147,6 +147,14 @@ export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   // and can screenshot for the owner's look-and-speed review, resizable, focusable, in the app switcher,
   // NOT the always-on-top glass HUD. Wide enough to seat the three columns side-by-side at first render.
   'surf-openinfo-notetaker': { chrome: 'app', width: 960 },
+  // The #134 attached-panel shells. Both take the inherited Glass chrome — frameless, transparent,
+  // content-PROTECTED (they carry the same sensitive session content the HUD does), always-on-top — so
+  // they float beside/beneath the HUD. Their COLLAPSED/EXPANDED extent is owned by the surface's `panel`
+  // block and applied over the hud:panel-size bridge (the renderer installs the PanelController instead of
+  // auto-resize for these), NOT the content-sizer. The chat is the HUD's own width so it sits flush
+  // beneath it; the sidebar's width is driven by its panel (collapsed 0 → expanded 320).
+  'surf-openinfo-chat': { chrome: 'hud' },
+  'surf-openinfo-sidebar': { chrome: 'hud', width: 320 },
 }
 
 /** The window config for a surface id — its explicit entry, else the disclosed `'app'` default. */

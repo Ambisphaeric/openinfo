@@ -1,12 +1,15 @@
-import type { AttributionPattern, BlockQuery, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
+import type { AttributionPattern, BlockQuery, ChatReply, ChatTurn, Pin, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
 import { mountSurface, renderInto, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import { createBootController } from './boot.js'
 import type { HudTransport } from './transport.js'
 import { hudStyles, hudOutlineStyles } from './styles.js'
 import { renderNotetaker } from './notetaker-layout.js'
+import { panelStyles } from './panel-styles.js'
 import { installWindowDrag, type DragBridge } from './window-drag.js'
 import { installAutoResize, type ResizeBridge } from './auto-resize.js'
+import { PanelController, type PanelSize } from './panel.js'
+import { InputSession, type AttachedDoc, type UploadFile } from './input-submit.js'
 
 /**
  * A plain-browser dev entry that renders the live HUD against a running engine — the mountable view
@@ -107,8 +110,17 @@ interface DevGlobal {
   }
   location?: { search: string }
   navigator?: { clipboard?: { writeText(text: string): Promise<void> } }
-  /** Present only inside the Electron shell (preload.cts) — absent in a plain browser. */
-  openinfoDrag?: DragBridge & ResizeBridge
+  /** Present only inside the Electron shell (preload.cts) — absent in a plain browser. `panel` (#134) is
+   * additive: the attached-panel bridge that reports a collapsed/expanded content size to the main process. */
+  openinfoDrag?: DragBridge & ResizeBridge & { panel?: (size: PanelSize) => void }
+  /** #134 panel control seam — exposed so a keyboard/affordance (and the e2e) can drive expand/collapse. */
+  openinfoPanel?: {
+    toggle(): void
+    expand(): void
+    collapse(): void
+    dismissSuggestion(): void
+    state(): { expanded: boolean; suggested: boolean }
+  }
 }
 
 /**
@@ -251,6 +263,67 @@ export const submitEntityCorrection =
     if (!res.ok) throw new Error(`clarify: write failed (HTTP ${res.status})`)
   }
 
+/**
+ * The `input` block's chat submit path (#134). POSTs the turn to the configured route (e.g. /chat) WITH the
+ * attached pin id + prior turns, and returns the ChatReply. Honest failure: a non-ok response REJECTS with
+ * the engine's `error` message (or the HTTP status), so the input block paints it as visible text — never a
+ * silent no-op. `workspace` is omitted when undefined so the engine applies its own default.
+ */
+export const submitChat =
+  (baseUrl: string, workspace: string | undefined, fetchFn: FetchLike = fetch) =>
+  async (input: { target: string; route: string; message: string; pinId?: string; history: ChatTurn[] }): Promise<ChatReply> => {
+    const body: Record<string, unknown> = { message: input.message, history: input.history }
+    if (workspace !== undefined) body['workspace'] = workspace
+    if (input.pinId !== undefined) body['pinId'] = input.pinId
+    const res = await fetchFn(`${baseUrl}${input.route}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => undefined)) as { error?: string } | undefined
+      throw new Error(detail?.error ?? `chat failed (HTTP ${res.status})`)
+    }
+    return (await res.json()) as ChatReply
+  }
+
+/**
+ * The `input` block's file-drop path (#134) — reuses the EXISTING pins/ingest substrate. A dropped/picked
+ * file in the desktop shell carries its local `path` (Electron `File.path`); we create a Pin over that path
+ * and run the engine's ingest lifecycle (fetch → page-anchored chunks), so the extract becomes citable chat
+ * context. Honest failure: no local path (a plain browser) or a failed ingest (a v0-unsupported pdf) REJECTS
+ * with the real reason — the input block paints it. `.pdf` is a NAMED ingest failure by the engine's v0 policy.
+ */
+export const uploadAndIngest =
+  (baseUrl: string, workspace: string | undefined, fetchFn: FetchLike = fetch, newId: () => string = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`) =>
+  async (file: UploadFile): Promise<AttachedDoc> => {
+    if (!file.path) throw new Error('file upload needs the desktop app (this file has no local path)')
+    const id = `pin-${newId()}`
+    const kind = /\.pdf$/i.test(file.name) ? 'pdf' : 'file'
+    const pin: Pin = {
+      id,
+      workspaceId: workspace ?? 'default',
+      uri: file.path,
+      title: file.name,
+      kind,
+      ingest: { status: 'pending' },
+      createdAt: new Date().toISOString(),
+    }
+    const created = await fetchFn(`${baseUrl}/pins`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(pin),
+    })
+    if (!created.ok) throw new Error(`attach: could not create pin (HTTP ${created.status})`)
+    const q = workspace !== undefined ? `?workspace=${encodeURIComponent(workspace)}` : ''
+    const ingested = await fetchFn(`${baseUrl}/pins/${encodeURIComponent(id)}/ingest${q}`, { method: 'POST' })
+    if (!ingested.ok) throw new Error(`attach: ingest failed (HTTP ${ingested.status})`)
+    const result = (await ingested.json()) as Pin
+    if (result.ingest.status !== 'ingested') throw new Error(result.ingest.error ?? `attach: ${file.name} could not be ingested`)
+    const summary = result.ingest.pages !== undefined ? `${result.ingest.pages} pages ingested` : `${result.ingest.chunks ?? 0} chunks ingested`
+    return { pinId: id, title: file.name, summary }
+  }
+
 export const startHud = (options: { baseUrl?: string; workspace?: string; surfaceId?: string } = {}): void => {
   const g = globalThis as unknown as DevGlobal
   const doc = g.document
@@ -267,7 +340,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const surfaceRenderer = resolvedSurfaceId === 'surf-openinfo-notetaker' ? renderNotetaker : undefined
 
   const style = doc.createElement('style')
-  style.textContent = hudStyles
+  style.textContent = hudStyles + panelStyles // #134 input-block + attached-panel styles ride alongside the HUD chrome
   // Debug outline (?outline=1, from OPENINFO_HUD_OUTLINE / client.json hudOutline): the window is
   // frameless + transparent, so when nothing paints there is NOTHING to see. The outline draws the
   // window bounds + the panel bounds so "where does the HUD render" is answerable by looking.
@@ -296,14 +369,38 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const accept = acceptHintCandidate(baseUrl)
   const dismiss = dismissItem(baseUrl)
   const submitCorrection = submitEntityCorrection(baseUrl)
+  const workspace = options.workspace ?? params.get('workspace') ?? undefined
+  const transport = new BrowserTransport(baseUrl)
+  // #134: the input block's live conversation controller. Its state (turns/attachment/status) lives here,
+  // not in the DOM, so a destructive panel re-render never eats it — repaint() re-injects after every render.
+  const inputSession = new InputSession({ submit: submitChat(baseUrl, workspace), upload: uploadAndIngest(baseUrl, workspace) })
+  // #134: the attached-panel geometry controller — created from surface.panel once the doc loads (below).
+  let panelController: PanelController | undefined
   let mounted = false
   // Event-driven refresh failures re-enter the boot loop — visible, never an unhandled rejection.
   let onHudError: (error: unknown) => void = () => {}
   const hud = new Hud({
-    transport: new BrowserTransport(baseUrl),
+    transport,
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
     ...(resolvedSurfaceId !== undefined ? { surfaceId: resolvedSurfaceId } : {}),
     ...(surfaceRenderer !== undefined ? { renderSurface: surfaceRenderer } : {}),
+    // #134: size the window to the declared attached panel (collapsed/expanded along its edge) and, for a
+    // reveal:'event' panel, subscribe to the trigger to open it as a dismissible suggestion. Electron-only
+    // (needs the panel bridge); a plain browser page simply scrolls. Created once — hot-reloads keep it.
+    onSurfaceLoaded: (surface) => {
+      if (panelController || surface.panel === undefined) return
+      const bridge = g.openinfoDrag
+      if (!bridge?.panel) return
+      panelController = new PanelController(surface.panel, { apply: (size) => bridge.panel!(size) }, transport)
+      panelController.start()
+      g.openinfoPanel = {
+        toggle: () => panelController?.toggle(),
+        expand: () => panelController?.expand(),
+        collapse: () => panelController?.collapse(),
+        dismissSuggestion: () => panelController?.dismissSuggestion(),
+        state: () => panelController?.state() ?? { expanded: false, suggested: false },
+      }
+    },
     onRender: (node) => {
       if (!mounted) {
         // #96: the system-stream mute is a client-local display toggle — flips Hud state + re-paints,
@@ -325,10 +422,16 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
             await hud.refresh()
           },
         })
+        // #134: install the input block's delegated submit/file listeners ONCE on the container (they
+        // survive innerHTML replacement, exactly like wireActions' click delegation).
+        inputSession.install(panel as unknown as Parameters<InputSession['install']>[0])
         mounted = true
       } else {
         renderInto(panel, node)
       }
+      // #134: re-inject the input block's conversation/attachment/status after EVERY render (the pure
+      // renderer leaves those regions empty) — the compose-after-render discipline the live strip uses.
+      inputSession.repaint(panel as unknown as Parameters<InputSession['repaint']>[0])
     },
     onError: (error) => onHudError(error),
   })
