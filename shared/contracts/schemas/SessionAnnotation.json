@@ -1,0 +1,98 @@
+{
+  "$id": "SessionAnnotation",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "sessionId",
+    "nature",
+    "direction",
+    "topics",
+    "provenance",
+    "updatedAt",
+    "schemaVersion"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "nature": {
+      "description": "the shape of the session — seeded vocab \"meeting\" | \"call\" | \"solo-work\", plus \"unclear\" when the source is too thin. Open/document-configurable; never fabricated.",
+      "type": "string"
+    },
+    "direction": {
+      "description": "the teach-vs-learn direction per the learn/teach canon — seeded vocab \"teach\" | \"learn\" | \"mixed\", plus \"unclear\". Open/document-configurable; never fabricated.",
+      "type": "string"
+    },
+    "topics": {
+      "description": "the topic taxonomy — short subject phrases the source supports, most salient first; engine-capped, never count-inflated. Empty when unclear.",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "provenance": {
+      "$id": "OrientationProvenance",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "templateId",
+        "endpoint",
+        "classifiedAt"
+      ],
+      "properties": {
+        "templateId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "endpoint": {
+          "description": "the fabric endpoint name that classified (never a secret value)",
+          "type": "string"
+        },
+        "model": {
+          "description": "the model that answered, when the endpoint names one",
+          "type": "string"
+        },
+        "windowStart": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "windowEnd": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "classifiedAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    },
+    "updatedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "minimum": 1,
+      "type": "integer"
+    }
+  }
+}

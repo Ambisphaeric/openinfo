@@ -192,6 +192,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     resolveKey,
     runtimeManager: runtime,
     publish: (value) => bus.publish('field.updated', value),
+    // Orientation pass (#131): a judge document producing a session-nature classification lands a
+    // SessionAnnotation and emits orientation.updated — the trigger source a contextual sidebar (#134)
+    // subscribes to. Disposition defaults to 'annotate' (the gate-ready seam; a future config flips to 'gate').
+    publishAnnotation: (annotation) => bus.publish('orientation.updated', annotation),
     log,
   })
   // Seam (see PHASE2-NOTES): distill rides the queue drain, gated on distill.enabled (OFF by
@@ -540,6 +544,9 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // Fast-field fan-out (#61): rebroadcast a field's latest value the instant it lands (mirrors the #58
   // transcript.updated pattern). Unlike that ephemeral feed, the value is ALSO persisted (FieldValue).
   bus.subscribe('field.updated', (value) => ws.broadcast('field.updated', value))
+  // Orientation pass (#131): rebroadcast the session-nature classification the instant it lands — the
+  // trigger a contextual surface (#134) subscribes to. Persisted as a SessionAnnotation (annotate-and-correct).
+  bus.subscribe('orientation.updated', (annotation) => ws.broadcast('orientation.updated', annotation))
   bus.subscribe('session.started', (session) => ws.broadcast('session.started', session))
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
   bus.subscribe('session.switched', (session) => ws.broadcast('session.switched', session))

@@ -4403,3 +4403,87 @@ getDisplayMedia. `config.test.ts` +2: `auto`→loopback on darwin / device elsew
 junk-token ignored. `capture-status.test.ts` +2: loopback names the recording grant + one-click Settings
 fix (not a device install) and is an actionable OS-layer block. Suite counts at the PR: contracts 81 /
 client 370 / engine 693.
+## Slice: #131 — judge-tier conversation orientation pass (annotate now, gate-ready seam) (2026-07-10)
+
+The heavy classification pass — "what KIND of session is this?" — had no home, so pieces of it leaked into
+every fast per-window prompt. This lands it as one occasional, GLOBAL judge-tier reading that classifies the
+session's orientation (nature / teach-vs-learn direction / topic taxonomy) on the judge cadence and ANNOTATES
+the session — never blocking the pipeline. Extends #62 (the judge tier + its tier-gate + cadence), #61 (the
+prompt-document/`field`-binding substrate), and #58 (rides the SAME cadence-released source batch).
+
+### 1 — contracts (append-only)
+- NEW `SessionAnnotation` record (`$id: SessionAnnotation`) + `OrientationProvenance`: the engine-stamped
+  orientation reading of a session — `nature` / `direction` (OPEN strings, document-configurable vocab like
+  `FieldValue.state`; seeded vocab meeting/call/solo-work and teach/learn/mixed, plus the honest `unclear`),
+  `topics` (the taxonomy), and full provenance (which judge doc / endpoint / model / window span /
+  `classifiedAt`). ADDITIVE to `Session` — a SEPARATE record keyed by session, so the `Session` schema is
+  untouched. Deterministic id `oa:<workspace>:<session>` ⇒ ANNOTATE-AND-CORRECT (a later pass persists a new
+  version in place, the #62 overrule pattern). `sessionAnnotation.orientation.json` example.
+- `FastFieldBinding` gains optional `produces: 'verdict' | 'orientation'` (judge tier only). Absent ⇒
+  `verdict`, so every #62 judge document is byte-for-byte unchanged; `orientation` routes a judge doc to the
+  classification path.
+- `orientation.updated` WS event (payload `SessionAnnotation`) — the TRIGGER source a contextual sidebar
+  (#134) subscribes to, mirroring `field.updated`.
+
+### 2 — the seeded orientation document (`distill/defaults.ts` `tpl-judge-orientation`)
+A `judge`-tier `field` document with `produces:'orientation'`, seeded seed-if-absent alongside the #62 judge
+(`documents.ts`), so `docs.judgeTemplates()` returns it and the scheduler routes it by `produces`. NEUTRAL
+body (#130): a factual classification job over the SINGLE `{{source}}` input (the same window the tiers see) —
+emit one strict JSON object `{nature, direction, topics}`; use `"unclear"` + empty topics when the source is
+too thin; invent nothing. No persona, no dials.
+
+### 3 — the orientation pass (`distill/judge.ts` `JudgeScheduler`)
+`runJudge` partitions its judge docs: `produces:'orientation'` → `runOrientation`; else the #62 verdict path.
+`runOrientation` interpolates `{{source}}`/`{{windowStart}}`/`{{windowEnd}}`, invokes the judge lane, and
+`parseOrientation` recovers the first object-shaped candidate defensively — a blank/absent nature or direction
+defaults to the honest `"unclear"` (never invented) and topics are trimmed, de-blanked, and engine-capped at
+`MAX_ORIENTATION_TOPICS` (5) so the MODEL NEVER CONTROLS COUNTS. The engine stamps ids/session/provenance/
+timestamps; the model controls only the classification text. TIER-GATED exactly like #62 (no `llm.judge`
+endpoint ⇒ logged no-op, nothing fabricated); an invoke failure or unparseable output is skipped-with-log and
+any earlier annotation is left in place.
+
+### 4 — GATE-READY SEAM (the explicit design requirement)
+Production (classify) is decoupled from APPLICATION, which is funneled through the SINGLE method
+`applyAnnotation`, switched on `orientationDisposition: 'annotate' | 'gate'`:
+- `annotate` (default, shipped): persist the `SessionAnnotation` + emit `orientation.updated`. The pipeline's
+  records are NOT held — the classification rides ALONGSIDE them (annotate-and-correct).
+- `gate` (future config flip, NOT enforced yet): the SAME classification would HOLD a session's downstream
+  writes until it is classified, then release. Because ONLY this application step changes — production, the
+  `SessionAnnotation` shape, and the `orientation.updated` event are all identical either way — the flip
+  needs no re-architecture: the hold/release logic slots into `applyAnnotation` (+ the drain in `http.ts`),
+  and the disposition becomes config-driven (a flag). Today the `gate` branch annotates + logs "gate
+  disposition set but not yet enforced" — HONEST: no half-built gate, no fabricated hold. `orientationDisposition`
+  is threaded from `http.ts` (currently hardcoded `annotate`) and constructor-injectable so the seam is
+  test-pinned.
+
+### 5 — wiring (`api/http.ts`, `bus/events.ts`)
+The `JudgeScheduler` gains `publishAnnotation: (a) => bus.publish('orientation.updated', a)`; the bus event is
+rebroadcast to WS (`bus.subscribe('orientation.updated', … ws.broadcast …)`), reusing the exact `field.updated`
+pattern. No new cadence — orientation rides the existing `judgeCadence`/`distill.judge` gate. No new store —
+the annotation persists via `LayoutStore` (kind `session-annotation`), like `FieldValueStore`; read back via
+`JudgeScheduler.latestAnnotation`.
+
+### Tests + verification (green in isolation)
+- **Contracts 81 → 84 (+3):** `sessionAnnotation.orientation.json` validates against `SessionAnnotation`;
+  `FastFieldBinding.produces` is additive/optional and closed (a #62 binding without it validates, an invented
+  value is rejected); `SessionAnnotation` validates both a rich and an `unclear`/empty-topics reading.
+- **Engine +6 (`distill/judge.test.ts`):** orientation classifies the session with NO fast values seeded +
+  engine-stamps the annotation + emits `orientation.updated` (and the prompt carries the source but NOT the
+  fast result set); annotate-and-correct (a later pass replaces in place); blank fields default to `"unclear"`
+  + topics engine-capped (model doesn't control counts); unparseable output → no annotation/no emit; tier-gate
+  no-op with no judge endpoint; the gate-ready seam annotates-and-logs under the `gate` disposition. Two
+  pre-existing #62 tests were trued up for the now-also-seeded orientation judge (the dual-input test asserts
+  the VERDICT prompt carries both inputs across all invokes; the explainable-empty test asserts the verdict
+  PATH does not invoke, since orientation legitimately classifies the source regardless of fast values).
+- **Full `pnpm -r test`:** contracts 84, client 363, engine 699 — green. KNOWN FLAKE CLASS (unrelated to this
+  slice): under one parallel run two engine e2e/timing tests flaked (`Try-it VOICE path` WS timing;
+  `#115 cold boot` "database connection is not open" teardown race); engine is 699/699 when re-run in isolation.
+
+### Deferred / disclosed (out of this v0, by scope)
+- **The gate is designed, not built.** Only `annotate` is enforced; the `gate` branch is a documented,
+  test-pinned no-op-with-log. Building the hold/release + the config flag is the follow-up the seam exists for.
+- **`orientation.updated` has no render consumer here.** It is emitted + broadcast; the contextual sidebar that
+  subscribes to it is #134's trigger consumer, out of this slice's file boundary.
+- **Taxonomy vocab is open/document-configurable** (nature/direction are strings, not closed unions) so it can
+  be tuned without a contract change — matching `FieldValue.state`. A closed union is deferred until the vocab
+  stabilizes.

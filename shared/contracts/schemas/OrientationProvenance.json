@@ -1,0 +1,40 @@
+{
+  "$id": "OrientationProvenance",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "templateId",
+    "endpoint",
+    "classifiedAt"
+  ],
+  "properties": {
+    "templateId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "endpoint": {
+      "description": "the fabric endpoint name that classified (never a secret value)",
+      "type": "string"
+    },
+    "model": {
+      "description": "the model that answered, when the endpoint names one",
+      "type": "string"
+    },
+    "windowStart": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "windowEnd": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "classifiedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

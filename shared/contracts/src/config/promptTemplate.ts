@@ -29,6 +29,10 @@ import { Id, SlotName } from '../common.js'
  * - `cadenceMs` (judge tier only, #62) is the judge's minimum re-review interval — its cadence is
  *   DECOUPLED from the fast fan-out (which runs every distill batch). Absent ⇒ the engine's judge
  *   cadence default. Ignored for a `fast` binding.
+ * - `produces` (judge tier only, #131) says WHAT OUTPUT this judge document produces: `verdict` (the
+ *   default #62 dual-input review — per-field confirm/correct/flag over the fast-result set) or
+ *   `orientation` (the occasional global classification of the session's nature/direction/topics, landed
+ *   as a `SessionAnnotation`). Absent ⇒ `verdict`, so every existing judge document is unchanged.
  */
 export const FastFieldBinding = Type.Object(
   {
@@ -55,6 +59,11 @@ export const FastFieldBinding = Type.Object(
     ),
     cadenceMs: Type.Optional(
       Type.Integer({ minimum: 0, description: 'judge tier only (#62): minimum re-review interval, decoupled from the fast fan-out; absent ⇒ engine default' }),
+    ),
+    produces: Type.Optional(
+      Type.Union(['verdict', 'orientation'].map((p) => Type.Literal(p)), {
+        description: "judge tier only (#131): output shape — 'verdict' (default, #62 per-field review) or 'orientation' (session-nature classification landed as a SessionAnnotation)",
+      }),
     ),
   },
   { $id: 'FastFieldBinding', additionalProperties: false },
