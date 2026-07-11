@@ -142,6 +142,14 @@ export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   // user wants visible in screenshots/screen-share (no content protection), resizable, and focusable while
   // they poke at the pipeline; it must NOT float always-on-top over the app it is diagnosing.
   'surf-openinfo-diagnostics': { chrome: 'app', width: 560 },
+  // The #134 attached-panel shells. Both take the inherited Glass chrome — frameless, transparent,
+  // content-PROTECTED (they carry the same sensitive session content the HUD does), always-on-top — so
+  // they float beside/beneath the HUD. Their COLLAPSED/EXPANDED extent is owned by the surface's `panel`
+  // block and applied over the hud:panel-size bridge (the renderer installs the PanelController instead of
+  // auto-resize for these), NOT the content-sizer. The chat is the HUD's own width so it sits flush
+  // beneath it; the sidebar's width is driven by its panel (collapsed 0 → expanded 320).
+  'surf-openinfo-chat': { chrome: 'hud' },
+  'surf-openinfo-sidebar': { chrome: 'hud', width: 320 },
 }
 
 /** The window config for a surface id — its explicit entry, else the disclosed `'app'` default. */

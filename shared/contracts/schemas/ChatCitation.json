@@ -1,0 +1,35 @@
+{
+  "$id": "ChatCitation",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "pinId",
+    "ordinal",
+    "excerpt"
+  ],
+  "properties": {
+    "pinId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "pinTitle": {
+      "type": "string"
+    },
+    "ordinal": {
+      "minimum": 0,
+      "description": "the cited chunk ordinal within the pin",
+      "type": "integer"
+    },
+    "page": {
+      "minimum": 1,
+      "description": "1-based source page anchor; absent for pageless sources",
+      "type": "integer"
+    },
+    "excerpt": {
+      "minLength": 1,
+      "description": "the cited excerpt (capped) — proof, not the whole chunk",
+      "type": "string"
+    }
+  }
+}

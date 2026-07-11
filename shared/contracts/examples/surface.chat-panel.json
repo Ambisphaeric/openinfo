@@ -1,0 +1,8 @@
+{ "id": "surf-openinfo-chat", "name": "Chat", "context": "any", "version": 1,
+  "panel": { "edge": "below", "collapsed": 120, "expanded": 432, "reveal": "user", "startExpanded": false },
+  "stack": [
+    { "block": "now" },
+    { "block": "input",
+      "input": { "target": "chat", "submit": "/chat", "mode": "both",
+        "placeholder": "Ask about this session — attach a doc to cite it", "submitLabel": "Send",
+        "accept": ".pdf,.txt,.md" } } ] }

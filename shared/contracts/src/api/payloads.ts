@@ -4,6 +4,7 @@ import { Entity } from '../records/entity.js'
 import { Moment } from '../records/moment.js'
 import { StarterModel } from '../config/local.js'
 import { AttributionPattern } from '../config/hints.js'
+import { EgressDecision } from '../config/egress.js'
 
 export const Health = Type.Object(
   {
@@ -608,3 +609,79 @@ export const LocalDownloadRequest = Type.Object(
   { $id: 'LocalDownloadRequest', additionalProperties: false },
 )
 export type LocalDownloadRequest = Static<typeof LocalDownloadRequest>
+
+/** One prior turn of a chat exchange (#134) — role + text. `assistant` turns are the engine's prior replies. */
+export const ChatTurn = Type.Object(
+  {
+    role: Type.Union([Type.Literal('user'), Type.Literal('assistant')]),
+    content: Type.String({ minLength: 1 }),
+  },
+  { $id: 'ChatTurn', additionalProperties: false },
+)
+export type ChatTurn = Static<typeof ChatTurn>
+
+/**
+ * The body of POST /chat (#134) — the below-HUD chat shell's turn. The engine answers WITH THE CORPUS IN
+ * HAND (relevant entities + cited pin chunks when a document is attached), not vanilla completion. `pinId`
+ * attaches an INGESTED pin whose page-anchored chunks become the citable context; `history` carries prior
+ * turns so the honest turn budget can be computed and disclosed. Small local models get few useful turns
+ * against a big document, so context enters DISTILLED/CHUNKED (cited excerpts, capped), never raw-stuffed.
+ */
+export const ChatRequest = Type.Object(
+  {
+    message: Type.String({ minLength: 1 }),
+    workspace: Type.Optional(Id),
+    pinId: Type.Optional(Id),
+    history: Type.Optional(Type.Array(ChatTurn)),
+  },
+  { $id: 'ChatRequest', additionalProperties: false },
+)
+export type ChatRequest = Static<typeof ChatRequest>
+
+/** A page-anchored citation the chat answer stands on (#134) — the pin chunk it drew from, cite-ready ("p. 42"). */
+export const ChatCitation = Type.Object(
+  {
+    pinId: Id,
+    pinTitle: Type.Optional(Type.String()),
+    ordinal: Type.Integer({ minimum: 0, description: 'the cited chunk ordinal within the pin' }),
+    page: Type.Optional(Type.Integer({ minimum: 1, description: '1-based source page anchor; absent for pageless sources' })),
+    excerpt: Type.String({ minLength: 1, description: 'the cited excerpt (capped) — proof, not the whole chunk' }),
+  },
+  { $id: 'ChatCitation', additionalProperties: false },
+)
+export type ChatCitation = Static<typeof ChatCitation>
+
+/**
+ * The HONEST, VISIBLE turn/context budget (#134) — disclosed to the user, never a silent truncation. Small
+ * local models get ~3-4 useful turns against a big document, so the reply states the estimated context
+ * tokens, the invoke's max output tokens, how many turns are estimated to remain at this rate, and whether
+ * the attached context had to be TRUNCATED to fit (with a human `note` naming what was dropped).
+ */
+export const ChatBudget = Type.Object(
+  {
+    contextTokens: Type.Integer({ minimum: 0, description: 'estimated tokens the assembled context + history occupy (chars/4)' }),
+    maxTokens: Type.Integer({ minimum: 1, description: 'the max output tokens this invoke ran under' }),
+    turnsRemaining: Type.Integer({ minimum: 0, description: 'estimated useful turns left at this context rate before the window fills' }),
+    truncated: Type.Boolean({ description: 'true ⇒ attached context was capped/dropped to fit — see note' }),
+    note: Type.String({ minLength: 1, description: 'one-line honest disclosure of the budget/truncation, safe to surface' }),
+  },
+  { $id: 'ChatBudget', additionalProperties: false },
+)
+export type ChatBudget = Static<typeof ChatBudget>
+
+/**
+ * The reply of POST /chat (#134) — the model's answer, the page-anchored citations it stands on, the honest
+ * turn/context budget, and the egress decision this hop ran under (every hop is egress-gated). A failed hop
+ * does NOT come back here — the route returns a 4xx/5xx whose body the input block paints as visible text.
+ */
+export const ChatReply = Type.Object(
+  {
+    answer: Type.String({ minLength: 1 }),
+    citations: Type.Array(ChatCitation),
+    budget: ChatBudget,
+    endpoint: Type.Optional(Type.String({ description: 'the fabric endpoint that answered' })),
+    egress: Type.Optional(EgressDecision),
+  },
+  { $id: 'ChatReply', additionalProperties: false },
+)
+export type ChatReply = Static<typeof ChatReply>

@@ -1,0 +1,162 @@
+{
+  "$id": "ChatReply",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "answer",
+    "citations",
+    "budget"
+  ],
+  "properties": {
+    "answer": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "citations": {
+      "type": "array",
+      "items": {
+        "$id": "ChatCitation",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pinId",
+          "ordinal",
+          "excerpt"
+        ],
+        "properties": {
+          "pinId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "pinTitle": {
+            "type": "string"
+          },
+          "ordinal": {
+            "minimum": 0,
+            "description": "the cited chunk ordinal within the pin",
+            "type": "integer"
+          },
+          "page": {
+            "minimum": 1,
+            "description": "1-based source page anchor; absent for pageless sources",
+            "type": "integer"
+          },
+          "excerpt": {
+            "minLength": 1,
+            "description": "the cited excerpt (capped) — proof, not the whole chunk",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "budget": {
+      "$id": "ChatBudget",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contextTokens",
+        "maxTokens",
+        "turnsRemaining",
+        "truncated",
+        "note"
+      ],
+      "properties": {
+        "contextTokens": {
+          "minimum": 0,
+          "description": "estimated tokens the assembled context + history occupy (chars/4)",
+          "type": "integer"
+        },
+        "maxTokens": {
+          "minimum": 1,
+          "description": "the max output tokens this invoke ran under",
+          "type": "integer"
+        },
+        "turnsRemaining": {
+          "minimum": 0,
+          "description": "estimated useful turns left at this context rate before the window fills",
+          "type": "integer"
+        },
+        "truncated": {
+          "description": "true ⇒ attached context was capped/dropped to fit — see note",
+          "type": "boolean"
+        },
+        "note": {
+          "minLength": 1,
+          "description": "one-line honest disclosure of the budget/truncation, safe to surface",
+          "type": "string"
+        }
+      }
+    },
+    "endpoint": {
+      "description": "the fabric endpoint that answered",
+      "type": "string"
+    },
+    "egress": {
+      "$id": "EgressDecision",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "reach",
+        "allowed",
+        "decidedBy",
+        "reason"
+      ],
+      "properties": {
+        "reach": {
+          "$id": "EgressReach",
+          "description": "layer 1: an endpoint is local (loopback/LAN/spawned) or egress (hosted/cloud) by its nature",
+          "anyOf": [
+            {
+              "const": "local",
+              "type": "string"
+            },
+            {
+              "const": "egress",
+              "type": "string"
+            }
+          ]
+        },
+        "allowed": {
+          "description": "did the layered content-side policy permit egress for this content?",
+          "type": "boolean"
+        },
+        "decidedBy": {
+          "$id": "EgressLayer",
+          "description": "which of the four layers decided (or `default` = no denial, `endpoint` = destination-classification decided)",
+          "anyOf": [
+            {
+              "const": "endpoint",
+              "type": "string"
+            },
+            {
+              "const": "prompt",
+              "type": "string"
+            },
+            {
+              "const": "mode",
+              "type": "string"
+            },
+            {
+              "const": "workspace",
+              "type": "string"
+            },
+            {
+              "const": "content-class",
+              "type": "string"
+            },
+            {
+              "const": "default",
+              "type": "string"
+            }
+          ]
+        },
+        "reason": {
+          "minLength": 1,
+          "description": "one-line, human-readable why — safe to surface (no url/secret)",
+          "type": "string"
+        }
+      }
+    }
+  }
+}

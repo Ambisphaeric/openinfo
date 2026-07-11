@@ -1,0 +1,6 @@
+{ "id": "surf-openinfo-sidebar", "name": "Sidebar", "context": "any", "version": 1,
+  "panel": { "edge": "right", "collapsed": 0, "expanded": 320, "reveal": "event", "openOn": "entity.updated", "startExpanded": false },
+  "stack": [
+    { "block": "now" },
+    { "block": "relevant-now", "top": 6,
+      "query": { "source": "relevant-now", "params": { "session": "current" }, "top": 6 } } ] }

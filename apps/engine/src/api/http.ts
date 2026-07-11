@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type ChatRequest, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, type DistillOptions } from '../distill/index.js'
@@ -21,6 +21,7 @@ import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
+import { runChat, type ChatDeps } from './chat.js'
 import { readEngineVersion, readEngineBuild } from './version.js'
 import { EventSocketHub } from './ws.js'
 
@@ -718,6 +719,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   // #99: `?surface=<id>` names the app instance a query runs under — its bound workspace becomes the query's
   // DEFAULT (an explicit params.workspace still wins). Absent ⇒ unchanged 'default' behavior.
   if (req.method === 'POST' && url.pathname === '/query') return runQuery(req, res, ctx, url.searchParams.get('surface'))
+  if (req.method === 'POST' && url.pathname === '/chat') return postChat(req, res, ctx)
   // #66: dismiss / mark-for-follow-up write a per-item signal. Dismiss is the SUPPRESSION record that
   // runQuery above then honors (dismissed rows excluded). Self-contained: one POST over the store seam.
   if (req.method === 'POST' && url.pathname === '/item-signals') return postItemSignal(req, res, ctx)
@@ -1645,6 +1647,46 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
   // are cheap, but async status() is awaited only when needed. Every other source reads through store/.
   const sources = await buildQuerySources(query, ctx)
   send(res, 200, compileQuery(ctx.store, query, new Date(), sources, boundWorkspace))
+}
+
+/**
+ * POST /chat (#134) — the below-HUD chat shell's turn. Delegates the corpus assembly + honest budget + the
+ * egress-gated invoke to chat.ts::runChat over a ChatDeps built from the store/fabric here. Reuses the SAME
+ * #63 guard config the distiller builds (guard.egress flag + policy + the fabric guard slot), so the chat
+ * hop is filtered exactly like a distill hop. A FAILURE (empty llm slot, guard hold, transport) is caught
+ * and returned as a 502 whose `error` the input block paints as visible text — the QA doctrine, no silent
+ * no-op. A malformed body is a 400 before any model is touched.
+ */
+async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('ChatRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid ChatRequest', details: errors })
+  const request = body as ChatRequest
+
+  const fabric = ctx.fabric.load()
+  const guardOn = isFlagEnabled(ctx.store, 'guard.egress')
+  const policy = ctx.guardDocs.policy()
+  const guard = guardOn
+    ? { endpoints: fabric.slots.guard ?? [], behavior: policy.behavior, acknowledgeUnguardedEgress: policy.acknowledgeUnguardedEgress, resolveKey: (ref: string) => ctx.secrets.resolve(ref) }
+    : undefined
+
+  const deps: ChatDeps = {
+    fabric,
+    relevant: (workspaceId) => (ctx.store.all().some((w) => w.id === workspaceId) ? relevantNow(ctx.store, workspaceId, {}) : []),
+    pinTitle: (workspaceId, pinId) => ctx.store.getPin(workspaceId, pinId)?.title,
+    pinChunks: (workspaceId, pinId) => (ctx.store.getPin(workspaceId, pinId) ? ctx.store.listPinChunks(workspaceId, pinId) : []),
+    workspaceDeniesEgress: (workspaceId) => ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true,
+    ...(guard !== undefined ? { guard } : {}),
+    resolveKey: (ref: string) => ctx.secrets.resolve(ref),
+    runtimeManager: ctx.runtime,
+  }
+
+  try {
+    send(res, 200, await runChat(deps, request))
+  } catch (error) {
+    // Honest failure: name the reason (empty slot / held hop / transport) so the input block shows it.
+    send(res, 502, { error: error instanceof Error ? error.message : String(error) })
+  }
 }
 
 /**

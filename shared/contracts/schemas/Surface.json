@@ -100,6 +100,10 @@
                 "type": "string"
               },
               {
+                "const": "input",
+                "type": "string"
+              },
+              {
                 "const": "custom",
                 "type": "string"
               }
@@ -346,6 +350,54 @@
                 "type": "string"
               }
             }
+          },
+          "input": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "target",
+              "submit"
+            ],
+            "properties": {
+              "target": {
+                "minLength": 1,
+                "description": "what the entry feeds — a free identifier (chat | entity-map | pins | …)",
+                "type": "string"
+              },
+              "submit": {
+                "minLength": 1,
+                "description": "engine route the entry POSTs to, e.g. \"/chat\"; a failed submit surfaces as visible text",
+                "type": "string"
+              },
+              "mode": {
+                "description": "text-entry, file-drop, or both; absent ⇒ text",
+                "anyOf": [
+                  {
+                    "const": "text",
+                    "type": "string"
+                  },
+                  {
+                    "const": "file",
+                    "type": "string"
+                  },
+                  {
+                    "const": "both",
+                    "type": "string"
+                  }
+                ]
+              },
+              "placeholder": {
+                "type": "string"
+              },
+              "submitLabel": {
+                "description": "submit affordance label; absent ⇒ \"Send\"",
+                "type": "string"
+              },
+              "accept": {
+                "description": "file-drop accept filter (MIME/extension), e.g. \".pdf,.txt,.md\"; mode file/both only",
+                "type": "string"
+              }
+            }
           }
         }
       }
@@ -358,6 +410,64 @@
       "minLength": 1,
       "description": "opaque identifier",
       "type": "string"
+    },
+    "panel": {
+      "$id": "AttachedPanel",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "edge",
+        "collapsed",
+        "expanded",
+        "reveal"
+      ],
+      "properties": {
+        "edge": {
+          "description": "below ⇒ expand height; right ⇒ expand width",
+          "anyOf": [
+            {
+              "const": "below",
+              "type": "string"
+            },
+            {
+              "const": "right",
+              "type": "string"
+            }
+          ]
+        },
+        "collapsed": {
+          "minimum": 0,
+          "description": "window content size (px) along the edge axis when collapsed",
+          "type": "integer"
+        },
+        "expanded": {
+          "minimum": 1,
+          "description": "window content size (px) along the edge axis when expanded",
+          "type": "integer"
+        },
+        "reveal": {
+          "description": "user = manual toggle only; event = also opens as a dismissible suggestion on a matching bus event",
+          "anyOf": [
+            {
+              "const": "user",
+              "type": "string"
+            },
+            {
+              "const": "event",
+              "type": "string"
+            }
+          ]
+        },
+        "openOn": {
+          "minLength": 1,
+          "description": "event name (or \"prefix.\" prefix) that SUGGESTS opening when reveal:\"event\"; matched tolerantly — an absent event is a no-op",
+          "type": "string"
+        },
+        "startExpanded": {
+          "description": "initial state; absent ⇒ collapsed",
+          "type": "boolean"
+        }
+      }
     }
   }
 }
