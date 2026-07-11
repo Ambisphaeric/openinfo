@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { asChunkStrategy, DEFAULT_CHUNK_STRATEGY, DEFAULT_VAD_PARAMS, type ChunkStrategy } from '../capture/vad.js'
+import { DELTA_THRESHOLD_DEFAULT } from '../capture/frame-delta.js'
 import type { SystemAudioMethod } from '../capture/protocol.js'
 
 /**
@@ -100,6 +101,18 @@ export interface ShellConfig {
    */
   screenIntervalMs: number
   /**
+   * Screen Δ-gate threshold (issue #5) — the minimum fraction of sampled probe bytes that must differ
+   * from the last KEPT frame for a new frame to be sent (capture/frame-delta.ts; the measured score is
+   * stamped into ScreenFrameMeta.deltaScore). A static screen otherwise re-sends — and the engine
+   * re-OCRs — the identical pixels every cadence tick. **0 disables gating entirely** (every tick sends,
+   * the pre-gate behaviour) — 0 is a MEANINGFUL value here, not garbage. The resolved value is clamped
+   * into [0, 1] (the score is a fraction; above 1 nothing could ever pass early); a negative/garbage
+   * value falls through to the next source, then the default (DELTA_THRESHOLD_DEFAULT, 0.015). Only
+   * meaningful when `screenEnabled`. Override with OPENINFO_SCREEN_DELTA or `"screenDeltaThreshold"`.
+   * The heartbeat that bounds a fully-gated stream is a code constant (DELTA_HEARTBEAT_TICKS), not config.
+   */
+  screenDeltaThreshold: number
+  /**
    * Audio capture segment length in ms — how often the hidden renderer stops-and-restarts its
    * MediaRecorder to cut one complete, independently-decodable webm file (capture-renderer.ts explains
    * why segmenting is stop/restart, never `timeslice`). This is the DOMINANT capture latency: a spoken
@@ -163,6 +176,7 @@ export interface ClientConfigFile {
   focus?: boolean
   screen?: boolean
   screenIntervalMs?: number
+  screenDeltaThreshold?: number
   segmentMs?: number
   chunkStrategy?: ChunkStrategy
   vadSilenceHoldMs?: number
@@ -261,6 +275,21 @@ const resolveScreenIntervalMs = (envRaw: string | undefined, fileVal: number | u
 }
 
 /**
+ * Resolve the screen Δ-gate threshold (#5): env > file > default, where a VALID value is a finite number
+ * ≥ 0 — deliberately NOT resolveIntervalMs's positive-only rule, because **0 is meaningful** (gating
+ * disabled: every cadence tick sends). A valid choice is clamped to at most 1 (the score is a fraction;
+ * anything above 1 could never pass early — snap to "only a fully-changed frame passes", the heartbeat
+ * still breathes). A negative/garbage value is invalid and falls through to the next source, then the
+ * default (frame-delta.ts DELTA_THRESHOLD_DEFAULT — itself in range).
+ */
+const resolveScreenDeltaThreshold = (envRaw: string | undefined, fileVal: number | undefined, def: number): number => {
+  const fromEnv = envRaw !== undefined ? Number(envRaw) : undefined
+  if (fromEnv !== undefined && Number.isFinite(fromEnv) && fromEnv >= 0) return Math.min(fromEnv, 1)
+  if (fileVal !== undefined && Number.isFinite(fileVal) && fileVal >= 0) return Math.min(fileVal, 1)
+  return def
+}
+
+/**
  * Resolve the chunk strategy (#95): a valid env token (fixed|vad) wins, else the file value, else the
  * measured default (vad). Mirrors the env > file > default precedence of the string/url fields.
  */
@@ -324,6 +353,8 @@ export const parseClientConfigFile = (raw: unknown): ClientConfigFile | undefine
   if (screen !== undefined) out.screen = screen
   const screenIntervalMs = asNumber(r['screenIntervalMs'])
   if (screenIntervalMs !== undefined) out.screenIntervalMs = screenIntervalMs
+  const screenDeltaThreshold = asNumber(r['screenDeltaThreshold'])
+  if (screenDeltaThreshold !== undefined) out.screenDeltaThreshold = screenDeltaThreshold
   const segmentMs = asNumber(r['segmentMs'])
   if (segmentMs !== undefined) out.segmentMs = segmentMs
   const chunkStrategy = asChunkStrategy(r['chunkStrategy'])
@@ -366,7 +397,9 @@ export const loadClientConfigFile = (filePath: string = clientConfigPath()): Cli
  * - the audio/focus toggles: an explicit env token (opt-out), else the file boolean, else the senses-on
  *   default (ON — SENSE_DEFAULTS).
  * - screen: an explicit env token (opt-IN), else the file boolean, else OFF (SENSE_DEFAULTS.screen);
- *   screenIntervalMs: env/file/5000, then clamped into the 3–6s band (issue #4 — see resolveScreenIntervalMs).
+ *   screenIntervalMs: env/file/5000, then clamped into the 3–6s band (issue #4 — see resolveScreenIntervalMs);
+ *   screenDeltaThreshold: env/file/0.015, clamped to ≤1 — 0 disables the Δ-gate (issue #5 — see
+ *   resolveScreenDeltaThreshold).
  * - segmentMs: a valid positive env number, else the file value, else 1000 (~1s) — the capture cadence (#57).
  */
 export const resolveShellConfig = (
@@ -394,6 +427,7 @@ export const resolveShellConfig = (
     focusEnabled: resolveEnabled(env['OPENINFO_FOCUS'], file?.focus, SENSE_DEFAULTS.focus),
     screenEnabled: resolveOptIn(env['OPENINFO_SCREEN'], file?.screen, SENSE_DEFAULTS.screen),
     screenIntervalMs: resolveScreenIntervalMs(env['OPENINFO_SCREEN_INTERVAL_MS'], file?.screenIntervalMs, DEFAULTS.screenIntervalMs),
+    screenDeltaThreshold: resolveScreenDeltaThreshold(env['OPENINFO_SCREEN_DELTA'], file?.screenDeltaThreshold, DELTA_THRESHOLD_DEFAULT),
     segmentMs: resolveIntervalMs(env['OPENINFO_SEGMENT_MS'], file?.segmentMs, DEFAULTS.segmentMs),
     chunkStrategy: resolveChunkStrategy(env['OPENINFO_CHUNK_STRATEGY'], file?.chunkStrategy, DEFAULT_CHUNK_STRATEGY),
     vadSilenceHoldMs: resolveIntervalMs(env['OPENINFO_VAD_SILENCE_HOLD_MS'], file?.vadSilenceHoldMs, DEFAULT_VAD_PARAMS.silenceHoldMs),
