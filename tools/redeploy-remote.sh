@@ -73,6 +73,7 @@ ssh "$REMOTE" "
   . \"\$NVM_DIR/nvm.sh\"
   nvm use ${NODE_VERSION} >/dev/null
   NODE_BIN=\"\$(command -v node)\"
+  DEPLOY_SHA=\"\$(cd ~/${REMOTE_PATH} && git rev-parse --short HEAD)\"
   mkdir -p ~/Library/LaunchAgents
   cat > ~/Library/LaunchAgents/io.openinfo.engine.plist <<PLIST
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
@@ -86,6 +87,7 @@ ssh "$REMOTE" "
   <key>WorkingDirectory</key><string>\${HOME}/${REMOTE_PATH}</string>
   <key>EnvironmentVariables</key><dict>
     <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:\${HOME}/.local/bin</string>
+    <key>OPENINFO_BUILD</key><string>\${DEPLOY_SHA}</string>
   </dict>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>/tmp/openinfo-engine.log</string>
