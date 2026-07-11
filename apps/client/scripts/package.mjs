@@ -52,6 +52,11 @@ const electronVersion = require('electron/package.json').version
 const extendInfo = {
   NSMicrophoneUsageDescription:
     'openinfo listens to your microphone only while a session is live, to transcribe the conversation into your notes locally. No session, no listening.',
+  // #142: REQUIRED for macOS 14.2+ system-audio capture — Chromium's CoreAudio-Tap (the no-routing loopback
+  // path getDisplayMedia uses) reads system audio only when this key is present; without it the OS hands back
+  // a DEAD (digital-silence) stream with no error. Shown verbatim in the Screen & System Audio Recording grant.
+  NSAudioCaptureUsageDescription:
+    'openinfo captures your system audio (the far side of calls and media) only while a session is live, to transcribe it into your notes locally. No session, no capture.',
   NSLocalNetworkUsageDescription:
     'openinfo reaches model servers and engines on your local network (LM Studio, Ollama, or an engine on another machine) to run your local AI.',
   // Menu-bar-only agent: no Dock icon (app.dock.hide() already hides it at runtime; this avoids a launch flash).

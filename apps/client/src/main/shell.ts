@@ -50,6 +50,15 @@ const CAPTURE_PRELOAD_JS = path.join(__dirname, '..', 'capture', 'capture-preloa
 // env > ~/.openinfo/client.json > defaults — the file lets a double-clicked packaged .app point at an
 // engine without env vars (env still wins, so the verifier can override on the command line). See config.ts.
 const cfg: ShellConfig = resolveShellConfig(process.env, loadClientConfigFile())
+
+// System-audio loopback (#142): opt into Chromium's macOS CoreAudio-Tap so getDisplayMedia's `audio:'loopback'`
+// captures the system mix WITHOUT a virtual device. It is the default from Electron v39; on v38 it is
+// explicit. Must be appended before app-ready, so it lives here at module init. Only relevant when the
+// system-audio method is loopback (macOS default) — harmless otherwise (no getDisplayMedia loopback call).
+if (cfg.systemAudioMethod === 'loopback') {
+  app.commandLine.appendSwitch('enable-features', 'MacCatapLoopbackAudioForScreenShare')
+}
+
 const session = new EngineSessionClient(cfg.engineUrl)
 const liveState = new SessionLiveState(cfg.workspace)
 // The boot guard (issue #41): capture only ever auto-starts on a live-session transition the USER
@@ -179,6 +188,7 @@ const captureStatusInput = () => {
     // one). engineGates is the engine's half (GET /senses), undefined until fetched.
     micEnabled: cfg.micEnabled,
     systemAudioEnabled: cfg.systemAudioEnabled,
+    systemAudioMethod: cfg.systemAudioMethod, // #142: drives whether the readout names the loopback grant or a virtual device
     engineReachable: connected,
     sessionLive: liveState.live,
     ...(senseGates !== undefined ? { engineGates: senseGates } : {}),
@@ -569,9 +579,23 @@ const createCaptureWindow = (): void => {
     onCaptureRendererLost(`page failed to load: ${code} ${description}`))
   captureWindow.webContents.on('render-process-gone', (_event, details) =>
     onCaptureRendererLost(`renderer gone: ${details.reason} (exitCode ${details.exitCode})`))
+  // System-audio loopback (#142): grant the capture renderer's getDisplayMedia request with system-audio
+  // loopback (Chromium CoreAudio-Tap — no virtual device, no routing). We must supply a video source too
+  // (getDisplayMedia requires a video request); the renderer immediately drops the video track and keeps
+  // only the audio (the system mix). Scoped to THIS hidden window's session so it never affects other
+  // windows' media requests. Only the loopback method calls getDisplayMedia, so this is inert for `device`.
+  captureWindow.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer
+      .getSources({ types: ['screen'] })
+      .then((sources) => callback(sources[0] ? { video: sources[0], audio: 'loopback' } : {}))
+      .catch((err) => {
+        console.error('[shell] loopback getSources failed:', err)
+        callback({}) // deny → getDisplayMedia rejects → the renderer reports no-device/permission honestly
+      })
+  })
   void captureWindow.loadFile(CAPTURE_HTML)
   captureWindow.on('closed', () => (captureWindow = undefined))
-  console.log('[shell] hidden capture window created — mic + system-audio renderer host')
+  console.log(`[shell] hidden capture window created — mic + system-audio renderer host (system-audio method: ${cfg.systemAudioMethod})`)
 }
 
 /**
@@ -763,6 +787,9 @@ const setupCapture = (): void => {
             vadMinSegmentMs: cfg.vadMinSegmentMs,
             vadMaxSegmentMs: cfg.vadMaxSegmentMs,
             vadSilencePeak: cfg.vadSilencePeak,
+            // #142: how to open the system-audio stream (loopback CoreAudio-Tap vs BlackHole device). The
+            // renderer applies it only to the system-audio source; mic ignores it. Constant per run.
+            systemAudioMethod: cfg.systemAudioMethod,
           })
         : captureWindow?.webContents.send(CAPTURE_CHANNELS.stop, source),
     onFault: onCaptureFault,

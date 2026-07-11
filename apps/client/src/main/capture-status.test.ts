@@ -70,6 +70,30 @@ test('system-audio is device presence, not a permission — missing-device point
   assert.equal(unknown.level, 'not-determined')
 })
 
+test('system-audio LOOPBACK method names the recording grant + one-click Settings fix, not a device install (#142)', () => {
+  const missing = bySense(run({ sysAudio: 'missing-device', systemAudioMethod: 'loopback' }), 'sys-audio')
+  assert.equal(missing.level, 'missing-device')
+  assert.equal(missing.state, 'not available')
+  // Loopback failing IS a one-click OS fix (grant Screen & System Audio Recording), unlike the device path.
+  assert.equal(missing.fixCommand, 'open-screen-settings')
+  assert.match(missing.detail, /Recording|relaunch|RELAUNCH/i)
+  assert.match(missing.detail, /systemAudioMethod=device/) // honest downgrade path is named
+
+  const present = bySense(run({ sysAudio: 'present', systemAudioMethod: 'loopback' }), 'sys-audio')
+  assert.equal(present.level, 'granted')
+  assert.match(present.detail, /no virtual device|no routing/i) // the no-setup win is stated
+  assert.doesNotMatch(present.detail, /Microphone grant/) // loopback rides the recording grant, not the mic one
+})
+
+test('system-audio LOOPBACK missing is an actionable OS-layer block carrying the Settings fix command (#142)', () => {
+  const missing = bySense(
+    run({ sysAudio: 'missing-device', systemAudioMethod: 'loopback', engineReachable: true, sessionLive: true }),
+    'sys-audio',
+  )
+  assert.equal(missing.blocking?.gate, 'os-permission')
+  assert.equal(missing.blocking?.fixCommand, 'open-screen-settings')
+})
+
 test('off macOS the media senses read as unsupported (no false TCC claims)', () => {
   const linux = run({ platform: 'linux' }) // micAccess/screenAccess omitted (undefined) as the shell does off-darwin
   assert.equal(bySense(linux, 'mic').level, 'unsupported')

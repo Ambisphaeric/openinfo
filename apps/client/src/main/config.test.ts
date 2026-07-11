@@ -54,6 +54,25 @@ test('mic + system-audio capture are opt-OUT: default ON, disabled only by an ex
   assert.equal(micOnly.systemAudioEnabled, false)
 })
 
+test('systemAudioMethod defaults to auto → loopback on macOS, device elsewhere (#142)', () => {
+  // auto (the default) is platform-aware: macOS gets the no-routing CoreAudio-Tap loopback; others BlackHole.
+  assert.equal(resolveShellConfig({}, undefined, 'darwin').systemAudioMethod, 'loopback')
+  assert.equal(resolveShellConfig({}, undefined, 'win32').systemAudioMethod, 'device')
+  assert.equal(resolveShellConfig({}, undefined, 'linux').systemAudioMethod, 'device')
+})
+
+test('systemAudioMethod is overridable by env > file, and only valid tokens count (#142)', () => {
+  // An explicit env token wins over platform default and over the file.
+  assert.equal(resolveShellConfig({ OPENINFO_SYSTEM_AUDIO_METHOD: 'device' }, { systemAudioMethod: 'loopback' }, 'darwin').systemAudioMethod, 'device')
+  assert.equal(resolveShellConfig({ OPENINFO_SYSTEM_AUDIO_METHOD: 'LOOPBACK' }, undefined, 'win32').systemAudioMethod, 'loopback')
+  // Explicit auto re-resolves per platform.
+  assert.equal(resolveShellConfig({ OPENINFO_SYSTEM_AUDIO_METHOD: 'auto' }, undefined, 'darwin').systemAudioMethod, 'loopback')
+  // The file value applies when env is absent.
+  assert.equal(resolveShellConfig({}, { systemAudioMethod: 'device' }, 'darwin').systemAudioMethod, 'device')
+  // A garbage token is ignored (falls through to file/auto), never crashes.
+  assert.equal(resolveShellConfig({ OPENINFO_SYSTEM_AUDIO_METHOD: 'nonsense' }, undefined, 'darwin').systemAudioMethod, 'loopback')
+})
+
 test('focus watching is opt-OUT: default ON, disabled only by an explicit falsy OPENINFO_FOCUS token', () => {
   assert.equal(resolveShellConfig({}).focusEnabled, true) // default ON — but a no-op unless route.detect is also on
   for (const off of ['0', 'false', 'off', 'no', 'OFF']) {
