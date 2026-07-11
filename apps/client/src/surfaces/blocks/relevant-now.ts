@@ -1,4 +1,4 @@
-import type { Block, EntityProvenance, MomentProvenance, RelevantEntity } from '@openinfo/contracts'
+import type { Block, EntityProvenance, MomentProvenance, RelevantEntity, Sighting } from '@openinfo/contracts'
 import { h, type VNode } from '../block-renderer/vnode.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
 import { clockLabel } from '../block-renderer/format.js'
@@ -9,14 +9,17 @@ import { clarifyGlyph, clarifyAsk, type ClarifyContext } from './clarify.js'
 
 /**
  * The `relevant-now` block — the live join, the heart of the HUD (design/renderings/hud-v2.html state
- * A). Each row is a ranked entity with its one-line WHY. When the pipeline RECORDED provenance on the
- * entity (or on a joined moment) — which distillate/window/endpoint/model named it — the why line is
- * derived from that recorded trail (#14), so the card explains itself from the truth the pipeline
- * stored rather than a re-guessed heuristic. When no provenance was recorded (Phase-0 rows, or a merge
- * with no trail), it FALLS BACK to the mention-count + latest-moment heuristic. Either way this honours
- * display rule #1 ("nothing without a why — can't produce the sentence → don't show the card"): a row
- * that can state neither a recorded trail, a mention count, a moment, nor a last-seen time renders no
- * card at all (renderRelevantNow drops it) rather than a why-less shell.
+ * A). Each row is a ranked entity with its one-line WHY, phrased for a HUMAN reading the HUD (#117): why
+ * the item is relevant — how it reached the user (heard / on screen / from calendar) and when. When the
+ * pipeline RECORDED provenance on the entity (or on a joined moment) the why line is derived from that
+ * recorded trail (#14) — but as a HUD-tier surface it states the human-legible slice (source kind +
+ * recency) and NEVER the endpoint, model id, or template id that produced it. The full machine trail
+ * (endpoint/model/window) stays recorded on the entity and remains reachable on the diagnostics surfaces
+ * and the ledger — it is simply not the HUD's job to render it. When no provenance was recorded (Phase-0
+ * rows, or a merge with no trail), the why FALLS BACK to the mention-count + latest-moment heuristic.
+ * Either way this honours display rule #1 ("nothing without a why — can't produce the sentence → don't
+ * show the card"): a row that can state neither a recorded trail, a mention count, a moment, nor a
+ * last-seen time renders no card at all (renderRelevantNow drops it) rather than a why-less shell.
  */
 type Provenance = EntityProvenance | MomentProvenance
 
@@ -29,13 +32,36 @@ const recordedProvenance = (row: RelevantEntity): { prov: Provenance; count: num
   return undefined
 }
 
-/** A one-line why built from a RECORDED provenance object — endpoint/model that named it, and when. */
-const provenanceWhy = (recorded: { prov: Provenance; count: number }): string => {
-  const { prov, count } = recorded
-  const via = prov.model ? `${prov.endpoint} · ${prov.model}` : prov.endpoint
+/** Human phrasing for how the item reached the user — the source kind, never a slot/model/endpoint id. */
+const SOURCE_PHRASE: Record<Sighting['via'], string> = { heard: 'heard', seen: 'on screen', calendar: 'from calendar' }
+
+/**
+ * The human source kind for this row: the most recent typed SIGHTING (heard/seen/calendar) when the
+ * entity carries an evidence trail, else `heard` — the honest default, since the only live producer of a
+ * recorded provenance trail today is the heard (ASR → distill) pipeline. Never derived from the fabric
+ * slot (`llm`/`stt`/…), which is a machine capability name, not how a human encountered the item.
+ */
+const sourceKind = (row: RelevantEntity): string => {
+  const sightings = row.entity.sightings
+  if (sightings && sightings.length > 0) {
+    const latest = sightings.reduce((a, b) => (b.at > a.at ? b : a))
+    return SOURCE_PHRASE[latest.via] ?? 'heard'
+  }
+  return 'heard'
+}
+
+/**
+ * A one-line why built from a RECORDED provenance object, phrased for the HUD (#117): the human source
+ * kind (heard / on screen / from calendar) and WHEN — never the endpoint, model id, or template id. The
+ * "when" prefers the provenance window, falling back to the entity's last-seen time; a row that recorded
+ * a trail but no usable time still states its source kind alone.
+ */
+const provenanceWhy = (row: RelevantEntity, recorded: { prov: Provenance; count: number }): string => {
+  const { prov } = recorded
   const window = prov.windowEnd ?? prov.windowStart
-  const when = window ? clockLabel(window) : count > 1 ? `${count} windows` : ''
-  return when ? `via ${via} · ${when}` : `via ${via}`
+  const when = (window && clockLabel(window)) || clockLabel(row.entity.lastSeen)
+  const kind = sourceKind(row)
+  return when ? `${kind} · ${when}` : kind
 }
 
 /** The Phase-0 fallback: mention count + the most recent joined moment, else the last-seen time. */
@@ -58,7 +84,7 @@ const heuristicWhy = (row: RelevantEntity): string => {
  */
 const whyLine = (row: RelevantEntity): { why: VNode; text: string } | undefined => {
   const recorded = recordedProvenance(row)
-  const text = recorded ? provenanceWhy(recorded) : heuristicWhy(row)
+  const text = recorded ? provenanceWhy(row, recorded) : heuristicWhy(row)
   if (!text) return undefined
   return { why: text, text }
 }
