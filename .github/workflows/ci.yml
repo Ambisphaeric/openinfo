@@ -51,9 +51,22 @@ jobs:
           chmod +x "$RUNNER_TEMP/stub-bin/llama-server"
           echo "$RUNNER_TEMP/stub-bin" >> "$GITHUB_PATH"
 
-      # KNOWN FLAKE GUARD: apps/engine has one mid-sequence load-flake (seen
-      # on the judge-stage e2e in api/http.test.ts; passes in isolation and in
-      # other full passes). One full retry keeps the gate honest: a real
-      # regression fails both runs.
+      # FLAKE CONTROLS (environment-gated, not product bugs — both engine
+      # e2es pass in isolation and in most full passes):
+      #  * apps/engine is run with --test-concurrency=1: its timing e2es
+      #    (#115 STT-keeps-flowing-while-distill-is-parked, the judge-stage
+      #    e2e) measure wall-clock behavior and starve when node --test runs
+      #    test files in parallel on a loaded 4-core runner.
+      #  * one full retry of the suites — a real regression fails both runs.
+      # Suite order mirrors `pnpm -r` topology: contracts -> engine -> client
+      # -> workbench (client's engine-link/seam.test.ts spawns the engine
+      # dist built above).
       - name: Test
-        run: pnpm test || pnpm test
+        run: |
+          run_suites() {
+            pnpm --filter @openinfo/contracts test &&
+            pnpm --filter @openinfo/engine exec node --test --test-concurrency=1 "dist/**/*.test.js" &&
+            pnpm --filter @openinfo/client test &&
+            pnpm --filter @openinfo/workbench test
+          }
+          run_suites || run_suites
