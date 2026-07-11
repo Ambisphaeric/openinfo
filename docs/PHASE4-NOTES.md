@@ -4617,3 +4617,36 @@ both turns + budget, a FAILED submit paints the reason, file-drop attaches + cit
 destructive re-render). Driven Electron e2e `scripts/panel-bounds-e2e.mjs` (`test:e2e:panel`, GUI-only like
 hud-bounds): real window bounds follow user expand/collapse AND an event-suggestion + dismiss (verified 0
 → 320 → suggested 320 → 0). Suites at the PR: contracts 83 / client 383 / engine 702.
+
+## PR #150 — human why-lines for fields + distillates, and the register lint (#118 partial)  *(branch fix/118-hud-why-lines)*
+
+### What / where
+- `apps/client/src/surfaces/blocks/fields.ts` — the field why-line was `via <endpoint> · <model> · <templateId>` (the exact machine-speak class the owner kept hitting live); now `updated <clock>` with honest fallbacks (updatedAt → provenance windowEnd/Start → `updated this session`). The empty state loses the raw `distill.fields` flag key ("turn on Fields in Settings → Features…"). Full ids stay recorded on the value and readable on Diagnostics + the Ledger — the #117 tier rule applied to its second offender.
+- `apps/client/src/surfaces/blocks/distillates.ts` — `distilled · via <endpoint>` → `distilled from capture` (the row's mark column already carries the clock).
+- Pinned assertions updated in `fields.test.ts` / `distillates.test.ts` / `fields-app.test.ts` with #117-style `doesNotMatch` id guards; new fallback-chain test (`ac5918a`).
+- **`hud-register-lint.test.ts`** (`83e5e16`) — the recurrence-ender: every registered block renderer driven through the REAL renderer with marker-id fixtures (`lint-endpoint-x`/`lint-model-9b`/`tpl-lint-1`); FAILS if a marker renders outside the Diagnostics-tier allow-list, and positively asserts inspector/queue/sense-gates DO show ids so the allow-list stays honest. `drafts` excluded with a comment pending its own via-line fix.
+
+### Remaining #118
+Block-header subtitles/legends · drafts why-line · stale `via …` prose in `shared/contracts/src/records/fieldValue.ts` docstrings.
+
+## PR #151 — echo-dedupe: mic fragments that duplicate the system stream die at the transcribe seam  *(branch feat/echo-dedupe)*
+
+### What / where
+With the #142 tap live, speakers-on audio arrives TWICE — clean on the system stream, garbled via speaker-bleed on the physical mic (rendered `mic · me`, the live-QA complaint). Deterministic engine-side dedupe:
+- `apps/engine/src/distill/echo-dedupe.ts` (pure): per-session 30s rolling buffer of system-stream fragments; a mic fragment within ±2000ms whose token-set Jaccard ≥ 0.8 (or full mic⊆system containment — deliberately directional) is an echo; fragments under 3 UNIQUE tokens are never dropped ("yeah yeah yeah" survives). `OPENINFO_ECHO_DEDUPE=0` kill-switch; per-session `echoSuppressed` counter.
+- Wired in `api/http.ts` `runTranscribe` — the seam shared by the legacy audio drain AND the workflow executor: two passes per drain (observe all system fragments first, then filter mic), echoes dropped from BOTH text-queue persistence and the `transcript.updated` live fan-out.
+- Tests: 9 pure-module (`39691eb`) + 1 drain-level wiring through a real engine (`2882acd` — echo absent from the LLM prompt and the live feed; control mic line passes).
+
+### v1 limits (disclosed in PR)
+Forward-only across drains (a mic fragment drained before its system twin is never re-checked); the suppressed counter is log-only until a System-app surface reads it.
+
+## PR #152 — Δ-gate: static screen frames stop re-capturing (#5 first pass)  *(branch feat/5-screen-delta-gate)*
+
+### What / where
+A static display was re-captured and re-OCR'd every 3–6s tick forever. Now:
+- `apps/client/src/capture/frame-delta.ts` (pure, electron-free): `computeDeltaScore` (32px probe, sampled byte-diff stride 4, per-byte tolerance 8, fail-open 1 on mismatch/empty), `shouldSend` (threshold 0.015 OR every-10th-tick heartbeat), per-displayId `FrameDeltaGate` scoring against the last KEPT probe so gradual drift accumulates instead of slipping under the threshold; `reset()` per session.
+- `shell.ts` derives the probe from the already-fetched thumbnail BEFORE the JPEG encode, early-outs gated frames, stamps `meta.deltaScore` on kept ones (the ScreenFrameMeta field had existed unset since P4B), resets the gate in `startScreenLoop`; `config.ts` `resolveScreenDeltaThreshold` (`OPENINFO_SCREEN_DELTA` / `screenDeltaThreshold`, 0 = gate off, clamped ≤ 1).
+- Tests: 13 pure-module (`f5260b0`) incl. the tolerance boundary and the 9th-vs-10th-tick heartbeat negative.
+
+### Follow-ups
+OCR-economics tuning of threshold/tolerance/probe width (#5) · an engine-side deltaScore reader · multi-display capture rides this same gate when displays fan out.
