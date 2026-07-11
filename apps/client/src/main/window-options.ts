@@ -142,6 +142,11 @@ export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   // user wants visible in screenshots/screen-share (no content protection), resizable, and focusable while
   // they poke at the pipeline; it must NOT float always-on-top over the app it is diagnosing.
   'surf-openinfo-diagnostics': { chrome: 'app', width: 560 },
+  // The #133 meeting note-taker: the mainstream look-and-speed EXEMPLAR. Deliberately the FRAMED `app`
+  // chrome — a full three-zone workspace app (left rail · center canvas · right enrichments) you WORK in
+  // and can screenshot for the owner's look-and-speed review, resizable, focusable, in the app switcher,
+  // NOT the always-on-top glass HUD. Wide enough to seat the three columns side-by-side at first render.
+  'surf-openinfo-notetaker': { chrome: 'app', width: 960 },
 }
 
 /** The window config for a surface id — its explicit entry, else the disclosed `'app'` default. */

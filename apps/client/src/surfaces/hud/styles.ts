@@ -154,6 +154,69 @@ body{margin:0;background:var(--page-bg);
   background:rgba(12,14,19,.92);border:1px solid rgba(217,161,59,.45);border-radius:8px;
   padding:6px 12px;pointer-events:none;z-index:9}
 .hud-boot-status:empty{display:none}
+
+/* ── #133 meeting note-taker: the three-zone app frame (scoped to .nt-app) ──────────────────────────
+   The Meetily-shape look-and-speed exemplar. renderNotetaker (notetaker-layout.ts) composes three
+   renderSurface panels into this grid: LEFT rail (home/nav/folders/pins) · CENTER canvas (notes + AI
+   summary, with the relocated Record affordance in its header) · RIGHT sidebar (enrichments — the rolling
+   summary). The controller-composed #58 live-transcript strip (.lt) is parked as a full-width bottom
+   ticker (the grid area named strip). Minimalist: quiet lines, one accent, columns split by hairline rules.
+   Everything below is prefixed .nt- / .nt-app so it never touches the HUD/fields/diagnostics surfaces. */
+.nt-app{width:100%;max-width:1220px;margin:0 auto;color:var(--s-ink);
+  display:grid;grid-template-columns:220px minmax(0,1fr) 320px;grid-template-rows:minmax(0,1fr) auto;
+  grid-template-areas:"left center right" "strip strip strip";gap:1px;
+  min-height:calc(100vh - 24px);background:var(--s-line);border:1px solid var(--s-line);
+  border-radius:14px;overflow:hidden;box-shadow:0 24px 60px -28px rgba(0,0,0,.7)}
+.nt-left{grid-area:left;background:#0b0d12;display:flex;flex-direction:column;overflow-y:auto}
+.nt-center{grid-area:center;background:var(--s-glass);display:flex;flex-direction:column;overflow-y:auto}
+.nt-right{grid-area:right;background:#0b0d12;display:flex;flex-direction:column;overflow-y:auto}
+/* The zone panels ARE the shared block renderer's .hud output — strip its glass/width chrome so it
+   flows as a plain column body (the blocks keep their own row styling). */
+.nt-app .hud{width:auto;max-width:none;background:transparent;backdrop-filter:none;border:0;
+  border-radius:0;box-shadow:none;overflow:visible}
+.nt-app .streamwrap{max-height:none;margin:0 18px}
+.nt-app .streamwrap::after{display:none}
+
+/* Left rail chrome */
+.nt-rail-chrome{padding:14px 14px 6px;border-bottom:1px solid var(--s-line-soft)}
+.nt-brand{display:flex;align-items:center;gap:9px;padding:2px 4px 12px}
+.nt-home{width:26px;height:26px;border-radius:8px;border:1px solid var(--s-line);background:rgba(224,106,60,.14);
+  color:var(--accent);font-size:13px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+.nt-brand-name{font-size:13.5px;font-weight:650;letter-spacing:-.01em;color:var(--s-ink)}
+.nt-nav{display:flex;flex-direction:column;gap:2px;padding-bottom:10px}
+.nt-navitem{text-align:left;padding:6px 9px;border-radius:7px;border:0;background:transparent;
+  color:var(--s-muted);font-size:12px;font-weight:550;cursor:pointer}
+.nt-navitem:hover{color:var(--s-ink);background:rgba(255,255,255,.04)}
+.nt-navitem.active{color:var(--s-ink);background:rgba(255,255,255,.06)}
+.nt-folders{padding:6px 0 2px}
+.nt-folder{display:flex;align-items:center;gap:8px;padding:5px 9px;font-size:11.5px;color:var(--s-muted);cursor:default}
+.nt-folder-glyph{color:var(--s-faint);font-size:9px}
+.nt-folder-note{padding:2px 9px 4px 25px;font-size:9.5px;font-style:italic;color:var(--s-faint)}
+
+/* Center canvas header + the relocated Record affordance (honest, inert placeholder — see #136) */
+.nt-canvas-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:13px 18px 11px;border-bottom:1px solid var(--s-line-soft)}
+.nt-canvas-title{font-size:14px;font-weight:650;letter-spacing:-.01em;color:var(--s-ink)}
+.nt-record{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:8px;
+  font-size:11.5px;font-weight:650;cursor:pointer;border:1px solid var(--accent);color:var(--accent);
+  background:rgba(224,106,60,.12)}
+.nt-record-dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+/* pending = the in-window control isn't wired (needs #136); render it visibly-inert, never fake-live. */
+.nt-record.pending{border-style:dashed;border-color:var(--s-line);color:var(--s-muted);
+  background:transparent;cursor:default}
+.nt-record.pending .nt-record-dot{background:var(--s-faint)}
+
+/* Right sidebar header */
+.nt-side-head{padding:13px 18px 9px;border-bottom:1px solid var(--s-line-soft);
+  font-family:var(--s-mono);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--s-faint)}
+
+/* The live-transcript ticker, parked full-width across the bottom (controller-composed .lt) */
+.nt-app > .lt{grid-area:strip;margin:0;padding:9px 18px 11px;border-top:1px solid var(--s-line);
+  background:#0b0d12;max-height:120px;overflow-y:auto}
+
+@media (max-width:900px){
+  .nt-app{grid-template-columns:1fr;grid-template-areas:"center" "right" "left" "strip"}
+}
 `
 
 /**

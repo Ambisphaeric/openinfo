@@ -4,6 +4,7 @@ import { Hud } from './hud.js'
 import { createBootController } from './boot.js'
 import type { HudTransport } from './transport.js'
 import { hudStyles, hudOutlineStyles } from './styles.js'
+import { renderNotetaker } from './notetaker-layout.js'
 import { installWindowDrag, type DragBridge } from './window-drag.js'
 import { installAutoResize, type ResizeBridge } from './auto-resize.js'
 
@@ -260,6 +261,10 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   // Which surface the HUD renders: explicit option wins, else ?surface= from the URL, else the default
   // (the Electron shell passes ?surface from ShellConfig.surfaceId; the browser dev harness accepts it too).
   const resolvedSurfaceId = options.surfaceId ?? params.get('surface') ?? undefined
+  // Per-surface layout renderer (#133): the note-taker composes its three-zone frame via renderNotetaker
+  // (signature-compatible with the generic renderSurface); every other surface uses the controller default.
+  // Selected by surface id here so the Hud controller stays layout-agnostic (see HudOptions.renderSurface).
+  const surfaceRenderer = resolvedSurfaceId === 'surf-openinfo-notetaker' ? renderNotetaker : undefined
 
   const style = doc.createElement('style')
   style.textContent = hudStyles
@@ -298,6 +303,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     transport: new BrowserTransport(baseUrl),
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
     ...(resolvedSurfaceId !== undefined ? { surfaceId: resolvedSurfaceId } : {}),
+    ...(surfaceRenderer !== undefined ? { renderSurface: surfaceRenderer } : {}),
     onRender: (node) => {
       if (!mounted) {
         // #96: the system-stream mute is a client-local display toggle — flips Hud state + re-paints,
