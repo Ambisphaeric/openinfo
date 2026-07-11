@@ -24,5 +24,16 @@ export {
 } from './moments.js'
 export { parseJsonCandidates } from './parse.js'
 export { transcribeChunks, buildTranscriptUpdates, isAudioChunk, speakerLabel, type SttInvoke, type TranscribeDeps } from './transcribe.js'
+export {
+  EchoDedupe,
+  echoDedupeEnabled,
+  normalizeEchoText,
+  ECHO_DEDUPE_BUFFER_MS,
+  ECHO_DEDUPE_WINDOW_MS,
+  ECHO_DEDUPE_SIMILARITY,
+  ECHO_DEDUPE_MIN_MIC_TOKENS,
+  ECHO_DEDUPE_ENV,
+  type EchoFragment,
+} from './echo-dedupe.js'
 export { TranscriptRing, DEFAULT_TRANSCRIPT_RING_SIZE } from './transcript-ring.js'
 export { DistillCadence, DEFAULT_DISTILL_CADENCE_MS } from './cadence.js'

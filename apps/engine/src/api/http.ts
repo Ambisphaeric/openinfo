@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type ChatRequest, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, type DistillOptions } from '../distill/index.js'
+import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
@@ -241,15 +241,23 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
     const raw = Number(process.env['OPENINFO_QUEUE_MAX_AGE_MINUTES'])
     return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_MAX_AGE_MINUTES
   })()
+  // Echo-dedupe (sys-audio arc, follow-up to #142): with the CoreAudio tap a speakers-on call yields the
+  // SAME words on BOTH streams — the tap carries the clean far side while the physical mic picks up
+  // speaker bleed, so the live transcript shows near-duplicate lines (the mic copy garbled, mislabeled
+  // `mic · me`). Freshly-transcribed system-audio fragments feed a per-session rolling buffer; a mic
+  // fragment that near-duplicates a buffered system fragment is dropped inside runTranscribe, BEFORE the
+  // text queue persists it and before the transcript.updated fan-out. OPENINFO_ECHO_DEDUPE=0 disables
+  // (default ON — a no-op with no system stream). Resolved once at wiring time like the knobs above.
+  const echoDedupe = echoDedupeEnabled(process.env) ? new EchoDedupe() : undefined
   const runTranscribe = async (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> => {
-    const segments: { sessionId: string; source: CaptureChunk['source']; text: string; capturedAt: string }[] = []
+    const segments: { id: string; sessionId: string; source: CaptureChunk['source']; text: string; capturedAt: string }[] = []
     // Skipped-as-silence accounting (#69): count windows fully filtered to nothing and total segments
     // dropped across the drain, so filtered content is VISIBLE in a log line rather than silently vanished.
     let skippedWindows = 0
     let droppedSegments = 0
     const ready = await transcribeChunks(chunks, {
       invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }),
-      onTranscribed: (chunk, text) => segments.push({ sessionId: chunk.sessionId, source: chunk.source, text, capturedAt: chunk.capturedAt }),
+      onTranscribed: (chunk, text) => segments.push({ id: chunk.id, sessionId: chunk.sessionId, source: chunk.source, text, capturedAt: chunk.capturedAt }),
       onSilenceSkipped: (_chunk, info) => {
         droppedSegments += info.dropped
         if (info.windowSkipped) skippedWindows += 1
@@ -258,8 +266,24 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
       log,
     })
     if (droppedSegments > 0) log(`transcribe: silence filter dropped ${droppedSegments} no-speech segment(s); ${skippedWindows} window(s) skipped as silence this drain`)
-    for (const update of buildTranscriptUpdates(segments)) await bus.publish('transcript.updated', update)
-    return ready
+    // ECHO-DEDUPE: two passes over THIS drain's freshly-transcribed fragments (only chunks onTranscribed
+    // saw — utf8 passthroughs and the executor's re-pass over already-text chunks are untouched). Pass 1
+    // feeds every system-audio fragment into the rolling buffer FIRST, so a mic twin matches regardless
+    // of intra-drain order; pass 2 drops mic fragments the buffer marks as echoes — out of BOTH the
+    // returned stream (text queue → distill) and the live transcript.updated fan-out. Cross-drain the
+    // check stays forward-only (v1): a mic fragment drained BEFORE its system twin is never re-checked.
+    const echoDropped = new Set<string>()
+    if (echoDedupe !== undefined) {
+      for (const segment of segments) if (segment.source === 'system-audio') echoDedupe.observeSystem(segment)
+      for (const segment of segments) {
+        if (segment.source !== 'mic' || !echoDedupe.isEcho(segment)) continue
+        echoDropped.add(segment.id)
+        log(`transcribe: echo-dedupe dropped mic chunk ${segment.id} — near-duplicates a system-audio fragment within ±${ECHO_DEDUPE_WINDOW_MS}ms (session ${segment.sessionId}: ${echoDedupe.suppressedCount(segment.sessionId)} suppressed)`)
+      }
+    }
+    const live = echoDropped.size === 0 ? segments : segments.filter((segment) => !echoDropped.has(segment.id))
+    for (const update of buildTranscriptUpdates(live)) await bus.publish('transcript.updated', update)
+    return echoDropped.size === 0 ? ready : ready.filter((chunk) => !echoDropped.has(chunk.id))
   }
 
   // Distill cadence throttle (#58): transcription runs every drain (cheap now, and it feeds the live
