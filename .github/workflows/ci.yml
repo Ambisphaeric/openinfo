@@ -36,11 +36,24 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # KNOWN FLAKE GUARD (environment-gated, not a product bug): apps/engine
-      # has one load-order flake mid-sequence — the tier-zero e2e in
-      # api/http.test.ts can render the starter offer from the wrong catalog
-      # state when the full suite runs under load; it passes in isolation and
-      # in local full runs. One full retry keeps the gate honest: a real
+      # ENVIRONMENT GATE (not a product bug): the tier-zero e2e in
+      # apps/engine/src/api/http.test.ts spawns an injected fake runtime, but
+      # LocalModelStore's *availability* probe does a real PATH lookup for
+      # llama.cpp's `llama-server` (present on dev machines, absent on bare
+      # runners) — without it the Get-started page renders the install hint
+      # instead of the download button and the test fails deterministically.
+      # A no-op stub on PATH satisfies the probe; it is never executed (the
+      # spawn path uses the injected fake binary).
+      - name: Stub llama-server for runtime-availability probe
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub-bin"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/stub-bin/llama-server"
+          chmod +x "$RUNNER_TEMP/stub-bin/llama-server"
+          echo "$RUNNER_TEMP/stub-bin" >> "$GITHUB_PATH"
+
+      # KNOWN FLAKE GUARD: apps/engine has one mid-sequence load-flake (seen
+      # on the judge-stage e2e in api/http.test.ts; passes in isolation and in
+      # other full passes). One full retry keeps the gate honest: a real
       # regression fails both runs.
       - name: Test
         run: pnpm test || pnpm test
