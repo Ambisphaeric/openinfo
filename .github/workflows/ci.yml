@@ -1,0 +1,72 @@
+# Build + test gate (#126).
+#
+# Reuses the root orchestration scripts: `pnpm -r` runs workspaces in
+# topological dependency order (shared/contracts -> apps/engine ->
+# apps/client -> apps/workbench), so the compiled engine dist exists
+# before apps/client's engine-link/seam.test.ts spawns it.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Version comes from "packageManager": "pnpm@9.15.4" in root package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Client unit tests are deliberately electron-free (shell.ts /
+      # capture-renderer.ts are untested by design; the electron-driven
+      # test:e2e:* scripts are not run here), so skip the ~100MB Electron
+      # binary download.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+
+      - name: Build
+        run: pnpm build
+
+      # ENVIRONMENT GATE (not a product bug): the tier-zero e2e in
+      # apps/engine/src/api/http.test.ts spawns an injected fake runtime, but
+      # LocalModelStore's *availability* probe does a real PATH lookup for
+      # llama.cpp's `llama-server` (present on dev machines, absent on bare
+      # runners) — without it the Get-started page renders the install hint
+      # instead of the download button and the test fails deterministically.
+      # A no-op stub on PATH satisfies the probe; it is never executed (the
+      # spawn path uses the injected fake binary).
+      - name: Stub llama-server for runtime-availability probe
+        run: |
+          mkdir -p "$RUNNER_TEMP/stub-bin"
+          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/stub-bin/llama-server"
+          chmod +x "$RUNNER_TEMP/stub-bin/llama-server"
+          echo "$RUNNER_TEMP/stub-bin" >> "$GITHUB_PATH"
+
+      # FLAKE CONTROLS (environment-gated, not product bugs — both engine
+      # e2es pass in isolation and in most full passes):
+      #  * apps/engine is run with --test-concurrency=1: its timing e2es
+      #    (#115 STT-keeps-flowing-while-distill-is-parked, the judge-stage
+      #    e2e) measure wall-clock behavior and starve when node --test runs
+      #    test files in parallel on a loaded 4-core runner.
+      #  * one full retry of the suites — a real regression fails both runs.
+      # Suite order mirrors `pnpm -r` topology: contracts -> engine -> client
+      # -> workbench (client's engine-link/seam.test.ts spawns the engine
+      # dist built above).
+      - name: Test
+        run: |
+          run_suites() {
+            pnpm --filter @openinfo/contracts test &&
+            pnpm --filter @openinfo/engine exec node --test --test-concurrency=1 "dist/**/*.test.js" &&
+            pnpm --filter @openinfo/client test &&
+            pnpm --filter @openinfo/workbench test
+          }
+          run_suites || run_suites
