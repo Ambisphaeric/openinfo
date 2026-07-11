@@ -29,7 +29,7 @@ const surface: Surface = {
   ],
 }
 
-test('the distillates block renders STORE-DERIVED windows: distilled text, a timestamp and an endpoint why-line', () => {
+test('the distillates block renders STORE-DERIVED windows: distilled text, a timestamp and a HUMAN why-line', () => {
   // The render half of the distillate-stream slice (#12): the renderer reads the hydrated `result.items`
   // (the Distillate records the engine served), NOT anything static in the block config. The seeded text
   // below is the proof of provenance — it can only come from the query result.
@@ -41,7 +41,11 @@ test('the distillates block renders STORE-DERIVED windows: distilled text, a tim
   assert.match(html, /Transcript · distillate stream/) // the block's group label
   assert.match(html, /agreed to ship Thursday/) // store-derived window text (only via result.items)
   assert.match(html, /class="mk t">2:30p/) // each line carries its timestamp (clockLabel of windowEnd)
-  assert.match(html, /class="why">distilled · via llm\.fast/) // the endpoint provenance why-line
+  assert.match(html, /class="why">distilled from capture</) // HUMAN why (#117/#118), clock already leads the row
+  // #118 REGRESSION: no endpoint id, no `via …` machine phrasing at this tier — the recorded trail
+  // stays on the distillate's provenance, reachable on diagnostics surfaces + the ledger, not here.
+  assert.doesNotMatch(html, /llm\.fast/)
+  assert.doesNotMatch(html, /class="why">via /)
   // the copy affordance carries the window text (the app prepares; verbs never send)
   assert.match(html, /data-copy="agreed to ship Thursday"/)
 })
