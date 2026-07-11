@@ -62,6 +62,22 @@ test('the fields block renders each field value with its label, value, and a HUM
   assert.match(html, /data-copy="Q3 planning"/)
 })
 
+test('the fields why falls back (#118): provenance window when updatedAt is unusable, else "updated this session"', () => {
+  // updatedAt is type-required, so the no-updatedAt arm is an unparseable stamp (clockLabel → '').
+  const windowed = fieldValue('field-a', 'topic', 'window-derived clock', {
+    updatedAt: 'not-a-date',
+    provenance: { templateId: 'tpl-a', slot: 'llm', endpoint: 'this-mac', windowStart: '2026-07-09T15:00:00Z', windowEnd: '2026-07-09T15:30:00Z' },
+  })
+  const bare = fieldValue('field-b', 'notes', 'no clock at all', {
+    updatedAt: 'not-a-date',
+    provenance: { templateId: 'tpl-b', slot: 'llm', endpoint: 'this-mac' },
+  })
+  const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([windowed, bare])] }, defaultBlockRegistry))
+  assert.match(html, /class="why">updated 3:30p</) // windowEnd drives the clock when updatedAt cannot
+  assert.match(html, /class="why">updated this session</) // no usable time anywhere → the honest constant
+  assert.doesNotMatch(html, /class="why">via /) // the fallback chain never regresses to machine phrasing
+})
+
 test('a provisional field renders the #66 micro-state dot (a real signal, not decoration)', () => {
   const items = [fieldValue('field-topic', 'topic', 'Q3 planning')]
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result(items)] }, defaultBlockRegistry))
