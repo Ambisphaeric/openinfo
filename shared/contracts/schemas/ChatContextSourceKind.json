@@ -1,0 +1,34 @@
+{
+  "$id": "ChatContextSourceKind",
+  "description": "append-only closed union of the seven chat context sources",
+  "anyOf": [
+    {
+      "const": "bundle-prompt",
+      "type": "string"
+    },
+    {
+      "const": "active-preset",
+      "type": "string"
+    },
+    {
+      "const": "transcript-window",
+      "type": "string"
+    },
+    {
+      "const": "insights",
+      "type": "string"
+    },
+    {
+      "const": "relevant-entities",
+      "type": "string"
+    },
+    {
+      "const": "attached-docs",
+      "type": "string"
+    },
+    {
+      "const": "recent-turns",
+      "type": "string"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "id": "bundle-standard-app",
+  "name": "Standard App",
+  "version": 1,
+  "description": "The MVP Standard App at glass parity (the pill). Its faces are the shipped HUD, chat, and support surfaces; it runs the default workflow with the default distill/extract/entities/follow-up templates. The first real instance proving the bundle-as-runtime-object contract — ship a different app later by shipping a different bundle document.",
+  "faces": [
+    { "kind": "hud", "surfaceRef": "surf-openinfo-hud" },
+    { "kind": "chat", "surfaceRef": "surf-openinfo-chat" },
+    { "kind": "support", "surfaceRef": "surf-openinfo-fields" },
+    { "kind": "support", "surfaceRef": "surf-openinfo-diagnostics" }
+  ],
+  "workflowRef": "workflow-default",
+  "templateRefs": [
+    "tpl-distill-default",
+    "tpl-extract-default",
+    "tpl-entities-default",
+    "tpl-followup-default"
+  ],
+  "flags": {
+    "distill.enabled": true,
+    "distill.transcribe": true,
+    "distill.moments": true,
+    "distill.index": true,
+    "act.enabled": true
+  },
+  "chat": {
+    "sources": [
+      { "kind": "bundle-prompt" },
+      { "kind": "active-preset" },
+      { "kind": "transcript-window", "windowChars": 4000 },
+      { "kind": "insights", "limit": 6 },
+      { "kind": "relevant-entities", "limit": 8 },
+      { "kind": "attached-docs", "limit": 4, "tokenBudget": 1500 },
+      { "kind": "recent-turns", "limit": 8 }
+    ]
+  }
+}

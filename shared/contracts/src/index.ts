@@ -27,6 +27,7 @@ export * from './config/local.js'
 export * from './config/flag.js'
 export * from './config/hints.js'
 export * from './config/workflow.js'
+export * from './config/bundle.js'
 export * from './config/invoke.js'
 export * from './config/todo.js'
 export * from './api/routes.js'
@@ -61,6 +62,7 @@ import { StarterModel, StarterModels } from './config/local.js'
 import { Flag } from './config/flag.js'
 import { AttributionPattern, WorkspaceHints } from './config/hints.js'
 import { WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate } from './config/workflow.js'
+import { Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind } from './config/bundle.js'
 import { OcrInvokeParams, VlmInvokeParams } from './config/invoke.js'
 import { TodoList, TodoItem, TodoProvenance } from './config/todo.js'
 import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest, ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply } from './api/payloads.js'
@@ -74,6 +76,7 @@ export const AllSchemas = {
   Mode, PromptTemplate, FastFieldBinding, EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
+  Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind,
   TodoList, TodoItem, TodoProvenance,
   Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest,
   CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,

@@ -260,7 +260,7 @@ export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => {
   // The Apps folder (#19/#98) — the mini-apps window launcher, right under the window/session toggles.
   // Each app opens/focuses/closes its own window; favorites float to the top. Omitted until we know the
   // surface list (an engine that serves none, or before the first fetch) so the menu never shows an empty folder.
-  if (state.apps && state.apps.surfaces.length > 0) {
+  if (state.apps && (state.apps.surfaces.length > 0 || (state.apps.bundles?.length ?? 0) > 0)) {
     items.push(
       { id: 'sep-apps', type: 'separator' },
       { id: 'apps', type: 'normal', label: 'Apps', enabled: true, submenu: appsSubmenuItems(state.apps) },

@@ -1,0 +1,59 @@
+{
+  "$id": "ChatContextSource",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "kind"
+  ],
+  "properties": {
+    "kind": {
+      "$id": "ChatContextSourceKind",
+      "description": "append-only closed union of the seven chat context sources",
+      "anyOf": [
+        {
+          "const": "bundle-prompt",
+          "type": "string"
+        },
+        {
+          "const": "active-preset",
+          "type": "string"
+        },
+        {
+          "const": "transcript-window",
+          "type": "string"
+        },
+        {
+          "const": "insights",
+          "type": "string"
+        },
+        {
+          "const": "relevant-entities",
+          "type": "string"
+        },
+        {
+          "const": "attached-docs",
+          "type": "string"
+        },
+        {
+          "const": "recent-turns",
+          "type": "string"
+        }
+      ]
+    },
+    "limit": {
+      "minimum": 0,
+      "description": "max items/turns this source contributes; absent ⇒ engine default",
+      "type": "integer"
+    },
+    "windowChars": {
+      "minimum": 0,
+      "description": "rolling character window for this source; absent ⇒ engine default",
+      "type": "integer"
+    },
+    "tokenBudget": {
+      "minimum": 0,
+      "description": "estimated-token budget (chars/4) this source may occupy; absent ⇒ engine default",
+      "type": "integer"
+    }
+  }
+}
