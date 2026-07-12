@@ -1,7 +1,7 @@
 import type { AttributionPattern, BlockQuery, Bundle, ChatReply, ChatScreenshot, ChatTurn, Pin, PromptTemplate, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
 import { mountSurface, renderInto, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
-import { createBootController } from './boot.js'
+import { backoffMs, createBootController } from './boot.js'
 import type { HudTransport } from './transport.js'
 import { hudStyles, hudOutlineStyles } from './styles.js'
 import { renderNotetaker } from './notetaker-layout.js'
@@ -30,9 +30,19 @@ export const chatFaceRefForPill = (bundles: readonly Bundle[], pillSurfaceId: st
 }
 
 /**
+ * The ONE terminal resolve outcome: GET /bundles ANSWERED and the data says no bundle gives this pill a
+ * chat face. Retrying is pointless (the answer is authoritative data, not a flaky wire), so the ask-resolve
+ * controller stops on this error — every OTHER rejection (the engine-spawn race, a non-ok read, a failed
+ * surface fetch) is transient and keeps the retry loop alive. The distinction is a TYPE, not a message
+ * match, so a rewording can never silently turn a data answer back into an infinite retry (or vice versa).
+ */
+export class NoChatFaceError extends Error {}
+
+/**
  * Resolve the pill's Ask-face surface over the wire: GET /bundles → the chat face surfaceRef (bundle data)
  * → GET /layouts/surfaces/:ref. Rejects with an HONEST reason (no bundle opens this pill, the bundle has no
- * chat face, or a failed read) that the pill paints as visible text — never a silent blank Ask panel.
+ * chat face, or a failed read) that the pill paints as visible text — never a silent blank Ask panel. The
+ * no-chat-face case rejects with the TYPED NoChatFaceError (terminal); everything else is transient.
  */
 export const resolvePillAskSurface =
   (baseUrl: string, transport: Pick<HudTransport, 'surface'>, fetchFn: FetchLike = fetch) =>
@@ -41,9 +51,63 @@ export const resolvePillAskSurface =
     if (!res.ok) throw new Error(`the app bundle could not be read (HTTP ${res.status})`)
     const bundles = (await res.json()) as Bundle[]
     const ref = chatFaceRefForPill(bundles, pillSurfaceId)
-    if (ref === undefined) throw new Error('this app has no chat face')
+    if (ref === undefined) throw new NoChatFaceError('this app has no chat face')
     return transport.surface(ref)
   }
+
+export interface AskResolveDeps {
+  /** One resolve attempt (resolvePillAskSurface). Rejection ⇒ retry, unless it is a NoChatFaceError. */
+  resolve: () => Promise<Surface>
+  /** The chat face resolved — flip the Ask affordance live and repaint. */
+  onResolved: (surface: Surface) => void
+  /** The bundle GENUINELY has no chat face (GET /bundles answered) — the one terminal stop, no more retries. */
+  onNoChatFace: (reason: string) => void
+  /** A transient failure; the retry is already scheduled — log the underlying error so there is a trace. */
+  onRetry: (error: unknown, attempt: number) => void
+  /** Injectable timer (tests use a manual scheduler). */
+  schedule?: (fn: () => void, ms: number) => void
+}
+
+/**
+ * The Ask-face resolve controller — the same posture as createBootController, for the SAME race: the
+ * packaged shell creates the pill window BEFORE `ensureEngine()` spawns the bundled engine (shell.ts), so
+ * the first GET /bundles typically loses that race. The old one-shot `.then/.catch` made that loss
+ * PERMANENT — `setAskAvailable(false)` stuck forever and the Ask affordance (the door to the whole chat
+ * box) was dead on every packaged cold boot. This retries with the boot controller's capped backoff
+ * (backoffMs) until the resolve succeeds, and stops ONLY on the typed NoChatFaceError — the one outcome
+ * where retrying is pointless because the engine answered and the data says there is no chat face.
+ */
+export const createAskResolveController = (deps: AskResolveDeps): { start: () => void } => {
+  const schedule = deps.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
+  let attempt = 0
+  let settled = false
+
+  const tryResolve = (): void => {
+    deps.resolve().then(
+      (surface) => {
+        settled = true
+        deps.onResolved(surface)
+      },
+      (error: unknown) => {
+        if (error instanceof NoChatFaceError) {
+          settled = true
+          deps.onNoChatFace(error.message)
+          return
+        }
+        attempt += 1
+        deps.onRetry(error, attempt)
+        schedule(tryResolve, backoffMs(attempt))
+      },
+    )
+  }
+
+  return {
+    start: () => {
+      if (settled) return
+      tryResolve()
+    },
+  }
+}
 
 /**
  * A plain-browser dev entry that renders the live HUD against a running engine — the mountable view
@@ -631,24 +695,37 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   onHudError = (error) => boot.restart(error)
   boot.boot()
 
-  // THE PILL (the-pill): resolve the Ask face FROM THE BUNDLE at open (data, not a hardcoded window) — GET
-  // /bundles → the chat face surfaceRef → its surface doc. Success ⇒ the Ask affordance lights up and the
-  // panel mounts the resolved chat organs; failure ⇒ an HONEST reason painted in the Ask panel (never a
-  // silent blank). Independent of the boot loop; each outcome re-paints via hud.rerender().
+  // THE PILL (the-pill): resolve the Ask face FROM THE BUNDLE (data, not a hardcoded window) — GET
+  // /bundles → the chat face surfaceRef → its surface doc. Through the RETRY controller, NOT a one-shot
+  // `.then/.catch`: the packaged shell creates this window BEFORE its bundled engine spawns (the same race
+  // the boot controller above exists for), and the old one-shot lost it permanently — setAskAvailable(false)
+  // stuck forever, so the Ask button (the door to the whole chat box) was dead on every packaged cold boot.
+  // Success ⇒ the Ask affordance lights up and the panel mounts the resolved chat organs; the ONE terminal
+  // failure (the bundle genuinely has no chat face) paints its honest reason; every transient failure is
+  // logged and retried with the boot controller's capped backoff. Each outcome re-paints via hud.rerender().
   if (isPill && resolvedSurfaceId !== undefined) {
-    void resolvePillAskSurface(baseUrl, transport)(resolvedSurfaceId)
-      .then((chatSurface) => {
+    createAskResolveController({
+      resolve: () => resolvePillAskSurface(baseUrl, transport)(resolvedSurfaceId),
+      onResolved: (chatSurface) => {
         pillSources.chat = chatSurface
         pillSources.resolving = false
+        delete pillSources.chatError
         pill?.setAskAvailable(true)
         hud.rerender()
-      })
-      .catch((error: unknown) => {
+      },
+      onNoChatFace: (reason) => {
         pillSources.resolving = false
-        pillSources.chatError = error instanceof Error ? error.message : String(error)
+        pillSources.chatError = reason
         pill?.setAskAvailable(false)
+        console.error(`[pill] the Ask face is unavailable: ${reason}`)
         hud.rerender()
-      })
+      },
+      onRetry: (error, attempt) => {
+        // The trace the old .catch never left: why THIS attempt failed. The visible surface stays in its
+        // honest catching-up state (pillSources.resolving remains true) while the retry ladder runs.
+        console.error(`[pill] Ask face resolve failed (attempt ${attempt}): ${error instanceof Error ? error.message : String(error)} — retrying`)
+      },
+    }).start()
   }
 }
 
