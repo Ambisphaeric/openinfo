@@ -4650,3 +4650,18 @@ A static display was re-captured and re-OCR'd every 3–6s tick forever. Now:
 
 ### Follow-ups
 OCR-economics tuning of threshold/tolerance/probe width (#5) · an engine-side deltaScore reader · multi-display capture rides this same gate when displays fan out.
+
+## Basics wave B / S2 — file attach via webUtils.getPathForFile  *(branch feat/basics-b-attach)*
+
+### What / where
+The input block's file-attach resolved the local path off `File.path`, which Electron removed in v32 (this repo ships 38) — so a picked/dropped file carried no path and the attach went SILENTLY inert (a rendered affordance with a dead handler, the exact class the basics-wave QA doctrine forbids). Fix, per the Electron-prescribed pattern:
+- `apps/client/src/main/preload.cts` exposes `webUtils.getPathForFile` on `window.openinfoFiles` (behind context isolation; `contextIsolation` on, `nodeIntegration` off — the same posture as the drag/capture bridges).
+- `apps/client/src/surfaces/hud/input-submit.ts` `resolveUploadFile` resolves the path at attach time: prefer the preload bridge; treat an empty-string result (a File with no disk backing) as no-path so the upload dep raises its honest "needs the desktop app" failure; builds a fresh plain `{name,type,path}` rather than spreading the File (its fields are prototype getters, a spread would drop them).
+- Dev-harness / served-test / plain-browser FALLBACK lives INSIDE the attach module (not dev-entry, owned elsewhere): with no bridge present it uses a `path` already on the supplied File-like.
+- Tests: 3 new unit (`input-submit.test.ts` — bridge resolution when the File has no `.path`, an '' bridge result surfacing a VISIBLE failure, the no-bridge harness fallback) + a DRIVEN real-Electron e2e (`scripts/attach-e2e.mjs` + `scripts/e2e-attach.html`, wired `test:e2e:attach`) that picks a genuine file over CDP `DOM.setFileInputFiles` and asserts the real OS path reaches the upload dep and paints into `.in-context` (phase 1), and that a rejected ingest paints its reason into `.in-status` with nothing attached (phase 2). Verified green on darwin.
+
+### Rule-7 check (definition of done)
+No new HTTP route, no new flag, no new block type — the fix is internal to the existing `input` block's client wiring plus a preload bridge. No `skills/`-rail or CONTRIBUTING recipe references the attach path / `File.path` / `getPathForFile` (grep-confirmed), so no skills or recipe edit is required.
+
+### Disclosed deviations / limits
+The bridge lives on the SHARED HUD preload (`preload.cjs`) so any window loading it gets `openinfoFiles`; that matches how the input block is served today. The e2e is GUI-only (darwin), deliberately NOT in the headless default `test` — the capture-lifecycle-e2e precedent. Engine flake unrelated to this slice: one engine suite intermittently reports 1 fail then 730/731→731/731 on re-run (known, the repo serializes+retries engine suites); the client package is solidly green.
