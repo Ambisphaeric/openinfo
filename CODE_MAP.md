@@ -161,3 +161,14 @@ Practical cadence this implies: run spikes `seam-echo`, `glass-capture`, and `ex
 days (they are cheap and they de-risk the two riskiest phases before any production code hardens); build
 Phases 0–2 as fast as agents allow; then let the calendar do what only it can — accumulate real sessions —
 while construction runs ahead on Phases 3–4 behind flags.
+
+---
+
+### Basics wave A — window shell (S1/S4/S5, branch feat/basics-a-window-shell)
+
+- `apps/client/src/main/window-options.ts` — **S1** per-surface `focusable` override (`SurfaceWindowConfig.focusable` + `hudWindowSpec({focusable})`, ON for `surf-openinfo-chat` so the typed-in HUD window can become key — else macOS NSBeeps every keystroke); `surfaceWindowSpec(surfaceId)` the ONE resolver of chrome+width+focusability shared by the factory + e2e. **S4** `windowTitleFor(surfaceId)`→`openinfo — <Face>` (FACE_NAMES + humanized fallback). **S5** `surfaceWindowWidth`, `MIN_HUD_FIT_WIDTH`=260, `windowContract`/`assertWindowContract` — the window contract (resizes OR provably-fits + self-identifies).
+- `apps/client/src/main/shell.ts` — `createSurfaceWindow` now resolves via `surfaceWindowSpec`, `assertWindowContract`s at create (policy item 3, enforced in the ONE factory), and stamps `windowTitleFor` (S4).
+- `apps/client/src/surfaces/hud/dev-entry.ts` — **S1** ONE height authority per window (panel surface → PanelController, else auto-resize; no longer both); **S4** renderer drives `document.title` from the loaded surface's live `name`.
+- `apps/client/src/surfaces/hud/styles.ts` — **S5** `.hud` fluid (`width:100%;max-width:660px;min-width:0`) so a narrow window never both-edges-clips; wide default HUD still 660.
+- `apps/client/hud.html` — **S4** neutral shared `<title>openinfo</title>` (was `— HUD`, mislabeling every framed window).
+- `apps/client/scripts/chat-input-e2e.mjs` (`test:e2e:chat`), `apps/client/scripts/clip-e2e.mjs` (`test:e2e:clip`) — driven REAL-Electron e2es (GUI-only, not in headless `test`): real keystrokes land + panel-extent height; narrow windows fit with no clip.
