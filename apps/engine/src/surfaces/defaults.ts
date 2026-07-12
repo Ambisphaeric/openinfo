@@ -1,5 +1,6 @@
 import type { Surface } from '@openinfo/contracts'
 import { defaultNotetakerSurface } from './notetaker.js'
+import { defaultPillSurface } from './pill.js'
 import { PANEL_SURFACES } from './panel-surfaces.js'
 
 /**
@@ -157,4 +158,4 @@ export const defaultDiagnosticsSurface: Surface = {
  * surface (one line); each is seeded ONLY when absent, so a user's edits are never clobbered. Glass Minimal
  * is deliberately NOT here — it is a cloneable TEMPLATE (templates/glass-minimal), not a seeded default.
  */
-export const SEEDED_SURFACES: readonly Surface[] = [defaultHudSurface, defaultFieldsSurface, defaultDiagnosticsSurface, defaultNotetakerSurface, ...PANEL_SURFACES]
+export const SEEDED_SURFACES: readonly Surface[] = [defaultPillSurface, defaultHudSurface, defaultFieldsSurface, defaultDiagnosticsSurface, defaultNotetakerSurface, ...PANEL_SURFACES]

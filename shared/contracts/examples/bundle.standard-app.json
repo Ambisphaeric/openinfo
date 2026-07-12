@@ -4,7 +4,7 @@
   "version": 1,
   "description": "The MVP Standard App at glass parity (the pill). Its faces are the shipped HUD, chat, and support surfaces; it runs the default workflow with the default distill/extract/entities/follow-up templates. The first real instance proving the bundle-as-runtime-object contract — ship a different app later by shipping a different bundle document.",
   "faces": [
-    { "kind": "hud", "surfaceRef": "surf-openinfo-hud" },
+    { "kind": "hud", "surfaceRef": "surf-openinfo-pill" },
     { "kind": "chat", "surfaceRef": "surf-openinfo-chat" },
     { "kind": "support", "surfaceRef": "surf-openinfo-fields" },
     { "kind": "support", "surfaceRef": "surf-openinfo-diagnostics" }

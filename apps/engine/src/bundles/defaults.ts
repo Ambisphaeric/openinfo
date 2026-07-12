@@ -25,7 +25,12 @@ export const loadDefaultBundle = (): Bundle =>
  * idiom, applied to the bundle document). ensureDefaults refreshes an install's seeded bundle to the new
  * shipped doc ONLY when it is provably UNEDITED — still version 1 AND byte-identical (after JSON
  * round-trip) to one of these — so an upgrader's chat plan gains a newly shipped source (the Ask face
- * `screen`) without EVER clobbering a user edit. Either signal failing ⇒ the user owns it ⇒ untouched.
+ * `screen`) OR the newly shipped PILL hud face without EVER clobbering a user edit. Either signal
+ * failing ⇒ the user owns it ⇒ untouched. Each entry is a body a PRIOR build shipped:
+ *  1. pre-`screen` chat source, hud face → surf-openinfo-hud (the original launch body).
+ *  2. + the `screen` chat source, hud face → surf-openinfo-hud (the P1×P2 chat-context body).
+ * The CURRENT shipped body (bundle.standard-app.json) points the hud face at surf-openinfo-pill, so an
+ * unedited install on either prior body refreshes onto the pill.
  */
 export const PREVIOUS_DEFAULT_BUNDLE_BODIES: readonly string[] = [
   JSON.stringify({
@@ -51,6 +56,34 @@ export const PREVIOUS_DEFAULT_BUNDLE_BODIES: readonly string[] = [
         { kind: 'insights', limit: 6 },
         { kind: 'relevant-entities', limit: 8 },
         { kind: 'attached-docs', limit: 4, tokenBudget: 1500 },
+        { kind: 'recent-turns', limit: 8 },
+      ],
+    },
+  }),
+  JSON.stringify({
+    id: 'bundle-standard-app',
+    name: 'Standard App',
+    version: 1,
+    description:
+      'The MVP Standard App at glass parity (the pill). Its faces are the shipped HUD, chat, and support surfaces; it runs the default workflow with the default distill/extract/entities/follow-up templates. The first real instance proving the bundle-as-runtime-object contract — ship a different app later by shipping a different bundle document.',
+    faces: [
+      { kind: 'hud', surfaceRef: 'surf-openinfo-hud' },
+      { kind: 'chat', surfaceRef: 'surf-openinfo-chat' },
+      { kind: 'support', surfaceRef: 'surf-openinfo-fields' },
+      { kind: 'support', surfaceRef: 'surf-openinfo-diagnostics' },
+    ],
+    workflowRef: 'workflow-default',
+    templateRefs: ['tpl-distill-default', 'tpl-extract-default', 'tpl-entities-default', 'tpl-followup-default'],
+    flags: { 'distill.enabled': true, 'distill.transcribe': true, 'distill.moments': true, 'distill.index': true, 'act.enabled': true },
+    chat: {
+      sources: [
+        { kind: 'bundle-prompt' },
+        { kind: 'active-preset' },
+        { kind: 'transcript-window', windowChars: 4000 },
+        { kind: 'insights', limit: 6 },
+        { kind: 'relevant-entities', limit: 8 },
+        { kind: 'attached-docs', limit: 4, tokenBudget: 1500 },
+        { kind: 'screen', tokenBudget: 1000 },
         { kind: 'recent-turns', limit: 8 },
       ],
     },
