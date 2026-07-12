@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
-import { Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
+import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
+import { ChatTurn as ChatTurnSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
 import { DEFAULT_GAZETTEER, GAZETTEER_KEY, GAZETTEER_KIND, gazetteerRivals, type GazetteerDocument } from '../index/gazetteer.js'
@@ -594,6 +594,45 @@ export class WorkspaceRegistry {
   }
 
   /**
+   * Append one turn to the workspace's PERSISTENT app-scoped chat thread (the Ask face's ask-history —
+   * owner canon 2026-07-11: chat is one persistent thread per workspace; upstream glass left this
+   * vestigial). Workspace-level like a pin (NOT session-keyed — the thread outlives sessions, so it is
+   * no part of a session move), workspace created on demand, contract-validated before write (the
+   * savePin last-line-of-defense idiom). Order is the store-stamped autoincrement `seq`, not the
+   * timestamp — a user+assistant pair lands in the same millisecond.
+   */
+  appendChatTurn(workspaceId: string, turn: ChatTurn, at: string = new Date().toISOString()): ChatTurn {
+    this.ensureWorkspace({ id: workspaceId, name: workspaceId })
+    const db = this.openWorkspace(workspaceId)
+    const { role } = turn
+    if (!Value.Check(ChatTurnSchema, turn)) throw new Error(`chat turn failed contract validation: ${role}`)
+    db.prepare('insert into chat_turns (created_at, body) values (?, ?)').run(at, JSON.stringify(turn))
+    return turn
+  }
+
+  /**
+   * The workspace's persisted chat thread, OLDEST turn first (the order a thread renders). `limit` keeps
+   * the most recent tail (the honest cap the /chat/history route discloses via `truncated`); absent ⇒ the
+   * whole thread. Unknown workspace reads as [] (mirrors listPins) — asking is never an error.
+   */
+  listChatTurns(workspaceId: string, limit?: number): ChatTurn[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const rows =
+      limit !== undefined
+        ? (db.prepare('select body from chat_turns order by seq desc limit ?').all(limit) as { body: string }[]).reverse()
+        : (db.prepare('select body from chat_turns order by seq').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as ChatTurn)
+  }
+
+  /** The full persisted turn count for a workspace (the `total` the honest history cap is disclosed against). */
+  countChatTurns(workspaceId: string): number {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return 0
+    const db = this.openWorkspace(workspaceId)
+    return (db.prepare('select count(*) as n from chat_turns').get() as { n: number }).n
+  }
+
+  /**
    * Retroactively move a session — and EVERYTHING keyed to it — from one workspace DB to another
    * (Phase 3, the correction loop the router's mistakes require; IMPLEMENTATION §3 risk register).
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
@@ -1061,6 +1100,13 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists pin_chunks (id text primary key, pin_id text not null, ordinal integer not null, page integer, body text not null)',
+    ).run()
+    // The Ask face's persistent app-scoped chat thread — one thread per workspace (owner canon 2026-07-11;
+    // upstream glass left ask-history vestigial). `seq` (autoincrement) is the stable turn order: turns in
+    // one exchange share a created_at millisecond, so time alone cannot order them. Additive `create table
+    // if not exists` in the per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
+    db.prepare(
+      'create table if not exists chat_turns (seq integer primary key autoincrement, created_at text not null, body text not null)',
     ).run()
     this.workspaceHandles.set(id, db)
     return db
