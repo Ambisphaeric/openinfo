@@ -5019,3 +5019,25 @@ Focused combined run: engine build + 114 transcript/http/egress/OCR/VLM tests, z
 `pnpm -r build && pnpm -r test`: contracts **91**, client **482**, engine **782**, zero failures first run.
 No shared-contract/schema, client, route-shape, flag, persistence-schema, or release-version change. The
 process-global diagnostics/WS transcript feed remains explicit; only the Ask context is workspace-filtered.
+
+## Slice: the Ask-face resolve race — retry, true disabled reasons, the race-path e2e  *(branch fix/ask-face-resolve-retry)*
+
+Drive-and-snoop QA against the packaged boot order confirmed a shipped defect: on every packaged cold boot the pill's Ask button — the affordance that gates the entire chat text box — was permanently disabled. The mechanism and the three honesty gaps around it, fixed exactly.
+
+### 1 · The race (why Ask died on every cold boot)
+The packaged shell creates the pill window BEFORE spawning its bundled engine (`shell.ts`: `createHudWindow()` runs, then `await ensureEngine()`). The boot controller (`boot.ts`) exists for exactly this ordering and retries `hud.start()` with capped backoff forever — but the Ask-face resolution directly below it in `dev-entry.ts` was a ONE-SHOT `void resolvePillAskSurface(...).then/.catch`. When GET /bundles lost the engine-spawn race, the `.catch` set `setAskAvailable(false)` and nothing ever tried again: the Listen face recovered (boot retry), the Ask face did not. Three compounding honesty gaps rode along: the `.catch` logged nothing (no trace), the disabled button's static tooltip claimed "this app has no chat face yet" whatever the real failure was, and the honest Ask panel was unreachable behind the same disabled gate.
+
+### 2 · The fix: the resolve gets the boot controller's posture
+`createAskResolveController` (dev-entry) retries the resolve with the SAME capped ladder (`backoffMs` from boot.ts: 500ms → 8s, forever) until it succeeds — success flips `setAskAvailable(true)` and re-renders exactly as before. The ONE terminal stop is the new typed `NoChatFaceError`, thrown by `resolvePillAskSurface` only when GET /bundles ANSWERED and the data says no bundle gives this pill a chat face — a data answer, so retrying is pointless and the loop settles with that honest reason. The transient/terminal distinction is a TYPE, never a message match, so a rewording cannot silently flip an outcome class. Every transient failure is `console.error`-logged with its attempt (the trace the old `.catch` never left).
+
+### 3 · The disabled Ask affordance states the TRUE current reason
+`askDisabledTitle` (pill-layout) derives the tooltip from the resolve state: while the retry loop is still working it says `Ask — catching up, chat will be ready in a moment` (calm, human, no endpoints — the hud-voice rules); only the terminal no-chat-face answer earns `Ask — this app has no chat face`. The honest Ask panel's resolving copy dropped its machine-speak ("Resolving the chat face from the bundle…" → "Catching up — chat will be ready in a moment."). The interaction lint (`hud-interaction-lint.test.ts`) now covers BOTH disabled reasons (resolving + terminal) as honestly-disabled, silent-dead-button-free renders, and the layout tests pin that the catching-up state never renders the no-chat-face wording.
+
+### 4 · The race-path e2e (why this bug shipped green)
+Every prior driven e2e started its fake engine BEFORE the window, so no test ever entered through the race. `ask-race-e2e.mjs` (`test:e2e:askrace`) inverts the order on the ANCHOR path (the Scene-0 entry-point policy: built exactly as `createHudWindow` does from `resolveShellConfig({})`): window at t=0, nothing listening; the honest boot chip is asserted while the engine is down; the fake engine listens at t≈2.5s; then the regression lock — Ask BECOMES enabled once the engine is healthy — and the user's Ask button click mounts the resolved chat panel + text input at the real 432px ask extent with typed keystrokes landing in the box. The lock was verified against the pre-fix one-shot: the identical scene FAILS at "the Ask face resolve retry winning after the engine came up".
+
+### Evidence
+- Race e2e (fixed code): engine up t=2.6s → `Ask ENABLED` t=3.8s → `ASK bounds.height=432` → typed input landed → PASS. Same scene against the pre-fix resolve: FAIL (Ask never enabled after 15s of engine health).
+- Touched driven e2es green: ask-race (new), pill (Scene 0 + scenes 1-6), ask-face — all PASS; the driven set is now ten.
+- Unit: contracts **91** / client **489** (+7: the retry ladder, the capped forever-posture, the terminal no-retry stop, the typed transient/terminal distinction, the true-reason tooltips) / engine **782**, zero failures, `pnpm -r build && pnpm -r test` green before each commit.
+- Scope: client only — no contract/schema, route-shape, flag, persistence, or version change.
