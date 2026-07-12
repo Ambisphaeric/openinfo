@@ -1489,10 +1489,11 @@ function getActivePreset(res: ServerResponse, ctx: HandlerContext, url: URL): vo
 
 /**
  * PUT /active-preset?workspace=<id> — set (or clear) the workspace's active context preset. Body:
- * `{ presetId: string | null }`. HONEST validation: a non-string/absent presetId that is not explicitly
- * null ⇒ 400; selecting a preset id that does not resolve to a live preset document ⇒ 400 (never silently
- * ignored); `null` clears the selection (back to no injection). On success the workspace's next distill
- * pass prepends the selected preset (read-fresh — no restart), and the response echoes the new state.
+ * `{ presetId: string | null }`. HONEST validation: an absent or explicitly `null` presetId clears the
+ * selection (back to no injection); a present, non-null presetId that is not a string ⇒ 400; selecting a
+ * preset id that does not resolve to a live preset document ⇒ 400 (never silently ignored). On success the
+ * workspace's next distill pass prepends the selected preset (read-fresh — no restart), and the response
+ * echoes the new state.
  */
 async function putActivePreset(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, url: URL): Promise<void> {
   const workspaceId = url.searchParams.get('workspace') ?? 'default'
