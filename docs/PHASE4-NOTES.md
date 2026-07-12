@@ -4686,3 +4686,49 @@ The `drafts` block why-line rendered `via <endpoint>` — a machine endpoint id 
 
 ### Disclosed deviation
 S3 named only the Record button; the rail nav/home buttons shared its silent-dead failure mode and live in the same owned file, so they were made honest (`disabled` + `title`) too — required for a GENERAL interaction lint over the served frame. Wiring nav (multi-view routing) remains a separate future slice; `data-nt` hooks are retained so it lights up when a handler lands in dev-entry.
+## basics wave S6 — engine-skew refusal + build stamp  *(branch feat/basics-d-skew-stamp)*
+
+### Why
+The owner's QA round ran a stale 0.0.10 DMG believing it was newer, and a stale client silently adopted a
+newer engine — the shell adopted ANY reachable engine and the only skew signal was a disabled tray line.
+In-app version surfacing was effectively nonexistent: /health's build-sha rendered nowhere and packaged
+builds never set it. This slice makes skew LOUD and the running version/build answerable without a terminal.
+
+### What / where
+- **Skew refusal** — `client/main/engine-supervisor.ts` `assessEngineSkew` (pure): an adopted engine is
+  skewed when its /health version differs from the app's, when it reports NO version (predates the field, so
+  it is an old build), or when it is the SAME version but a different build sha. Default = REFUSE; the dev
+  opt-in `OPENINFO_ALLOW_ENGINE_SKEW` (`parseAllowSkew`) adopts anyway with a warning. `shell.ts ensureEngine`
+  wires it: on refusal it SKIPS `seedSessionState` (so `connected` stays false — Start/End disabled, no
+  session/capture/fabric driven through the mismatched engine), sets the refusal reason, and auto-opens the
+  System window. A spawned bundled engine (our own build) and an unreachable one are never assessed.
+- **Tray** — `tray-menu.ts` leads with "⚠ engine refused — version mismatch (see System info…)" and shows the
+  reason line instead of the adopted-vN line; `engineStatusLine` now surfaces the /health `build` (it used to
+  be dropped even when reported). A new always-present "System info…" item (`open-system`) carries the fix.
+- **System face** — `client/main/system-face.ts` (pure `model → self-contained HTML`, reusing the block
+  renderer's tested vnode serializer): app + engine version/build and, under skew, a blocking red banner (or a
+  softer amber note when dev-allowed) with the override instructions. `shell.ts openSystemWindow` loads it as a
+  `data:` URL into a plain framed window — no HTML host, no preload, nothing external to fetch.
+- **Build stamp** — `scripts/package.mjs` `resolveBuildSha` (git short sha, `OPENINFO_BUILD` override) +
+  `writeBuildStamp` ship `build-stamp.json` as an extraResource; `shell.ts` reads it (`readBuildStamp`), shows
+  it, and forwards it to the spawned engine as `OPENINFO_BUILD` so /health echoes the SAME sha. The DMG inherits
+  it via `packageApp()`. This is the package half of the stamp the deploy path already set in the launchd plist.
+- **Release protocol** — `tools/bump-version.mjs` bumps root + client + ENGINE package.json in lockstep (the
+  engine was the half a hand-cut forgot: the 0.0.6 app shipped a 0.0.5 engine, which would have tripped the
+  client's own skew note). `tools/check-version-parity.mjs` + `client/main/version-parity.test.ts` fail on any
+  drift. Root scripts `version:bump` / `version:check`. (No release cut here — the wave cuts 0.0.12 after merge.)
+
+### Tests + verification
+Client 408 → 439 (+31: skew verdict incl. older/newer/no-version/same-version-diff-build/dev-flag/unknown-self;
+build surfaced in the status line; build-stamp read round-trip; System face model→HTML incl. both banners;
+tray skew-lead + System item; the release parity guard). Contracts 86, engine 731 — unchanged (no engine/contract
+edits). The stamp plumbing was driven end-to-end outside the harness: `resolveBuildSha → writeBuildStamp →
+readBuildStamp` round-trips the real sha, and an unstamped build reads back `undefined`.
+
+### Disclosed
+- A refused engine's HUD window still fetches surface DOCUMENTS from cfg.engineUrl for read-only display (the
+  window is created before the skew verdict is known); the SUBSTANTIVE refusal is that the shell won't seed or
+  drive sessions through it and the tray/System banner make the mismatch unmissable. Rerouting the window is a
+  larger change that would cross into agent-A window files.
+- The System window is a main-process data-URL page (pure builder tested headless); it is not yet covered by a
+  GUI e2e like the HUD/capture scripts — the render is a pure function and the open-system handler is live.

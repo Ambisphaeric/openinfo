@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 
 /**
@@ -136,9 +137,13 @@ const portSuffix = (engineUrl: string | undefined): string => {
 /**
  * The one-line engine-status affordance the client surfaces (tray). Examples:
  *   "engine v0.0.1 · adopted at :8787"
- *   "engine v0.0.1 · spawned (bundled)"
- *   "engine v0.0.1 · adopted at :8787 · older than this app (v0.0.2)"   ← skew made plain
+ *   "engine v0.0.1 · spawned (bundled) · build a1b2c3d"
+ *   "engine v0.0.1 · adopted at :8787 · build a1b2c3d · older than this app (v0.0.2)"   ← skew made plain
  *   "engine version unknown · adopted at :8787 · predates this app's version reporting"
+ * The optional `build` id (a git short sha the packaged/deployed engine stamps into /health via
+ * OPENINFO_BUILD) is surfaced right after the location — two builds of the SAME version are otherwise
+ * indistinguishable, which is exactly the stale-adoption failure this line exists to make visible. It
+ * used to be dropped on the floor here even when /health reported it.
  * Returns undefined for `unreachable` — the tray already LEADS with its own unreachable state, so this
  * line would be redundant noise there.
  */
@@ -147,6 +152,7 @@ export const engineStatusLine = (info: EngineVersionInfo): string | undefined =>
   const where = info.disposition === 'adopt' ? `adopted${portSuffix(info.engineUrl)}` : 'spawned (bundled)'
   const version = info.engineVersion ? `engine v${info.engineVersion}` : 'engine version unknown'
   const parts = [version, where]
+  if (info.build !== undefined && info.build.trim() !== '') parts.push(`build ${info.build.trim()}`)
   const skew = versionSkewNote(info.disposition, info.engineVersion, info.appVersion)
   if (skew !== undefined) parts.push(skew)
   return parts.join(' · ')
@@ -210,6 +216,107 @@ export const waitForEngine = async (
  */
 export const bundledEngineEntry = (resourcesPath: string): string =>
   path.join(resourcesPath, 'engine-bundle', 'apps', 'engine', 'dist', 'main.js')
+
+// ── Skew refusal (S6) ────────────────────────────────────────────────────────────────────────────────
+// Adopting ANY reachable engine was silent: a stale launchd/dev engine (an older version, or the SAME
+// version built from different source) was adopted with no signal beyond a disabled tray line. That is
+// how the owner's QA round ran a client against a mismatched engine without noticing. The client now
+// ASSESSES an adopted engine's version/build against its own and, on a mismatch, REFUSES it by default —
+// the shell surfaces a blocking banner instead of quietly talking to the wrong engine. A dev flag
+// (OPENINFO_ALLOW_ENGINE_SKEW) opts back into adoption, because a dev deliberately runs mismatched pairs.
+
+/** Inputs to the skew assessment — the adopted engine's reported identity vs. this app's own. */
+export interface SkewInput {
+  /** the app's own version (app.getVersion()) — the reference point. When absent we cannot honestly judge. */
+  appVersion?: string
+  /** the app's own build id (git short sha stamped into the package), when this is a stamped build. */
+  appBuild?: string
+  /** the engine's /health version (undefined ⇒ an engine predating the version field — treated as skew). */
+  engineVersion?: string
+  /** the engine's /health build id, when it stamped one. */
+  engineBuild?: string
+  /** the dev opt-in: a mismatch is ADOPTED anyway (with a warning) rather than refused. */
+  allowSkew: boolean
+}
+
+/** The verdict: whether to adopt, whether the refusal was a skew refusal, and the plain-language reason. */
+export interface SkewVerdict {
+  /** proceed to talk to this engine (true when there is no skew, or skew is dev-allowed). */
+  adopt: boolean
+  /** a version/build mismatch was detected at all (independent of whether it was overridden). */
+  skewed: boolean
+  /** the mismatch was detected AND not dev-allowed ⇒ the engine is refused. */
+  refused: boolean
+  /** plain-language mismatch explanation — present whenever `skewed`, for the banner + tray + log. */
+  reason?: string
+}
+
+/**
+ * Assess an ADOPTED engine's identity against this app's own — the pure heart of skew refusal, tested
+ * headless. Skew is: a parseably-different version; an engine that reports NO version (predates the field,
+ * so it is by definition an old build); or the SAME version stamped with a different build id. No skew ⇒
+ * adopt. Skew + `allowSkew` ⇒ adopt with the reason retained (the caller logs a warning). Skew + no flag ⇒
+ * refused. When the app's OWN version is unknown we cannot honestly refuse (nothing to compare) ⇒ adopt.
+ * Only meaningful for the `adopt` disposition — a spawned bundled engine IS this app's build, and an
+ * unreachable one is nothing to assess.
+ */
+export const assessEngineSkew = (input: SkewInput): SkewVerdict => {
+  const noSkew: SkewVerdict = { adopt: true, skewed: false, refused: false }
+  if (input.appVersion === undefined) return noSkew // can't compare against an unknown self — don't fabricate a refusal
+  let reason: string | undefined
+  if (input.engineVersion === undefined) {
+    reason = `the engine predates version reporting (this app is v${input.appVersion})`
+  } else {
+    const cmp = compareVersions(input.engineVersion, input.appVersion)
+    if (cmp === -1) reason = `engine v${input.engineVersion} is older than this app (v${input.appVersion})`
+    else if (cmp === 1) reason = `engine v${input.engineVersion} is newer than this app (v${input.appVersion})`
+    else if (cmp === undefined) reason = `engine version "${input.engineVersion}" is not comparable to this app (v${input.appVersion})`
+    else if (buildsDiffer(input.engineBuild, input.appBuild)) {
+      // Same version, different build: two engines both self-reporting v0.0.11 but built from different
+      // source — the exact case a version-only check misses. Only asserted when BOTH stamp a build.
+      reason = `engine and app are both v${input.appVersion} but built from different sources (engine build ${input.engineBuild}, app build ${input.appBuild})`
+    }
+  }
+  if (reason === undefined) return noSkew
+  return input.allowSkew
+    ? { adopt: true, skewed: true, refused: false, reason }
+    : { adopt: false, skewed: true, refused: true, reason }
+}
+
+/** Two builds "differ" only when both are present and unequal — a missing stamp is not evidence of skew. */
+const buildsDiffer = (a: string | undefined, b: string | undefined): boolean =>
+  a !== undefined && b !== undefined && a.trim() !== '' && b.trim() !== '' && a.trim() !== b.trim()
+
+/** The dev opt-in token parse (opt-IN like OPENINFO_SCREEN): only an explicit truthy token allows skew. */
+export const parseAllowSkew = (raw: string | undefined): boolean =>
+  raw !== undefined && ['1', 'true', 'on', 'yes'].includes(raw.trim().toLowerCase())
+
+// ── Build stamp (S6) ─────────────────────────────────────────────────────────────────────────────────
+// A packaged app inherits NO env, so OPENINFO_BUILD (the git short sha) can't reach the spawned engine or
+// the client's own version surface that way. package.mjs writes the sha into a `build-stamp.json` beside
+// the app's other resources; the shell reads it at startup, shows it, and forwards it to the engine it
+// spawns as OPENINFO_BUILD (so /health echoes the same sha). Undefined in a dev run (no packaged resources).
+
+/** The build-stamp file path inside the packaged app's resources (Electron's `process.resourcesPath`). */
+export const buildStampPath = (resourcesPath: string): string => path.join(resourcesPath, 'build-stamp.json')
+
+/**
+ * Read the packaged build stamp (`{ build }`) from resources — the client's own build id. Best-effort and
+ * additive: an absent/unreadable/malformed file (every dev run) resolves to `undefined`, never throws.
+ * `readFileImpl` is injectable so the plumbing is asserted headless with no filesystem.
+ */
+export const readBuildStamp = (
+  resourcesPath: string,
+  readFileImpl: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+): string | undefined => {
+  try {
+    const parsed = JSON.parse(readFileImpl(buildStampPath(resourcesPath))) as { build?: unknown } | null
+    const build = parsed && typeof parsed.build === 'string' ? parsed.build.trim() : ''
+    return build !== '' ? build : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * The port a spawned engine must listen on — parsed from the configured engineUrl so the client talks to

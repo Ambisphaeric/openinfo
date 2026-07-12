@@ -17,6 +17,7 @@ export type ShellCommandName =
   | 'start-session'
   | 'end-session'
   | 'open-setup'
+  | 'open-system'
   | 'open-mic-settings'
   | 'open-accessibility-settings'
   | 'open-screen-settings'

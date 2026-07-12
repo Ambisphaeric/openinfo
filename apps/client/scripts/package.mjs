@@ -35,7 +35,7 @@ import { packager } from '@electron/packager'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { readFileSync, rmSync, mkdirSync, cpSync } from 'node:fs'
+import { readFileSync, writeFileSync, rmSync, mkdirSync, cpSync } from 'node:fs'
 import path from 'node:path'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -61,6 +61,36 @@ const extendInfo = {
     'openinfo reaches model servers and engines on your local network (LM Studio, Ollama, or an engine on another machine) to run your local AI.',
   // Menu-bar-only agent: no Dock icon (app.dock.hide() already hides it at runtime; this avoids a launch flash).
   LSUIElement: true,
+}
+
+/**
+ * Resolve the build id (git short sha) to STAMP into the packaged app (S6). An explicit OPENINFO_BUILD env
+ * wins (CI can pass a canonical sha); otherwise read `git rev-parse --short HEAD`. Best-effort: outside a git
+ * checkout it degrades to `undefined` (an unstamped build — honest, never fabricated), exactly like the engine
+ * dev run. This is the DMG/package half of the same stamp the deploy path sets in the launchd plist, so a
+ * double-clicked app can prove its own build and the engine it spawns echoes the SAME sha on /health.
+ */
+export function resolveBuildSha() {
+  const fromEnv = process.env.OPENINFO_BUILD
+  if (fromEnv !== undefined && fromEnv.trim() !== '') return fromEnv.trim()
+  try {
+    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: repoRoot }).toString().trim() || undefined
+  } catch {
+    return undefined // not a git checkout — leave the build unstamped rather than invent one
+  }
+}
+
+/**
+ * Write `build-stamp.json` into release/ so packager can ship it as an extraResource (it lands in the .app's
+ * Contents/Resources, where the shell reads it via `process.resourcesPath` — see readBuildStamp). Returns the
+ * file path (always written, `{build: null}` when unstamped, so the resource is deterministic).
+ */
+export function writeBuildStamp(sha) {
+  const stampPath = path.join(outDir, 'build-stamp.json')
+  mkdirSync(outDir, { recursive: true })
+  writeFileSync(stampPath, JSON.stringify({ build: sha ?? null }, null, 2))
+  console.log(`[package] build stamp: ${sha ?? '(unstamped — not a git checkout / no OPENINFO_BUILD)'}`)
+  return stampPath
 }
 
 /**
@@ -118,6 +148,8 @@ export function stageEngineBundle() {
 /** Run @electron/packager (with the staged engine bundle as an extraResource) and ad-hoc codesign. */
 export async function packageApp() {
   const engineBundle = stageEngineBundle()
+  // Stamp this build (S6): the git short sha → build-stamp.json, shipped in Resources beside the engine bundle.
+  const buildStamp = writeBuildStamp(resolveBuildSha())
   const [built] = await packager({
     dir: appDir,
     out: outDir,
@@ -133,8 +165,9 @@ export async function packageApp() {
     prune: false, // pnpm workspace; the sole workspace dep (@openinfo/contracts) is type-only — see ignore below
     extendInfo,
     // Ship the bundled engine into Contents/Resources/engine-bundle. The shell spawns it on first launch
-    // when nothing already answers the engine URL (adopt-not-collide). See engine-supervisor.ts.
-    extraResource: [engineBundle],
+    // when nothing already answers the engine URL (adopt-not-collide). See engine-supervisor.ts. The build
+    // stamp (S6) rides alongside so the shell reads it at startup (readBuildStamp).
+    extraResource: [engineBundle, buildStamp],
     // The client itself has NO runtime node_modules dependency (contracts is compile-time types only), so we
     // ship just its compiled dist + the two HTML hosts and skip node_modules/sources — a lean client bundle.
     ignore: [
