@@ -128,10 +128,22 @@ test('the served pill frame is honest end-to-end: header + face bodies carry no 
   assert.match(wired, /data-verb="input-submit"/) // the mounted chat organ is itself honest (its verb is live)
   assert.deepEqual(silentDeadButtons(wired), [])
 
-  // Ask unavailable (bundle still resolving): the Ask affordance is honestly DISABLED, not a fake-live button.
+  // Ask unavailable (bundle still resolving — the resolve retry loop is still working): the Ask affordance
+  // is honestly DISABLED, not a fake-live button, and its disclosure is the truthful catching-up state.
   const gated = renderToHtml(
     createPillRenderer(() => ({ face: 'listen', open: true, askAvailable: false }), () => ({ chat: null, resolving: true }))(input, defaultBlockRegistry),
   )
   assert.match(gated, /data-face="ask"[^>]*disabled/)
   assert.deepEqual(silentDeadButtons(gated), [])
+
+  // Ask TERMINALLY unavailable (GET /bundles answered: genuinely no chat face): still honestly disabled —
+  // the one state where the no-chat-face disclosure is TRUE (retrying is pointless; the reason is data).
+  const terminal = renderToHtml(
+    createPillRenderer(
+      () => ({ face: 'listen', open: true, askAvailable: false }),
+      () => ({ chat: null, resolving: false, chatError: 'this app has no chat face' }),
+    )(input, defaultBlockRegistry),
+  )
+  assert.match(terminal, /data-face="ask"[^>]*disabled/)
+  assert.deepEqual(silentDeadButtons(terminal), [])
 })
