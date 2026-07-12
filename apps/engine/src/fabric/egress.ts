@@ -33,6 +33,25 @@ const hostOf = (url: string): string | undefined => {
 }
 
 /**
+ * Is an endpoint confined to this machine, rather than merely reachable on the private LAN? This is
+ * deliberately narrower than `classifyEndpoint`: managed `local` runtimes are engine-spawned on
+ * loopback, while an http endpoint must name localhost, 127.0.0.0/8, or ::1. Wildcard bind addresses
+ * (0.0.0.0 / ::), private IPs, link-local IPs, and mDNS names are NOT loopback destinations.
+ *
+ * Raw screen frames use this predicate before OCR/VLM invocation. Other content retains the broader
+ * local-vs-egress classification, so this does not change existing private-LAN model support generally.
+ */
+export const isLoopbackEndpoint = (endpoint: Endpoint): boolean => {
+  if (endpoint.kind === 'local') return true
+  if (endpoint.kind === 'cloud') return false
+  const host = hostOf(endpoint.url)
+  if (host === undefined) return false
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1') return true
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  return v4 !== null && Number(v4[1]) === 127
+}
+
+/**
  * Is a hostname loopback or a private/link-local LAN address (or an mDNS `.local` name)? Such a host never
  * leaves the machine's own network, so it is `local`; everything else (a public hostname or routable IP)
  * is `egress`. Covers IPv4 loopback/private/link-local ranges, IPv6 loopback/ULA/link-local, `0.0.0.0`,
@@ -96,7 +115,7 @@ export interface EgressContext {
  */
 export const resolveEgress = (ctx: EgressContext): EgressConsent => {
   if (ctx.contentClass === 'screen') {
-    return { allowed: false, decidedBy: 'content-class', reason: 'screen-derived content never leaves the machine' }
+    return { allowed: false, decidedBy: 'content-class', reason: 'raw screen content is restricted to this machine' }
   }
   if (ctx.promptNeverEgress === true) {
     return { allowed: false, decidedBy: 'prompt', reason: 'this prompt is declared never-egress' }

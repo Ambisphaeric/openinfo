@@ -151,6 +151,37 @@ test('invokeOcr falls through an unreachable paddle endpoint to a live one', asy
   }
 })
 
+test('invokeOcr sends raw frames only to loopback, skipping private-LAN and public HTTP endpoints before fetch', async () => {
+  const local = await startFakePaddle([{ text: 'read locally', confidence: 0.9, text_region: [[0, 0], [1, 0], [1, 1], [0, 1]] }])
+  const originalFetch = globalThis.fetch
+  const attempted: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    if (!url.startsWith(local.url)) throw new Error(`non-loopback fetch attempted: ${url}`)
+    return originalFetch(input, init)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        ocr: [
+          { kind: 'http', name: 'lan-ocr', url: 'http://192.168.1.50:8000', api: 'paddle-serving' },
+          { kind: 'http', name: 'public-ocr', url: 'https://ocr.example.test', api: 'paddle-serving' },
+          { kind: 'http', name: 'loopback-ocr', url: local.url, api: 'paddle-serving' },
+        ],
+      },
+    }
+    const result = await invokeOcr(fabric, params)
+    assert.equal(result.endpoint, 'loopback-ocr')
+    assert.equal(result.text, 'read locally')
+    assert.deepEqual(attempted, [`${local.url}/predict/ocr_system`])
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(local)
+  }
+})
+
 test('invokeOcr injects a resolved keyRef as Authorization: Bearer on the paddle call', async () => {
   const seen: string[] = []
   const server = createServer((req, res) => {
