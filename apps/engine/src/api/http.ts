@@ -1833,9 +1833,18 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     // delivered through the declared `bundle-prompt` source (drop that source and the app runs without priming).
     bundlePrompt: BUNDLE_PROMPT,
     relevant: (workspaceId) => (known(workspaceId) ? relevantNow(ctx.store, workspaceId, {}) : []),
-    // The live-transcript ring is a process-global recent feed (not workspace-scoped, disclosed); join
-    // oldest-last so the assembler's rolling window keeps the MOST RECENT characters.
-    transcript: () => ctx.transcripts.recent().reverse().map((u) => u.text).filter((t) => t.trim() !== '').join('\n'),
+    // The underlying live-transcript ring remains process-global for diagnostics, but chat sees only
+    // updates from sessions currently owned by its workspace. TranscriptUpdate carries sessionId (not a
+    // duplicated workspaceId), so resolve the workspace's persisted session set at gather time; a rerouted
+    // session therefore follows its current owner. Join oldest-first so the assembler's rolling window
+    // keeps the MOST RECENT characters.
+    transcript: (workspaceId) => {
+      const sessionIds = new Set(
+        ctx.transcripts.recent().map((update) => update.sessionId)
+          .filter((sessionId) => ctx.store.getSession(workspaceId, sessionId) !== undefined),
+      )
+      return ctx.transcripts.recentForSessions(sessionIds).reverse().map((u) => u.text).filter((t) => t.trim() !== '').join('\n')
+    },
     // Session insights = the distillate summaries (oldest-first); the assembler keeps the most recent `limit`.
     insights: (workspaceId) => (known(workspaceId) ? ctx.store.listDistillates(workspaceId).map((d) => d.text).filter((t) => t.trim() !== '') : []),
     pinTitle: (workspaceId, pinId) => ctx.store.getPin(workspaceId, pinId)?.title,

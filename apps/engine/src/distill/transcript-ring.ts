@@ -33,6 +33,16 @@ export class TranscriptRing {
     return [...this.items].reverse()
   }
 
+  /**
+   * The retained updates whose session belongs to the caller's scope, newest-first. TranscriptUpdate
+   * deliberately carries only session identity, so the caller resolves its workspace-owned sessions
+   * through the store and supplies that bounded set here. Keeping the filter on the ring avoids exposing
+   * the backing array while leaving the diagnostics inspector's process-wide `recent()` view unchanged.
+   */
+  recentForSessions(sessionIds: ReadonlySet<string>): TranscriptUpdate[] {
+    return this.recent().filter((update) => sessionIds.has(update.sessionId))
+  }
+
   /** The retention bound, surfaced as the inspector's `ringLimit` disclosure. */
   get capacity(): number {
     return this.limit

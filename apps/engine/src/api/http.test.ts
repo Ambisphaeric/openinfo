@@ -3690,6 +3690,73 @@ test('POST /chat validates the body (400) and surfaces an honest failure with no
   }
 })
 
+test('POST /chat includes live transcript only from sessions owned by the requested workspace', async () => {
+  const seen: { messages: { role: string; content: string }[] }[] = []
+  const up = createServer((req, res) => {
+    let body = ''
+    req.on('data', (chunk) => (body += chunk))
+    req.on('end', () => {
+      seen.push(JSON.parse(body) as { messages: { role: string; content: string }[] })
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => up.listen(0, resolve))
+  const upAddr = up.address()
+  assert.ok(upAddr && typeof upAddr === 'object')
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-chat-transcript-scope-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.local', url: `http://127.0.0.1:${upAddr.port}`, api: 'openai-compat' }] } }),
+    })
+
+    const session = (id: string, workspaceId: string): Session => ({
+      id,
+      workspaceId,
+      modeId: 'mode-default',
+      startedAt: '2026-07-12T12:00:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'test', weight: 1 }], confidence: 1 },
+    })
+    app.store.saveSession(session('ses-a', 'ws-a'))
+    app.store.saveSession(session('ses-b', 'ws-b'))
+    await app.bus.publish('transcript.updated', {
+      sessionId: 'ses-a', source: 'mic', text: 'ALPHA_WORKSPACE_ONLY',
+      capturedAtRange: { start: '2026-07-12T12:00:00Z', end: '2026-07-12T12:00:01Z' },
+    })
+    await app.bus.publish('transcript.updated', {
+      sessionId: 'ses-b', source: 'system-audio', text: 'BRAVO_WORKSPACE_ONLY',
+      capturedAtRange: { start: '2026-07-12T12:00:02Z', end: '2026-07-12T12:00:03Z' },
+    })
+
+    for (const workspace of ['ws-a', 'ws-b']) {
+      const response = await fetch(`${base}/chat`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspace, message: 'summarize the live transcript' }),
+      })
+      assert.equal(response.status, 200)
+    }
+
+    const systemA = seen[0]!.messages.find((message) => message.role === 'system')?.content ?? ''
+    const systemB = seen[1]!.messages.find((message) => message.role === 'system')?.content ?? ''
+    assert.match(systemA, /ALPHA_WORKSPACE_ONLY/)
+    assert.doesNotMatch(systemA, /BRAVO_WORKSPACE_ONLY/, 'workspace B transcript must not leak into workspace A chat')
+    assert.match(systemB, /BRAVO_WORKSPACE_ONLY/)
+    assert.doesNotMatch(systemB, /ALPHA_WORKSPACE_ONLY/, 'workspace A transcript must not leak into workspace B chat')
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('pill P1×P2: the active-preset read-seam is wired into chat context assembly end-to-end', async () => {
   // The merge-time integration wire (neither PR did it alone): P1 defined the OPTIONAL
   // `ChatDeps.resolveActivePreset` seam and left it unfilled (⇒ `unavailable`); P2 shipped
