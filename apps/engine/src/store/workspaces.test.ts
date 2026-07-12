@@ -22,6 +22,34 @@ test('workspace registry creates one sqlite file per workspace', async () => {
   }
 })
 
+test('pill P2: the active-preset selection round-trips, clears, and persists across reopen', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-preset-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // Unset by default — the byte-identical seam: no selection ⇒ no injection.
+    assert.equal(registry.getActivePreset('default'), undefined, 'unset by default')
+    // A workspace that was never created reads undefined rather than throwing (degradable seam).
+    assert.equal(registry.getActivePreset('never-made'), undefined, 'unknown workspace reads undefined')
+    // Set, then read back through the SAME narrow read the distiller and P1 land on.
+    registry.setActivePreset('default', 'preset-sales')
+    assert.equal(registry.getActivePreset('default'), 'preset-sales', 'selection reads back')
+    // The store creates the workspace on demand (mirrors the other writers).
+    registry.setActivePreset('sales-ws', 'preset-recruiting')
+    assert.equal(registry.getActivePreset('sales-ws'), 'preset-recruiting', 'write creates the workspace')
+    // Clearing round-trips as absent — back to no injection.
+    registry.setActivePreset('default', undefined)
+    assert.equal(registry.getActivePreset('default'), undefined, 'cleared selection reads undefined')
+    registry.close()
+
+    // Durable: a fresh registry over the same dir rehydrates the selection (persisted, not in-memory).
+    const reopened = new WorkspaceRegistry(dir)
+    assert.equal(reopened.getActivePreset('sales-ws'), 'preset-recruiting', 'selection persists across reopen')
+    reopened.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('#128: a workspace-level egress deny survives the store row round-trip (fromRow used to drop it)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-egress-'))
   try {
