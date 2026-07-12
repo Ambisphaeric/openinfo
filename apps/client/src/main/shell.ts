@@ -512,13 +512,19 @@ const persistOpenApps = (): void => {
 
 /**
  * Reopen the app windows that were open at last quit (#19 — "config persists the set of open surfaces
- * across restart"). The default HUD surface is skipped: it is the singular anchor, always created
- * directly by createHudWindow. A stale id whose surface the engine no longer serves still opens a window
- * that shows the renderer's honest boot-status text rather than failing invisibly — harmless.
+ * across restart"). The ANCHOR surface (cfg.surfaceId — the window createHudWindow opens directly) is
+ * DEDUPED here: it is never reopened as a registry window, because it is already the anchor. This is what
+ * keeps the repointed pill anchor honest — a QA-era apps-state may still list surf-openinfo-pill among its
+ * openApps (the pill used to open as an Apps-folder window before it became the default), and without this
+ * skip that entry would open a DUPLICATE second pill beside the anchor and resurrect forever. The guard is
+ * against cfg.surfaceId precisely because that is the id createHudWindow builds the anchor from, so the two
+ * can never drift. The reopen feature itself is intact (a note-taker the user left open still returns); a
+ * stale id whose surface the engine no longer serves opens a window showing the renderer's honest
+ * boot-status text rather than failing invisibly — harmless.
  */
 const reopenPersistedApps = (): void => {
   for (const surfaceId of appState.openApps) {
-    if (surfaceId === cfg.surfaceId) continue
+    if (surfaceId === cfg.surfaceId) continue // dedupe: the anchor is already open (createHudWindow)
     appRegistry.openOrFocus(surfaceId)
   }
 }
