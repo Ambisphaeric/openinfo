@@ -341,3 +341,105 @@ test('no egress consent supplied ⇒ no decision stamped (honest absence, unchan
     await stop(local)
   }
 })
+
+/** A fake openai-compat server that HONORS stream:true with SSE frames (the Ask face streaming path). */
+const startStreamingLlm = async (deltas: string[], opts: { failMidStream?: boolean } = {}): Promise<FakeServer> => {
+  const requests: unknown[] = []
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c: Buffer) => chunks.push(c))
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { stream?: boolean }
+      requests.push(body)
+      if (body.stream !== true) {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: deltas.join('') } }] }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      for (const delta of deltas) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: delta } }] })}\n\n`)
+      }
+      if (opts.failMidStream) {
+        // A hard RST after partial output (a clean destroy reads as EOF) — the no-fall-through case.
+        setTimeout(() => req.socket.resetAndDestroy(), 20)
+        return
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 7, completion_tokens: 3 } })}\n\n`)
+      res.write('data: [DONE]\n\n')
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}`, requests }
+}
+
+test('Ask face: onDelta streams each SSE content chunk in order and the result is the full accumulated answer', async () => {
+  const fake = await startStreamingLlm(['Hel', 'lo ', 'there'])
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'streamer', url: fake.url, api: 'openai-compat' }] } }
+    const seen: string[] = []
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { onDelta: (t) => seen.push(t) })
+    assert.deepEqual(seen, ['Hel', 'lo ', 'there'], 'every content delta arrives, in order')
+    assert.equal(result.text, 'Hello there', 'the resolved text is the accumulated answer')
+    assert.equal((fake.requests[0] as { stream?: boolean }).stream, true, 'the request asked for SSE')
+    assert.equal(result.usage?.estimated, false, 'usage from the final SSE frame is MEASURED')
+    assert.equal(result.usage?.totalTokens, 10)
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('Ask face: a server that ignores stream:true degrades honestly to ONE final chunk (no fake typewriter)', async () => {
+  const fake = await startFakeLlm('all at once')
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'buffered', url: fake.url, api: 'openai-compat' }] } }
+    const seen: string[] = []
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { onDelta: (t) => seen.push(t) })
+    assert.deepEqual(seen, [], 'no deltas are faked for a non-streaming server')
+    assert.equal(result.text, 'all at once', 'the classic buffered parse still answers')
+    assert.equal((fake.requests[0] as { stream?: boolean }).stream, true, 'streaming was REQUESTED (the server just ignored it)')
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('Ask face: without onDelta the request body is byte-for-byte the legacy stream:false shape', async () => {
+  const fake = await startFakeLlm('legacy')
+  try {
+    const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'legacy', url: fake.url, api: 'openai-compat' }] } }
+    await invokeLlm(fabric, [{ role: 'user', content: 'hi' }])
+    assert.equal((fake.requests[0] as { stream?: boolean }).stream, false, 'no onDelta ⇒ stream:false, unchanged')
+  } finally {
+    await stop(fake)
+  }
+})
+
+test('Ask face: a mid-stream failure AFTER deltas were emitted surfaces — it never silently falls through to the next endpoint', async () => {
+  const broken = await startStreamingLlm(['partial '], { failMidStream: true })
+  const fallback = await startFakeLlm('should never answer')
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [
+          { kind: 'http', name: 'breaks-mid-stream', url: broken.url, api: 'openai-compat' },
+          { kind: 'http', name: 'fallback', url: fallback.url, api: 'openai-compat' },
+        ],
+      },
+    }
+    const seen: string[] = []
+    await assert.rejects(
+      invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { onDelta: (t) => seen.push(t) }),
+      () => true, // any failure shape — the point is that it SURFACES instead of falling through
+      'partial output was painted, so the failure must surface',
+    )
+    assert.deepEqual(seen, ['partial '], 'the partial delta did stream before the failure')
+    assert.equal(fallback.requests.length, 0, 'the fallback endpoint was never consulted after partial output')
+  } finally {
+    await stop(broken)
+    await stop(fallback)
+  }
+})
