@@ -1865,7 +1865,8 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     // Ask face `screen` source: read the send's one frame into text through the SAME screen-understanding
     // path the P4B processor uses (invokeOcr: paddle-serving blocks, or an openai-compat VLM in the ocr
     // slot). Consent is content-class `screen` — resolveEgress DENIES egress for screen content outright
-    // (egress.ts, most-specific-denial-wins), so the frame's bytes can only ever reach a LOCAL endpoint.
+    // (egress.ts, most-specific-denial-wins), and invokeOcr further restricts raw frame bytes to an
+    // engine-managed runtime or explicit loopback URL — private-LAN endpoints are skipped before fetch.
     // Only the DERIVED TEXT then rides the chat hop, which runs the normal typed-content gate + #63 guard.
     screenText: async (workspaceId: string, screenshot: ChatScreenshot) => {
       const consent = resolveEgress({ contentClass: 'screen', workspaceDenies: ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true })

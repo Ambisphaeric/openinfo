@@ -298,6 +298,35 @@ test('egress-denied consent SKIPS an egress endpoint and falls through to a loca
   }
 })
 
+test('ordinary LLM content preserves private-LAN endpoints as local (screen loopback restriction does not leak)', async () => {
+  const lanTarget = await startFakeLlm('answered over LAN')
+  const port = new URL(lanTarget.url).port
+  const documentedUrl = `http://192.168.1.50:${port}`
+  const originalFetch = globalThis.fetch
+  const attempted: string[] = []
+  // Keep the endpoint document honestly private-LAN for policy classification, while steering this test's
+  // transport to its loopback fake server. A leaked screen-only restriction would skip before this seam.
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    return originalFetch(url.replace(documentedUrl, lanTarget.url), init)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'lan-llm', url: documentedUrl, api: 'openai-compat' }] },
+    }
+    const deniedPublicEgress = resolveEgress({ contentClass: 'transcript', workspaceDenies: true })
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { egress: deniedPublicEgress })
+    assert.equal(result.endpoint, 'lan-llm')
+    assert.equal(result.text, 'answered over LAN')
+    assert.equal(result.egress?.reach, 'local')
+    assert.deepEqual(attempted, [`${documentedUrl}/v1/chat/completions`])
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(lanTarget)
+  }
+})
+
 test('egress-denied with ONLY egress endpoints degrades explainably (egress-denied classified failure)', async () => {
   const fabric: Fabric = {
     slots: {

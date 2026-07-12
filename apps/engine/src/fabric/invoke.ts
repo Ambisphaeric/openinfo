@@ -2,7 +2,7 @@ import type { EgressDecision, EgressReach, Endpoint, Fabric, GuardVerdict, Invok
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
 import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
-import { classifyEndpoint, egressDecision, type EgressConsent } from './egress.js'
+import { classifyEndpoint, egressDecision, isLoopbackEndpoint, type EgressConsent } from './egress.js'
 import { runEgressGuard, type GuardOptions } from './guard.js'
 import {
   AggregateInvokeError,
@@ -79,8 +79,21 @@ const egressGate = (
   consent: EgressConsent | undefined,
   classified: ClassifiedFailure[],
   lines: string[],
+  restriction: 'network-local' | 'loopback-only' = 'network-local',
 ): EgressGate => {
   const reach = classifyEndpoint(endpoint)
+  // Raw screen bytes are stricter than the general egress model: private-LAN endpoints count as
+  // `local` for ordinary content, but OCR/VLM frames may reach only an engine-managed runtime or an
+  // explicit loopback URL. This check precedes runtime resolution, auth, guards, and fetch.
+  if (restriction === 'loopback-only' && !isLoopbackEndpoint(endpoint)) {
+    const reason = 'raw screen frames are loopback-only'
+    const err = new InvokeError('egress-denied', ctxForGate(endpoint), {
+      hint: `${reason} — endpoint "${endpoint.name}" was skipped before invocation`,
+    })
+    classified.push(err.toFailure())
+    lines.push(`${endpoint.name}: ${reason}`)
+    return { allow: false }
+  }
   if (reach === 'local' || consent === undefined || consent.allowed) return { allow: true, reach }
   const err = new InvokeError('egress-denied', ctxForGate(endpoint), {
     hint: `${consent.reason} — egress-capable endpoint "${endpoint.name}" was skipped (${consent.decidedBy})`,
@@ -717,7 +730,7 @@ export const invokeVlm = async (
       lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
-    const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
+    const gate = egressGate(endpoint, opts.egress, classified, lines, 'loopback-only') // raw frame: LAN + egress deny before any call
     if (!gate.allow) continue
     try {
       const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint
@@ -873,7 +886,7 @@ export const invokeOcr = async (
       lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
       continue
     }
-    const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
+    const gate = egressGate(endpoint, opts.egress, classified, lines, 'loopback-only') // raw frame: LAN + egress deny before any call
     if (!gate.allow) continue
     try {
       const http = endpoint.kind === 'local' ? (await resolveLocal(endpoint, opts.runtimeManager)).http : endpoint

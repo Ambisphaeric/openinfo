@@ -104,6 +104,37 @@ test('invokeVlm falls through to the next endpoint when the first is unreachable
   }
 })
 
+test('invokeVlm sends raw frames only to loopback, skipping private-LAN and public HTTP endpoints before fetch', async () => {
+  const local = await startFakeVlm('described locally')
+  const originalFetch = globalThis.fetch
+  const attempted: string[] = []
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    if (!url.startsWith(local.url)) throw new Error(`non-loopback fetch attempted: ${url}`)
+    return originalFetch(input, init)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        vlm: [
+          { kind: 'http', name: 'lan-vlm', url: 'http://10.0.0.20:8000', api: 'openai-compat' },
+          { kind: 'http', name: 'public-vlm', url: 'https://vlm.example.test', api: 'openai-compat' },
+          { kind: 'http', name: 'loopback-vlm', url: local.url, api: 'openai-compat' },
+        ],
+      },
+    }
+    const result = await invokeVlm(fabric, params)
+    assert.equal(result.endpoint, 'loopback-vlm')
+    assert.equal(result.text, 'described locally')
+    assert.deepEqual(attempted, [`${local.url}/v1/chat/completions`])
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(local)
+  }
+})
+
 test('invokeVlm injects a resolved keyRef as Authorization: Bearer', async () => {
   const fake = await startFakeVlm('authed answer')
   vlmAuthHeaders.length = 0

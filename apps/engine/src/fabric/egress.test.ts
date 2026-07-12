@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Endpoint } from '@openinfo/contracts'
-import { classifyEndpoint, classifyHost, egressDecision, resolveEgress } from './egress.js'
+import { classifyEndpoint, classifyHost, egressDecision, isLoopbackEndpoint, resolveEgress } from './egress.js'
 
 /* ---------- Layer 1: endpoint reach classification (pure, URL-derived) ---------- */
 
@@ -43,6 +43,18 @@ test('classifyEndpoint: local kind is local, cloud kind is egress, http follows 
   assert.equal(classifyEndpoint(cloud), 'egress')
   assert.equal(classifyEndpoint(httpLocal), 'local')
   assert.equal(classifyEndpoint(httpEgress), 'egress')
+})
+
+test('isLoopbackEndpoint: distinguishes this machine from private-LAN endpoints', () => {
+  const endpoint = (url: string): Endpoint => ({ kind: 'http', name: url, url, api: 'openai-compat' })
+  for (const url of ['http://localhost:8000', 'http://worker.localhost:8000', 'http://127.5.5.5:8000', 'http://[::1]:8000']) {
+    assert.equal(isLoopbackEndpoint(endpoint(url)), true, url)
+  }
+  for (const url of ['http://0.0.0.0:8000', 'http://[::]:8000', 'http://10.1.2.3:8000', 'http://192.168.1.50:8000', 'http://worker.local:8000', 'https://api.example.com']) {
+    assert.equal(isLoopbackEndpoint(endpoint(url)), false, url)
+  }
+  assert.equal(isLoopbackEndpoint({ kind: 'local', name: 'managed', runtime: 'mlx', model: 'm' }), true)
+  assert.equal(isLoopbackEndpoint({ kind: 'cloud', name: 'cloud', provider: 'anthropic', auth: 'keychain' }), false)
 })
 
 /* ---------- Layers 2-4: content-side consent, most-specific denial wins ---------- */
