@@ -62,6 +62,12 @@ export class PresetDocuments {
     return this.get(id) !== undefined
   }
 
+  /** The raw stored selection id (or undefined) — the low-level per-workspace seam GET /active-preset
+   * echoes and P1 may read directly. `resolveActive` is the resolved-document counterpart. */
+  activeId(workspaceId: string): string | undefined {
+    return this.store.getActivePreset(workspaceId)
+  }
+
   /**
    * Resolve the workspace's ACTIVE preset document if one is set, else undefined — the narrow read the
    * distiller prepends from and P1 gathers the `active-preset` chat source from. Degradable by design:

@@ -586,6 +586,59 @@ test('e2e (#99): instantiate one template TWICE with different workspaces; each 
   }
 })
 
+// ---- pill P2: /active-preset selection + presets over the existing /templates substrate ----
+test('pill P2: /active-preset GET/PUT — five presets listed, honest 400 on a nonexistent preset, set/clear round-trip, editable via /templates', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-preset-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // The five presets seed and enumerate over the EXISTING /templates route (they are prompt-template docs).
+    const templates = (await (await fetch(`${base}/templates`)).json()) as PromptTemplate[]
+    const presetIds = templates.filter((t) => t.kind === 'preset').map((t) => t.id).sort()
+    assert.deepEqual(presetIds, ['preset-meetings', 'preset-recruiting', 'preset-sales', 'preset-school', 'preset-support'])
+
+    // GET selection: unset ⇒ presetId null; the five choices ride along.
+    const initial = (await (await fetch(`${base}/active-preset`)).json()) as { workspaceId: string; presetId: string | null; presets: PromptTemplate[] }
+    assert.equal(initial.workspaceId, 'default')
+    assert.equal(initial.presetId, null, 'unset by default (byte-identical seam)')
+    assert.equal(initial.presets.length, 5, 'the five choices are served')
+
+    // PUT a nonexistent preset ⇒ honest 400 (never silently ignored).
+    assert.equal((await putJson(base, '/active-preset', { presetId: 'preset-nope' })).status, 400)
+    // PUT a non-string, non-null presetId ⇒ 400.
+    assert.equal((await putJson(base, '/active-preset', { presetId: 42 })).status, 400)
+
+    // PUT a real preset ⇒ 200, GET reflects it.
+    assert.equal((await putJson(base, '/active-preset', { presetId: 'preset-sales' })).status, 200)
+    const set = (await (await fetch(`${base}/active-preset`)).json()) as { presetId: string | null }
+    assert.equal(set.presetId, 'preset-sales', 'the selection reads back')
+
+    // Per-workspace scoping: another workspace is independent.
+    const other = (await (await fetch(`${base}/active-preset?workspace=ws-other`)).json()) as { presetId: string | null }
+    assert.equal(other.presetId, null, 'selection is per-workspace')
+
+    // A preset edits over the EXISTING /templates route (no new editing UI) and reads back as a preset.
+    const sales = (await (await fetch(`${base}/templates/preset-sales`)).json()) as PromptTemplate
+    assert.equal(sales.kind, 'preset')
+    const editedSales = { ...sales, body: 'Context: my customized sales preset.' }
+    assert.equal((await putJson(base, '/templates/preset-sales', editedSales)).status, 200)
+    const afterEdit = (await (await fetch(`${base}/templates/preset-sales`)).json()) as PromptTemplate
+    assert.equal(afterEdit.body, 'Context: my customized sales preset.', 'the preset edit round-trips over /templates')
+
+    // Clearing (presetId null) ⇒ back to unset.
+    assert.equal((await putJson(base, '/active-preset', { presetId: null })).status, 200)
+    const cleared = (await (await fetch(`${base}/active-preset`)).json()) as { presetId: string | null }
+    assert.equal(cleared.presetId, null, 'cleared selection reads null')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('e2e: a todos surface hydrates its todos block from the store over POST /query', async () => {
   // The data path the HUD drives for the todos block (#9): author a to-do list over the real served
   // write (PUT /todos/:sessionId), author a surface carrying a todos block whose query is
