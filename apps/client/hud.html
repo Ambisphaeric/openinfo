@@ -2,7 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>openinfo — HUD</title>
+    <!--
+      Neutral placeholder title (S4): hud.html is the ONE renderer host EVERY surface window loads, so a
+      hardcoded "— HUD" here mislabeled every framed titlebar (diagnostics, note-taker, chat) as the HUD. The
+      shell factory stamps the correct per-surface title at create, and the renderer refines it to the loaded
+      surface's live name (dev-entry sets document.title) — this is only what shows before that lands.
+    -->
+    <title>openinfo</title>
     <!--
       The Electron renderer host for the live HUD. It loads the SAME compiled dev entry the browser
       harness (dev-hud.html) uses — no renderer/controller change, exactly as PHASE2-NOTES scoped the

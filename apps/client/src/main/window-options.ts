@@ -237,3 +237,33 @@ export const surfaceWindowSpec = (surfaceId: string, opts: { startVisible?: bool
     ? hudWindowSpec({ startVisible, ...widthOpt, ...focusableOpt })
     : appWindowSpec({ startVisible, ...widthOpt })
 }
+
+/**
+ * Per-surface human FACE names — what a window calls itself (S4). The window's live title is refined by the
+ * renderer to the loaded surface document's `name`; this is the pre-load fallback the factory stamps so a
+ * window is NEVER mislabeled "HUD" while it boots (the old bug: every framed titlebar read "openinfo — HUD"
+ * because the shared hud.html <title> was the only title anything ever set). An unknown surface is humanized
+ * from its id, so a new surface still self-identifies without a code change.
+ */
+const FACE_NAMES: Record<string, string> = {
+  'surf-openinfo-hud': 'HUD',
+  'surf-glass-minimal': 'HUD',
+  'surf-openinfo-fields': 'Fields',
+  'surf-openinfo-diagnostics': 'Diagnostics',
+  'surf-openinfo-notetaker': 'Meeting Notes',
+  'surf-openinfo-chat': 'Chat',
+  'surf-openinfo-sidebar': 'Sidebar',
+}
+
+/** Humanize an unknown surface id (`surf-openinfo-foo-bar` → `Foo Bar`) so it still names itself. */
+const humanizeSurfaceId = (surfaceId: string): string =>
+  surfaceId
+    .replace(/^surf-/, '')
+    .replace(/^openinfo-/, '')
+    .split('-')
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'App'
+
+/** The per-surface window title (chrome titlebar / app switcher). `openinfo — <Face>`. Pure + testable. */
+export const windowTitleFor = (surfaceId: string): string => `openinfo — ${FACE_NAMES[surfaceId] ?? humanizeSurfaceId(surfaceId)}`

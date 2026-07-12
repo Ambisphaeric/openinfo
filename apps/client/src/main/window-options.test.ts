@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hudWindowSpec, configForSurface, surfaceWindowSpec } from './window-options.js'
+import { hudWindowSpec, configForSurface, surfaceWindowSpec, windowTitleFor } from './window-options.js'
 
 test('the HUD window carries the inherited-Glass signature', () => {
   const spec = hudWindowSpec()
@@ -78,4 +78,16 @@ test('S1: surfaceWindowSpec resolves chrome + width + focusability from the surf
   assert.equal(diag.browserWindow.frame, true, 'diagnostics is framed app chrome')
   assert.equal(diag.browserWindow.focusable, true, 'framed app windows are always focusable')
   assert.equal(diag.browserWindow.width, 560)
+})
+
+// ── S4: window identity — per-surface titles ──────────────────────────────────────────────────────────
+test('S4: every surface names itself with a DISTINCT, non-generic title (not all "openinfo — HUD")', () => {
+  assert.equal(windowTitleFor('surf-openinfo-hud'), 'openinfo — HUD')
+  assert.equal(windowTitleFor('surf-openinfo-diagnostics'), 'openinfo — Diagnostics')
+  assert.equal(windowTitleFor('surf-openinfo-chat'), 'openinfo — Chat')
+  assert.equal(windowTitleFor('surf-openinfo-notetaker'), 'openinfo — Meeting Notes')
+  // an unknown surface is humanized from its id, so it still self-identifies without a code change
+  assert.equal(windowTitleFor('surf-openinfo-widget-shop'), 'openinfo — Widget Shop')
+  // the framed apps (diagnostics + note-taker) no longer collide on the HUD title — the reported bug
+  assert.notEqual(windowTitleFor('surf-openinfo-diagnostics'), windowTitleFor('surf-openinfo-hud'))
 })

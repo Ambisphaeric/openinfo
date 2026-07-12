@@ -7,7 +7,7 @@ import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, native
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
-import { surfaceWindowSpec, configForSurface, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
+import { surfaceWindowSpec, configForSurface, windowTitleFor, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
 import { resolveHudHeight } from './hud-height.js'
 import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
@@ -335,6 +335,10 @@ const createSurfaceWindow = (
   const spec: HudWindowSpec = surfaceWindowSpec(surfaceId, { startVisible: opts.startVisible })
   const window = new BrowserWindow({
     ...spec.browserWindow,
+    // Self-identify (S4): stamp the per-surface title so a booting window is never mislabeled "HUD" (every
+    // window loads the SAME hud.html, so its shared <title> alone titled them all "HUD"); the renderer then
+    // refines it to the loaded surface's live `name` (page-title-updated flows through by default).
+    title: windowTitleFor(surfaceId),
     // The one bridge the renderer needs: the drag channel (preload.cts). Nothing node-bound crosses.
     webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
   })

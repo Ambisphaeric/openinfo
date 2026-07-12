@@ -103,6 +103,9 @@ interface DevGlobal {
     readyState: string
     head: DevElement
     body: DevElement
+    // The document's own title — the window names ITSELF in-content (S4): the renderer drives this from the
+    // loaded surface's live name, which the framed titlebar / app switcher then reflect (page-title-updated).
+    title?: string
     createElement(tag: string): DevElement
     addEventListener(type: string, listener: () => void): void
     // Legacy synchronous copy path — present in every renderer, absent in a bare node test.
@@ -392,6 +395,10 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     // reveal:'event' panel, subscribe to the trigger to open it as a dismissible suggestion. Electron-only
     // (needs the panel bridge); a plain browser page simply scrolls. Created once — hot-reloads keep it.
     onSurfaceLoaded: (surface) => {
+      // S4: the window names ITSELF in-content — drive document.title from the loaded surface's live name.
+      // The framed titlebar / app switcher reflect it (page-title-updated flows by default); the frameless
+      // HUD's identity is otherwise invisible, so this is where a window stops being an anonymous glass box.
+      if (surface.name) doc.title = surface.name
       // S1: install the window's ONE height authority, exactly once. A panel surface (the chat/sidebar) is
       // sized by its PanelController along its edge; every other HUD window by the content auto-resizer. They
       // are mutually exclusive — installing both let the resize floor override the panel's extents (panel.ts).
