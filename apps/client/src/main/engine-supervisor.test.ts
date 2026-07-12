@@ -9,6 +9,10 @@ import {
   fetchEngineHealth,
   compareVersions,
   engineStatusLine,
+  assessEngineSkew,
+  parseAllowSkew,
+  buildStampPath,
+  readBuildStamp,
   type FetchLike,
   type HealthFetchLike,
 } from './engine-supervisor.js'
@@ -184,4 +188,109 @@ test('engineStatusLine: an adopted engine that reports NO version reads as preda
 
 test('engineStatusLine: unreachable ⇒ undefined (the tray already leads with unreachable)', () => {
   assert.equal(engineStatusLine({ disposition: 'unreachable', appVersion: '0.0.1' }), undefined)
+})
+
+test('engineStatusLine: a reported build id is surfaced (no longer dropped) after the location', () => {
+  assert.equal(
+    engineStatusLine({ disposition: 'adopt', engineVersion: '0.0.11', appVersion: '0.0.11', engineUrl: 'http://127.0.0.1:8787', build: 'a1b2c3d' }),
+    'engine v0.0.11 · adopted at :8787 · build a1b2c3d',
+  )
+})
+
+test('engineStatusLine: a spawned engine surfaces its build too, before any skew note', () => {
+  assert.equal(
+    engineStatusLine({ disposition: 'spawn', engineVersion: '0.0.11', appVersion: '0.0.11', build: 'deadbee' }),
+    'engine v0.0.11 · spawned (bundled) · build deadbee',
+  )
+})
+
+test('engineStatusLine: build + skew both show (build before the skew note)', () => {
+  assert.equal(
+    engineStatusLine({ disposition: 'adopt', engineVersion: '0.0.10', appVersion: '0.0.11', engineUrl: 'http://127.0.0.1:8787', build: 'a1b2c3d' }),
+    'engine v0.0.10 · adopted at :8787 · build a1b2c3d · older than this app (v0.0.11)',
+  )
+})
+
+test('engineStatusLine: a blank build is not rendered (no dangling "· build ")', () => {
+  assert.equal(
+    engineStatusLine({ disposition: 'adopt', engineVersion: '0.0.11', appVersion: '0.0.11', engineUrl: 'http://127.0.0.1:8787', build: '  ' }),
+    'engine v0.0.11 · adopted at :8787',
+  )
+})
+
+test('assessEngineSkew: identical version + no builds ⇒ ADOPT (the normal dev/prod parity case)', () => {
+  assert.deepEqual(assessEngineSkew({ appVersion: '0.0.11', engineVersion: '0.0.11', allowSkew: false }), {
+    adopt: true,
+    skewed: false,
+    refused: false,
+  })
+})
+
+test('assessEngineSkew: an OLDER adopted engine is REFUSED by default, with a plain reason', () => {
+  const v = assessEngineSkew({ appVersion: '0.0.11', engineVersion: '0.0.10', allowSkew: false })
+  assert.equal(v.adopt, false)
+  assert.equal(v.refused, true)
+  assert.equal(v.skewed, true)
+  assert.match(v.reason ?? '', /older than this app \(v0\.0\.11\)/)
+})
+
+test('assessEngineSkew: a NEWER adopted engine is refused too (the stale-client-adopts-newer-engine case)', () => {
+  const v = assessEngineSkew({ appVersion: '0.0.10', engineVersion: '0.0.11', allowSkew: false })
+  assert.equal(v.refused, true)
+  assert.match(v.reason ?? '', /newer than this app \(v0\.0\.10\)/)
+})
+
+test('assessEngineSkew: an engine reporting NO version (predates the field) is refused as an old build', () => {
+  const v = assessEngineSkew({ appVersion: '0.0.11', allowSkew: false })
+  assert.equal(v.refused, true)
+  assert.match(v.reason ?? '', /predates version reporting/)
+})
+
+test('assessEngineSkew: SAME version, DIFFERENT build ⇒ refused (two builds of one version)', () => {
+  const v = assessEngineSkew({ appVersion: '0.0.11', engineVersion: '0.0.11', appBuild: 'aaaaaaa', engineBuild: 'bbbbbbb', allowSkew: false })
+  assert.equal(v.refused, true)
+  assert.match(v.reason ?? '', /different sources/)
+})
+
+test('assessEngineSkew: same version, same build ⇒ adopt (a matched stamped pair)', () => {
+  assert.deepEqual(
+    assessEngineSkew({ appVersion: '0.0.11', engineVersion: '0.0.11', appBuild: 'aaaaaaa', engineBuild: 'aaaaaaa', allowSkew: false }),
+    { adopt: true, skewed: false, refused: false },
+  )
+})
+
+test('assessEngineSkew: a build present on only ONE side is NOT skew (a missing stamp is not evidence)', () => {
+  assert.equal(assessEngineSkew({ appVersion: '0.0.11', engineVersion: '0.0.11', engineBuild: 'bbbbbbb', allowSkew: false }).skewed, false)
+})
+
+test('assessEngineSkew: the dev flag ADOPTS a mismatch (skewed:true, refused:false, reason retained for the warning)', () => {
+  const v = assessEngineSkew({ appVersion: '0.0.11', engineVersion: '0.0.10', allowSkew: true })
+  assert.equal(v.adopt, true)
+  assert.equal(v.refused, false)
+  assert.equal(v.skewed, true)
+  assert.match(v.reason ?? '', /older than this app/)
+})
+
+test('assessEngineSkew: an unknown app version cannot honestly refuse ⇒ adopt (no fabricated skew)', () => {
+  assert.deepEqual(assessEngineSkew({ engineVersion: '0.0.1', allowSkew: false }), { adopt: true, skewed: false, refused: false })
+})
+
+test('parseAllowSkew: only an explicit truthy token opts into skew adoption', () => {
+  for (const yes of ['1', 'true', 'on', 'YES', ' True ']) assert.equal(parseAllowSkew(yes), true)
+  for (const no of [undefined, '', '0', 'false', 'off', 'no', 'nonsense']) assert.equal(parseAllowSkew(no), false)
+})
+
+test('buildStampPath: the stamp lives beside the app resources', () => {
+  assert.equal(buildStampPath('/Applications/openinfo.app/Contents/Resources'), '/Applications/openinfo.app/Contents/Resources/build-stamp.json')
+})
+
+test('readBuildStamp: reads {build} from the resources file (injected reader, no filesystem)', () => {
+  assert.equal(readBuildStamp('/res', () => JSON.stringify({ build: 'a1b2c3d' })), 'a1b2c3d')
+})
+
+test('readBuildStamp: a missing/unreadable/malformed stamp ⇒ undefined (every dev run), never throws', () => {
+  assert.equal(readBuildStamp('/res', () => { throw new Error('ENOENT') }), undefined)
+  assert.equal(readBuildStamp('/res', () => 'not json'), undefined)
+  assert.equal(readBuildStamp('/res', () => JSON.stringify({ build: '' })), undefined)
+  assert.equal(readBuildStamp('/res', () => JSON.stringify({ build: 42 })), undefined)
 })
