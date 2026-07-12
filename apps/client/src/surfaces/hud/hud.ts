@@ -203,6 +203,16 @@ export class Hud {
     this.render()
   }
 
+  /**
+   * Re-paint with the CURRENT data (no re-hydrate, no query) — a client-local VIEW-STATE change, the same
+   * shape as toggleSystemStream/openClarify but driven from OUTSIDE the controller (the pill's face/Show-
+   * Hide toggle owns its state in the PillController and calls this to repaint). No-op before the first
+   * surface load (render guards on surface).
+   */
+  rerender(): void {
+    this.render()
+  }
+
   /** Re-derive the live session and re-hydrate every block query, then render. */
   async refresh(): Promise<void> {
     if (!this.surface) return

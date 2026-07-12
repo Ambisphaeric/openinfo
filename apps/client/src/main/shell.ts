@@ -1454,6 +1454,12 @@ app.whenReady().then(async () => {
   // The consent gate (screen sense enabled + OS grant) lives in captureAskFrame — a refusal answers an
   // honest { ok:false, reason } the send path paints, never a silent null and never a blocked send.
   ipcMain.handle('hud:capture-frame', () => captureAskFrame())
+  // The pill's settings-on-hover bridge (the-pill): open the EXISTING settings surface — the SAME path the
+  // tray's open-setup command opens (GET /settings in the default browser). Not a new settings UI; the pill
+  // just reaches the one that already ships. Fire-and-forget; a failed open is logged, never a silent hang.
+  ipcMain.on('hud:open-settings', () => {
+    void electronShell.openExternal(`${cfg.engineUrl}/settings`).catch((err) => console.error('[shell] open settings (pill) failed:', err))
+  })
   // Load the Apps-folder state (favorites + open set + per-app positions) before creating windows so a
   // reopened app restores its saved position (#19/#20/#98). Best-effort — a missing file reads as empty.
   appState = readAppState(app.getPath('userData'))

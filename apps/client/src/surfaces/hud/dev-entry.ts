@@ -1,4 +1,4 @@
-import type { AttributionPattern, BlockQuery, ChatReply, ChatScreenshot, ChatTurn, Pin, PromptTemplate, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
+import type { AttributionPattern, BlockQuery, Bundle, ChatReply, ChatScreenshot, ChatTurn, Pin, PromptTemplate, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
 import { mountSurface, renderInto, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import { createBootController } from './boot.js'
@@ -6,10 +6,44 @@ import type { HudTransport } from './transport.js'
 import { hudStyles, hudOutlineStyles } from './styles.js'
 import { renderNotetaker } from './notetaker-layout.js'
 import { panelStyles } from './panel-styles.js'
+import { pillStyles } from './pill-styles.js'
+import { createPillRenderer, type PillFaceSources } from './pill-layout.js'
+import { PillController, pillExtentsFromPanel, type PillState } from './pill.js'
 import { installWindowDrag, type DragBridge } from './window-drag.js'
 import { installAutoResize, type ResizeBridge } from './auto-resize.js'
 import { PanelController, type PanelSize } from './panel.js'
 import { InputSession, type AttachedDoc, type CaptureOutcome, type ChatThread, type UploadFile } from './input-submit.js'
+
+/** The pill surface id — the surface whose window is the pill (its renderer + height authority differ). */
+const PILL_SURFACE_ID = 'surf-openinfo-pill'
+
+/**
+ * PURE: which surface backs the pill's Ask face, resolved FROM THE BUNDLE (data, not a hardcoded window).
+ * Find the bundle whose `hud` face opens this pill, then return its `chat` face's surfaceRef — so a
+ * different bundle produces a different Ask panel. Falls back to any bundle that opens this pill as its hud
+ * face (order-independent), and returns undefined when no such bundle has a chat face (an honest absence).
+ */
+export const chatFaceRefForPill = (bundles: readonly Bundle[], pillSurfaceId: string): string | undefined => {
+  const owning = bundles.find((b) => b.faces.some((f) => f.kind === 'hud' && f.surfaceRef === pillSurfaceId))
+  const chat = owning?.faces.find((f) => f.kind === 'chat')
+  return chat?.surfaceRef
+}
+
+/**
+ * Resolve the pill's Ask-face surface over the wire: GET /bundles → the chat face surfaceRef (bundle data)
+ * → GET /layouts/surfaces/:ref. Rejects with an HONEST reason (no bundle opens this pill, the bundle has no
+ * chat face, or a failed read) that the pill paints as visible text — never a silent blank Ask panel.
+ */
+export const resolvePillAskSurface =
+  (baseUrl: string, transport: Pick<HudTransport, 'surface'>, fetchFn: FetchLike = fetch) =>
+  async (pillSurfaceId: string): Promise<Surface> => {
+    const res = await fetchFn(`${baseUrl}/bundles`)
+    if (!res.ok) throw new Error(`the app bundle could not be read (HTTP ${res.status})`)
+    const bundles = (await res.json()) as Bundle[]
+    const ref = chatFaceRefForPill(bundles, pillSurfaceId)
+    if (ref === undefined) throw new Error('this app has no chat face')
+    return transport.surface(ref)
+  }
 
 /**
  * A plain-browser dev entry that renders the live HUD against a running engine — the mountable view
@@ -123,6 +157,16 @@ interface DevGlobal {
     collapse(): void
     dismissSuggestion(): void
     state(): { expanded: boolean; suggested: boolean }
+  }
+  /** THE PILL control seam (the-pill) — drives the face toggle / Show-Hide and reads state (header + e2e). */
+  openinfoPill?: {
+    face(face: 'listen' | 'ask'): void
+    toggle(): void
+    state(): PillState
+  }
+  /** The pill's settings-on-hover bridge (preload.cts) — opens the EXISTING settings path in the shell. */
+  openinfoShell?: {
+    openSettings(): void
   }
 }
 
@@ -390,13 +434,26 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   // Which surface the HUD renders: explicit option wins, else ?surface= from the URL, else the default
   // (the Electron shell passes ?surface from ShellConfig.surfaceId; the browser dev harness accepts it too).
   const resolvedSurfaceId = options.surfaceId ?? params.get('surface') ?? undefined
-  // Per-surface layout renderer (#133): the note-taker composes its three-zone frame via renderNotetaker
-  // (signature-compatible with the generic renderSurface); every other surface uses the controller default.
-  // Selected by surface id here so the Hud controller stays layout-agnostic (see HudOptions.renderSurface).
-  const surfaceRenderer = resolvedSurfaceId === 'surf-openinfo-notetaker' ? renderNotetaker : undefined
+  // THE PILL (the-pill): its own view-state + resolved face sources, read by the pill renderer closure.
+  // `pillState` is a GETTER so the renderer works before the PillController is built (in onSurfaceLoaded);
+  // `pillSources` is the mutable Ask-face resolution (GET /bundles → chat face surface), filled async.
+  const isPill = resolvedSurfaceId === PILL_SURFACE_ID
+  let pill: PillController | undefined
+  const pillSources: PillFaceSources = { chat: null, resolving: isPill }
+  const pillState = (): PillState => pill?.state() ?? { face: 'listen', open: true, askAvailable: false }
+
+  // Per-surface layout renderer: the note-taker composes its three-zone frame (renderNotetaker); the pill
+  // composes its header-bar + docked-panel frame (createPillRenderer). Both are signature-compatible with
+  // the generic renderSurface; every other surface uses the controller default. Selected by surface id here
+  // so the Hud controller stays layout-agnostic (see HudOptions.renderSurface).
+  const surfaceRenderer = isPill
+    ? createPillRenderer(pillState, () => pillSources)
+    : resolvedSurfaceId === 'surf-openinfo-notetaker'
+      ? renderNotetaker
+      : undefined
 
   const style = doc.createElement('style')
-  style.textContent = hudStyles + panelStyles // #134 input-block + attached-panel styles ride alongside the HUD chrome
+  style.textContent = hudStyles + panelStyles + pillStyles // #134 input/panel + the-pill styles ride alongside the HUD chrome
   // Debug outline (?outline=1, from OPENINFO_HUD_OUTLINE / client.json hudOutline): the window is
   // frameless + transparent, so when nothing paints there is NOTHING to see. The outline draws the
   // window bounds + the panel bounds so "where does the HUD render" is answerable by looking.
@@ -474,6 +531,28 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
       // are mutually exclusive — installing both let the resize floor override the panel's extents (panel.ts).
       if (sizerInstalled) return
       const bridge = g.openinfoDrag
+      // THE PILL (the-pill): its ONE height authority is the PillController — three extents (bar / listen /
+      // ask) over the SAME hud:panel-size bridge PanelController uses (S1: installed instead of it). Created
+      // even without the bridge (browser dev) with a no-op sizer, so the face toggle still re-paints there.
+      if (isPill && surface.panel !== undefined) {
+        const extents = pillExtentsFromPanel(surface.panel)
+        const pillBridge = bridge?.panel ? { apply: (size: { height: number }) => bridge.panel!(size) } : { apply: () => {} }
+        pill = new PillController({
+          extents,
+          bridge: pillBridge,
+          onChange: () => hud.rerender(),
+          startOpen: surface.panel.startExpanded ?? true,
+        })
+        pill.setAskAvailable(pillSources.chat !== null) // in case the bundle resolved before this load
+        pill.start()
+        g.openinfoPill = {
+          face: (face) => pill?.setFace(face),
+          toggle: () => pill?.toggle(),
+          state: () => pill?.state() ?? { face: 'listen', open: true, askAvailable: false },
+        }
+        sizerInstalled = true
+        return
+      }
       if (surface.panel !== undefined) {
         if (!bridge?.panel) return // browser dev page has no bridge — nothing to size; retry on the next load
         panelController = new PanelController(surface.panel, { apply: (size) => bridge.panel!(size) }, transport)
@@ -512,6 +591,12 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
             hud.settleClarify(payload.entityId)
             await hud.refresh()
           },
+          // THE PILL (the-pill): header verbs — client-local view state (PillController), no writes. The
+          // settings-on-hover gear opens the EXISTING settings path over the shell bridge (a plain browser
+          // without the bridge is an honest no-op).
+          pillFace: (face) => pill?.setFace(face),
+          pillToggle: () => pill?.toggle(),
+          pillSettings: () => g.openinfoShell?.openSettings(),
         })
         // #134: install the input block's delegated submit/file listeners ONCE on the container (they
         // survive innerHTML replacement, exactly like wireActions' click delegation).
@@ -540,6 +625,26 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   })
   onHudError = (error) => boot.restart(error)
   boot.boot()
+
+  // THE PILL (the-pill): resolve the Ask face FROM THE BUNDLE at open (data, not a hardcoded window) — GET
+  // /bundles → the chat face surfaceRef → its surface doc. Success ⇒ the Ask affordance lights up and the
+  // panel mounts the resolved chat organs; failure ⇒ an HONEST reason painted in the Ask panel (never a
+  // silent blank). Independent of the boot loop; each outcome re-paints via hud.rerender().
+  if (isPill && resolvedSurfaceId !== undefined) {
+    void resolvePillAskSurface(baseUrl, transport)(resolvedSurfaceId)
+      .then((chatSurface) => {
+        pillSources.chat = chatSurface
+        pillSources.resolving = false
+        pill?.setAskAvailable(true)
+        hud.rerender()
+      })
+      .catch((error: unknown) => {
+        pillSources.resolving = false
+        pillSources.chatError = error instanceof Error ? error.message : String(error)
+        pill?.setAskAvailable(false)
+        hud.rerender()
+      })
+  }
 }
 
 // Auto-start when loaded as a module in a browser document.

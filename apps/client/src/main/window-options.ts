@@ -142,6 +142,12 @@ export interface SurfaceWindowConfig {
  */
 export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   'surf-openinfo-hud': { chrome: 'hud' },
+  // THE PILL — the MVP Standard App glance face. Inherited Glass chrome (frameless, transparent,
+  // content-PROTECTED, always-on-top — it carries live session content), and FOCUSABLE because its Ask
+  // face embeds an `input` the user types in (else macOS NSBeeps every keystroke into a non-key window,
+  // exactly as the chat panel opts in). Its bar/listen/ask heights are owned by the PillController over
+  // the hud:panel-size bridge (dev-entry installs it instead of auto-resize for this surface).
+  'surf-openinfo-pill': { chrome: 'hud', focusable: true },
   'surf-glass-minimal': { chrome: 'hud', width: 520 },
   // The #100 fields app: a companion panel that lives BESIDE the HUD. It carries the same sensitive
   // meeting content the HUD does (the live fields, the raw distillate stream), so it takes the inherited
@@ -247,6 +253,7 @@ export const surfaceWindowSpec = (surfaceId: string, opts: { startVisible?: bool
  */
 const FACE_NAMES: Record<string, string> = {
   'surf-openinfo-hud': 'HUD',
+  'surf-openinfo-pill': 'openinfo',
   'surf-glass-minimal': 'HUD',
   'surf-openinfo-fields': 'Fields',
   'surf-openinfo-diagnostics': 'Diagnostics',

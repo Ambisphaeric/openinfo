@@ -6,6 +6,7 @@ import { defaultBlockRegistry } from './index.js'
 import { rowAffordances } from './actions.js'
 import { h } from '../block-renderer/vnode.js'
 import { renderNotetaker } from '../hud/notetaker-layout.js'
+import { createPillRenderer } from '../hud/pill-layout.js'
 import { INPUT_SUBMIT_VERB } from '../hud/input-submit.js'
 
 /**
@@ -101,4 +102,36 @@ test('the served note-taker frame is honest end-to-end: Record + rail chrome car
 
   assert.match(html, /class="nt-record pending"[^>]*disabled/) // the Record button is honestly disabled
   assert.deepEqual(silentDeadButtons(html), []) // …and no chrome button invites a dead click
+})
+
+test('the served pill frame is honest end-to-end: header + face bodies carry no silent dead button', () => {
+  // Render the ACTUAL pill frame (createPillRenderer) — its header (Listen/Ask/Show-Hide/settings) is
+  // hand-rolled chrome, not a block, so only THIS driven render exercises it. Both the resolved-Ask state
+  // (Ask wired) and the unresolved state (Ask honestly disabled) must be silent-dead-button free.
+  const now: NowContext = { live: true, workspace: 'acme' }
+  const pillSurface: Surface = {
+    id: 'surf-openinfo-pill', name: 'openinfo', context: 'meeting', version: 1,
+    panel: { edge: 'below', collapsed: 56, expanded: 432, reveal: 'user', startExpanded: true },
+    stack: [{ block: 'now' }],
+  }
+  const chatSurface: Surface = {
+    id: 'surf-openinfo-chat', name: 'Chat', context: 'any', version: 1,
+    stack: [{ block: 'now' }, { block: 'input', input: { target: 'chat', submit: '/chat', mode: 'both' } }],
+  }
+  const input = { surface: pillSurface, now, results: [] as const }
+
+  // Ask available: the header's Ask affordance is a live wired verb, and the Ask face mounts the chat input.
+  const wired = renderToHtml(
+    createPillRenderer(() => ({ face: 'ask', open: true, askAvailable: true }), () => ({ chat: chatSurface, resolving: false }))(input, defaultBlockRegistry),
+  )
+  assert.match(wired, /data-verb="pill-face" data-face="ask"/) // Ask rendered live
+  assert.match(wired, /data-verb="input-submit"/) // the mounted chat organ is itself honest (its verb is live)
+  assert.deepEqual(silentDeadButtons(wired), [])
+
+  // Ask unavailable (bundle still resolving): the Ask affordance is honestly DISABLED, not a fake-live button.
+  const gated = renderToHtml(
+    createPillRenderer(() => ({ face: 'listen', open: true, askAvailable: false }), () => ({ chat: null, resolving: true }))(input, defaultBlockRegistry),
+  )
+  assert.match(gated, /data-face="ask"[^>]*disabled/)
+  assert.deepEqual(silentDeadButtons(gated), [])
 })
