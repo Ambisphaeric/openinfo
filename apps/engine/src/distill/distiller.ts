@@ -4,6 +4,7 @@ import { DISTILLATE_SCHEMA_VERSION } from '@openinfo/contracts'
 import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
 import type { GuardDocuments, GuardHoldStore } from '../guard/documents.js'
 import { correlateWindow, entityMentioned, extractEntities } from '../index/index.js'
+import type { PresetDocuments } from '../presets/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
 import { bucketIntoWindows } from './merge.js'
@@ -26,6 +27,13 @@ export interface DistillerDeps {
   voice: VoiceDocuments
   fabric: FabricDocuments
   docs: DistillDocuments
+  /**
+   * The workspace context-preset resolver (pill P2). When present, each window resolves the window's
+   * workspace's ACTIVE preset and PREPENDS its body to the distill summary prompt. Absent (or no preset
+   * selected) ⇒ NO injection: the prompt is byte-identical to today (the regression guard). Optional so
+   * every existing Distiller construction is unchanged.
+   */
+  presets?: PresetDocuments
   /** publish distillate.updated so it reaches WS clients; optional (tests may omit) */
   publish?: (distillate: Distillate) => void | Promise<void>
   /** publish moment.created per extracted moment; optional (tests may omit) */
@@ -82,6 +90,7 @@ export class Distiller {
   private readonly voice: VoiceDocuments
   private readonly fabric: FabricDocuments
   private readonly docs: DistillDocuments
+  private readonly presets: PresetDocuments | undefined
   private readonly publish: ((d: Distillate) => void | Promise<void>) | undefined
   private readonly publishMoment: ((m: Moment) => void | Promise<void>) | undefined
   private readonly publishEntity: ((e: Entity) => void | Promise<void>) | undefined
@@ -100,6 +109,7 @@ export class Distiller {
     this.voice = deps.voice
     this.fabric = deps.fabric
     this.docs = deps.docs
+    this.presets = deps.presets
     this.publish = deps.publish
     this.publishMoment = deps.publishMoment
     this.publishEntity = deps.publishEntity
@@ -221,12 +231,21 @@ export class Distiller {
             return label ? `${label}: ${chunk.data}` : chunk.data
           })
           .join('\n')
-        const prompt = interpolateTemplate(template.body, {
+        const basePrompt = interpolateTemplate(template.body, {
           ...compileVoiceVars(resolved.dials),
           transcript,
           windowStart: window.start,
           windowEnd: window.end,
         })
+        // pill P2 — ACTUAL preset injection: resolve THIS window's workspace's active context preset and
+        // PREPEND its body as leading context to the distill summary prompt. This is the one right
+        // interpolation site (where the final prompt string is composed), and prepending here — rather than
+        // requiring a {{preset}} placeholder in the template body — means the active preset applies to
+        // WHATEVER distill template is in force, including a user-authored one, and the byte-identical
+        // guarantee is exact: no preset ⇒ prompt === basePrompt (today's behavior). Only the distill
+        // summary pass is steered; the moments/entities passes below (strict-JSON grammars) are left bare.
+        const activePreset = this.presets?.resolveActive(workspaceId)
+        const prompt = activePreset ? `${activePreset.body}\n\n${basePrompt}` : basePrompt
         const messages: LlmMessage[] = [{ role: 'user', content: prompt }]
         // #63: a guard HOLD (strict flagged content, or a fail-closed empty slot) throws GuardHeldError out
         // of the invoke — a HARD STOP for this window. We record the held hop as a durable audit record
@@ -270,6 +289,10 @@ export class Distiller {
             // #63: the guard verdict when this pass ran through an egress hop with the guard active
             // (clean / redacted with span descriptors / unguarded) — lights up the ledger's guard column.
             ...(result.guard !== undefined ? { guard: result.guard } : {}),
+            // pill P2: name the active preset whose body was prepended to THIS pass, so the why-record is
+            // honest — a summary shaped by the Sales preset says so in the System/Ledger register. Absent
+            // when no preset was active (today's behavior), never fabricated.
+            ...(activePreset !== undefined ? { presetId: activePreset.id } : {}),
           },
           schemaVersion: DISTILLATE_SCHEMA_VERSION,
           createdAt: this.now().toISOString(),

@@ -152,6 +152,38 @@ export class WorkspaceRegistry {
   }
 
   /**
+   * Read a workspace's ACTIVE context-preset selection (pill P2) — the id of the `preset`-kind
+   * prompt-template document whose body is prepended to this workspace's distill pass, or `undefined`
+   * when unset (⇒ no injection, today's behavior). This is the ONE narrow read the rest of the engine
+   * lands on: the distiller resolves the body through it per window, and the chat context-assembly path
+   * (P1) reads it to gather the `active-preset` source — a degradable seam (unset ⇒ the source is simply
+   * omitted). A missing meta row (workspace never created) reads `undefined`, never throws. Does NOT
+   * validate that the id still resolves to a live preset document — that is the resolver's job
+   * (PresetDocuments.resolveActive), so a deleted preset degrades to no-injection rather than an error.
+   */
+  getActivePreset(workspaceId: string): string | undefined {
+    const row = this.metaDb
+      .prepare('select active_preset from workspaces where id = ?')
+      .get(workspaceId) as { active_preset: string | null } | undefined
+    return row?.active_preset ?? undefined
+  }
+
+  /**
+   * Set (or clear) a workspace's active context-preset selection (pill P2) — the write half the PUT
+   * /active-preset route binds to. `undefined` clears the selection (the workspace defers to no preset,
+   * byte-identical to today). Existence/validity of the preset id is checked at the ROUTE (a nonexistent
+   * preset ⇒ 400) — the store just persists the selection, mirroring how setEgressPolicy persists without
+   * re-deriving policy. The workspace is created on demand (mirrors the other writers). No UI yet — the
+   * pill's preset picker is a later client slice; selection is API-level this slice.
+   */
+  setActivePreset(workspaceId: string, presetId: string | undefined): void {
+    this.ensureWorkspace({ id: workspaceId, name: workspaceId })
+    this.metaDb
+      .prepare('update workspaces set active_preset = ? where id = ?')
+      .run(presetId ?? null, workspaceId)
+  }
+
+  /**
    * Persist a distillate to its workspace's OWN sqlite file. The workspace is created on demand
    * (a distill pass may reference a workspace no one has registered yet). This is the only path
    * that writes distillates — the distiller asks store to write, per the DB-handle hard rule.
@@ -1037,7 +1069,7 @@ export class WorkspaceRegistry {
   private createMetaTables(): void {
     this.metaDb
       .prepare(
-        'create table if not exists workspaces (id text primary key, name text not null, db_file text not null unique, color text, retention_days integer, egress text, created_at text not null)',
+        'create table if not exists workspaces (id text primary key, name text not null, db_file text not null unique, color text, retention_days integer, egress text, active_preset text, created_at text not null)',
       )
       .run()
     // Additive migration (#128): DBs created before the workspace egress-deny layer predate the `egress`
@@ -1045,6 +1077,14 @@ export class WorkspaceRegistry {
     const workspaceColumns = this.metaDb.prepare('pragma table_info(workspaces)').all() as { name: string }[]
     if (!workspaceColumns.some((column) => column.name === 'egress')) {
       this.metaDb.prepare('alter table workspaces add column egress text').run()
+    }
+    // Additive migration (pill P2): the workspace's ACTIVE context-preset selection — the id of the
+    // `preset`-kind prompt-template document prepended to its distill pass, or NULL when unset. Stored as
+    // its OWN column (the egress idiom), read/written by getActivePreset/setActivePreset, NOT rehydrated
+    // onto the Workspace object (so the Workspace contract stays unchanged: it is workspace state, not a
+    // workspace field). An existing meta.db gains the column in place instead of dropping the selection.
+    if (!workspaceColumns.some((column) => column.name === 'active_preset')) {
+      this.metaDb.prepare('alter table workspaces add column active_preset text').run()
     }
     this.metaDb
       .prepare(

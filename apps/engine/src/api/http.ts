@@ -16,6 +16,7 @@ import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
 import { BundleDocuments, DEFAULT_BUNDLE_ID } from '../bundles/index.js'
+import { PresetDocuments } from '../presets/index.js'
 import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
@@ -84,6 +85,9 @@ interface HandlerContext {
   todos: TodoDocuments
   workflow: WorkflowDocuments
   bundles: BundleDocuments
+  /** The five context presets + the active-preset resolver (pill P2). Presets live in the prompt-template
+   * substrate (edited over /templates); this exposes the preset-shaped reads + the active-preset seam. */
+  presets: PresetDocuments
   hints: HintsDocuments
   /** The STT track's spool — the capture backlog (#115). */
   queue: CaptureQueue
@@ -125,6 +129,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // App bundles (bundle-as-runtime-object): the Standard App is a DOCUMENT bundling its faces (surface
   // refs) + workflow/template refs + flag overlay + chat context-assembly plan — served like /workflows.
   const bundles = new BundleDocuments(store)
+  // Context presets (pill P2): the glass-parity five, seeded as preset-kind prompt-template documents.
+  // Editable over the existing /templates routes; this resolver backs the /active-preset selection routes,
+  // the distiller's injection, and the chat context-assembly path's (P1) active-preset read.
+  const presets = new PresetDocuments(store)
   // Tier zero (ARCHITECTURE §8, slice c): the engine downloads + spawns managed local runtimes.
   // The model store maps a `local` endpoint's model ref to its on-disk path; the runtime manager
   // spawns llama.cpp/whisper.cpp on demand and is threaded into invoke/health so local endpoints
@@ -156,12 +164,14 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   starterModels.ensureDefaults()
   workflow.ensureDefaults()
   bundles.ensureDefaults()
+  presets.ensureDefaults()
 
   const distiller = new Distiller({
     store,
     voice,
     fabric,
     docs: distillDocs,
+    presets,
     resolveKey,
     runtimeManager: runtime,
     guardDocs,
@@ -597,7 +607,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('guard.hold.updated', (hold) => ws.broadcast('guard.hold.updated', hold))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -715,6 +725,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   const mode = url.pathname.match(/^\/modes\/([^/]+)$/)
   if (req.method === 'GET' && mode?.[1]) return getMode(res, ctx, decodeURIComponent(mode[1]))
   if (req.method === 'PUT' && mode?.[1]) return putMode(req, res, ctx, decodeURIComponent(mode[1]))
+  // pill P2: the workspace's ACTIVE context-preset selection (the presets themselves are prompt-template
+  // documents served/edited by /templates above; this is the per-workspace selection over them). GET reads
+  // the selection (+ the five choices); PUT sets it with honest validation — selecting a nonexistent preset
+  // is a 400, clearing it (presetId null) is allowed. `?workspace=<id>` scopes it (absent ⇒ 'default').
+  if (req.method === 'GET' && url.pathname === '/active-preset') return getActivePreset(res, ctx, url)
+  if (req.method === 'PUT' && url.pathname === '/active-preset') return putActivePreset(req, res, ctx, url)
   if (req.method === 'GET' && url.pathname === '/sessions') return send(res, 200, readSessions(ctx.store, url))
   if (req.method === 'POST' && url.pathname === '/sessions') return startSession(req, res, ctx)
   const sessionEnd = url.pathname.match(/^\/sessions\/([^/]+)\/end$/)
@@ -1457,6 +1473,39 @@ async function putTemplate(req: IncomingMessage, res: ServerResponse, ctx: Handl
   const incoming = body as PromptTemplate
   if (incoming.id !== id) return send(res, 400, { error: 'template id does not match route' })
   send(res, 200, ctx.distill.saveTemplate(incoming))
+}
+
+/**
+ * GET /active-preset?workspace=<id> — the workspace's ACTIVE context-preset selection plus the five
+ * choices (pill P2). `presetId` is null when unset (⇒ no injection, today's behavior). `presets` is the
+ * list a picker renders (client UI is a later slice; the read is honest now). No 404: an unset workspace
+ * is a valid state, not a missing resource.
+ */
+function getActivePreset(res: ServerResponse, ctx: HandlerContext, url: URL): void {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const presetId = ctx.presets.activeId(workspaceId) ?? null
+  send(res, 200, { workspaceId, presetId, presets: ctx.presets.list() })
+}
+
+/**
+ * PUT /active-preset?workspace=<id> — set (or clear) the workspace's active context preset. Body:
+ * `{ presetId: string | null }`. HONEST validation: a non-string/absent presetId that is not explicitly
+ * null ⇒ 400; selecting a preset id that does not resolve to a live preset document ⇒ 400 (never silently
+ * ignored); `null` clears the selection (back to no injection). On success the workspace's next distill
+ * pass prepends the selected preset (read-fresh — no restart), and the response echoes the new state.
+ */
+async function putActivePreset(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, url: URL): Promise<void> {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const body = (await readJson(req)) as { presetId?: unknown }
+  const raw = body.presetId
+  if (raw === null || raw === undefined) {
+    ctx.presets.setActive(workspaceId, undefined)
+    return send(res, 200, { workspaceId, presetId: null })
+  }
+  if (typeof raw !== 'string') return send(res, 400, { error: 'presetId must be a string or null' })
+  if (!ctx.presets.isPreset(raw)) return send(res, 400, { error: `no such preset: ${raw}` })
+  ctx.presets.setActive(workspaceId, raw)
+  send(res, 200, { workspaceId, presetId: raw })
 }
 
 /**

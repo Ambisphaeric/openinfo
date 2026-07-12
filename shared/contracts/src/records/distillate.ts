@@ -44,6 +44,12 @@ export const Distillate = Type.Object(
         // clean / redacted (span-level detail, never the raw value) / unguarded. Append-only/optional: a
         // local pass (no egress) and records predating #63 omit it and the ledger renders "— no guard".
         guard: Type.Optional(GuardVerdict),
+        // pill P2: the id of the workspace's ACTIVE context preset when its body was prepended to this
+        // distill pass (see distill/distiller.ts). Append-only/optional — absent ⇒ NO preset was active
+        // (today's behavior, byte-identical), so the why-record honestly names the preset that shaped a
+        // summary WITHOUT fabricating one when none did. A technical id: it renders only in the System /
+        // Ledger register, never on a HUD-tier row.
+        presetId: Type.Optional(Id),
       },
       { additionalProperties: false },
     ),
