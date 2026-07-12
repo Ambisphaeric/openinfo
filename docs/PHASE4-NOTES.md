@@ -4978,3 +4978,44 @@ The pill e2e drove the pill window DIRECTLY (`surfaceWindowSpec(PILL)` by hand) 
 - Anchor-path scene measurements: `.pill-app` = 660 / 660 / 660 at listen / bar / ask (fill-floor 652 in a 708px window); show/hide preserved height 432 → 432. The full driven e2e set is green **9/9** (hud-bounds, panel-bounds, chat-input, clip, multiwindow, capture-lifecycle, attach, ask-face, pill).
 - Unit: client 482 / engine 776 / contracts 91 green before each commit (the #71 parallel-timing flake surfaced once each in the client engine-link seam and the engine — both passed in isolation and on re-run; no relation to this diff, which touches config/pill CSS/dev-entry/shell-comment/e2e).
 - OUT OF SCOPE (recorded follow-up): a bundle-resolved anchor at boot (requires deferring window creation past `refreshBundles`) — until then the anchor follows `cfg.surfaceId` directly, which is what makes the fix-3 dedupe exact.
+
+## Retro 39 — post-0.0.15 isolation + raw-frame boundary reconciliation
+
+Two bounded hardening slices followed the owner-facing pill architecture review. They were dispatched in
+parallel with non-overlapping ownership, then reconciled on one integration branch before the full suite.
+
+### Slice A — the Ask transcript window is workspace-scoped
+
+The live `TranscriptRing` remains intentionally process-global for the diagnostics inspector and ephemeral
+WS feed, but POST `/chat` no longer joins that whole ring into every workspace's prompt. `TranscriptUpdate`
+already carries a `sessionId`; the gatherer now resolves the ring's bounded unique session ids through the
+requested workspace store at turn time, then `recentForSessions` returns only those updates. Resolving at
+read time means a rerouted session follows its current owner, unknown/unpersisted sessions contribute
+nothing, and no `workspaceId` is duplicated onto the ephemeral contract. A real HTTP regression seeds two
+workspaces and proves neither model system prompt contains the other's transcript marker.
+
+### Slice B — raw OCR/VLM frames are loopback-only
+
+The prior statement “screen frames never leave the machine” was stronger than the actual layer-1 policy:
+`classifyHost` deliberately groups loopback, private LAN, link-local, and mDNS as `local`, so a denied-egress
+screen frame could still reach another machine on the LAN. `isLoopbackEndpoint` is now the strict refinement:
+engine-managed `local` runtimes plus localhost / `*.localhost` / 127/8 / ::1 pass; wildcard binds, LAN,
+link-local, mDNS, and public hosts fail. `invokeOcr` and `invokeVlm` apply that restriction before runtime
+resolution, auth, guard, or fetch. LLM/STT retain the broader LAN-local policy. OCR-derived TEXT remains a
+separate later hop governed by typed-content consent and the egress guard.
+
+### Reconciliation finding
+
+The first privacy diff attached the new restriction to adjacent `invokeLlm` / `invokeStt` gate calls rather
+than `invokeVlm` / `invokeOcr`. That would have broken LAN LLM/STT while leaving raw frames under the old
+policy. Main-thread diff review caught it before the combined run; all four call sites were corrected and a
+negative regression now proves ordinary LLM content still reaches a private-LAN endpoint. Durable lesson:
+when several slot loops repeat the same gate idiom, verify the complete call-site table—not merely the helper
+and its new positive tests.
+
+### Evidence and scope
+
+Focused combined run: engine build + 114 transcript/http/egress/OCR/VLM tests, zero failures. Full
+`pnpm -r build && pnpm -r test`: contracts **91**, client **482**, engine **782**, zero failures first run.
+No shared-contract/schema, client, route-shape, flag, persistence-schema, or release-version change. The
+process-global diagnostics/WS transcript feed remains explicit; only the Ask context is workspace-filtered.
