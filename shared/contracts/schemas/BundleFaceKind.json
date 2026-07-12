@@ -1,0 +1,18 @@
+{
+  "$id": "BundleFaceKind",
+  "description": "append-only closed union of app-face roles (hud | chat | support)",
+  "anyOf": [
+    {
+      "const": "hud",
+      "type": "string"
+    },
+    {
+      "const": "chat",
+      "type": "string"
+    },
+    {
+      "const": "support",
+      "type": "string"
+    }
+  ]
+}

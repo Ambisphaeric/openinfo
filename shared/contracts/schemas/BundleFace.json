@@ -1,0 +1,39 @@
+{
+  "$id": "BundleFace",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "kind",
+    "surfaceRef"
+  ],
+  "properties": {
+    "kind": {
+      "$id": "BundleFaceKind",
+      "description": "append-only closed union of app-face roles (hud | chat | support)",
+      "anyOf": [
+        {
+          "const": "hud",
+          "type": "string"
+        },
+        {
+          "const": "chat",
+          "type": "string"
+        },
+        {
+          "const": "support",
+          "type": "string"
+        }
+      ]
+    },
+    "surfaceRef": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "description": "display override; absent ⇒ the mapped surface’s own name (the window factory titles it)",
+      "type": "string"
+    }
+  }
+}

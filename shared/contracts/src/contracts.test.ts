@@ -12,7 +12,7 @@ const examplesDir = join(here, '..', 'examples')
 // filename convention: <schemaLowerCamel>.<label>.json ; flag.examples.json is an array of Flag
 const fileSchema: Record<string, keyof typeof AllSchemas> = {
   guardPolicy: 'GuardPolicy', guardHold: 'GuardHold', guardVerdict: 'GuardVerdict',
-  register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface', workflow: 'WorkflowSpec', todo: 'TodoList',
+  register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface', workflow: 'WorkflowSpec', bundle: 'Bundle', todo: 'TodoList',
   flag: 'Flag', workspaceHints: 'WorkspaceHints', commitment: 'Commitment', workspace: 'Workspace', moment: 'Moment',
   ocrInvokeParams: 'OcrInvokeParams', vlmInvokeParams: 'VlmInvokeParams',
   captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', transcriptUpdate: 'TranscriptUpdate', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
@@ -87,6 +87,31 @@ test('#131 FastFieldBinding.produces is additive/optional and closed', () => {
 
 // #131 orientation: SessionAnnotation is the engine-stamped session-nature reading — an "unclear" reading
 // (thin source, empty topics) validates as honestly as a rich one; the model never controls ids/provenance.
+// bundle-as-runtime-object: a Bundle is additive — a MINIMAL bundle (faces only) validates, so do the
+// optional workflow/template/flags/chat organs; the face-kind and chat-source unions are CLOSED, so an
+// unrunnable face role or an ungatherable chat source is rejected at write time (the Tier-A gate).
+test('Bundle: a minimal faces-only bundle validates; organs are optional', () => {
+  const minimal = { id: 'b-min', name: 'Min', version: 1, faces: [{ kind: 'hud', surfaceRef: 'surf-openinfo-hud' }] }
+  assert.deepEqual([...Value.Errors(AllSchemas.Bundle, minimal)], [], 'a faces-only bundle validates (organs optional)')
+  const full = {
+    ...minimal,
+    workflowRef: 'workflow-default',
+    templateRefs: ['tpl-distill-default'],
+    flags: { 'distill.enabled': true },
+    chat: { sources: [{ kind: 'recent-turns', limit: 8 }, { kind: 'bundle-prompt' }] },
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.Bundle, full)], [], 'a fully-populated bundle validates')
+})
+
+test('Bundle: face-kind and chat-source unions are closed', () => {
+  const badFace = { id: 'b-1', name: 'B', version: 1, faces: [{ kind: 'sidebar', surfaceRef: 's' }] }
+  assert.ok([...Value.Errors(AllSchemas.Bundle, badFace)].length > 0, 'an unknown face kind is rejected')
+  const noFaces = { id: 'b-1', name: 'B', version: 1, faces: [] }
+  assert.ok([...Value.Errors(AllSchemas.Bundle, noFaces)].length > 0, 'a bundle with no faces is rejected (minItems 1)')
+  const badSource = { id: 'b-1', name: 'B', version: 1, faces: [{ kind: 'hud', surfaceRef: 's' }], chat: { sources: [{ kind: 'weather' }] } }
+  assert.ok([...Value.Errors(AllSchemas.Bundle, badSource)].length > 0, 'an unknown chat source kind is rejected')
+})
+
 test('#131 SessionAnnotation validates rich and unclear readings', () => {
   const base = {
     id: 'oa:default:sess-1', workspaceId: 'default', sessionId: 'sess-1',
