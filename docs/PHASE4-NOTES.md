@@ -4755,3 +4755,28 @@ Every window loads the SAME hud.html, whose hardcoded `<title>openinfo — HUD</
 ### Disclosed / out of scope
 - In-content self-identification (S4) is `document.title` driven from the surface name (no added glass chrome — respects glass parity / "no redundant chrome"); framed windows also show it in the titlebar.
 - The two new driven e2es need a GUI (darwin), like the existing hud-bounds/panel-bounds — not in the headless default `test`. The second BrowserWindow in a run can hit a sandbox mach-port limit on this host, so `clip-e2e.mjs` reuses ONE window across surfaces.
+
+## Bundle-as-runtime-object — the app bundle substrate  *(branch feat/bundle-runtime-object)*
+
+The MVP-pivot substrate under "the pill": an app is a DOCUMENT, not code. A `Bundle` bundles references to one app's organs — its faces (surface doc refs, kinds hud/chat/support), a workflow ref, prompt/template refs, a flag-config overlay, and a declarative chat context-assembly plan. "Defaults are just documents we ship": the ~10 mini smart apps later are ~10 bundle docs, not new modules. Substrate only — this proves the contract with ONE seeded instance; it does not build the product.
+
+### Contract (`shared/contracts/src/config/bundle.ts`)
+- `Bundle` envelope follows the house convention (id·name·version·description?), like `WorkflowSpec`/`Surface`. `faces` (≥1) is required; `workflowRef`/`templateRefs`/`flags`/`chat` are all OPTIONAL — additive, so a minimal faces-only bundle validates and a bundle grows organs without breaking older docs.
+- `BundleFaceKind` (hud/chat/support) and `ChatContextSourceKind` (the seven sources: bundle-prompt · active-preset · transcript-window · insights · relevant-entities · attached-docs · recent-turns) are APPEND-ONLY CLOSED unions, mirroring `WorkflowStepKind`: a face role the shell can't open, or a chat source no assembler can gather, is rejected at the Tier-A write gate rather than silently dropped. These are the noun set the later Surface DSL compiles onto.
+- `ChatContextSource` carries HONEST, DECLARED budgets (`limit`/`windowChars`/`tokenBudget`, all optional → engine default) — "data, not code", so the chat route can disclose truncation (the #134 `ChatBudget` already surfaces it) instead of silently dropping. Everything a bundle names is a REFERENCE to an existing versioned document; a bundle never duplicates canon.
+
+### Engine (`apps/engine/src/bundles/`)
+- `BundleDocuments` is store-backed in the SAME `_meta.db` LayoutStore its sibling doc kinds live in: `list`/`get` with a code-default fallback, version-stamped history-preserving `save` with a contract-validation gate, `ensureDefaults` seeds only-when-absent. `loadDefaultBundle` reads the SAME validated `bundle.standard-app.json` the contract slice seeded (one source of truth, mirrors workflow/defaults).
+- GET `/bundles`, GET `/bundles/:id`, PUT `/bundles/:id` in the document-route idiom (schema-validated PUT → 400, id/route mismatch → 400, unknown-id GET → 404, create-on-unknown-id PUT), declared in the Routes registry. `createEngineApp` seeds the Standard App on boot.
+
+### Seed — the Standard App (the pill), from existing organs only
+`bundle.standard-app.json` maps hud → `surf-openinfo-hud`, chat → `surf-openinfo-chat`, support → `surf-openinfo-fields` + `surf-openinfo-diagnostics`; `workflowRef` = `workflow-default`; `templateRefs` = the seeded distill/extract/entities/follow-up templates; a flag overlay (distill/act posture, DECLARED not applied); the seven-source chat assembly. No new surfaces or blocks. `bundles/seed-integrity.test.ts` asserts every reference resolves to a served organ — a dangling ref would be an app listing a face that opens nothing.
+
+### Client (`apps/client/src/main/app-catalog.ts` + shell `refreshBundles`)
+The tray Apps folder reads GET `/bundles` and lists the bundle as ONE parent app whose faces open the mapped surfaces (open-app/close-app naming the face's surfaceRef — routed through the existing multi-window registry + the ONE window factory, so per-surface titles come free). A surface NOT claimed by any bundle face DEMOTES to a standalone catalog row (the owner IA: "Apps > Standard App > HUD/Chat/Support faces. Other windows demote to the Apps catalog."). Read-only consumption — no bundle-editing UI. Covered headless in `app-catalog.test.ts` (the established pure-spec layer for the Apps folder); no NEW served surface, so no new served-script e2e — faces open EXISTING surfaces via the already-covered factory path.
+
+### Disclosed / out of scope (open questions for the DSL spec review)
+- The flag overlay is DECLARED, not applied — preset/flag injection wiring is a later slice; a bundle records its intended posture as data the injection slice will read.
+- The chat context-assembly plan is DECLARED on the bundle; wiring the chat route to READ it (rolling window, preset injection) is explicitly deferred. Open DSL question: whether per-source budgets should compose into a single window budget, and how the DSL expresses source ORDER vs priority under a tight token cap.
+- `faces` allows repeats of any kind (support may repeat; hud/chat are single by SEEDING convention, not schema constraint) — kept flexible for the ~10 mini apps. Open question: should the DSL/contract pin hud+chat to exactly one each, or stay permissive?
+- No `bundle.updated` WS event — the client fetches bundles at startup and on `surface.updated` (a face label follows its surface's name). A dedicated event is a later nicety.

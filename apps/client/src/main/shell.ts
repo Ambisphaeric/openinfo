@@ -14,7 +14,7 @@ import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from '.
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
 import { WindowRegistry } from './app-registry.js'
 import { readAppState, writeAppState, toggleInList, type AppState } from './app-store.js'
-import type { AppSurface } from './app-catalog.js'
+import type { AppSurface, AppBundle } from './app-catalog.js'
 import { settingsUrlFor, isLanEngine } from './permission-help.js'
 import { ContextHealthTracker } from './context-health.js'
 import { shouldOpenSetup, shouldPromptMic } from './first-run.js'
@@ -86,6 +86,10 @@ let tray: Tray | undefined
 const windowMeta = new WeakMap<BrowserWindow, { surfaceId: string; chrome: WindowChrome; isDefaultHud: boolean }>()
 // The app surfaces the engine serves (GET /layouts/surfaces) — feeds the tray Apps folder. Empty until fetched.
 let appSurfaces: AppSurface[] = []
+// The app bundles the engine serves (GET /bundles) — each renders as ONE app in the Apps folder whose faces
+// open the mapped surfaces (bundle-as-runtime-object). Empty until fetched; a surface not claimed by a
+// bundle face is demoted to a standalone catalog row (see app-catalog.ts).
+let appBundles: AppBundle[] = []
 // Client-local Apps-folder state: favorites (float to top), the open-window set (reopened next launch),
 // and per-app window positions (#19/#20/#98). Loaded from apps-state.json in whenReady; see app-store.ts.
 let appState: AppState = { favorites: [], openApps: [], positions: {} }
@@ -240,6 +244,7 @@ const trayState = (): TrayState => ({
   // the registry); every other open surface comes from the multi-window registry.
   apps: {
     surfaces: appSurfaces,
+    bundles: appBundles,
     favorites: appState.favorites,
     openIds: [...appRegistry.openSurfaceIds(), ...(hudWindow?.isVisible() ? [cfg.surfaceId] : [])],
   },
@@ -1102,7 +1107,11 @@ const connectEvents = (): void => {
       if (liveState.applyEvent({ name: parsed.name, payload: parsed.payload })) refreshTray()
       // A surface was created/renamed/edited (PUT /layouts/surfaces/:id) — refresh the Apps folder list
       // so a new mini app appears (or a rename shows) without a restart (#98).
-      if (parsed.name === 'surface.updated') void refreshSurfaces()
+      if (parsed.name === 'surface.updated') {
+        void refreshSurfaces()
+        // A face's label is the mapped surface's name, so a rename should refresh the bundle view too.
+        void refreshBundles()
+      }
       // The live fabric changed (activate / PUT /fabric / active-profile edit) — recompute whether
       // the "Set up models…" nudge should be prominent, without a refetch (the event carries the map).
       if (parsed.name === 'fabric.changed' && parsed.payload) {
@@ -1287,6 +1296,36 @@ const refreshSurfaces = async (): Promise<void> => {
   }
 }
 
+/**
+ * Fetch the app bundles the engine serves (GET /bundles) for the tray Apps folder (bundle-as-runtime-
+ * object). Each bundle is ONE app whose faces open the mapped surfaces. Read-only consumption: the shell
+ * never edits a bundle. Best-effort — an old/unreachable engine that has no /bundles route leaves the last-
+ * known list (empty ⇒ the folder falls back to the flat #98 surface listing), never crashing the tray. We
+ * tolerate the payload defensively (id/name/faces), so a forward-compatible bundle field never breaks us.
+ */
+const refreshBundles = async (): Promise<void> => {
+  try {
+    const res = await fetch(`${cfg.engineUrl}/bundles`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const list = (await res.json()) as Array<{ id?: unknown; name?: unknown; faces?: unknown }>
+    appBundles = list
+      .filter((b): b is { id: string; name: string; faces: unknown[] } => typeof b.id === 'string' && typeof b.name === 'string' && Array.isArray(b.faces))
+      .map((b) => ({
+        id: b.id,
+        name: b.name,
+        faces: b.faces
+          .filter((f): f is { kind: 'hud' | 'chat' | 'support'; surfaceRef: string; title?: string } => {
+            const face = f as { kind?: unknown; surfaceRef?: unknown }
+            return (face.kind === 'hud' || face.kind === 'chat' || face.kind === 'support') && typeof face.surfaceRef === 'string'
+          })
+          .map((f) => ({ kind: f.kind, surfaceRef: f.surfaceRef, ...(typeof f.title === 'string' ? { title: f.title } : {}) })),
+      }))
+    refreshTray()
+  } catch (err) {
+    console.error('[shell] could not read /bundles for the Apps folder:', err)
+  }
+}
+
 const seedSessionState = async (): Promise<void> => {
   // A refused (skewed) engine is NOT ours to drive (S6): skip the whole seed so Start/End stays disabled
   // and no session, capture, or fabric state is read from the mismatched engine. The tray leads with the
@@ -1316,8 +1355,10 @@ const seedSessionState = async (): Promise<void> => {
   // Seed the per-sense gate verdicts (issue #7) so the capture-status readout names the engine-side
   // blocking gate too. Best-effort: an old/unreachable engine just leaves the engine-side gates absent.
   await refreshSenses()
-  // Seed the Apps folder's surface list (#98) — best-effort, so the folder appears once we reach the engine.
+  // Seed the Apps folder's surface list (#98) + bundle list (bundle-as-runtime-object) — best-effort, so
+  // the folder appears once we reach the engine. Bundles render as one app each; unclaimed surfaces demote.
   await refreshSurfaces()
+  await refreshBundles()
   // Seed focus watching from the engine's route.detect flag (best-effort — a failure just leaves focus
   // idle rather than crashing). The WS `flag.changed` handler keeps it fresh after this.
   try {
