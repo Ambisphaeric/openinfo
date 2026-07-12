@@ -8,7 +8,7 @@ import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, assessEngineSkew, parseAllowSkew, readBuildStamp, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
 import { systemFaceDataUrl, type SystemFaceModel } from './system-face.js'
-import { hudWindowSpec, appWindowSpec, configForSurface, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
+import { surfaceWindowSpec, configForSurface, windowTitleFor, assertWindowContract, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
 import { resolveHudHeight } from './hud-height.js'
 import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
@@ -348,14 +348,19 @@ const createSurfaceWindow = (
   surfaceId: string,
   opts: { chrome: WindowChrome; isDefaultHud: boolean; startVisible: boolean },
 ): BrowserWindow => {
-  const declaredWidth = configForSurface(surfaceId).width
-  const widthOpt = declaredWidth !== undefined ? { width: declaredWidth } : {}
-  const spec: HudWindowSpec =
-    opts.chrome === 'hud'
-      ? hudWindowSpec({ startVisible: opts.startVisible, ...widthOpt })
-      : appWindowSpec({ startVisible: opts.startVisible, ...widthOpt })
+  // The window CONTRACT (policy item 3), enforced HERE in the one factory: every surface window either
+  // resizes or provably fits its content (S5), AND self-identifies with a non-empty title (S4). A surface
+  // added with a clipping fixed width or no identity fails LOUDLY at create, never shipping a broken window.
+  assertWindowContract(surfaceId)
+  // The full window spec is resolved from the surface's declared config in ONE place (chrome, width, AND the
+  // per-surface focusability override, S1) so the shell and the driven e2e build the identical window.
+  const spec: HudWindowSpec = surfaceWindowSpec(surfaceId, { startVisible: opts.startVisible })
   const window = new BrowserWindow({
     ...spec.browserWindow,
+    // Self-identify (S4): stamp the per-surface title so a booting window is never mislabeled "HUD" (every
+    // window loads the SAME hud.html, so its shared <title> alone titled them all "HUD"); the renderer then
+    // refines it to the loaded surface's live `name` (page-title-updated flows through by default).
+    title: windowTitleFor(surfaceId),
     // The one bridge the renderer needs: the drag channel (preload.cts). Nothing node-bound crosses.
     webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
   })

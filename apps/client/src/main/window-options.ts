@@ -71,8 +71,14 @@ const WINDOW_MARGIN = 24
  */
 export const HUD_MIN_HEIGHT = 144
 
-export const hudWindowSpec = (opts: { startVisible?: boolean; width?: number } = {}): HudWindowSpec => {
+export const hudWindowSpec = (opts: { startVisible?: boolean; width?: number; focusable?: boolean } = {}): HudWindowSpec => {
   const startVisible = opts.startVisible ?? false
+  // `focusable` is a PER-SURFACE override, defaulting false (the inherited Glass glance never steals focus).
+  // A HUD-chrome surface the user TYPES in (the chat's `input` block, #134) MUST be able to become the key
+  // window — otherwise a `focusable:false` window can never accept keys, macOS NSBeeps every keystroke, and
+  // typing is impossible (the chat-keyboard bug). Focusability is orthogonal to the rest of the Glass
+  // signature (still frameless/transparent/content-protected/always-on-top), so we flip only this one flag.
+  const focusable = opts.focusable ?? false
   return {
     browserWindow: {
       width: opts.width ?? PANEL_WIDTH + WINDOW_MARGIN * 2,
@@ -86,7 +92,7 @@ export const hudWindowSpec = (opts: { startVisible?: boolean; width?: number } =
       fullscreenable: false,
       skipTaskbar: true,
       alwaysOnTop: true,
-      focusable: false,
+      focusable,
       show: startVisible,
       title: 'openinfo HUD',
       backgroundColor: '#00000000',
@@ -120,6 +126,13 @@ export interface SurfaceWindowConfig {
   chrome: WindowChrome
   /** Outer window width in px; omitted ⇒ the chrome's default (HUD panel width, or the app default). */
   width?: number
+  /**
+   * Whether this surface's window may become the key/focused window. Framed `app` chrome is always focusable
+   * (a normal window); HUD chrome defaults to NON-focusable (a glance). A HUD-chrome surface the user TYPES
+   * in must opt IN here (else macOS NSBeeps every keystroke into a window that can never accept it). Omitted
+   * ⇒ the chrome default. Ignored for `app` chrome (already focusable).
+   */
+  focusable?: boolean
 }
 
 /**
@@ -153,7 +166,9 @@ export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   // block and applied over the hud:panel-size bridge (the renderer installs the PanelController instead of
   // auto-resize for these), NOT the content-sizer. The chat is the HUD's own width so it sits flush
   // beneath it; the sidebar's width is driven by its panel (collapsed 0 → expanded 320).
-  'surf-openinfo-chat': { chrome: 'hud' },
+  // The chat carries an `input` block the user TYPES in, so it opts INTO focusability (S1) — otherwise the
+  // inherited Glass `focusable:false` makes the window unable to become key and every keystroke NSBeeps.
+  'surf-openinfo-chat': { chrome: 'hud', focusable: true },
   'surf-openinfo-sidebar': { chrome: 'hud', width: 320 },
 }
 
@@ -205,4 +220,109 @@ export const appWindowSpec = (opts: { width?: number; startVisible?: boolean } =
     },
     startVisible,
   }
+}
+
+/**
+ * The ONE place a surface's full window spec is resolved from its declared config — chrome, width override,
+ * AND the per-surface focusability override (S1). Used by the shell's single window factory and by the
+ * driven e2e so both build the EXACT same window a surface ships with (no drift between test and shell).
+ */
+export const surfaceWindowSpec = (surfaceId: string, opts: { startVisible?: boolean } = {}): HudWindowSpec => {
+  const cfg = configForSurface(surfaceId)
+  const startVisible = opts.startVisible ?? false
+  const widthOpt = cfg.width !== undefined ? { width: cfg.width } : {}
+  // Spread conditionally (exactOptionalPropertyTypes): an absent override must NOT be passed as `undefined`.
+  const focusableOpt = cfg.focusable !== undefined ? { focusable: cfg.focusable } : {}
+  return cfg.chrome === 'hud'
+    ? hudWindowSpec({ startVisible, ...widthOpt, ...focusableOpt })
+    : appWindowSpec({ startVisible, ...widthOpt })
+}
+
+/**
+ * Per-surface human FACE names — what a window calls itself (S4). The window's live title is refined by the
+ * renderer to the loaded surface document's `name`; this is the pre-load fallback the factory stamps so a
+ * window is NEVER mislabeled "HUD" while it boots (the old bug: every framed titlebar read "openinfo — HUD"
+ * because the shared hud.html <title> was the only title anything ever set). An unknown surface is humanized
+ * from its id, so a new surface still self-identifies without a code change.
+ */
+const FACE_NAMES: Record<string, string> = {
+  'surf-openinfo-hud': 'HUD',
+  'surf-glass-minimal': 'HUD',
+  'surf-openinfo-fields': 'Fields',
+  'surf-openinfo-diagnostics': 'Diagnostics',
+  'surf-openinfo-notetaker': 'Meeting Notes',
+  'surf-openinfo-chat': 'Chat',
+  'surf-openinfo-sidebar': 'Sidebar',
+}
+
+/** Humanize an unknown surface id (`surf-openinfo-foo-bar` → `Foo Bar`) so it still names itself. */
+const humanizeSurfaceId = (surfaceId: string): string =>
+  surfaceId
+    .replace(/^surf-/, '')
+    .replace(/^openinfo-/, '')
+    .split('-')
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'App'
+
+/** The per-surface window title (chrome titlebar / app switcher). `openinfo — <Face>`. Pure + testable. */
+export const windowTitleFor = (surfaceId: string): string => `openinfo — ${FACE_NAMES[surfaceId] ?? humanizeSurfaceId(surfaceId)}`
+
+/**
+ * The RESOLVED outer window width for a surface — its declared override, else the chrome default. Pure so
+ * the window contract can reason about whether a fixed-size window provably fits its content.
+ */
+export const surfaceWindowWidth = (surfaceId: string): number => {
+  const cfg = configForSurface(surfaceId)
+  if (cfg.width !== undefined) return cfg.width
+  return cfg.chrome === 'hud' ? PANEL_WIDTH + WINDOW_MARGIN * 2 : APP_WINDOW_DEFAULT_WIDTH
+}
+
+/**
+ * The minimum outer width at which a fixed-size (non-resizable) HUD-chrome window PROVABLY fits its content
+ * without the both-edges clip (the S5 mechanism makes `.hud` fluid up to its 660px cap, so any width at or
+ * above this reflows cleanly; below it the block grids can no longer shrink and content is lost). A framed
+ * `app` window is exempt — the user can always resize it to fit.
+ */
+export const MIN_HUD_FIT_WIDTH = 260
+
+export interface WindowContract {
+  surfaceId: string
+  chrome: WindowChrome
+  width: number
+  /** The window can be resized by the user (framed app chrome) — so it fits by construction. */
+  resizable: boolean
+  /** A fixed-size window whose width is at or above the fit floor — provably fits without clipping. */
+  fitsWidth: boolean
+  /** The window's non-empty self-identifying title. */
+  title: string
+  /** The contract holds: the window resizes OR provably fits, AND it self-identifies. */
+  ok: boolean
+}
+
+/**
+ * The window contract (policy item 3), enforced in the ONE window factory: every surface window either
+ * RESIZES (framed app chrome) or PROVABLY FITS its content at a fixed width (HUD chrome ≥ the fit floor,
+ * given the fluid-panel S5 mechanism), AND it SELF-IDENTIFIES with a non-empty title. Pure so it is asserted
+ * headless for every shipped surface; the factory calls `assertWindowContract` at create time so a future
+ * surface added with a clipping width or no identity fails LOUDLY rather than shipping a broken window.
+ */
+export const windowContract = (surfaceId: string): WindowContract => {
+  const cfg = configForSurface(surfaceId)
+  const width = surfaceWindowWidth(surfaceId)
+  const resizable = cfg.chrome === 'app'
+  const fitsWidth = width >= MIN_HUD_FIT_WIDTH
+  const title = windowTitleFor(surfaceId)
+  return { surfaceId, chrome: cfg.chrome, width, resizable, fitsWidth, title, ok: (resizable || fitsWidth) && title.length > 0 }
+}
+
+/** Assert the window contract for a surface; throws with the offending detail if it does not hold. */
+export const assertWindowContract = (surfaceId: string): WindowContract => {
+  const contract = windowContract(surfaceId)
+  if (!contract.ok) {
+    throw new Error(
+      `window contract violated for ${surfaceId}: a window must resize or provably fit (≥${MIN_HUD_FIT_WIDTH}px) and self-identify — ${JSON.stringify(contract)}`,
+    )
+  }
+  return contract
 }

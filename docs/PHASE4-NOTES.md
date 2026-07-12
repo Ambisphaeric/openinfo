@@ -4732,3 +4732,26 @@ readBuildStamp` round-trips the real sha, and an unstamped build reads back `und
   larger change that would cross into agent-A window files.
 - The System window is a main-process data-URL page (pure builder tested headless); it is not yet covered by a
   GUI e2e like the HUD/capture scripts — the render is a pure function and the open-system handler is live.
+
+## Basics wave A — chat keyboard · window identity · clip mechanism (S1/S4/S5)  *(branch feat/basics-a-window-shell)*
+
+The MVP-pivot "basics bar": served windows must pass a basic interaction check before new capability lands. Three window-shell fixes + a permanent policy (rendering an affordance with no live handler is a FAILING test; every served surface gets a driven-input e2e; the window contract is enforced in the one factory).
+
+### S1 — chat keyboard + one height authority (`77dd676`)
+- `main/window-options.ts`: per-surface `focusable` override (`SurfaceWindowConfig.focusable` + `hudWindowSpec({focusable})`), ON for `surf-openinfo-chat`. HUD chrome inherits Glass `focusable:false`, so the chat window could never become key — macOS NSBeeped every keystroke and typing was impossible. Orthogonal to the rest of the Glass signature. New `surfaceWindowSpec(surfaceId)` is the ONE resolver of a surface's full spec (chrome+width+focusability), shared by the shell factory and the e2e.
+- `surfaces/hud/dev-entry.ts`: ended the chat height fight — auto-resize was installed UNCONDITIONALLY while the PanelController was ALSO installed, so the resize floor (144) overrode the panel's 120/432 extents (contradicting panel.ts). Now ONE height authority per window, chosen once in `onSurfaceLoaded`: panel surface → PanelController, every other HUD window → auto-resize.
+- `scripts/chat-input-e2e.mjs` (`test:e2e:chat`): drives REAL key events into the served `.in-text`; asserts they land (no NSBeep path) and height obeys the panel extents (opens 120, expands 432). Verified passing on real Electron.
+
+### S4 — window identity (`32b6cd1`)
+Every window loads the SAME hud.html, whose hardcoded `<title>openinfo — HUD</title>` was the only title anything set, so every framed titlebar read "openinfo — HUD".
+- `hud.html`: neutral `<title>openinfo</title>`. `main/window-options.ts`: `windowTitleFor(surfaceId)` → per-surface `openinfo — <Face>` (unknown ids humanized). `main/shell.ts`: factory stamps it at create. `dev-entry.ts`: the renderer drives `document.title` from the loaded surface's live `name` (page-title-updated propagates to the framed titlebar). Verified: a diagnostics window opens "openinfo — Diagnostics", refines to "Diagnostics".
+
+### S5 — clip mechanism + window contract (`dcd180b`)
+`.stage` flex-centered a `.hud` with default `min-width:auto`, so content wider than a narrow window forced the panel wider than the window; centering split the overflow across BOTH edges and the LEFT overflow was unreachable — fields (480), sidebar-expanded (320), glass-minimal (520), diagnostics (560) all silently lost content.
+- `surfaces/hud/styles.ts`: `.hud` is FLUID — `width:100%;max-width:660px;min-width:0` (can't exceed the window; children can shrink). Fixed the MECHANISM once — every window inherits it; the wide default HUD still renders at 660.
+- `main/window-options.ts` + `main/shell.ts`: the window CONTRACT (policy item 3), enforced in the ONE factory — `assertWindowContract(surfaceId)`: a window RESIZES (framed app) or PROVABLY FITS at a fixed width (HUD ≥ `MIN_HUD_FIT_WIDTH`=260), AND self-identifies; a future clipping/anonymous surface throws at create.
+- `scripts/clip-e2e.mjs` (`test:e2e:clip`): opens the narrow fields (480) + glass-minimal (520) served windows with a wide unbreakable token; asserts `.hud` sits fully inside (neither edge off-screen). Verified passing.
+
+### Disclosed / out of scope
+- In-content self-identification (S4) is `document.title` driven from the surface name (no added glass chrome — respects glass parity / "no redundant chrome"); framed windows also show it in the titlebar.
+- The two new driven e2es need a GUI (darwin), like the existing hud-bounds/panel-bounds — not in the headless default `test`. The second BrowserWindow in a run can hit a sandbox mach-port limit on this host, so `clip-e2e.mjs` reuses ONE window across surfaces.

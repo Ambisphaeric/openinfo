@@ -31,10 +31,17 @@ body{margin:0;background:var(--page-bg);
     radial-gradient(800px 460px at 8% 112%, #1a2028 0%, transparent 55%),
     var(--s-bg0)}
 
-.hud{width:660px;max-width:100%;border-radius:15px;overflow:hidden;
+/* S5 clip mechanism: the panel is FLUID — it fills the window up to a 660px cap, never a fixed 660px that
+   overflows a narrower window. With .stage flex-CENTERED, any panel wider than its window overflowed on BOTH
+   edges, and the left overflow was unreachable (you cannot scroll a frameless content-sized window left) —
+   so a window narrower than ~684px (fields 480, sidebar 320, glass-minimal 520, diagnostics 560) silently
+   lost content off both sides. width:100%+max-width caps the panel AT the window width so it can never
+   overflow; min-width:0 lets its grid/flex children shrink (their default min-width:auto was what forced the
+   overflow). Every surface inherits this — no per-window patch. The wide default HUD still renders at 660. */
+.hud{width:100%;max-width:660px;min-width:0;border-radius:15px;overflow:hidden;
   background:var(--s-glass);backdrop-filter:blur(20px);border:1px solid var(--s-line);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.07), 0 34px 70px -24px rgba(0,0,0,.8)}
-.hud.compact{width:560px}
+.hud.compact{max-width:560px}
 
 .hudtop{display:flex;align-items:baseline;gap:10px;padding:14px 18px 4px;
   cursor:grab;-webkit-user-select:none;user-select:none}
