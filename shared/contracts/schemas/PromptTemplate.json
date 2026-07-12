@@ -19,7 +19,7 @@
       "type": "string"
     },
     "kind": {
-      "description": "which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61)",
+      "description": "which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61; preset = a workspace-selectable CONTEXT preset overlay prepended to the distill pass, editable over the same /templates routes — the glass \"five prompts\" made an actual document, pill P2)",
       "anyOf": [
         {
           "const": "distill",
@@ -35,6 +35,10 @@
         },
         {
           "const": "field",
+          "type": "string"
+        },
+        {
+          "const": "preset",
           "type": "string"
         }
       ]

@@ -378,6 +378,11 @@
               "type": "string"
             }
           }
+        },
+        "presetId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
         }
       }
     },

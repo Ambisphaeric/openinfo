@@ -4858,3 +4858,20 @@ Engine 747 → 755 (`--test-concurrency=1`, the CI serialize posture): store rou
 - One additive contract field beyond the kind literal: `Distillate.provenance.presetId` (optional). Deemed unavoidable for an HONEST why-record — injection that silently altered the summary prompt with no provenance trace would be less honest, and `additionalProperties:false` on `provenance` requires the field to stamp it. Renders in the technical register only.
 - Injection is a distiller-level PREPEND rather than a `{{preset}}` template placeholder (rationale above) — a small, deliberate departure from the literal reading of "the {{todo}} interpolation precedent," chosen for the exact byte-identical guarantee and template-agnostic application. The interpolation site itself (where the final prompt is composed) is unchanged.
 - `/active-preset` intentionally omitted from the `/routes` manifest (no response-schema invented), matching the existing guard control-plane precedent.
+
+### Pill P1×P2 integration wiring (merge-time commit, retro-35 true-up entry)
+The integration commit wired P2's preset resolver into P1's chat seam: `postChat`'s `ChatDeps`
+supplies `resolveActivePreset` backed by `ctx.presets.resolveActive(workspaceId)`, mapping the
+resolved preset document to `ActivePresetRef { label: name, text: body }` — the same resolver
+the distiller injects from (single source of truth). E2e over the real engine + a capturing
+openai-compat upstream proves: unset ⇒ the visible budget note reports `active-preset (empty)`
+and no Voice/register block reaches the system prompt; after `PUT /active-preset` ⇒ note reports
+`active-preset(1)` and the captured system prompt carries the preset label and body. Disclosed:
+with the seam always supplied by the served engine, the `unavailable` source state is reachable
+only from other `ChatDeps` constructions (degradation contract, covered by unit test) — the
+served engine's note will report `empty`, never `unavailable`, for this source.
+This entry was appended at retro 35 (the integration commit updated CODE_MAP only — the slice
+entry was missed); the same true-up regenerates the two committed schemas P2's contract delta
+touched (`Distillate.json` +presetId, `PromptTemplate.json` +preset kind) — the regen step was
+skipped in the P2 branch, so `git diff --exit-code` after `pnpm gen` failed until now. A CI
+schema-drift guard remains the standing fix (issue #87).
