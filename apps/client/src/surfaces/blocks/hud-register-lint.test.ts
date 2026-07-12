@@ -92,12 +92,34 @@ const fixtures: Record<string, unknown[]> = {
       blocking: { id: 'ocr', label: 'Reading (ocr) endpoint', pass: false, fix: DIAG_FIX },
     },
   ],
+  // A prepared Draft with the lint markers riding on its provenance (endpoint/model/template) — the block
+  // must render its human why-line (act kind + source counts) WITHOUT leaking any of them (#118).
+  drafts: [
+    {
+      id: 'drf-1',
+      sessionId: 'ses',
+      workspaceId: 'ws',
+      actKind: 'follow-up-draft',
+      body: 'a prepared follow-up draft',
+      status: 'prepared',
+      voice: { scope: 'session', dials: { tone: 3, warmth: 4, wit: 2, charm: 2, specificity: 9, brevity: 8 } },
+      provenance: {
+        templateId: 'tpl-lint-1',
+        slot: 'llm',
+        endpoint: 'lint-endpoint-x',
+        model: 'lint-model-9b',
+        sourceDistillates: ['dst-1', 'dst-2'],
+        sourceMoments: ['mom-1'],
+      },
+      schemaVersion: 1,
+      createdAt: '2026-07-09T15:30:31Z',
+    },
+  ],
 }
 
 /** Diagnostics-tier keeps full ids BY DESIGN — these must POSITIVELY render the markers. */
 const ALLOW = new Set(['transcript-inspector', 'queue', 'sense-gates'])
-// drafts renders `via <endpoint>` today — the known remaining #118 scope, excluded until its own slice fixes it.
-const SKIPPED = new Set(['drafts'])
+// (No block is skipped: the last #118 leftover — drafts' `via <endpoint>` why-line — is fixed this slice.)
 
 const now: NowContext = { live: true, workspace: 'acme', title: 'Renewal — security review' }
 
@@ -115,7 +137,6 @@ const render = (type: string, items: unknown[]): string => {
 
 test('register lint (#118): provenance ids cannot render outside the Diagnostics-tier allow-list', () => {
   for (const type of Object.keys(defaultBlockRegistry)) {
-    if (SKIPPED.has(type)) continue
     const html = render(type, fixtures[type] ?? [sink])
     if (ALLOW.has(type)) {
       assert.match(html, MARKERS, `${type} is Diagnostics-tier and must keep rendering full ids (allow-list honesty)`)

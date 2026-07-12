@@ -9,8 +9,7 @@
       "id": "nt-left-pins",
       "show": "always",
       "top": 6,
-      "query": { "source": "pins", "params": {}, "top": 6 },
-      "actions": [{ "id": "act-nt-open-pin", "label": "Open", "verb": "open", "params": {} }]
+      "query": { "source": "pins", "params": {}, "top": 6 }
     },
     { "block": "now", "id": "nt-center-now" },
     {

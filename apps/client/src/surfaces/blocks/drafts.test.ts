@@ -37,8 +37,11 @@ test('the drafts block renders STORE-DERIVED drafts: the prepared body + a prove
 
   assert.match(html, /Prepared drafts/) // the block's group label
   assert.match(html, /Hi Dana, thanks for the time today/) // store-derived body (only via result.items)
-  // WHY-line built from the draft's own provenance: act kind + source counts + producing endpoint
-  assert.match(html, /class="why">follow-up draft · from 2 distillates \+ 1 moment · via llm\.fast/)
+  // WHY-line built from the draft's own provenance: act kind + human source counts. #118: NO machine trail
+  // (endpoint/model/template id) at this human tier, nor the old `via <endpoint>` phrasing — it stays
+  // recorded on provenance and reachable on diagnostics + the ledger, just not rendered here.
+  assert.match(html, /class="why">follow-up draft · from 2 distillates \+ 1 moment</)
+  assert.doesNotMatch(html, /via llm\.fast|class="why">[^<]*via /)
   // the copy affordance carries the body (the app prepares; the human executes — verbs never send)
   assert.match(html, /data-copy="Hi Dana, thanks for the time today/)
 })

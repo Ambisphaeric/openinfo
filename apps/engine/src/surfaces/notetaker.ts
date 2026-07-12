@@ -32,9 +32,9 @@ import type { Surface } from '@openinfo/contracts'
  *
  * Record affordance: capture start/stop is the tray's session control today (consent boundary, #41 — a
  * window launches STOPPED, never auto-resuming). An IN-WINDOW record button needs the #136 session-control
- * block, which is NOT built; the layout ships an honest, visibly-inert Record placeholder in the center
- * canvas header linking that gap (chosen placement — flagged in the PR for the owner's first-render review)
- * rather than a fake-live button. Mirrors templates/openinfo-notetaker/surface.json.
+ * block, which is NOT built; the layout ships a DISABLED Record button in the center canvas header with an
+ * inline note disclosing that recording is controlled from the tray (S3 — an honest affordance, not a
+ * fake-live button whose only disclosure is a tooltip). Mirrors templates/openinfo-notetaker/surface.json.
  */
 export const defaultNotetakerSurface: Surface = {
   id: 'surf-openinfo-notetaker',
@@ -42,14 +42,15 @@ export const defaultNotetakerSurface: Surface = {
   context: 'meeting',
   version: 1,
   stack: [
-    // LEFT rail — the Pins/Favorites list (home/nav/folders are chrome; see the module header).
+    // LEFT rail — the Pins/Favorites list (home/nav/folders are chrome; see the module header). No actions:
+    // the only one here was `open`, which was never wired (no navigation target) — a support tier keeps ONLY
+    // verbs that actually work (S7 chrome honesty), so the dead Open is dropped rather than shipped inert.
     {
       block: 'pinned-doc',
       id: 'nt-left-pins',
       show: 'always',
       top: 6,
       query: { source: 'pins', params: {}, top: 6 },
-      actions: [{ id: 'act-nt-open-pin', label: 'Open', verb: 'open', params: {} }],
     },
     // CENTER canvas — meeting context, the live note stream, and the running AI summary.
     { block: 'now', id: 'nt-center-now' },

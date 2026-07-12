@@ -11,8 +11,9 @@
       "show": "always",
       "query": { "source": "relevant-now", "params": { "session": "current" }, "top": 4 },
       "actions": [
-        { "id": "act-copy", "label": "Copy", "verb": "copy", "params": {} },
-        { "id": "act-open", "label": "Open", "verb": "open", "params": {} }
+        { "id": "act-dismiss", "label": "Dismiss", "verb": "dismiss", "params": {} },
+        { "id": "act-pin", "label": "Pin", "verb": "pin", "params": {} },
+        { "id": "act-followup", "label": "Follow up", "verb": "mark-for-follow-up", "params": {} }
       ]
     },
     {
