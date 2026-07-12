@@ -1,0 +1,4 @@
+Vendored from https://github.com/nextlevelbuilder/ui-ux-pro-max-skill
+Pinned commit: 3da52ff1cab1be91848072ec1be5f493d730fd5f (2026-07-12)
+License: MIT (LICENSE in this directory)
+Audit at vendor time: scripts are stdlib-only Python 3 (argparse/csv/io/json/os/re/sys/pathlib/collections/math/datetime); zero network or subprocess calls; 29 CSV data files + SKILL.md.
