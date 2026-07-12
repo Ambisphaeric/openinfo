@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatRequest, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
-import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeStt, describeInvokeFailure, enrichFailureHint, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
+import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
@@ -577,6 +577,10 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('distillate.updated', (distillate) => ws.broadcast('distillate.updated', distillate))
   // Ephemeral transcript fast-path (#58): rebroadcast the live feed to WS clients. Never persisted.
   bus.subscribe('transcript.updated', (update) => ws.broadcast('transcript.updated', update))
+  // Ephemeral streaming chat-answer fast-path (the Ask face): rebroadcast each model-emitted chunk the
+  // instant postChat publishes it (the #58 idiom). Never persisted — the ChatReply is the authoritative
+  // answer, and the persisted thread (chat_turns) the durable record.
+  bus.subscribe('chat.delta', (delta) => ws.broadcast('chat.delta', delta))
   // Diagnostics inspector (#101): remember the last N ephemeral updates in an in-memory ring so the
   // diagnostics app's transcription inspector can render the recent feed on a surface (it was ssh-only).
   // Fed off the SAME bus event — no new persistence path; the ring is process-scoped and cleared on restart.
@@ -787,6 +791,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   // DEFAULT (an explicit params.workspace still wins). Absent ⇒ unchanged 'default' behavior.
   if (req.method === 'POST' && url.pathname === '/query') return runQuery(req, res, ctx, url.searchParams.get('surface'))
   if (req.method === 'POST' && url.pathname === '/chat') return postChat(req, res, ctx)
+  // The Ask face's persisted thread read (ask-history): the chat window renders the recent conversation on
+  // open. Honest cap — the tail plus total/truncated so a cut is disclosed, never silently absorbed.
+  if (req.method === 'GET' && url.pathname === '/chat/history') return getChatHistory(res, ctx, url)
   // #66: dismiss / mark-for-follow-up write a per-item signal. Dismiss is the SUPPRESSION record that
   // runQuery above then honors (dismissed rows excluded). Self-contained: one POST over the store seam.
   if (req.method === 'POST' && url.pathname === '/item-signals') return postItemSignal(req, res, ctx)
@@ -1798,6 +1805,11 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
   if (errors.length > 0) return send(res, 400, { error: 'invalid ChatRequest', details: errors })
   const request = body as ChatRequest
 
+  // The ephemeral-stream key for this turn's chat.delta frames — client-minted (so the sender can paint
+  // its own in-flight turn) or engine-minted when absent (uniform frames; no one is listening for them).
+  const turnId = request.turnId ?? `turn-${randomUUID()}`
+  let seq = 0
+
   const fabric = ctx.fabric.load()
   const guardOn = isFlagEnabled(ctx.store, 'guard.egress')
   const policy = ctx.guardDocs.policy()
@@ -1841,14 +1853,64 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     ...(guard !== undefined ? { guard } : {}),
     resolveKey: (ref: string) => ctx.secrets.resolve(ref),
     runtimeManager: ctx.runtime,
+    // Ask face `screen` source: read the send's one frame into text through the SAME screen-understanding
+    // path the P4B processor uses (invokeOcr: paddle-serving blocks, or an openai-compat VLM in the ocr
+    // slot). Consent is content-class `screen` — resolveEgress DENIES egress for screen content outright
+    // (egress.ts, most-specific-denial-wins), so the frame's bytes can only ever reach a LOCAL endpoint.
+    // Only the DERIVED TEXT then rides the chat hop, which runs the normal typed-content gate + #63 guard.
+    screenText: async (workspaceId: string, screenshot: ChatScreenshot) => {
+      const consent = resolveEgress({ contentClass: 'screen', workspaceDenies: ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true })
+      const read = await invokeOcr(
+        fabric,
+        { image: screenshot.data, contentType: screenshot.contentType, timeoutMs: 30_000 },
+        { resolveKey: (ref: string) => ctx.secrets.resolve(ref), runtimeManager: ctx.runtime, egress: consent },
+      )
+      return read.text
+    },
+    // Ask-history: the persisted per-workspace thread is what the recent-turns source reads (the store is
+    // the truth; the request's history remains the fallback against an empty store — see runChat).
+    recentTurns: (workspaceId: string) => ctx.store.listChatTurns(workspaceId, CHAT_HISTORY_LIMIT),
+    // Streaming (the Ask face): publish each model-emitted chunk as an ephemeral chat.delta keyed by the
+    // request's client-minted turnId (engine-minted when absent — nobody listens, but the shape is uniform).
+    onDelta: (text: string) => {
+      void ctx.bus.publish('chat.delta', { turnId, seq: seq++, text, done: false })
+    },
   }
 
   try {
-    send(res, 200, await runChat(deps, request))
+    const reply = await runChat(deps, request)
+    // Persist the exchange to the workspace's app-scoped thread (ask-history) — the durable record the
+    // chat window rehydrates from on open. Deliberately AFTER the turn succeeded (a failed turn leaves no
+    // half-exchange) and after gathering (recent-turns must not see this turn's own user message).
+    const workspaceId = request.workspace ?? 'default'
+    ctx.store.appendChatTurn(workspaceId, { role: 'user', content: request.message })
+    ctx.store.appendChatTurn(workspaceId, { role: 'assistant', content: reply.answer })
+    send(res, 200, reply)
   } catch (error) {
     // Honest failure: name the reason (empty slot / held hop / transport) so the input block shows it.
     send(res, 502, { error: error instanceof Error ? error.message : String(error) })
+  } finally {
+    // The terminal stream frame — done:true whether the turn succeeded or failed, so a listener keyed to
+    // this turnId always sees the end. Failure detail travels on the HTTP reply, never in the stream.
+    void ctx.bus.publish('chat.delta', { turnId, seq, text: '', done: true })
   }
+}
+
+/** How many persisted turns the recent-turns gatherer and GET /chat/history read (the honest, disclosed tail). */
+export const CHAT_HISTORY_LIMIT = 50
+
+/**
+ * GET /chat/history?workspace=<id> (the Ask face) — the workspace's persisted app-scoped chat thread,
+ * oldest-first, capped at CHAT_HISTORY_LIMIT with the cut DISCLOSED (total + truncated), so the chat
+ * window renders the recent conversation on open and never silently pretends the thread starts at the cap.
+ * An unknown workspace reads as an empty thread (asking is not an error), mirroring listPins.
+ */
+function getChatHistory(res: ServerResponse, ctx: HandlerContext, url: URL): void {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const turns = ctx.store.listChatTurns(workspaceId, CHAT_HISTORY_LIMIT)
+  const total = ctx.store.countChatTurns(workspaceId)
+  const history: ChatHistory = { turns, total, truncated: total > turns.length }
+  send(res, 200, history)
 }
 
 /**

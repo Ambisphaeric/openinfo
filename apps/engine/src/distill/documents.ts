@@ -2,7 +2,7 @@ import type { Mode, PromptTemplate } from '@openinfo/contracts'
 import { Mode as ModeSchema, PromptTemplate as PromptTemplateSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { PREVIOUS_BUILTIN_BODIES, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode, defaultOrientationTemplate } from './defaults.js'
+import { PREVIOUS_BUILTIN_BODIES, defaultAskTemplate, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode, defaultOrientationTemplate } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 const MODE_KIND = 'mode'
@@ -11,7 +11,7 @@ const MODE_KIND = 'mode'
  * unseeded store, mirroring WorkflowDocuments' loadDefaultWorkflow fallback for `workflow-default`. The
  * three fast-field prompt documents (#61) are seeded alongside the distill/extract trio — they are the
  * SAME `prompt-template` kind, discriminated by `kind: 'field'` + a `field` binding. */
-const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate, ...defaultFieldTemplates, defaultJudgeTemplate, defaultOrientationTemplate]
+const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate, ...defaultFieldTemplates, defaultJudgeTemplate, defaultOrientationTemplate, defaultAskTemplate]
 
 /**
  * Store-backed distill config docs (prompt templates + modes), consistent with FabricDocuments
@@ -44,6 +44,12 @@ export class DistillDocuments {
     // returns it (tier: 'judge'); the scheduler routes it by `produces: 'orientation'`.
     if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultOrientationTemplate.id)) {
       this.store.layouts.put(TEMPLATE_KIND, defaultOrientationTemplate.id, defaultOrientationTemplate)
+    }
+    // The Ask face default-question document (empty send = "explain my screen") — seed-if-absent like the
+    // fast/judge documents; the client reads its body over GET /templates/tpl-ask-default, a user edit
+    // over PUT /templates/:id is never clobbered, and the read is fresh per send (no restart).
+    if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultAskTemplate.id)) {
+      this.store.layouts.put(TEMPLATE_KIND, defaultAskTemplate.id, defaultAskTemplate)
     }
     if (!this.store.layouts.getLatest<Mode>(MODE_KIND, defaultMeetingMode.id)) {
       this.store.layouts.put(MODE_KIND, defaultMeetingMode.id, defaultMeetingMode)

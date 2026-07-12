@@ -1,4 +1,4 @@
-import type { ChatBudget, ChatContextSource, ChatReply, ChatRequest, Fabric, PinChunk, RelevantEntity } from '@openinfo/contracts'
+import type { ChatBudget, ChatContextSource, ChatReply, ChatRequest, ChatScreenshot, ChatTurn, Fabric, PinChunk, RelevantEntity } from '@openinfo/contracts'
 import {
   invokeLlm,
   resolveEgress,
@@ -99,6 +99,26 @@ export interface ChatDeps {
   guard?: GuardOptions | undefined
   resolveKey: SecretResolver
   runtimeManager: LocalRuntimeManager
+  /**
+   * Read the request's screenshot into TEXT (the Ask face `screen` source): the route runs the frame
+   * through the screen-understanding path (ocr slot, VLM fallback) under content-class `screen` egress
+   * consent — the frame can never leave the machine; only its derived text enters the (guarded) chat hop.
+   * OPTIONAL seam: absent while a frame shipped ⇒ the source degrades honestly to `unavailable`.
+   */
+  screenText?: ((workspaceId: string, screenshot: ChatScreenshot) => Promise<string>) | undefined
+  /**
+   * The workspace's PERSISTED chat thread (ask-history) — the store-backed truth the `recent-turns`
+   * source prefers over the request's client-supplied `history`. OPTIONAL seam: absent ⇒ request.history
+   * (the pre-persistence behavior); present-but-empty with a non-empty request.history ⇒ the request's
+   * turns still count (a client mid-conversation against a fresh store is not amnesiac).
+   */
+  recentTurns?: ((workspaceId: string) => ChatTurn[]) | undefined
+  /**
+   * Streaming seam (the Ask face): forwarded to the llm invoke — each answer chunk lands here as the
+   * model emits it (the route publishes them as ephemeral `chat.delta` events). Absent ⇒ buffered invoke,
+   * byte-for-byte the legacy request. The returned ChatReply remains the authoritative answer either way.
+   */
+  onDelta?: ((text: string) => void) | undefined
 }
 
 /**
@@ -110,6 +130,24 @@ export interface ChatDeps {
  */
 export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<ChatReply> => {
   const workspaceId = request.workspace ?? 'default'
+
+  // Ask face `screen` source: read the shipped frame into text through the seam (ocr/vlm under `screen`
+  // consent, route-owned). Three honest states for the assembler — no frame / unreadable / text in hand.
+  // A read failure NEVER fails the turn: the send proceeds without the screen and the note says so.
+  const screen: GatheredContext['screen'] =
+    request.screenshot === undefined
+      ? { attempted: false }
+      : deps.screenText === undefined
+        ? { attempted: true, failure: 'no screen-understanding path wired' }
+        : await deps
+            .screenText(workspaceId, request.screenshot)
+            .then((text): GatheredContext['screen'] => ({ attempted: true, text }))
+            .catch((error: unknown): GatheredContext['screen'] => ({ attempted: true, failure: error instanceof Error ? error.message : String(error) }))
+
+  // Ask-history: the persisted per-workspace thread is the truth when the seam is wired; the request's
+  // client-supplied history still counts against a fresh/empty store (never amnesiac mid-conversation).
+  const persistedTurns = deps.recentTurns?.(workspaceId) ?? []
+  const recentTurns = persistedTurns.length > 0 ? persistedTurns : (request.history ?? [])
 
   const gathered: GatheredContext = {
     bundlePrompt: deps.bundlePrompt,
@@ -124,7 +162,8 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
       request.pinId !== undefined
         ? { pinId: request.pinId, pinTitle: deps.pinTitle(workspaceId, request.pinId), chunks: deps.pinChunks(workspaceId, request.pinId) }
         : { chunks: [] },
-    recentTurns: request.history ?? [],
+    recentTurns,
+    screen,
   }
 
   const assembled = assembleChatContext(deps.contextSources, gathered)
@@ -146,6 +185,7 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
     runtimeManager: deps.runtimeManager,
     egress: consent,
     ...(deps.guard !== undefined ? { guard: deps.guard } : {}),
+    ...(deps.onDelta !== undefined ? { onDelta: deps.onDelta } : {}),
   })
 
   const historyTokens = assembled.historyTurns.reduce((n, turn) => n + estimateTokens(turn.content), 0)

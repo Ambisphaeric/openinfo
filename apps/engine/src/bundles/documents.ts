@@ -2,7 +2,7 @@ import type { Bundle } from '@openinfo/contracts'
 import { Bundle as BundleSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { DEFAULT_BUNDLE_ID, loadDefaultBundle } from './defaults.js'
+import { DEFAULT_BUNDLE_ID, PREVIOUS_DEFAULT_BUNDLE_BODIES, loadDefaultBundle } from './defaults.js'
 
 const BUNDLE_KIND = 'bundle'
 
@@ -21,8 +21,18 @@ export class BundleDocuments {
   constructor(private readonly store: WorkspaceRegistry) {}
 
   ensureDefaults(): void {
-    if (!this.store.layouts.getLatest<Bundle>(BUNDLE_KIND, DEFAULT_BUNDLE_ID)) {
+    const existing = this.store.layouts.getLatest<Bundle>(BUNDLE_KIND, DEFAULT_BUNDLE_ID)
+    if (!existing) {
       this.store.layouts.put(BUNDLE_KIND, DEFAULT_BUNDLE_ID, loadDefaultBundle())
+      return
+    }
+    // The #130 seed-or-refresh discipline, applied to the bundle: an existing install's seeded Standard
+    // App gains a newly shipped organ (e.g. the Ask face `screen` chat source) ONLY when it is provably
+    // UNEDITED — still at version 1 AND byte-identical to a previous shipped body. Any user PUT bumps the
+    // version off 1 (save() stamps latest+1), so an edited plan is never clobbered. The refresh is itself
+    // a put (version 2), so it runs at most once per shipped change.
+    if (existing.body.version === 1 && PREVIOUS_DEFAULT_BUNDLE_BODIES.includes(JSON.stringify(existing.body))) {
+      this.store.layouts.put(BUNDLE_KIND, DEFAULT_BUNDLE_ID, { ...loadDefaultBundle(), version: 2 })
     }
   }
 

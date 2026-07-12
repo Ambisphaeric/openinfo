@@ -115,3 +115,88 @@ test('runChat THROWS on an empty llm slot (the route turns this into visible fai
   const fabric: Fabric = { slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } }
   await assert.rejects(() => runChat(baseDeps(fabric), { message: 'hi' }), /llm/i)
 })
+
+test('Ask face: a shipped screenshot reaches the screenText seam and its text enters the corpus; the seam absent degrades honestly', async () => {
+  const seen: { messages: { role: string; content: string }[] } = { messages: [] }
+  const server: Server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.messages = (JSON.parse(body) as { messages: { role: string; content: string }[] }).messages
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'That is your invoice screen.' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const addr = server.address()
+  assert.ok(addr && typeof addr === 'object')
+  const fabric: Fabric = { slots: { stt: [], tts: [], llm: [{ kind: 'http', name: 'local', url: `http://127.0.0.1:${addr.port}`, api: 'openai-compat' }], vlm: [], ocr: [], embed: [] } }
+  try {
+    // Seam wired: the frame is read into text and enters the context under the declared `screen` source.
+    const shots: { workspaceId: string; contentType: string }[] = []
+    const reply = await runChat(
+      {
+        ...baseDeps(fabric),
+        screenText: async (workspaceId, shot) => {
+          shots.push({ workspaceId, contentType: shot.contentType })
+          return 'INVOICE #42 — total $1,300'
+        },
+      },
+      { message: 'what am I looking at?', screenshot: { contentType: 'image/jpeg', data: 'aGVsbG8=' } },
+    )
+    assert.deepEqual(shots, [{ workspaceId: 'default', contentType: 'image/jpeg' }], 'the seam got the frame once')
+    const system = seen.messages.find((m) => m.role === 'system')!.content
+    assert.match(system, /On the user's screen right now \(read at send\):\nINVOICE #42/)
+    assert.match(reply.budget.note, /screen\(1\)/, 'the note discloses the screen contribution')
+
+    // Seam ABSENT while a frame shipped ⇒ the turn still answers, and the note says the screen was omitted.
+    const noSeam = await runChat(baseDeps(fabric), { message: 'and now?', screenshot: { contentType: 'image/png', data: 'aGVsbG8=' } })
+    assert.match(noSeam.budget.note, /screen \(unavailable\)/, 'unreadable frame is disclosed, never silent')
+
+    // A THROWING seam degrades the same way — the send proceeds WITHOUT the screen (never blocking).
+    const failing = await runChat(
+      { ...baseDeps(fabric), screenText: async () => { throw new Error('no ocr endpoint answered') } },
+      { message: 'still there?', screenshot: { contentType: 'image/jpeg', data: 'aGVsbG8=' } },
+    )
+    assert.match(failing.budget.note, /screen \(unavailable\)/)
+    assert.match(failing.answer, /invoice screen/)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+test('Ask face: the persisted thread (recentTurns seam) is the recent-turns truth; request.history is the fallback against an empty store', async () => {
+  const seen: { messages: { role: string; content: string }[][] } = { messages: [] }
+  const server: Server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.messages.push((JSON.parse(body) as { messages: { role: string; content: string }[] }).messages)
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const addr = server.address()
+  assert.ok(addr && typeof addr === 'object')
+  const fabric: Fabric = { slots: { stt: [], tts: [], llm: [{ kind: 'http', name: 'local', url: `http://127.0.0.1:${addr.port}`, api: 'openai-compat' }], vlm: [], ocr: [], embed: [] } }
+  try {
+    // Store has turns ⇒ they win over the client-supplied history (the persistent thread is the truth).
+    await runChat(
+      { ...baseDeps(fabric), recentTurns: () => [{ role: 'user', content: 'persisted question' }, { role: 'assistant', content: 'persisted answer' }] },
+      { message: 'next', history: [{ role: 'user', content: 'client-only memory' }] },
+    )
+    const first = seen.messages[0]!
+    assert.ok(first.some((m) => m.content === 'persisted question'), 'store turns rode as history messages')
+    assert.ok(!first.some((m) => m.content === 'client-only memory'), 'the stale client history did not double-feed')
+
+    // Empty store ⇒ the request's history still counts (a client mid-conversation is not amnesiac).
+    await runChat(
+      { ...baseDeps(fabric), recentTurns: () => [] },
+      { message: 'next', history: [{ role: 'user', content: 'client-only memory' }] },
+    )
+    assert.ok(seen.messages[1]!.some((m) => m.content === 'client-only memory'), 'request.history is the fallback')
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})

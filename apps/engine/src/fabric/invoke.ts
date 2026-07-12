@@ -190,6 +190,17 @@ export interface InvokeOptions {
    * text-span filter (disclosed).
    */
   guard?: GuardOptions
+  /**
+   * Streaming seam (the Ask face). When present, the completions request asks the endpoint for SSE
+   * (`stream: true`) and each emitted content chunk is handed here AS IT ARRIVES; the resolved
+   * `LlmResult.text` is still the full accumulated answer, so every caller downstream is unchanged.
+   * HONEST DEGRADE: a server that ignores `stream:true` and answers plain JSON is parsed as the classic
+   * single completion and `onDelta` is simply never called — one final chunk, no fake typewriter.
+   * Runs AFTER the egress gate + guard (deltas are the model's OUTPUT, not outbound content). Once any
+   * delta has been emitted, a mid-stream failure no longer falls through to the next endpoint — partial
+   * output has already been shown, so the failure surfaces instead of silently re-answering.
+   */
+  onDelta?: (text: string) => void
 }
 
 interface ChatChoice {
@@ -199,6 +210,70 @@ interface ChatChoice {
 interface ChatCompletion {
   choices?: ChatChoice[]
   usage?: RawUsage
+}
+
+/** One SSE frame of an openai-compat STREAMING completion (`"data: {…}"` lines; `delta`, not `message`). */
+interface ChatStreamChunk {
+  choices?: { delta?: { content?: string; reasoning_content?: string }; finish_reason?: string }[]
+  usage?: RawUsage
+}
+
+/**
+ * Drain an openai-compat SSE completion stream (the Ask face streaming path): parse each `data:` frame,
+ * hand every non-empty content delta to `onDelta` as it arrives, and accumulate the full answer. Returns
+ * the same shape the buffered parse yields plus the reasoning tells, so the caller classifies a
+ * reasoning-exhausted stream exactly like a buffered one. `usage` is taken from whichever frame carries
+ * one (servers that report it do so on the final frame); absent ⇒ the caller estimates and marks it.
+ */
+const readSseCompletion = async (
+  response: Response,
+  onDelta: (text: string) => void,
+  ctx: InvokeCtx,
+): Promise<{ text: string; usage: RawUsage | undefined; finishReason: string | undefined; sawReasoning: boolean }> => {
+  const body = response.body
+  if (body === null) throw new InvokeError('bad-response', ctx, { serverMessage: 'empty body on a streaming completions response' })
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let text = ''
+  let usage: RawUsage | undefined
+  let finishReason: string | undefined
+  let sawReasoning = false
+  let sawFrame = false
+  const handleLine = (line: string): void => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return // comments/blank keep-alives — ignored per SSE
+    const payload = trimmed.slice(5).trim()
+    if (payload === '' || payload === '[DONE]') return
+    let chunk: ChatStreamChunk
+    try {
+      chunk = JSON.parse(payload) as ChatStreamChunk
+    } catch {
+      return // a torn frame is skipped, not fatal — the stream's end decides success
+    }
+    sawFrame = true
+    if (chunk.usage !== undefined) usage = chunk.usage
+    const choice = chunk.choices?.[0]
+    if (choice?.finish_reason !== undefined && choice.finish_reason !== null) finishReason = choice.finish_reason
+    const reasoning = choice?.delta?.reasoning_content
+    if (typeof reasoning === 'string' && reasoning.trim() !== '') sawReasoning = true
+    const delta = choice?.delta?.content
+    if (typeof delta === 'string' && delta !== '') {
+      text += delta
+      onDelta(delta)
+    }
+  }
+  for await (const piece of body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(piece, { stream: true })
+    let newline = buffer.indexOf('\n')
+    while (newline >= 0) {
+      handleLine(buffer.slice(0, newline))
+      buffer = buffer.slice(newline + 1)
+      newline = buffer.indexOf('\n')
+    }
+  }
+  if (buffer !== '') handleLine(buffer)
+  if (!sawFrame) throw new InvokeError('bad-response', ctx, { serverMessage: 'no SSE data frames in the streaming completions response' })
+  return { text, usage, finishReason, sawReasoning }
 }
 
 /**
@@ -227,7 +302,10 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
   const started = Date.now()
   let response: Response
   try {
-    const body: Record<string, unknown> = { messages, stream: false }
+    // Streaming (the Ask face): with an onDelta consumer the request asks for SSE; whether the server
+    // actually streams is decided from the RESPONSE content-type below — a server that ignores the flag
+    // and answers plain JSON degrades honestly to the classic one-chunk parse (no fake typewriter).
+    const body: Record<string, unknown> = { messages, stream: opts.onDelta !== undefined }
     if (endpoint.model !== undefined) body['model'] = endpoint.model
     if (opts.maxTokens !== undefined) body['max_tokens'] = opts.maxTokens
     if (opts.temperature !== undefined) body['temperature'] = opts.temperature
@@ -249,6 +327,18 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
     clearTimeout(timeout)
   }
   if (!response.ok) throw classifyHttpResponse(response.status, await response.text().catch(() => ''), ctx)
+  // The STREAMED variant: the server honored `stream:true` (SSE content-type) — drain frames, forwarding
+  // each content delta as it lands; the reasoning-exhausted classification below mirrors the buffered path.
+  if (opts.onDelta !== undefined && (response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+    const streamed = await readSseCompletion(response, opts.onDelta, ctx)
+    if (streamed.text.trim() === '' && (streamed.sawReasoning || streamed.finishReason === 'length')) {
+      throw new InvokeError('reasoning-exhausted', ctx, {
+        serverMessage: streamed.finishReason === 'length' ? 'finish_reason: length, no streamed content' : 'reasoning consumed the token budget, no streamed content',
+      })
+    }
+    const usage = buildUsage(streamed.usage, messages.map((m) => m.content).join('\n'), streamed.text, Date.now() - started)
+    return { text: streamed.text, usage }
+  }
   let json: ChatCompletion
   try {
     json = (await response.json()) as ChatCompletion
@@ -292,6 +382,20 @@ export const invokeLlm = async (
   const endpoints = fabric.slots.llm
   const lines: string[] = []
   const classified: ClassifiedFailure[] = []
+  // Streaming honesty (the Ask face): once any delta reached the consumer, a later failure must NOT fall
+  // through to the next endpoint — partial output was already painted, so silently re-answering from a
+  // different model would be a lie. The wrapped onDelta latches the flag; the catch below rethrows on it.
+  let deltasEmitted = false
+  const callOpts: InvokeOptions =
+    opts.onDelta !== undefined
+      ? {
+          ...opts,
+          onDelta: (text: string) => {
+            deltasEmitted = true
+            opts.onDelta!(text)
+          },
+        }
+      : opts
   for (const endpoint of endpoints) {
     if (endpoint.kind === 'cloud') {
       lines.push(`${endpoint.name}: cloud endpoints are out of scope`)
@@ -320,13 +424,15 @@ export const invokeLlm = async (
         lines.push(`${endpoint.name}: unsupported api "${http.api}"`)
         continue
       }
-      const { text, usage } = await callHttp(http, outbound, opts)
+      const { text, usage } = await callHttp(http, outbound, callOpts)
       const result: LlmResult = { text, endpoint: endpoint.name, slot: 'llm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
       if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
       if (guardVerdict !== undefined) result.guard = guardVerdict
       return result
     } catch (error) {
+      // Deltas already streamed to the consumer ⇒ no silent fall-through (see callOpts above) — surface it.
+      if (deltasEmitted) throw error
       if (error instanceof InvokeError) classified.push(error.toFailure())
       lines.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
     }

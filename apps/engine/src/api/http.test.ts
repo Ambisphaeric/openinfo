@@ -3853,3 +3853,138 @@ test('GET/PUT /bundles serves the Standard App bundle in the document-route idio
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('Ask face vertical: screenshot→ocr→context, streamed chat.delta frames, persisted thread + GET /chat/history', async () => {
+  // ONE fake upstream serves both slots: a VISION completions call (content is an array carrying the
+  // image data URI — what invokeOcr's openai-compat branch sends) is answered with the recognized text;
+  // a plain chat call with stream:true is answered as SSE frames (the streamed reply).
+  const visionRequests: string[] = []
+  const chatRequests: { messages: { role: string; content: string }[] }[] = []
+  const up = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const parsed = JSON.parse(body) as { stream?: boolean; messages: { role: string; content: unknown }[] }
+      const isVision = parsed.messages.some((m) => Array.isArray(m.content))
+      if (isVision) {
+        visionRequests.push(JSON.stringify(parsed.messages))
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'INVOICE #42 — total $1,300' } }] }))
+        return
+      }
+      chatRequests.push(parsed as { messages: { role: string; content: string }[] })
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'Your invoice ' } }] })}\n\n`)
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'screen.' } }] })}\n\n`)
+      res.write('data: [DONE]\n\n')
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => up.listen(0, resolve))
+  const upAddr = up.address()
+  assert.ok(upAddr && typeof upAddr === 'object')
+  const upUrl = `http://127.0.0.1:${upAddr.port}`
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-ask-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const deltas: { turnId: string; seq: number; text: string; done: boolean }[] = []
+  app.bus.subscribe('chat.delta', (d) => {
+    deltas.push(d)
+  })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: upUrl, api: 'openai-compat' }], ocr: [{ kind: 'http', name: 'ocr.vlm', url: upUrl, api: 'openai-compat' }] } }),
+    })
+
+    // One send: message + one frame + a client-minted turnId (screenshot-on-every-send).
+    const reply = (await (await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'what am I looking at?', turnId: 'turn-e2e-1', screenshot: { contentType: 'image/jpeg', data: 'aGVsbG8=' } }),
+    })).json()) as ChatReply
+
+    // The reply is the authoritative accumulated answer; the note discloses the screen contribution.
+    assert.equal(reply.answer, 'Your invoice screen.')
+    assert.match(reply.budget.note, /screen\(1\)/)
+    // The frame reached the screen-understanding path as a data URI (the CaptureChunk convention).
+    assert.equal(visionRequests.length, 1)
+    assert.match(visionRequests[0]!, /data:image\/jpeg;base64,aGVsbG8=/)
+    // ...and the RECOGNIZED TEXT (never the image) rode the chat hop's system context.
+    const system = chatRequests[0]!.messages.find((m) => m.role === 'system')!.content
+    assert.match(system, /On the user's screen right now \(read at send\):\nINVOICE #42/)
+
+    // The ephemeral stream: every frame keyed to the client's turnId, seq-ordered, terminal done:true.
+    for (let i = 0; i < 100 && !deltas.some((d) => d.done); i += 1) await new Promise((r) => setTimeout(r, 10))
+    const mine = deltas.filter((d) => d.turnId === 'turn-e2e-1')
+    assert.deepEqual(mine.map((d) => [d.seq, d.text, d.done]), [[0, 'Your invoice ', false], [1, 'screen.', false], [2, '', true]])
+
+    // Ask-history: the exchange persisted to the workspace thread and rehydrates over GET /chat/history.
+    const history = (await (await fetch(`${base}/chat/history`)).json()) as { turns: { role: string; content: string }[]; total: number; truncated: boolean }
+    assert.deepEqual(history.turns.map((t) => [t.role, t.content]), [['user', 'what am I looking at?'], ['assistant', 'Your invoice screen.']])
+    assert.equal(history.total, 2)
+    assert.equal(history.truncated, false)
+
+    // A second send with NO client history: the persisted thread feeds recent-turns (store is the truth).
+    await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'thanks', turnId: 'turn-e2e-2' }),
+    })
+    const second = chatRequests[1]!
+    assert.ok(second.messages.some((m) => m.content === 'what am I looking at?'), 'the persisted user turn rode as history')
+    assert.ok(second.messages.some((m) => m.content === 'Your invoice screen.'), 'the persisted assistant turn rode as history')
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('Ask face privacy: a screenshot can NEVER reach an egress ocr endpoint — fail-closed, disclosed, non-blocking', async () => {
+  // The ocr slot holds ONLY a hosted (egress-classified) endpoint. Screen content resolves content-class
+  // `screen` ⇒ consent DENIES ⇒ the egress gate skips the endpoint BEFORE any bytes leave (no request is
+  // ever made — the host below is not even routable). The send still answers over the local llm, and the
+  // note discloses the omission. Never silent, never blocking.
+  const chatSeen: string[] = []
+  const up = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      chatSeen.push(body)
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'answered without the screen' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => up.listen(0, resolve))
+  const upAddr = up.address()
+  assert.ok(upAddr && typeof upAddr === 'object')
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-ask-egress-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.local', url: `http://127.0.0.1:${upAddr.port}`, api: 'openai-compat' }], ocr: [{ kind: 'http', name: 'ocr.hosted', url: 'https://ocr.example.com', api: 'openai-compat' }] } }),
+    })
+    const reply = (await (await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'what is on my screen?', screenshot: { contentType: 'image/jpeg', data: 'aGVsbG8=' } }),
+    })).json()) as ChatReply
+    assert.equal(reply.answer, 'answered without the screen', 'the send proceeded WITHOUT the frame')
+    assert.match(reply.budget.note, /screen \(unavailable\)/, 'the omission is disclosed in the visible note')
+    assert.ok(!chatSeen.some((b) => b.includes('aGVsbG8=')), 'the frame bytes never rode any outbound request')
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})

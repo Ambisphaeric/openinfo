@@ -227,6 +227,23 @@ export const defaultJudgeTemplate: PromptTemplate = {
  * engine stamps the SessionAnnotation ids/session/provenance/timestamps; the model controls only the
  * classification text, and "unclear" is the honest answer when the source is too thin — invent nothing.
  */
+/**
+ * The Ask face's default question (the empty-send "explain my screen" — owner canon 2026-07-11: an EMPTY
+ * send with a captured frame IS an ask). A shipped DOCUMENT, not a string buried in client code (#130
+ * posture): the client resolves this body over the existing GET /templates/:id read and sends it as the
+ * turn's message, so editing the default ask is a plain PUT /templates edit — no rebuild, no new UI.
+ * Neutral and SHORT by the same #130 discipline the window templates follow; no persona, no voice. No
+ * `slot`: it feeds no pipeline stage — it is the question itself.
+ */
+export const defaultAskTemplate: PromptTemplate = {
+  id: 'tpl-ask-default',
+  name: 'Explain my screen',
+  kind: 'ask',
+  builtin: true,
+  description: 'the Ask face default: the question an empty send with a captured screen asks',
+  body: 'Explain what is on my screen right now, briefly and in plain terms.',
+}
+
 export const defaultOrientationTemplate: PromptTemplate = {
   id: 'tpl-judge-orientation',
   name: 'judge-orientation',

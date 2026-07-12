@@ -5,6 +5,7 @@ import { Moment } from '../records/moment.js'
 import { StarterModel } from '../config/local.js'
 import { AttributionPattern } from '../config/hints.js'
 import { EgressDecision } from '../config/egress.js'
+import { ScreenContentType } from '../records/screen.js'
 
 export const Health = Type.Object(
   {
@@ -621,11 +622,31 @@ export const ChatTurn = Type.Object(
 export type ChatTurn = Static<typeof ChatTurn>
 
 /**
+ * The one screen frame a chat turn ships (the Ask face: screenshot-on-every-send). Mirrors the
+ * `source:'screen'` CaptureChunk convention (records/screen.ts): base64 image bytes + their mime — no new
+ * transport idea. Captured ONLY on an explicit user send (never ambient), only when the screen sense is
+ * granted+enabled client-side; absent ⇒ the turn simply has no screen context and the budget note says so.
+ * Server-side the frame is read through the screen-understanding path (ocr slot, VLM fallback) under
+ * content-class `screen` egress consent — the frame itself can never leave the machine.
+ */
+export const ChatScreenshot = Type.Object(
+  {
+    contentType: ScreenContentType,
+    data: Type.String({ minLength: 1, description: 'base64-encoded image bytes of one screen frame' }),
+  },
+  { $id: 'ChatScreenshot', additionalProperties: false },
+)
+export type ChatScreenshot = Static<typeof ChatScreenshot>
+
+/**
  * The body of POST /chat (#134) — the below-HUD chat shell's turn. The engine answers WITH THE CORPUS IN
  * HAND (relevant entities + cited pin chunks when a document is attached), not vanilla completion. `pinId`
  * attaches an INGESTED pin whose page-anchored chunks become the citable context; `history` carries prior
  * turns so the honest turn budget can be computed and disclosed. Small local models get few useful turns
  * against a big document, so context enters DISTILLED/CHUNKED (cited excerpts, capped), never raw-stuffed.
+ * Ask face (additive): `screenshot` is the one frame captured at send (declared `screen` source gathers it);
+ * `turnId` is the CLIENT-minted correlation id the ephemeral `chat.delta` stream events carry, so the sender
+ * can paint deltas for its own in-flight turn (absent ⇒ the engine mints one; the reply itself is unkeyed).
  */
 export const ChatRequest = Type.Object(
   {
@@ -633,6 +654,8 @@ export const ChatRequest = Type.Object(
     workspace: Type.Optional(Id),
     pinId: Type.Optional(Id),
     history: Type.Optional(Type.Array(ChatTurn)),
+    screenshot: Type.Optional(ChatScreenshot),
+    turnId: Type.Optional(Id),
   },
   { $id: 'ChatRequest', additionalProperties: false },
 )
@@ -685,3 +708,38 @@ export const ChatReply = Type.Object(
   { $id: 'ChatReply', additionalProperties: false },
 )
 export type ChatReply = Static<typeof ChatReply>
+
+/**
+ * One ephemeral chunk of a STREAMING chat answer (the Ask face), mirroring the #58 transcript fast-path:
+ * published the instant the upstream model emits it, broadcast to WS clients, and NEVER persisted — the
+ * POST /chat ChatReply (and the persisted thread) remains the authoritative record the client reconciles
+ * to when the turn completes (event-fed render, query-fed truth). Keyed by the request's `turnId`; `seq`
+ * is monotonic per turn so a consumer can drop duplicates; the final frame carries `done:true` (and no
+ * text) whether the turn succeeded or failed — failure detail travels on the HTTP reply, never here.
+ */
+export const ChatDelta = Type.Object(
+  {
+    turnId: Id,
+    seq: Type.Integer({ minimum: 0, description: 'monotonic per-turn frame counter (0-based)' }),
+    text: Type.String({ description: 'appendable answer text; empty on the terminal done frame' }),
+    done: Type.Boolean({ description: 'true ⇒ the turn is over; the HTTP ChatReply is the authoritative answer' }),
+  },
+  { $id: 'ChatDelta', additionalProperties: false },
+)
+export type ChatDelta = Static<typeof ChatDelta>
+
+/**
+ * The reply of GET /chat/history (the Ask face) — the workspace's PERSISTED app-scoped chat thread, oldest
+ * turn first, so the chat window renders the recent conversation on open. HONESTLY capped: `turns` is the
+ * most recent tail, `total` the full persisted count, `truncated` true when older turns were cut — the
+ * client discloses the cut instead of silently pretending the thread starts where the cap fell.
+ */
+export const ChatHistory = Type.Object(
+  {
+    turns: Type.Array(ChatTurn),
+    total: Type.Integer({ minimum: 0, description: 'full persisted turn count for the workspace' }),
+    truncated: Type.Boolean({ description: 'true ⇒ turns is the capped tail of a longer thread' }),
+  },
+  { $id: 'ChatHistory', additionalProperties: false },
+)
+export type ChatHistory = Static<typeof ChatHistory>

@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import type { Bundle } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { BundleDocuments } from './documents.js'
-import { DEFAULT_BUNDLE_ID } from './defaults.js'
+import { DEFAULT_BUNDLE_ID, PREVIOUS_DEFAULT_BUNDLE_BODIES } from './defaults.js'
 
 // The store-backed write/read seam the GET/PUT /bundles routes bind to. Proves the versioning, the seeded
 // Standard App enumerating, the get()/list() code fallbacks, and the Tier-A validation gate at write time
@@ -93,4 +93,58 @@ test('save() creates a brand-new named bundle (PUT-unknown-id create semantics)'
     assert.equal(docs.get('bundle-custom')!.name, 'My App')
     assert.deepEqual(docs.list().map((b) => b.id).sort(), ['bundle-custom', DEFAULT_BUNDLE_ID].sort())
   })
+})
+
+test('ensureDefaults refreshes an UNEDITED v1 seed to the new shipped plan (the #130 seed-or-refresh, bundle edition)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-bundle-refresh-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // Simulate an OLD install: the store holds the PREVIOUS shipped body (seven chat sources, no `screen`).
+    const previous = JSON.parse(PREVIOUS_DEFAULT_BUNDLE_BODIES[0]!) as Bundle
+    store.layouts.put('bundle', DEFAULT_BUNDLE_ID, previous)
+    const docs = new BundleDocuments(store)
+    docs.ensureDefaults()
+    const refreshed = docs.get(DEFAULT_BUNDLE_ID)!
+    assert.equal(refreshed.version, 2, 'the refresh is itself a versioned put')
+    assert.ok(refreshed.chat!.sources.some((s) => s.kind === 'screen'), 'the upgraded plan carries the Ask face screen source')
+    // At most once: a second ensureDefaults does not re-bump (v2 no longer matches the previous body).
+    docs.ensureDefaults()
+    assert.equal(docs.get(DEFAULT_BUNDLE_ID)!.version, 2)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensureDefaults NEVER clobbers a user-edited bundle (version off 1, or a diverged body)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-bundle-noclobber-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // A user PUT bumped the version — the plan (which deliberately DROPS sources) must be left untouched.
+    const docs = new BundleDocuments(store)
+    docs.ensureDefaults()
+    const mine = docs.get(DEFAULT_BUNDLE_ID)!
+    docs.save({ ...mine, chat: { sources: [{ kind: 'bundle-prompt' }] } })
+    docs.ensureDefaults()
+    const kept = docs.get(DEFAULT_BUNDLE_ID)!
+    assert.equal(kept.version, 2)
+    assert.deepEqual(kept.chat!.sources.map((s) => s.kind), ['bundle-prompt'], 'the user-owned plan survives')
+
+    // And a v1 body that DIVERGES from every previous shipped body is conservatively left alone too.
+    const store2dir = await mkdtemp(join(tmpdir(), 'openinfo-bundle-noclobber2-'))
+    const store2 = new WorkspaceRegistry(store2dir)
+    try {
+      const diverged = { ...(JSON.parse(PREVIOUS_DEFAULT_BUNDLE_BODIES[0]!) as Bundle), description: 'hand-tuned' }
+      store2.layouts.put('bundle', DEFAULT_BUNDLE_ID, diverged)
+      const docs2 = new BundleDocuments(store2)
+      docs2.ensureDefaults()
+      assert.equal(docs2.get(DEFAULT_BUNDLE_ID)!.description, 'hand-tuned', 'a diverged v1 is user-owned — untouched')
+    } finally {
+      store2.close()
+      await rm(store2dir, { recursive: true, force: true })
+    }
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
 })

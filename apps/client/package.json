@@ -14,6 +14,7 @@
     "test:e2e:multiwindow": "pnpm build && electron scripts/multiwindow-e2e.mjs",
     "test:e2e:capture": "pnpm build && electron scripts/capture-lifecycle-e2e.mjs",
     "test:e2e:attach": "pnpm build && electron scripts/attach-e2e.mjs",
+    "test:e2e:ask": "pnpm build && electron scripts/ask-face-e2e.mjs",
     "start": "pnpm build && electron .",
     "package": "pnpm build && node scripts/package.mjs",
     "dmg": "pnpm build && node scripts/dmg.mjs"

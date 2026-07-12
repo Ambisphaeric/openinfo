@@ -39,7 +39,7 @@ export const BundleFace = Type.Object(
 export type BundleFace = Static<typeof BundleFace>
 
 /**
- * The kinds of context a chat turn may assemble — the SEVEN declared sources (owner canon 2026-07-11:
+ * The kinds of context a chat turn may assemble — the EIGHT declared sources (owner canon 2026-07-11:
  * "CONTEXT ASSEMBLY … must be DECLARED in the bundle config — data, not code — so a future DSL compiles
  * onto it"). Append-only closed union: a source an assembler has no path to gather is rejected at write
  * time rather than silently omitted. Each maps to an assembly stage the chat route already has (or will):
@@ -51,10 +51,13 @@ export type BundleFace = Static<typeof BundleFace>
  *   relevant-entities  — the recency×frequency relevant-now join.
  *   attached-docs      — cited chunks from a doc attached to the turn (the pins/ingest path).
  *   recent-turns       — the prior turns of this app-scoped thread.
+ *   screen             — the one frame the turn shipped (Ask face screenshot-on-send), read through the
+ *                        screen-understanding path (ocr slot, VLM fallback) and entered as TEXT under this
+ *                        source's cap; the frame itself never leaves the machine (content-class `screen`).
  */
 export const ChatContextSourceKind = Type.Union(
-  ['bundle-prompt', 'active-preset', 'transcript-window', 'insights', 'relevant-entities', 'attached-docs', 'recent-turns'].map((k) => Type.Literal(k)),
-  { $id: 'ChatContextSourceKind', description: 'append-only closed union of the seven chat context sources' },
+  ['bundle-prompt', 'active-preset', 'transcript-window', 'insights', 'relevant-entities', 'attached-docs', 'recent-turns', 'screen'].map((k) => Type.Literal(k)),
+  { $id: 'ChatContextSourceKind', description: 'append-only closed union of the eight chat context sources' },
 )
 export type ChatContextSourceKind = Static<typeof ChatContextSourceKind>
 
@@ -114,7 +117,7 @@ export type ChatContextAssembly = Static<typeof ChatContextAssembly>
  *   flags        — a flag-config OVERLAY: flag key → desired enabled state for this app. A declared overlay
  *                  (NOT applied by this slice — preset/flag injection wiring is out of scope); it records the
  *                  app's intended posture as data the later injection slice reads.
- *   chat         — the declarative chat context-assembly plan (the seven sources + honest budgets).
+ *   chat         — the declarative chat context-assembly plan (the eight sources + honest budgets).
  */
 export const Bundle = Type.Object(
   {

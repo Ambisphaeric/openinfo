@@ -25,6 +25,7 @@ const bare: GatheredContext = {
   entities: [],
   attachedDocs: { chunks: [] },
   recentTurns: [],
+  screen: { attempted: false },
 }
 const report = (reports: readonly SourceReport[], kind: string): SourceReport => reports.find((r) => r.kind === kind)!
 
@@ -159,4 +160,29 @@ test('a stored bundle edit changes assembly with no code change (declaration is 
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('Ask face `screen` source: the four honest states (no frame / unreadable / blank / text), capped', () => {
+  const sources: ChatContextSource[] = [{ kind: 'screen', windowChars: 40 }]
+  // No frame this turn ⇒ empty (wired, nothing to contribute).
+  assert.equal(report(assembleChatContext(sources, bare).reports, 'screen').status, 'empty')
+  // A frame shipped but could not be read (no ocr/vlm endpoint, invoke failure) ⇒ unavailable, disclosed.
+  const unreadable = assembleChatContext(sources, { ...bare, screen: { attempted: true, failure: 'no ocr endpoint answered' } })
+  assert.equal(report(unreadable.reports, 'screen').status, 'unavailable')
+  assert.ok(!unreadable.contextText.includes('screen'), 'nothing enters the context for an unreadable frame')
+  // A blank frame ('' recognized) is a NORMAL empty result, not an error.
+  assert.equal(report(assembleChatContext(sources, { ...bare, screen: { attempted: true, text: '   ' } }).reports, 'screen').status, 'empty')
+  // Screen text in hand enters as its own block, clipped by the DECLARED budget (capped, disclosed).
+  const long = 'INVOICE #42 — total $1,300 due Friday, approve in the billing tab'
+  const out = assembleChatContext(sources, { ...bare, screen: { attempted: true, text: long } })
+  const rep = report(out.reports, 'screen')
+  assert.equal(rep.status, 'capped')
+  assert.match(out.contextText, /On the user's screen right now \(read at send\):\nINVOICE #42/)
+  assert.ok(out.truncated, 'a capped screen source flips the honest truncated flag')
+  // Within budget ⇒ included, whole text.
+  const short = assembleChatContext([{ kind: 'screen' }], { ...bare, screen: { attempted: true, text: 'a tiny toolbar' } })
+  assert.equal(report(short.reports, 'screen').status, 'included')
+  assert.match(short.contextText, /a tiny toolbar/)
+  // The disclosure note names the omission states in human terms.
+  assert.match(describeAssembly(unreadable.reports), /screen \(unavailable\)/)
 })

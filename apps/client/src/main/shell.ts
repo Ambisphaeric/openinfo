@@ -789,21 +789,33 @@ const requestScreenPermission = async (): Promise<boolean> => {
 // Per-display Δ-gate state (last kept probe + tick counter), reset on each session's loop start so a
 // session's first frame always sends. Keyed by displayId — primary-only today, multi-display free later.
 const frameDeltaGate = new FrameDeltaGate(cfg.screenDeltaThreshold)
+
+/**
+ * The ONE desktopCapturer grab both screen paths share: a full-resolution still of the primary display.
+ * Returns undefined when no usable frame exists (macOS answers an EMPTY image until the Screen-Recording
+ * grant lands) — callers decide what a missing frame means (the cadence skips; the Ask send discloses).
+ */
+const grabPrimaryDisplayImage = async (): Promise<{ image: Electron.NativeImage; displayId: string; scale: number } | undefined> => {
+  const primary = screen.getPrimaryDisplay()
+  const scale = primary.scaleFactor || 1
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: Math.round(primary.size.width * scale), height: Math.round(primary.size.height * scale) },
+  })
+  const primaryId = String(primary.id)
+  const source = sources.find((s) => s.display_id === primaryId) ?? sources[0]
+  const image = source?.thumbnail
+  if (!image || image.isEmpty()) return undefined // no frame yet — Screen-Recording grant likely still pending
+  return { image, displayId: source?.display_id || primaryId, scale }
+}
+
 const captureScreenFrame = async (): Promise<void> => {
   const controller = screenController
   if (!controller) return
   try {
-    const primary = screen.getPrimaryDisplay()
-    const scale = primary.scaleFactor || 1
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: Math.round(primary.size.width * scale), height: Math.round(primary.size.height * scale) },
-    })
-    const primaryId = String(primary.id)
-    const source = sources.find((s) => s.display_id === primaryId) ?? sources[0]
-    const image = source?.thumbnail
-    if (!image || image.isEmpty()) return // no frame yet — Screen-Recording grant likely still pending
-    const displayId = source?.display_id || primaryId
+    const grabbed = await grabPrimaryDisplayImage()
+    if (!grabbed) return
+    const { image, displayId, scale } = grabbed
     // Δ-gate before the expensive steps: the probe (32px-wide resize → raw bitmap) is tiny next to the
     // full-display JPEG encode + send + engine OCR it saves on every static tick.
     const verdict = frameDeltaGate.assess(displayId, new Uint8Array(image.resize({ width: DELTA_PROBE_WIDTH }).toBitmap()))
@@ -853,6 +865,31 @@ const stopScreenLoop = (): void => {
   screenCadence?.stop()
   screenCadence = undefined
   setImmediate(() => void screenController?.onCaptureStopped())
+}
+
+/** The honest outcome of an Ask-face frame request — a frame, or the human reason there is none. */
+type AskFrameOutcome = { ok: true; frame: { contentType: 'image/jpeg'; data: string } } | { ok: false; reason: string }
+
+/**
+ * ONE still frame for an explicit chat send (the Ask face: screenshot-on-every-send). This is NOT the
+ * ambient cadence loop: no Δ-gate (the user asked about THIS moment — an unchanged screen is still the
+ * answer), no capture controller, no session; exactly one grab per invoke, and the invoke only ever
+ * arrives from the send path. CONSENT is enforced here, in main: the screen sense must be ENABLED
+ * (cfg.screenEnabled, opt-in default OFF) and the OS grant not refused — otherwise an honest { ok:false,
+ * reason } comes back and the send proceeds WITHOUT a frame (never silent, never blocking). Mirroring the
+ * cadence path's TCC posture, 'not-determined' proceeds (the first grab is what surfaces the macOS
+ * prompt) and an empty image reads as "no frame yet".
+ */
+const captureAskFrame = async (): Promise<AskFrameOutcome> => {
+  if (!cfg.screenEnabled) return { ok: false, reason: 'screen capture is off (enable screenEnabled in client config)' }
+  if (!(await requestScreenPermission())) return { ok: false, reason: 'screen recording is not permitted — grant it in System Settings, then relaunch' }
+  try {
+    const grabbed = await grabPrimaryDisplayImage()
+    if (!grabbed) return { ok: false, reason: 'no screen frame available (Screen-Recording grant still pending?)' }
+    return { ok: true, frame: { contentType: 'image/jpeg', data: grabbed.image.toJPEG(70).toString('base64') } }
+  } catch (err) {
+    return { ok: false, reason: `screen capture failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
 }
 
 /**
@@ -1413,6 +1450,10 @@ app.whenReady().then(async () => {
     const window = BrowserWindow.fromWebContents(event.sender)
     if (window) resizePanelWindow(window, size)
   })
+  // The Ask face capture bridge: one still frame per EXPLICIT chat send (preload.cts openinfoScreen).
+  // The consent gate (screen sense enabled + OS grant) lives in captureAskFrame — a refusal answers an
+  // honest { ok:false, reason } the send path paints, never a silent null and never a blocked send.
+  ipcMain.handle('hud:capture-frame', () => captureAskFrame())
   // Load the Apps-folder state (favorites + open set + per-app positions) before creating windows so a
   // reopened app restores its saved position (#19/#20/#98). Best-effort — a missing file reads as empty.
   appState = readAppState(app.getPath('userData'))

@@ -622,3 +622,47 @@ test('#143 the seeded gazetteer document is seed-if-absent and a user edit is NE
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('Ask face: the chat thread persists per workspace, ordered, capped honestly, durable across reopen', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-chat-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // Unknown workspace reads empty, never throws (mirrors listPins) — asking is not an error.
+    assert.deepEqual(registry.listChatTurns('never-made'), [], 'unknown workspace reads []')
+    assert.equal(registry.countChatTurns('never-made'), 0)
+    // Appends create the workspace on demand and keep INSERTION order even within one millisecond
+    // (a user+assistant pair shares created_at — seq, not time, is the order).
+    const at = '2026-07-12T00:00:00.000Z'
+    registry.appendChatTurn('ask-ws', { role: 'user', content: 'what is this?' }, at)
+    registry.appendChatTurn('ask-ws', { role: 'assistant', content: 'a test.' }, at)
+    registry.appendChatTurn('ask-ws', { role: 'user', content: 'thanks' }, at)
+    assert.deepEqual(
+      registry.listChatTurns('ask-ws').map((t) => t.content),
+      ['what is this?', 'a test.', 'thanks'],
+      'oldest-first, insertion-ordered',
+    )
+    // The cap keeps the most recent TAIL (the honest truncation /chat/history discloses).
+    assert.deepEqual(
+      registry.listChatTurns('ask-ws', 2).map((t) => t.content),
+      ['a test.', 'thanks'],
+      'limit keeps the tail, still oldest-first',
+    )
+    assert.equal(registry.countChatTurns('ask-ws'), 3)
+    // A malformed turn is rejected by the contract gate BEFORE write (savePin's last line of defense).
+    assert.throws(() => registry.appendChatTurn('ask-ws', { role: 'user', content: '' } as never))
+    // Threads are workspace-scoped — another workspace's thread is untouched.
+    assert.deepEqual(registry.listChatTurns('default'), [])
+    registry.close()
+
+    // Durable: a fresh registry over the same dir reads the same thread (persisted, not in-memory).
+    const reopened = new WorkspaceRegistry(dir)
+    assert.deepEqual(
+      reopened.listChatTurns('ask-ws').map((t) => t.content),
+      ['what is this?', 'a test.', 'thanks'],
+      'the thread survives a reopen',
+    )
+    reopened.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
