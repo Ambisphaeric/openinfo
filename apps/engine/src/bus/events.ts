@@ -1,4 +1,4 @@
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, Session, SessionAnnotation, Surface, TranscriptUpdate } from '@openinfo/contracts'
+import type { CaptureChunk, ChatDelta, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, Session, SessionAnnotation, Surface, TranscriptUpdate } from '@openinfo/contracts'
 
 export interface EngineEvents {
   'capture.received': CaptureChunk
@@ -8,6 +8,10 @@ export interface EngineEvents {
   // Ephemeral live-transcript fast-path (#58): published right after the transcribe drain stage
   // succeeds, broadcast to WS clients, and NEVER persisted. See TranscriptUpdate in contracts.
   'transcript.updated': TranscriptUpdate
+  // Ephemeral streaming chat-answer fast-path (the Ask face): published per model-emitted chunk during a
+  // POST /chat turn, broadcast to WS clients, NEVER persisted — the ChatReply (and the persisted thread)
+  // is the authoritative record. Keyed by the request's client-minted turnId; terminal frame is done:true.
+  'chat.delta': ChatDelta
   // The screen-OCR processor's raw result (P4B). ENGINE-INTERNAL only — deliberately NOT mirrored to
   // the WS Events contract: the standard WS feed already carries this frame's understanding as the
   // distillate.updated it also publishes, and the richer OcrResult (with region blocks) is retrieved via

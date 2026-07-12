@@ -3,7 +3,7 @@ import type { ChatCitation, ChatContextSource, ChatContextSourceKind, ChatTurn, 
 /**
  * Chat context assembly — DATA, NOT CODE (owner canon 2026-07-11: "context assembly must be DECLARED in
  * the bundle config … so a future DSL compiles onto it", pill P1). The chat route reads the governing
- * bundle's `chat.contextAssembly` — an ORDERED list of the seven declared sources, each with its honest
+ * bundle's `chat.contextAssembly` — an ORDERED list of the eight declared sources, each with its honest
  * budget — and this module assembles the turn's context by iterating those sources IN DECLARED ORDER,
  * honoring each source's `limit` / `windowChars` / `tokenBudget`. Change the declaration (PUT /bundles) and
  * assembly changes with NO code change; that is the whole point, and a test proves it.
@@ -30,6 +30,7 @@ export const DEFAULT_CONTEXT_SOURCES: readonly ChatContextSource[] = [
   { kind: 'insights', limit: 6 },
   { kind: 'relevant-entities', limit: 8 },
   { kind: 'attached-docs', limit: 4, tokenBudget: 1500 },
+  { kind: 'screen', tokenBudget: 1000 },
   { kind: 'recent-turns', limit: 8 },
 ]
 
@@ -39,6 +40,8 @@ export const EXCERPT_CHARS = 320
 export const DEFAULT_ENTITY_LIMIT = 8
 /** Attached-docs char budget when a source declares neither `windowChars` nor `tokenBudget` (≈1.5k tokens). */
 export const DEFAULT_ATTACHED_CHARS = 6000
+/** Screen-text char budget when a `screen` source declares neither `windowChars` nor `tokenBudget` (≈1k tokens). */
+export const DEFAULT_SCREEN_CHARS = 4000
 
 /**
  * Why a declared source contributed what it did — the honest per-source verdict.
@@ -98,6 +101,16 @@ export interface GatheredContext {
   attachedDocs: { pinId?: string | undefined; pinTitle?: string | undefined; chunks: readonly PinChunk[] }
   /** the prior turns of this app-scoped thread (request.history), oldest-first. */
   recentTurns: readonly ChatTurn[]
+  /**
+   * The Ask face's screenshot-on-send, already READ (the route runs the frame through the screen-
+   * understanding path — ocr slot, VLM fallback — under content-class `screen` consent; the assembler
+   * only ever sees TEXT). Three honest states, mirroring activePreset:
+   *   { attempted: false }                       — the turn shipped no frame ⇒ report `empty`.
+   *   { attempted: true, failure: '…' }          — a frame shipped but could not be read (no ocr/vlm
+   *                                                 endpoint, invoke failure) ⇒ report `unavailable`.
+   *   { attempted: true, text: '…' }             — screen text in hand ('' ⇒ a blank frame, `empty`).
+   */
+  screen: { attempted: boolean; text?: string | undefined; failure?: string | undefined }
 }
 
 /** The assembled turn context — the composed system body, the messages history, citations, and honest reports. */
@@ -286,6 +299,31 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
         const block = `Excerpts from ${title} (cite the [p.N] / [#N] tags in your answer):\n${excerptLines.join('\n')}`
         push(
           { kind: source.kind, status: cited < available ? 'capped' : 'included', items: cited, available, chars: block.length },
+          block,
+        )
+        break
+      }
+
+      case 'screen': {
+        // The Ask face's frame, entered as TEXT (the route already ran ocr/vlm under `screen` consent).
+        if (!gathered.screen.attempted) {
+          push({ kind: source.kind, status: 'empty', items: 0, available: 0, chars: 0 }) // no frame this turn
+          break
+        }
+        if (gathered.screen.failure !== undefined) {
+          push({ kind: source.kind, status: 'unavailable', items: 0, available: 0, chars: 0 }) // frame shipped, unreadable — degrade honestly
+          break
+        }
+        const full = (gathered.screen.text ?? '').trim()
+        if (full === '') {
+          push({ kind: source.kind, status: 'empty', items: 0, available: 0, chars: 0 }) // a blank frame is a normal result
+          break
+        }
+        const budget = charBudget(source, DEFAULT_SCREEN_CHARS)
+        const text = clip(full, budget)
+        const block = `On the user's screen right now (read at send):\n${text}`
+        push(
+          { kind: source.kind, status: text.length < full.length ? 'capped' : 'included', items: 1, available: 1, chars: block.length },
           block,
         )
         break
