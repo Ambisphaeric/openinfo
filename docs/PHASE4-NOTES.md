@@ -4627,7 +4627,7 @@ hud-bounds): real window bounds follow user expand/collapse AND an event-suggest
 - **`hud-register-lint.test.ts`** (`83e5e16`) — the recurrence-ender: every registered block renderer driven through the REAL renderer with marker-id fixtures (`lint-endpoint-x`/`lint-model-9b`/`tpl-lint-1`); FAILS if a marker renders outside the Diagnostics-tier allow-list, and positively asserts inspector/queue/sense-gates DO show ids so the allow-list stays honest. `drafts` excluded with a comment pending its own via-line fix.
 
 ### Remaining #118
-Block-header subtitles/legends · drafts why-line · stale `via …` prose in `shared/contracts/src/records/fieldValue.ts` docstrings.
+Block-header subtitles/legends · stale `via …` prose in `shared/contracts/src/records/fieldValue.ts` docstrings. *(drafts why-line fixed — basics wave C, S7 below.)*
 
 ## PR #151 — echo-dedupe: mic fragments that duplicate the system stream die at the transcribe seam  *(branch feat/echo-dedupe)*
 
@@ -4650,3 +4650,25 @@ A static display was re-captured and re-OCR'd every 3–6s tick forever. Now:
 
 ### Follow-ups
 OCR-economics tuning of threshold/tolerance/probe width (#5) · an engine-side deltaScore reader · multi-display capture rides this same gate when displays fan out.
+
+## PR — basics wave C: honest Record button + chrome honesty + interaction lint (S3/S7)  *(branch feat/basics-c-chrome-honesty)*
+
+MVP-pivot interaction bar: before new capability lands, every served window passes a basic honesty check. Adopted permanent policy — **rendering an affordance with no live handler is a FAILING test** — enforced as a lint sibling of the #118 register lint.
+
+### S3 — honest Record button (`apps/client/src/surfaces/hud/notetaker-layout.ts`)
+The note-taker Record button had NO click handler (`data-nt` is referenced nowhere but the render side) and its only disclosure was a hover tooltip — a live-looking silent dead button. The real fix (in-window start/stop) is the #136 session-control verb dispatched through the shell tray start-session path so capture consent flows; that is OUT OF SCOPE here. This slice renders the button **`disabled`** with an INLINE, always-visible `.nt-record-note` ("Controlled from the tray · … #136 session-control block"), not a tooltip. The rail chrome (home + Notes/Summary/Search nav) had the same failure mode — each is now `disabled` with a `title` disclosing that navigation is not wired yet (multi-view routing / session-list block unbuilt), so the whole frame is honest. `notetaker-layout.test.ts` asserts the disabled + inline-note markup.
+
+### Interaction lint (`apps/client/src/surfaces/blocks/hud-interaction-lint.test.ts`)
+The policy's enforcement arm. A rendered `<button>` is HONEST iff it is (1) WIRED — `data-verb` ∈ the mount-layer/input-submit dispatch set; (2) GHOST — carries the `ghost` visible-but-inert marker (#15/#66); or (3) DISABLED — the chrome disabled-with-disclosure pattern. Anything else — an enabled, live-looking control with no wired verb — is a SILENT DEAD BUTTON and FAILS. Tests: the predicate blesses S3's pattern and every honest form; it FAILS the old Record button + a fake-live `.mini`; the action renderer (`actions.ts`) never emits a dead button for ANY verb (wired, unwired text, or glyph); and the real `renderNotetaker` frame is driven end-to-end.
+
+### S7 — chrome honesty (`apps/engine/src/surfaces/defaults.ts`, `notetaker.ts`, mirrored templates)
+The `open` action shipped on seeded surfaces but was never wired (no mount handler, no navigation target). Tier rule adopted:
+- **HUD tier** (`surf-openinfo-hud`): the minimal glance carries NO text action buttons. Copy + Open stripped from `relevant-now` (the #66 dismiss/pin/follow-up glyph strip stays); Copy stripped from the HUD `fields` ride-along.
+- **Support tier** (note-taker): keep ONLY verbs that actually work — the dead Open dropped from `pinned-doc`; copy/mark-done/dismiss kept. The Fields app / distillates copy is untouched.
+- Both edits mirrored into `templates/openinfo-hud/surface.json` + `templates/openinfo-notetaker/surface.json`.
+
+### #118 leftover (rides S7)
+The `drafts` block why-line rendered `via <endpoint>` — a machine endpoint id at a human tier (the same leak `fields.ts` already fixed). Dropped; the trail stays recorded on `provenance` and reachable on the diagnostics surfaces + the ledger. `drafts` is un-skipped in `hud-register-lint.test.ts` with a marker-carrying Draft fixture, so it is now positively guarded. No block remains skipped by the register lint.
+
+### Disclosed deviation
+S3 named only the Record button; the rail nav/home buttons shared its silent-dead failure mode and live in the same owned file, so they were made honest (`disabled` + `title`) too — required for a GENERAL interaction lint over the served frame. Wiring nav (multi-view routing) remains a separate future slice; `data-nt` hooks are retained so it lights up when a handler lands in dev-entry.
