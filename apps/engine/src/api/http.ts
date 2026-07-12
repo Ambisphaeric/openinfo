@@ -1827,8 +1827,15 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     insights: (workspaceId) => (known(workspaceId) ? ctx.store.listDistillates(workspaceId).map((d) => d.text).filter((t) => t.trim() !== '') : []),
     pinTitle: (workspaceId, pinId) => ctx.store.getPin(workspaceId, pinId)?.title,
     pinChunks: (workspaceId, pinId) => (ctx.store.getPin(workspaceId, pinId) ? ctx.store.listPinChunks(workspaceId, pinId) : []),
-    // active-preset read-seam: P2 owns preset documents/selection. Left UNFILLED here, so the `active-preset`
-    // source degrades HONESTLY to `unavailable` in the accounting until P2 wires it in.
+    // active-preset read-seam (pill P1×P2 integration): P2 owns preset documents/selection; here we FILL P1's
+    // optional seam with `ctx.presets.resolveActive`, mapping the resolved preset document → P1's narrow
+    // ActivePresetRef {label, text}. The seam is now PRESENT, so the `active-preset` source reports `empty`
+    // (wired, none selected) rather than `unavailable`, and `included` once a workspace selects a preset —
+    // the SAME resolver the distiller injects from, so chat context and distill injection agree on one truth.
+    resolveActivePreset: (workspaceId) => {
+      const preset = ctx.presets.resolveActive(workspaceId)
+      return preset !== undefined ? { label: preset.name, text: preset.body } : undefined
+    },
     workspaceDeniesEgress: (workspaceId) => ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true,
     ...(guard !== undefined ? { guard } : {}),
     resolveKey: (ref: string) => ctx.secrets.resolve(ref),

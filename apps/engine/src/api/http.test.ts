@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Bundle, CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FieldValue, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
+import type { Bundle, CaptureChunk, ChatReply, Distillate, Draft, Entity, Fabric, FabricProfile, FieldValue, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
@@ -3686,6 +3686,81 @@ test('POST /chat validates the body (400) and surfaces an honest failure with no
     assert.match(((await empty.json()) as { error: string }).error, /llm/i) // the honest reason, verbatim
   } finally {
     await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('pill P1×P2: the active-preset read-seam is wired into chat context assembly end-to-end', async () => {
+  // The merge-time integration wire (neither PR did it alone): P1 defined the OPTIONAL
+  // `ChatDeps.resolveActivePreset` seam and left it unfilled (⇒ `unavailable`); P2 shipped
+  // `ctx.presets.resolveActive`. Here the ROUTE fills the seam with that resolver, so a workspace's
+  // selected preset text actually reaches the assembled chat context. Driven over the REAL engine +
+  // a throwaway openai-compat server that captures the messages it receives (chat.test idiom).
+  const seen: { messages: { role: string; content: string }[] } = { messages: [] }
+  const up = createServer((req, res) => {
+    if (req.url === '/v1/chat/completions') {
+      let body = ''
+      req.on('data', (c) => (body += c))
+      req.on('end', () => {
+        seen.messages = (JSON.parse(body) as { messages: { role: string; content: string }[] }).messages
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: { prompt_tokens: 40, completion_tokens: 2 } }))
+      })
+      return
+    }
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ object: 'list', data: [{ id: 'llama-3.2-3b' }] }))
+      return
+    }
+    res.writeHead(200); res.end('ok') // base ping
+  })
+  await new Promise<void>((resolve) => up.listen(0, resolve))
+  const upAddr = up.address()
+  assert.ok(upAddr && typeof upAddr === 'object')
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-preset-chat-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+
+    // Point the llm slot at the capturing server so the chat invoke actually reaches it.
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: `http://127.0.0.1:${upAddr.port}`, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+
+    // UNSET case — the seam is now PRESENT (wired), so the source reports `empty` (wired, none selected),
+    // NOT `unavailable`. This is the honest three-state design: the seam existing is what turns
+    // unavailable→empty. And no preset text is in the system prompt.
+    const before = (await (await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello' }),
+    })).json()) as ChatReply
+    assert.match(before.budget.note, /active-preset \(empty\)/, 'wired-but-unset reports empty (not unavailable)')
+    const systemBefore = seen.messages.find((m) => m.role === 'system')?.content ?? ''
+    assert.doesNotMatch(systemBefore, /Voice\/register/, 'no preset block when none is selected')
+
+    // Select a preset for the workspace (P2's PUT /active-preset), then chat again.
+    assert.equal((await putJson(base, '/active-preset', { presetId: 'preset-sales' })).status, 200)
+    const after = (await (await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hello' }),
+    })).json()) as ChatReply
+
+    // The source now reports INCLUDED in the visible budget note...
+    assert.match(after.budget.note, /active-preset\(1\)/, 'a selected preset reports included in the assembly note')
+    // ...and the preset's label + body TEXT actually reached the assembled system context.
+    const systemAfter = seen.messages.find((m) => m.role === 'system')!.content
+    assert.match(systemAfter, /Voice\/register — Sales:/, 'the active preset label is injected')
+    assert.match(systemAfter, /Favor the prospect's stated needs/, 'the active preset body text reaches the context')
+  } finally {
+    await app.close()
+    await new Promise<void>((resolve) => up.close(() => resolve()))
     await rm(dir, { recursive: true, force: true })
   }
 })
