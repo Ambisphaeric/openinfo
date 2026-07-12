@@ -191,7 +191,14 @@ const DEFAULTS = {
   port: 8787,
   workspace: 'default',
   modeId: 'mode-meeting',
-  surfaceId: 'surf-openinfo-hud',
+  // The default ANCHOR surface — the window createHudWindow opens and the ⌘\ accelerator + tray Show/Hide
+  // act on. This is THE PILL (the MVP Standard App glance face), not the old full HUD: the pill is what the
+  // user must be able to summon, so the anchor points AT it (otherwise the pill is undiscoverable — the ⌘\
+  // toggle reveals the old hud and the pill only ever opened as a buried Apps-folder window). Nothing
+  // persists surfaceId (not client.json/window-state/apps-state), so no migration; OPENINFO_SURFACE still
+  // overrides for dev. The pill's window is hud-chrome + focusable (window-options) and its height is owned
+  // by the PillController (three extents) — createHudWindow + showHud/hideHud only show/hide the window.
+  surfaceId: 'surf-openinfo-pill',
   screenIntervalMs: 5000,
   segmentMs: 1000,
 } as const
