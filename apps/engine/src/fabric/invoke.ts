@@ -2,7 +2,7 @@ import type { EgressDecision, EgressReach, Endpoint, Fabric, GuardVerdict, Invok
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
 import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
-import { classifyEndpoint, egressDecision, isLoopbackEndpoint, type EgressConsent } from './egress.js'
+import { classifyEndpoint, egressDecision, mayReceiveRawFrames, type EgressConsent } from './egress.js'
 import { runEgressGuard, type GuardOptions } from './guard.js'
 import {
   AggregateInvokeError,
@@ -83,10 +83,19 @@ const egressGate = (
 ): EgressGate => {
   const reach = classifyEndpoint(endpoint)
   // Raw screen bytes are stricter than the general egress model: private-LAN endpoints count as
-  // `local` for ordinary content, but OCR/VLM frames may reach only an engine-managed runtime or an
-  // explicit loopback URL. This check precedes runtime resolution, auth, guards, and fetch.
-  if (restriction === 'loopback-only' && !isLoopbackEndpoint(endpoint)) {
-    const reason = 'raw screen frames are loopback-only'
+  // `local` for ordinary content, but OCR/VLM frames may reach only an engine-managed runtime, an
+  // explicit loopback URL, or an http endpoint the USER explicitly flagged `trustRawFrames` — and that
+  // flag is honored only for LAN-local hosts (the cap is absolute: a flagged public host stays denied).
+  // This check precedes runtime resolution, auth, guards, and fetch.
+  if (restriction === 'loopback-only' && !mayReceiveRawFrames(endpoint)) {
+    const flagged = endpoint.kind === 'http' && endpoint.trustRawFrames === true
+    // The skip line names the REAL reason: no flag ⇒ the loopback default (and how to opt in); flagged
+    // but non-local ⇒ the absolute LAN cap; flagged but a wildcard bind ⇒ not a destination host at all.
+    const reason = !flagged
+      ? 'raw screen frames are loopback-only — set trustRawFrames on this endpoint to allow it'
+      : reach === 'egress'
+        ? 'raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames'
+        : 'raw screen frames require a real local-network host — a wildcard bind address is not a destination'
     const err = new InvokeError('egress-denied', ctxForGate(endpoint), {
       hint: `${reason} — endpoint "${endpoint.name}" was skipped before invocation`,
     })

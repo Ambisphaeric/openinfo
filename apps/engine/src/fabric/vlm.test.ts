@@ -135,6 +135,71 @@ test('invokeVlm sends raw frames only to loopback, skipping private-LAN and publ
   }
 })
 
+test('invokeVlm sends raw frames to a LAN endpoint the user explicitly flagged trustRawFrames', async () => {
+  const lanTarget = await startFakeVlm('described on the trusted box')
+  const port = new URL(lanTarget.url).port
+  const documentedUrl = `http://10.0.0.20:${port}`
+  const originalFetch = globalThis.fetch
+  const attempted: string[] = []
+  // Keep the endpoint document honestly private-LAN for policy classification, while steering this test's
+  // transport to its loopback fake server (the invoke.test.ts documentedUrl idiom).
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    return originalFetch(url.replace(documentedUrl, lanTarget.url), init)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        vlm: [{ kind: 'http', name: 'trusted-lan-vlm', url: documentedUrl, api: 'openai-compat', trustRawFrames: true }],
+      },
+    }
+    const result = await invokeVlm(fabric, params)
+    assert.equal(result.endpoint, 'trusted-lan-vlm')
+    assert.equal(result.text, 'described on the trusted box')
+    assert.deepEqual(attempted, [`${documentedUrl}/v1/chat/completions`])
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(lanTarget)
+  }
+})
+
+test('invokeVlm skips an untrusted LAN endpoint and a flagged PUBLIC endpoint before fetch, naming the real reasons', async () => {
+  const originalFetch = globalThis.fetch
+  const attempted: string[] = []
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    throw new Error(`no fetch may happen: ${url}`)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        vlm: [
+          { kind: 'http', name: 'lan-vlm', url: 'http://10.0.0.20:8000', api: 'openai-compat' }, // no flag
+          { kind: 'http', name: 'public-vlm', url: 'https://vlm.example.test', api: 'openai-compat', trustRawFrames: true }, // flag cannot cross the LAN cap
+        ],
+      },
+    }
+    await assert.rejects(
+      () => invokeVlm(fabric, params),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.failures.length, 2)
+        assert.ok(error.failures.every((f) => f.class === 'egress-denied'))
+        assert.match(error.message, /lan-vlm: raw screen frames are loopback-only — set trustRawFrames on this endpoint to allow it/)
+        assert.match(error.message, /public-vlm: raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames/)
+        return true
+      },
+    )
+    assert.deepEqual(attempted, []) // both skips happened BEFORE any fetch
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('invokeVlm injects a resolved keyRef as Authorization: Bearer', async () => {
   const fake = await startFakeVlm('authed answer')
   vlmAuthHeaders.length = 0
