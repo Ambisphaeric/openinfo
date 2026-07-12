@@ -4875,3 +4875,26 @@ entry was missed); the same true-up regenerates the two committed schemas P2's c
 touched (`Distillate.json` +presetId, `PromptTemplate.json` +preset kind) — the regen step was
 skipped in the P2 branch, so `git diff --exit-code` after `pnpm gen` failed until now. A CI
 schema-drift guard remains the standing fix (issue #87).
+
+## Slice: CI schema-drift guard (#87) + /active-preset doc-comment fix  *(filler, retro-35 true-up)*
+
+Two small items from retro 35. (1) **CI schema-drift guard (#87):** the committed
+`shared/contracts/schemas/*.json` are generated artifacts, but contracts tests validate examples
+against the TypeBox source, never against the committed JSON — so a slice that changed the contract
+source and skipped `pnpm gen` left the artifacts silently stale (the real incident repaired at
+`d79556c`, and the P2 branch's own missed regen noted above). Added a `Schema drift guard` step to
+`.github/workflows/ci.yml` between Build and Test (drift fails fast, before the suites): it runs
+`pnpm --filter @openinfo/contracts gen` then `git diff --exit-code shared/contracts/schemas/`, which
+fails loud and names the offending files. Proven both ways locally on this branch — clean on the
+current tree, and a hand-edited schema JSON made the diff exit non-zero naming `Ack.json` (reverted).
+(2) **Doc-comment fix:** the PUT `/active-preset` doc-comment in `apps/engine/src/api/http.ts` claimed
+an ABSENT presetId ⇒ 400, but the code treats absent (`undefined`) identically to `null` — it clears
+the selection. Corrected the COMMENT to match behavior (only a present, non-null non-string ⇒ 400);
+code unchanged.
+
+Disclosed deferrals against #87's DoD: (a) the guard is a CI step rather than a test under
+`pnpm -r test` — same PR-gating effect, and adding a test lives in the contracts region owned by a
+parallel agent this slice must not touch; (b) #87 also asks for a one-line contracts README note that
+the drift check is the enforcement — the README already labels schemas "generated", and the README is
+in that same off-limits region, so the enforcement clause is deferred. Hence the PR references (not
+closes) #87 pending those two doc/mechanism items.

@@ -36,6 +36,18 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Schema drift guard (#87): the committed shared/contracts/schemas/*.json
+      # are generated artifacts (gen reads the compiled TypeBox dist built
+      # above). A slice that changes the contract source but skips regeneration
+      # leaves these stale — contracts tests validate examples against the
+      # source, never against the committed JSON, so drift is otherwise
+      # invisible until fresh-eyes review. Regenerate and fail loudly on any
+      # diff, naming the offending files. Runs before tests so drift fails fast.
+      - name: Schema drift guard
+        run: |
+          pnpm --filter @openinfo/contracts gen
+          git diff --exit-code shared/contracts/schemas/
+
       # FLAKE CONTROLS (environment-gated, not product bugs — both engine
       # e2es pass in isolation and in most full passes):
       #  * apps/engine is run with --test-concurrency=1: its timing e2es
