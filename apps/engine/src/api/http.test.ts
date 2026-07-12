@@ -3702,6 +3702,17 @@ test('GET/PUT /bundles serves the Standard App bundle in the document-route idio
     })
     assert.equal(bad.status, 400)
 
+    // The bad-face-kind twin: an unknown CHAT-SOURCE kind is rejected at write time by the SAME Tier-A gate
+    // (the closed ChatContextSourceKind union) — a source the assembler has no path to gather must never
+    // persist, exactly as an unrunnable face role must not (pill P1 ride-along).
+    const badSource = await fetch(`${base}/bundles/bundle-standard-app`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...byId, chat: { sources: [{ kind: 'weather' }] } }),
+    })
+    assert.equal(badSource.status, 400)
+    assert.match(((await badSource.json()) as { error: string }).error, /invalid Bundle/)
+
     // An id/route mismatch ⇒ 400 (mirrors PUT /workflows).
     const mismatch = await fetch(`${base}/bundles/bundle-standard-app`, {
       method: 'PUT',
