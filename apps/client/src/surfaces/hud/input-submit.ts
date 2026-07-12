@@ -77,6 +77,14 @@ export interface InputDeps {
   upload?(file: UploadFile): Promise<AttachedDoc>
 }
 
+/**
+ * The verb the input block's submit button carries and this controller dispatches (the selector in
+ * install() gates on it). Exported as the source of truth so the honesty interaction lint can union it
+ * with the mount layer's WIRED_VERBS instead of hardcoding the literal — the input block's dispatch path
+ * lives here, not in wireActions, so its verb is contributed from here.
+ */
+export const INPUT_SUBMIT_VERB = 'input-submit'
+
 const escapeHtml = (value: string): string =>
   value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
@@ -115,7 +123,7 @@ export class InputSession {
   /** Wire the delegated submit-click + file-change listeners onto the mount container (survives re-render). */
   install(container: InputDomNode): void {
     container.addEventListener('click', (event) => {
-      const el = event.target?.closest('[data-verb="input-submit"]')
+      const el = event.target?.closest(`[data-verb="${INPUT_SUBMIT_VERB}"]`)
       if (!el) return
       const block = el.closest('.input-block')
       if (block) void this.onSubmit(block)

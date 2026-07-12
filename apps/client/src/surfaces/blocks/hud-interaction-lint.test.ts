@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Action, Surface } from '@openinfo/contracts'
-import { renderToHtml, type NowContext } from '../block-renderer/index.js'
+import { renderToHtml, WIRED_VERBS, type NowContext } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from './index.js'
 import { rowAffordances } from './actions.js'
 import { h } from '../block-renderer/vnode.js'
 import { renderNotetaker } from '../hud/notetaker-layout.js'
+import { INPUT_SUBMIT_VERB } from '../hud/input-submit.js'
 
 /**
  * The machine-speak INTERACTION LINT — the sibling of the register lint (#118) and the enforcement arm of
@@ -24,20 +25,11 @@ import { renderNotetaker } from '../hud/notetaker-layout.js'
  * tooltip), which S3 fixes to the disabled-with-inline-disclosure pattern this lint now blesses.
  */
 
-// The verbs the mount layer wires (mount.ts wireActions) plus the input block's submit (input-submit.ts).
-// A button carrying any of these has a real dispatch path; anything else must be ghost/disabled to be honest.
-const LIVE_VERBS = new Set([
-  'copy',
-  'mark-done',
-  'accept',
-  'dismiss',
-  'clarify-confirm',
-  'clarify-rival',
-  'clarify-open',
-  'clarify-dismiss',
-  'mute-system-stream',
-  'input-submit',
-])
+// The verbs with a real dispatch path, read STRAIGHT FROM the production source of truth: the mount layer's
+// WIRED_VERBS (mount.ts wireActions gates on it) unioned with the input block's own verb (input-submit.ts).
+// No hand-maintained copy — a verb wired (or unwired) in production moves this set with it, so the lint can
+// never drift into false-positiving a new verb or silently blessing a button whose verb was un-wired.
+const LIVE_VERBS = new Set<string>([...WIRED_VERBS, INPUT_SUBMIT_VERB])
 
 /** Every `<button …>` opening tag in a rendered HTML string. */
 const buttonTags = (html: string): string[] => html.match(/<button\b[^>]*>/g) ?? []
