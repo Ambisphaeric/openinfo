@@ -1,0 +1,4 @@
+{ "id": "preset-meetings", "name": "meetings", "kind": "preset",
+  "builtin": true,
+  "description": "context preset: a work meeting — favor decisions, action items, owners, and deadlines",
+  "body": "Context: this is a work meeting. Favor decisions made, action items with their owners, and deadlines." }
