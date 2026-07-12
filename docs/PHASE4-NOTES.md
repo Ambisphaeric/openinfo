@@ -5041,3 +5041,44 @@ Every prior driven e2e started its fake engine BEFORE the window, so no test eve
 - Touched driven e2es green: ask-race (new), pill (Scene 0 + scenes 1-6), ask-face — all PASS; the driven set is now ten.
 - Unit: contracts **91** / client **489** (+7: the retry ladder, the capped forever-posture, the terminal no-retry stop, the typed transient/terminal distinction, the true-reason tooltips) / engine **782**, zero failures, `pnpm -r build && pnpm -r test` green before each commit.
 - Scope: client only — no contract/schema, route-shape, flag, persistence, or version change.
+
+## Slice: raw-frame trusted hosts — the loopback-only policy becomes an explicit per-endpoint opt-in  *(branch feat/raw-frames-trusted-hosts)*
+
+The raw-frame restriction shipped in the loopback-only slice was absolute: OCR/VLM image bytes could reach
+only an engine-managed runtime or a loopback URL. That posture is right as a DEFAULT but wrong as a ceiling —
+a vision model running on another machine on the user's own network was unreachable with no way to say
+"I trust that box". This slice makes the policy user-configurable without weakening the default by one bit.
+
+### 1 · The contract: `trustRawFrames` on the http endpoint variant
+The http `Endpoint` variant gains an optional boolean `trustRawFrames` — the user's EXPLICIT declaration
+that this endpoint's host is trusted to receive raw screen frames. Absent means exactly what shipped before:
+raw frames stay loopback-only. The flag is documented (and enforced) as honored only for LAN-local hosts —
+it widens loopback to the user's own network, never to the internet. Append-only/optional (existing fabric
+documents validate unchanged), per-endpoint user config, never auto-set. Schemas regenerated and committed
+zero-drift (Endpoint/Fabric/FabricProfile/DiscoverResult).
+
+### 2 · The gate: `mayReceiveRawFrames`, a pure predicate beside `isLoopbackEndpoint`
+Raw frames may reach an endpoint iff `isLoopbackEndpoint(endpoint)` OR the endpoint is http, carries
+`trustRawFrames: true`, AND `classifyEndpoint` says `local`. The LAN cap is absolute: a public host with
+the flag set is STILL denied, and a wildcard bind address (0.0.0.0/::) is never trusted — it is a bind
+target, not a destination host. `egressGate`'s loopback-only branch now calls this predicate in the same
+place (before runtime resolution, auth, guard, and fetch), and the skip line names the REAL reason each
+way: an unflagged non-loopback endpoint reads "raw screen frames are loopback-only — set trustRawFrames on
+this endpoint to allow it" (the opt-in is discoverable at the point of denial); a flagged public host reads
+"raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames" (the cap
+is stated, not silently applied). Nothing else moved: the egress consent layers (content-class `screen`
+still denies EGRESS), LLM/STT gating, diagnostics, and the client are untouched.
+
+### 3 · Tests
+The predicate's full truth table is pinned in egress.test.ts (loopback no-flag · managed local · LAN+flag ·
+LAN no-flag · public+flag DENIED · wildcard+flag denied · cloud denied). Invoke-level, following the
+loopback slice's fetch-interception idiom: ocr.test.ts and vlm.test.ts each drive a trusted-LAN endpoint to
+a real answer (the endpoint document stays honestly private-LAN while the test steers transport to a
+loopback fake — the documentedUrl idiom), and prove an untrusted LAN endpoint plus a flagged PUBLIC endpoint
+are both skipped BEFORE any fetch with the honest classified lines.
+
+### Evidence
+- Full `pnpm -r build && pnpm -r test`: contracts **91** / client **489** / engine **787** (+5: the truth
+  table, trusted-LAN invoked ×2, skipped-before-fetch ×2), zero failures before each commit.
+- Scope: contracts (append-only optional field + regenerated schemas) + engine fabric (egress.ts predicate,
+  invoke.ts gate wording) + tests. No route-shape, flag, persistence-schema, client, or version change.
