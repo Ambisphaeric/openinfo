@@ -1,4 +1,4 @@
-import type { AttributionPattern, BlockQuery, ChatReply, ChatTurn, Pin, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
+import type { AttributionPattern, BlockQuery, ChatReply, ChatScreenshot, ChatTurn, Pin, PromptTemplate, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
 import { mountSurface, renderInto, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import { createBootController } from './boot.js'
@@ -9,7 +9,7 @@ import { panelStyles } from './panel-styles.js'
 import { installWindowDrag, type DragBridge } from './window-drag.js'
 import { installAutoResize, type ResizeBridge } from './auto-resize.js'
 import { PanelController, type PanelSize } from './panel.js'
-import { InputSession, type AttachedDoc, type UploadFile } from './input-submit.js'
+import { InputSession, type AttachedDoc, type CaptureOutcome, type ChatThread, type UploadFile } from './input-submit.js'
 
 /**
  * A plain-browser dev entry that renders the live HUD against a running engine — the mountable view
@@ -274,10 +274,11 @@ export const submitEntityCorrection =
  */
 export const submitChat =
   (baseUrl: string, workspace: string | undefined, fetchFn: FetchLike = fetch) =>
-  async (input: { target: string; route: string; message: string; pinId?: string; history: ChatTurn[] }): Promise<ChatReply> => {
-    const body: Record<string, unknown> = { message: input.message, history: input.history }
+  async (input: { target: string; route: string; message: string; pinId?: string; history: ChatTurn[]; screenshot?: ChatScreenshot; turnId: string }): Promise<ChatReply> => {
+    const body: Record<string, unknown> = { message: input.message, history: input.history, turnId: input.turnId }
     if (workspace !== undefined) body['workspace'] = workspace
     if (input.pinId !== undefined) body['pinId'] = input.pinId
+    if (input.screenshot !== undefined) body['screenshot'] = input.screenshot
     const res = await fetchFn(`${baseUrl}${input.route}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -288,6 +289,58 @@ export const submitChat =
       throw new Error(detail?.error ?? `chat failed (HTTP ${res.status})`)
     }
     return (await res.json()) as ChatReply
+  }
+
+/**
+ * The Ask face's screenshot-on-send dep: ask the SHELL for one frame over the preload capture bridge
+ * (`window.openinfoScreen`, main-process desktopCapturer behind the consent gate). No bridge — a plain
+ * browser / served test — is itself an honest outcome: the send proceeds frameless and says why. The
+ * bridge's discriminated { ok, frame|reason } is validated shape-first so a malformed answer can never
+ * masquerade as a frame.
+ */
+export const captureScreenViaBridge = async (): Promise<CaptureOutcome> => {
+  const bridge = (globalThis as { openinfoScreen?: { captureFrame(): Promise<unknown> } }).openinfoScreen
+  if (!bridge) return { ok: false, reason: 'screen capture needs the desktop app' }
+  try {
+    const outcome = (await bridge.captureFrame()) as { ok?: unknown; frame?: { contentType?: unknown; data?: unknown }; reason?: unknown }
+    if (outcome && outcome.ok === true && outcome.frame && typeof outcome.frame.data === 'string' && typeof outcome.frame.contentType === 'string') {
+      return { ok: true, frame: outcome.frame as ChatScreenshot }
+    }
+    return { ok: false, reason: typeof outcome?.reason === 'string' ? outcome.reason : 'screen capture returned no frame' }
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/**
+ * Resolve the Ask face's default question — the tpl-ask-default DOCUMENT body over the existing
+ * GET /templates/:id read (fresh per empty send, so a PUT /templates edit takes effect immediately;
+ * #130: a shipped document, never a string baked into the client). Honest failure: a non-ok read or an
+ * empty body REJECTS with the reason the input block paints.
+ */
+export const fetchDefaultAsk =
+  (baseUrl: string, fetchFn: FetchLike = fetch) =>
+  async (): Promise<string> => {
+    const res = await fetchFn(`${baseUrl}/templates/tpl-ask-default`)
+    if (!res.ok) throw new Error(`the default ask document could not be read (HTTP ${res.status})`)
+    const template = (await res.json()) as PromptTemplate
+    if (typeof template.body !== 'string' || template.body.trim() === '') throw new Error('the default ask document has an empty body')
+    return template.body
+  }
+
+/**
+ * Rehydrate the workspace's persisted chat thread (GET /chat/history) so the chat window opens
+ * mid-conversation — the owner's app-scoped persistent thread. Honest failure: a non-ok read rejects
+ * with the status; the caller surfaces it as visible text (an older engine without the route reads as
+ * exactly that, not as an empty thread).
+ */
+export const fetchChatHistory =
+  (baseUrl: string, workspace: string | undefined, fetchFn: FetchLike = fetch) =>
+  async (): Promise<ChatThread> => {
+    const q = workspace !== undefined ? `?workspace=${encodeURIComponent(workspace)}` : ''
+    const res = await fetchFn(`${baseUrl}/chat/history${q}`)
+    if (!res.ok) throw new Error(`chat history could not be read (HTTP ${res.status})`)
+    return (await res.json()) as ChatThread
   }
 
 /**
@@ -378,7 +431,21 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const transport = new BrowserTransport(baseUrl)
   // #134: the input block's live conversation controller. Its state (turns/attachment/status) lives here,
   // not in the DOM, so a destructive panel re-render never eats it — repaint() re-injects after every render.
-  const inputSession = new InputSession({ submit: submitChat(baseUrl, workspace), upload: uploadAndIngest(baseUrl, workspace) })
+  // Ask face deps ride alongside the S2 attach bridge: one frame per send (captureScreenViaBridge), the
+  // default-ask document for an empty send, and the streamed-delta ingest wired through the Hud below.
+  const inputSession = new InputSession({
+    submit: submitChat(baseUrl, workspace),
+    upload: uploadAndIngest(baseUrl, workspace),
+    captureScreen: captureScreenViaBridge,
+    defaultAsk: fetchDefaultAsk(baseUrl),
+  })
+  // Ask-history: rehydrate the workspace's persisted thread so the chat window opens mid-conversation
+  // (seedHistory never clobbers a live session; the paint lands with the next render). A failed read is
+  // logged to the console (visible in the shell's log surface) — the thread simply starts empty, and the
+  // engine's own responses still disclose their state per turn.
+  void fetchChatHistory(baseUrl, workspace)()
+    .then((thread) => inputSession.seedHistory(thread))
+    .catch((error: unknown) => console.error(`[chat] history rehydrate failed: ${error instanceof Error ? error.message : String(error)}`))
   // #134: the attached-panel geometry controller — created from surface.panel once the doc loads (below).
   let panelController: PanelController | undefined
   // S1: the window's ONE height authority (PanelController or auto-resize) is installed exactly once.
@@ -391,6 +458,9 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     ...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
     ...(resolvedSurfaceId !== undefined ? { surfaceId: resolvedSurfaceId } : {}),
     ...(surfaceRenderer !== undefined ? { renderSurface: surfaceRenderer } : {}),
+    // Ask face: streamed-reply deltas ride the Hud's ONE event socket, payload-fed (see hud.ts) — the
+    // InputSession appends each to its in-flight turn and re-paints, no query.
+    onChatDelta: (payload) => inputSession.ingestDelta(payload),
     // #134: size the window to the declared attached panel (collapsed/expanded along its edge) and, for a
     // reveal:'event' panel, subscribe to the trigger to open it as a dismissible suggestion. Electron-only
     // (needs the panel bridge); a plain browser page simply scrolls. Created once — hot-reloads keep it.

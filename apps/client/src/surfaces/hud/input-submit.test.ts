@@ -140,7 +140,7 @@ test('a FAILED submit paints the reason as visible text (never a silent no-op)',
   assert.doesNotMatch(log, /openinfo<\/span>/)
 })
 
-test('an empty message is ignored (no post)', async () => {
+test('an empty send with NO screenshot available is an honest VISIBLE no-op (text, not a swallow)', async () => {
   let posted = false
   const session = new InputSession({ submit: async () => { posted = true; return reply('x') } })
   const { container, textarea, submit } = buildContainer()
@@ -149,6 +149,9 @@ test('an empty message is ignored (no post)', async () => {
   container.dispatch('click', submit)
   await flush()
   assert.equal(posted, false)
+  const status = container.querySelector('.in-status')!
+  assert.match(status.innerHTML, /Nothing to ask/, 'the no-op is painted, never silent')
+  assert.match(status.innerHTML, /screen capture needs the desktop app/, 'the WHY rides along')
 })
 
 test('a dropped file ingests via the injected upload, shows the attachment, and cites it on the next turn', async () => {
@@ -288,4 +291,131 @@ test('repaint re-injects the conversation after a destructive re-render (state l
   session.repaint(second.container)
   assert.match(second.container.querySelector('.in-log')!.innerHTML, /remember this/)
   assert.match(second.container.querySelector('.in-log')!.innerHTML, /kept/)
+})
+
+test('Ask face: EVERY send captures one frame and ships it; a refused capture is disclosed beside the note', async () => {
+  const sent: { screenshot?: unknown; turnId?: string }[] = []
+  let captureCalls = 0
+  const session = new InputSession({
+    submit: async (input) => {
+      sent.push({ screenshot: input.screenshot, ...(input.turnId !== undefined ? { turnId: input.turnId } : {}) })
+      return reply('seen', 'Context: screen(1).')
+    },
+    captureScreen: async () => {
+      captureCalls += 1
+      return { ok: true, frame: { contentType: 'image/jpeg', data: 'aGVsbG8=' } }
+    },
+  })
+  const { container, textarea, submit } = buildContainer()
+  session.install(container)
+  textarea.value = 'what am I looking at?'
+  container.dispatch('click', submit)
+  await flush()
+  assert.equal(captureCalls, 1, 'exactly ONE frame per send — never ambient')
+  assert.deepEqual(sent[0]!.screenshot, { contentType: 'image/jpeg', data: 'aGVsbG8=' })
+  assert.match(sent[0]!.turnId ?? '', /^turn-/, 'the client mints the stream key')
+
+  // A refused capture: the send still posts (frameless) and the WHY is disclosed with the note.
+  const refusing = new InputSession({
+    submit: async (input) => {
+      sent.push({ screenshot: input.screenshot })
+      return reply('answered anyway', 'Context: none. Omitted: screen (empty).')
+    },
+    captureScreen: async () => ({ ok: false, reason: 'screen capture is off (enable screenEnabled in client config)' }),
+  })
+  const second = buildContainer()
+  refusing.install(second.container)
+  second.textarea.value = 'and now?'
+  second.container.dispatch('click', second.submit)
+  await flush()
+  assert.equal(sent[1]!.screenshot, undefined, 'no frame shipped')
+  const status = second.container.querySelector('.in-status')!
+  assert.match(status.innerHTML, /Omitted: screen \(empty\)/, 'the engine note still paints')
+  assert.match(status.innerHTML, /Screen skipped: screen capture is off/, 'the client-side WHY rides along')
+})
+
+test('Ask face: an EMPTY send with a frame becomes the default-ask DOCUMENT question (explain my screen)', async () => {
+  const posted: { message: string; screenshot?: unknown }[] = []
+  const session = new InputSession({
+    submit: async (input) => {
+      posted.push({ message: input.message, screenshot: input.screenshot })
+      return reply('that is your invoice')
+    },
+    captureScreen: async () => ({ ok: true, frame: { contentType: 'image/jpeg', data: 'ZnJhbWU=' } }),
+    defaultAsk: async () => 'Explain what is on my screen right now, briefly and in plain terms.',
+  })
+  const { container, textarea, submit } = buildContainer()
+  session.install(container)
+  textarea.value = ''
+  container.dispatch('click', submit)
+  await flush()
+  assert.equal(posted.length, 1)
+  assert.equal(posted[0]!.message, 'Explain what is on my screen right now, briefly and in plain terms.')
+  assert.notEqual(posted[0]!.screenshot, undefined, 'the frame rides the default ask')
+  const log = container.querySelector('.in-log')!
+  assert.match(log.innerHTML, /Explain what is on my screen/, 'the resolved question is the visible user turn')
+
+  // A failing default-ask read is a VISIBLE error (never a silent swallow).
+  const failing = new InputSession({
+    submit: async () => reply('x'),
+    captureScreen: async () => ({ ok: true, frame: { contentType: 'image/jpeg', data: 'ZnJhbWU=' } }),
+    defaultAsk: async () => { throw new Error('the default ask document could not be read (HTTP 404)') },
+  })
+  const second = buildContainer()
+  failing.install(second.container)
+  second.container.dispatch('click', second.submit)
+  await flush()
+  assert.match(second.container.querySelector('.in-status')!.innerHTML, /default ask document could not be read/)
+})
+
+test('Ask face: chat.delta frames for OUR in-flight turn paint progressively; the reply is the authoritative record', async () => {
+  let releaseReply: (() => void) | undefined
+  let capturedTurnId = ''
+  const session = new InputSession({
+    submit: async (input) => {
+      capturedTurnId = input.turnId
+      await new Promise<void>((resolve) => { releaseReply = resolve })
+      return reply('Hello world.', 'done')
+    },
+  })
+  const { container, textarea, submit } = buildContainer()
+  session.install(container)
+  textarea.value = 'hi'
+  container.dispatch('click', submit)
+  await flush()
+  const log = container.querySelector('.in-log')!
+
+  // Frames keyed to OUR turn append and paint as the provisional streaming turn.
+  session.ingestDelta({ turnId: capturedTurnId, seq: 0, text: 'Hello ', done: false })
+  assert.match(log.innerHTML, /in-turn assistant streaming/, 'a provisional streamed turn paints')
+  assert.match(log.innerHTML, /Hello\s/, 'the first delta is visible before the reply resolves')
+  // A duplicate/out-of-order seq is dropped; a foreign turn is ignored; malformed frames never throw.
+  session.ingestDelta({ turnId: capturedTurnId, seq: 0, text: 'Hello ', done: false })
+  session.ingestDelta({ turnId: 'turn-not-ours', seq: 1, text: 'INTRUDER', done: false })
+  session.ingestDelta('garbage')
+  session.ingestDelta({ turnId: capturedTurnId, seq: 1, text: 'world.', done: false })
+  assert.match(log.innerHTML, /Hello world\./)
+  assert.ok(!log.innerHTML.includes('INTRUDER'))
+  assert.ok(!log.innerHTML.includes('Hello Hello'), 'the duplicate seq did not double-append')
+
+  // The resolved reply replaces the provisional paint — one authoritative assistant turn, no streaming residue.
+  releaseReply!()
+  await flush()
+  assert.ok(!log.innerHTML.includes('streaming'), 'the provisional turn is gone')
+  assert.match(log.innerHTML, /Hello world\./, 'the authoritative answer stands')
+})
+
+test('Ask face: seedHistory renders the rehydrated thread once, discloses a truncated tail, never clobbers a live session', async () => {
+  const session = new InputSession({ submit: async () => reply('x') })
+  const { container } = buildContainer()
+  session.install(container)
+  session.seedHistory({ turns: [{ role: 'user', content: 'earlier question' }, { role: 'assistant', content: 'earlier answer' }], total: 12, truncated: true })
+  const log = container.querySelector('.in-log')!
+  assert.match(log.innerHTML, /earlier question/)
+  assert.match(log.innerHTML, /earlier answer/)
+  assert.match(log.innerHTML, /Showing the last 2 of 12 turns\./, 'the cap is disclosed, never silent')
+
+  // A second (late) seed against a non-empty session is a no-op — a live conversation is never clobbered.
+  session.seedHistory({ turns: [{ role: 'user', content: 'CLOBBER' }], total: 1, truncated: false })
+  assert.ok(!log.innerHTML.includes('CLOBBER'))
 })

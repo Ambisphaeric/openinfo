@@ -40,3 +40,17 @@ contextBridge.exposeInMainWorld('openinfoDrag', {
 contextBridge.exposeInMainWorld('openinfoFiles', {
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
 })
+
+/**
+ * The Ask face capture bridge (screenshot-on-every-send). `captureFrame` asks the MAIN process for ONE
+ * still frame of the primary display — desktopCapturer is main-only, exactly like dragging/resizing, so
+ * this is the third thing the renderer genuinely cannot do itself. The main handler enforces the consent
+ * gate (screen sense granted AND enabled) and answers an honest discriminated outcome:
+ *   { ok: true, frame: { contentType, data } }   — one base64 frame, captured for THIS send.
+ *   { ok: false, reason: '…' }                    — no frame, with the human WHY (sense off / not granted /
+ *                                                   no frame available) the send path discloses.
+ * One invoke per explicit user send — the renderer never polls this (no ambient capture on this channel).
+ */
+contextBridge.exposeInMainWorld('openinfoScreen', {
+  captureFrame: (): Promise<unknown> => ipcRenderer.invoke('hud:capture-frame'),
+})

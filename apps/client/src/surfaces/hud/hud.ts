@@ -16,6 +16,8 @@ const REFRESH_EVENTS = new Set(['moment.created', 'entity.updated', 'distillate.
 
 /** The ephemeral live-transcript fast-path event (#58) — PAYLOAD-fed, not a query-refresh trigger. */
 const TRANSCRIPT_EVENT = 'transcript.updated'
+/** The ephemeral streamed-chat-answer event (the Ask face) — PAYLOAD-fed exactly like the transcript. */
+const CHAT_DELTA_EVENT = 'chat.delta'
 /** Session boundaries reset the live feed — a new/ended session starts a fresh transcript. */
 const TRANSCRIPT_RESET_EVENTS = new Set(['session.started', 'session.ended'])
 
@@ -47,6 +49,13 @@ export interface HudOptions {
    * simply hands over the doc the Hud already loaded, so no extra request is made.
    */
   onSurfaceLoaded?: (surface: Surface) => void
+  /**
+   * Called with each ephemeral `chat.delta` payload (the Ask face streamed reply) — routed PAYLOAD-fed
+   * over the Hud's ONE event socket, handled-and-returned before the refresh set exactly like the
+   * transcript fast-path (payload events re-paint, they never re-hydrate). The dev entry feeds this to
+   * the InputSession, which appends the delta to its in-flight turn. Additive/optional.
+   */
+  onChatDelta?: (payload: unknown) => void
 }
 
 /**
@@ -69,6 +78,7 @@ export class Hud {
 
   private readonly onError: ((error: unknown) => void) | undefined
   private readonly onSurfaceLoaded: ((surface: Surface) => void) | undefined
+  private readonly onChatDelta: ((payload: unknown) => void) | undefined
 
   private surface: Surface | undefined
   private results: (QueryResult | undefined)[] = []
@@ -101,6 +111,7 @@ export class Hud {
     this.clock = options.now ?? (() => new Date())
     this.onError = options.onError
     this.onSurfaceLoaded = options.onSurfaceLoaded
+    this.onChatDelta = options.onChatDelta
   }
 
   /** Load the surface document, hydrate + render once, then start listening for live updates. */
@@ -124,6 +135,12 @@ export class Hud {
       // is handled before REFRESH_EVENTS and returns so it never triggers the expensive query path.
       if (event.name === TRANSCRIPT_EVENT) {
         this.ingestTranscript(event.payload)
+        return
+      }
+      // The streamed-chat fast-path (the Ask face) rides the same discipline: payload out to its consumer
+      // (the InputSession's in-flight turn), no query, handled-and-returned before the refresh set.
+      if (event.name === CHAT_DELTA_EVENT) {
+        this.onChatDelta?.(event.payload)
         return
       }
       // A session boundary starts a fresh live feed; fall through to the normal refresh below.
