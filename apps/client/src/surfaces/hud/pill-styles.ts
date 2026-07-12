@@ -6,10 +6,18 @@
  * Reuses the shared palette vars (--s-*, --accent) so it sits in the same visual system as the HUD.
  */
 export const pillStyles = `
-.pill-app{display:flex;flex-direction:column;gap:0;min-width:0}
-/* the header RECTANGLE — always visible, the compact bar the panel docks beneath */
+/* THE PILL FILLS ITS WINDOW — the same fluid-panel invariant every surface inherits from .hud
+   (styles.ts): width:100% up to the 660px cap, min-width:0 so its flex children can shrink. Without it
+   .pill-app shrink-wrapped to its intrinsic content and floated centered as a microsquare (measured: a
+   295px bar of naked buttons adrift in a 708px window). */
+.pill-app{display:flex;flex-direction:column;gap:0;width:100%;max-width:660px;min-width:0}
+/* the header RECTANGLE — always visible, the compact bar the panel docks beneath. It carries the SAME
+   glass-card idiom as .hud (styles.ts:41 — the shared --s-glass fill, backdrop blur, hairline border and
+   floating shadow) so the collapsed pill reads as one solid glass card, never as naked floating buttons. */
 .pill-bar{display:flex;align-items:center;gap:12px;padding:8px 12px;min-height:40px;
-  border-bottom:1px solid var(--s-line-soft);-webkit-app-region:drag}
+  background:var(--s-glass);backdrop-filter:blur(20px);border:1px solid var(--s-line);border-radius:15px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07), 0 34px 70px -24px rgba(0,0,0,.8);
+  -webkit-app-region:drag}
 .pill-bar button{-webkit-app-region:no-drag}
 .pill-brand{display:flex;align-items:center;gap:7px;min-width:0}
 .pill-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none}
