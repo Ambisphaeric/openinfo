@@ -10,6 +10,7 @@
     "test:e2e:hud": "pnpm build && electron scripts/hud-bounds-e2e.mjs",
     "test:e2e:panel": "pnpm build && electron scripts/panel-bounds-e2e.mjs",
     "test:e2e:chat": "pnpm build && electron scripts/chat-input-e2e.mjs",
+    "test:e2e:clip": "pnpm build && electron scripts/clip-e2e.mjs",
     "test:e2e:multiwindow": "pnpm build && electron scripts/multiwindow-e2e.mjs",
     "test:e2e:capture": "pnpm build && electron scripts/capture-lifecycle-e2e.mjs",
     "start": "pnpm build && electron .",

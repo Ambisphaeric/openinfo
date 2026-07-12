@@ -1,6 +1,16 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hudWindowSpec, configForSurface, surfaceWindowSpec, windowTitleFor } from './window-options.js'
+import {
+  hudWindowSpec,
+  configForSurface,
+  surfaceWindowSpec,
+  surfaceWindowWidth,
+  windowTitleFor,
+  windowContract,
+  assertWindowContract,
+  MIN_HUD_FIT_WIDTH,
+  SURFACE_WINDOW_CONFIG,
+} from './window-options.js'
 
 test('the HUD window carries the inherited-Glass signature', () => {
   const spec = hudWindowSpec()
@@ -90,4 +100,37 @@ test('S4: every surface names itself with a DISTINCT, non-generic title (not all
   assert.equal(windowTitleFor('surf-openinfo-widget-shop'), 'openinfo — Widget Shop')
   // the framed apps (diagnostics + note-taker) no longer collide on the HUD title — the reported bug
   assert.notEqual(windowTitleFor('surf-openinfo-diagnostics'), windowTitleFor('surf-openinfo-hud'))
+})
+
+// ── S5 + policy item 3: the window contract, enforced in the factory ──────────────────────────────────
+test('S5: every SHIPPED surface holds the window contract — it resizes OR provably fits, and self-identifies', () => {
+  for (const surfaceId of Object.keys(SURFACE_WINDOW_CONFIG)) {
+    const c = windowContract(surfaceId)
+    assert.equal(c.ok, true, `${surfaceId} violates the window contract: ${JSON.stringify(c)}`)
+    assert.ok(c.resizable || c.fitsWidth, `${surfaceId} neither resizes nor fits`)
+    assert.ok(c.title.length > 0, `${surfaceId} has no self-identifying title`)
+    assert.doesNotThrow(() => assertWindowContract(surfaceId))
+  }
+})
+
+test('S5: surfaceWindowWidth reflects the override, else the chrome default', () => {
+  assert.equal(surfaceWindowWidth('surf-openinfo-fields'), 480, 'declared override')
+  assert.equal(surfaceWindowWidth('surf-openinfo-sidebar'), 320)
+  assert.ok(surfaceWindowWidth('surf-openinfo-hud') >= 660, 'the default HUD wraps the 660px panel')
+  assert.equal(surfaceWindowWidth('surf-unknown'), 520, 'app-chrome default width')
+})
+
+test('S5: a fixed-size (non-resizable) HUD window narrower than the fit floor FAILS the contract loudly', () => {
+  // Register a degenerate too-narrow non-resizable HUD surface and prove the factory guard would reject it.
+  const NARROW = 'surf-openinfo-too-narrow-hud'
+  SURFACE_WINDOW_CONFIG[NARROW] = { chrome: 'hud', width: MIN_HUD_FIT_WIDTH - 40 }
+  try {
+    const c = windowContract(NARROW)
+    assert.equal(c.resizable, false, 'HUD chrome does not resize')
+    assert.equal(c.fitsWidth, false, 'below the fit floor it cannot provably fit')
+    assert.equal(c.ok, false)
+    assert.throws(() => assertWindowContract(NARROW), /window contract violated/)
+  } finally {
+    delete SURFACE_WINDOW_CONFIG[NARROW]
+  }
 })

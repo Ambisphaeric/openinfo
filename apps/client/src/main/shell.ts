@@ -7,7 +7,7 @@ import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, native
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
-import { surfaceWindowSpec, configForSurface, windowTitleFor, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
+import { surfaceWindowSpec, configForSurface, windowTitleFor, assertWindowContract, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
 import { resolveHudHeight } from './hud-height.js'
 import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
@@ -330,6 +330,10 @@ const createSurfaceWindow = (
   surfaceId: string,
   opts: { chrome: WindowChrome; isDefaultHud: boolean; startVisible: boolean },
 ): BrowserWindow => {
+  // The window CONTRACT (policy item 3), enforced HERE in the one factory: every surface window either
+  // resizes or provably fits its content (S5), AND self-identifies with a non-empty title (S4). A surface
+  // added with a clipping fixed width or no identity fails LOUDLY at create, never shipping a broken window.
+  assertWindowContract(surfaceId)
   // The full window spec is resolved from the surface's declared config in ONE place (chrome, width, AND the
   // per-surface focusability override, S1) so the shell and the driven e2e build the identical window.
   const spec: HudWindowSpec = surfaceWindowSpec(surfaceId, { startVisible: opts.startVisible })

@@ -267,3 +267,62 @@ const humanizeSurfaceId = (surfaceId: string): string =>
 
 /** The per-surface window title (chrome titlebar / app switcher). `openinfo — <Face>`. Pure + testable. */
 export const windowTitleFor = (surfaceId: string): string => `openinfo — ${FACE_NAMES[surfaceId] ?? humanizeSurfaceId(surfaceId)}`
+
+/**
+ * The RESOLVED outer window width for a surface — its declared override, else the chrome default. Pure so
+ * the window contract can reason about whether a fixed-size window provably fits its content.
+ */
+export const surfaceWindowWidth = (surfaceId: string): number => {
+  const cfg = configForSurface(surfaceId)
+  if (cfg.width !== undefined) return cfg.width
+  return cfg.chrome === 'hud' ? PANEL_WIDTH + WINDOW_MARGIN * 2 : APP_WINDOW_DEFAULT_WIDTH
+}
+
+/**
+ * The minimum outer width at which a fixed-size (non-resizable) HUD-chrome window PROVABLY fits its content
+ * without the both-edges clip (the S5 mechanism makes `.hud` fluid up to its 660px cap, so any width at or
+ * above this reflows cleanly; below it the block grids can no longer shrink and content is lost). A framed
+ * `app` window is exempt — the user can always resize it to fit.
+ */
+export const MIN_HUD_FIT_WIDTH = 260
+
+export interface WindowContract {
+  surfaceId: string
+  chrome: WindowChrome
+  width: number
+  /** The window can be resized by the user (framed app chrome) — so it fits by construction. */
+  resizable: boolean
+  /** A fixed-size window whose width is at or above the fit floor — provably fits without clipping. */
+  fitsWidth: boolean
+  /** The window's non-empty self-identifying title. */
+  title: string
+  /** The contract holds: the window resizes OR provably fits, AND it self-identifies. */
+  ok: boolean
+}
+
+/**
+ * The window contract (policy item 3), enforced in the ONE window factory: every surface window either
+ * RESIZES (framed app chrome) or PROVABLY FITS its content at a fixed width (HUD chrome ≥ the fit floor,
+ * given the fluid-panel S5 mechanism), AND it SELF-IDENTIFIES with a non-empty title. Pure so it is asserted
+ * headless for every shipped surface; the factory calls `assertWindowContract` at create time so a future
+ * surface added with a clipping width or no identity fails LOUDLY rather than shipping a broken window.
+ */
+export const windowContract = (surfaceId: string): WindowContract => {
+  const cfg = configForSurface(surfaceId)
+  const width = surfaceWindowWidth(surfaceId)
+  const resizable = cfg.chrome === 'app'
+  const fitsWidth = width >= MIN_HUD_FIT_WIDTH
+  const title = windowTitleFor(surfaceId)
+  return { surfaceId, chrome: cfg.chrome, width, resizable, fitsWidth, title, ok: (resizable || fitsWidth) && title.length > 0 }
+}
+
+/** Assert the window contract for a surface; throws with the offending detail if it does not hold. */
+export const assertWindowContract = (surfaceId: string): WindowContract => {
+  const contract = windowContract(surfaceId)
+  if (!contract.ok) {
+    throw new Error(
+      `window contract violated for ${surfaceId}: a window must resize or provably fit (≥${MIN_HUD_FIT_WIDTH}px) and self-identify — ${JSON.stringify(contract)}`,
+    )
+  }
+  return contract
+}
