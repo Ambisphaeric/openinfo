@@ -180,6 +180,86 @@ test('a dropped file ingests via the injected upload, shows the attachment, and 
   assert.match(container.querySelector('.in-log')!.innerHTML, /cited p\.2/)
 })
 
+test('the local path is resolved via the preload webUtils bridge (Electron 32+ removed File.path)', async () => {
+  // The desktop shell's real DOM File no longer carries `.path` (removed in Electron 32; this repo ships
+  // 38) — the path now comes from webUtils.getPathForFile, exposed on window.openinfoFiles by preload.cts.
+  const g = globalThis as { openinfoFiles?: { getPathForFile(file: unknown): string } }
+  const original = g.openinfoFiles
+  const seen: unknown[] = []
+  g.openinfoFiles = { getPathForFile: (file) => { seen.push(file); return '/Users/me/Documents/report.txt' } }
+  try {
+    const uploaded: UploadFile[] = []
+    const session = new InputSession({
+      submit: async () => reply('x'),
+      upload: async (file) => { uploaded.push(file); return { pinId: 'pin-9', title: file.name, summary: '5 pages ingested' } },
+    })
+    const { container, file } = buildContainer()
+    session.install(container)
+    // A file WITHOUT `.path` — exactly what a real Electron 38 File looks like.
+    file.files = { length: 1, item: () => ({ name: 'report.txt', type: 'text/plain' }) }
+    container.dispatch('change', file)
+    await flush()
+
+    assert.equal(seen.length, 1) // the bridge was consulted
+    assert.equal(uploaded.length, 1)
+    assert.equal(uploaded[0]!.path, '/Users/me/Documents/report.txt') // the resolved OS path rode to ingest
+    assert.equal(uploaded[0]!.name, 'report.txt')
+    assert.match(container.querySelector('.in-context')!.innerHTML, /report\.txt — 5 pages ingested/)
+  } finally {
+    if (original === undefined) delete g.openinfoFiles
+    else g.openinfoFiles = original
+  }
+})
+
+test('a bridge path of "" (a File with no disk backing) yields a VISIBLE failure, never a silent no-op', async () => {
+  // getPathForFile returns '' for a File built in JS with no file on disk — the attach must treat that as
+  // "no path" and let the upload dep raise its honest reason as text (the QA doctrine), not swallow it.
+  const g = globalThis as { openinfoFiles?: { getPathForFile(file: unknown): string } }
+  const original = g.openinfoFiles
+  g.openinfoFiles = { getPathForFile: () => '' }
+  try {
+    const session = new InputSession({
+      submit: async () => reply('x'),
+      // mirrors dev-entry's uploadAndIngest guard: no local path ⇒ honest rejection.
+      upload: async (file) => {
+        if (!file.path) throw new Error('file upload needs the desktop app (this file has no local path)')
+        return { pinId: 'pin-x', title: file.name, summary: 'ok' }
+      },
+    })
+    const { container, file } = buildContainer()
+    session.install(container)
+    file.files = { length: 1, item: () => ({ name: 'ghost.txt' }) }
+    container.dispatch('change', file)
+    await flush()
+
+    assert.match(container.querySelector('.in-status')!.innerHTML, /in-note error">file upload needs the desktop app/)
+    assert.equal(container.querySelector('.in-context')!.innerHTML, '') // nothing attached
+  } finally {
+    if (original === undefined) delete g.openinfoFiles
+    else g.openinfoFiles = original
+  }
+})
+
+test('with no preload bridge, a File-like carrying a path still attaches (the dev-harness / served-test fallback)', async () => {
+  // A plain browser / served test has no window.openinfoFiles; a harness supplies the path on the File-like
+  // directly, and the attach uses it unchanged — this is how the served driven e2e drives a real attach.
+  const g = globalThis as { openinfoFiles?: { getPathForFile(file: unknown): string } }
+  assert.equal(g.openinfoFiles, undefined) // no bridge in the headless test env
+  const uploaded: UploadFile[] = []
+  const session = new InputSession({
+    submit: async () => reply('x'),
+    upload: async (file) => { uploaded.push(file); return { pinId: 'pin-h', title: file.name, summary: '2 pages ingested' } },
+  })
+  const { container, file } = buildContainer()
+  session.install(container)
+  file.files = { length: 1, item: () => ({ name: 'harness.txt', path: '/tmp/harness.txt' }) }
+  container.dispatch('change', file)
+  await flush()
+
+  assert.equal(uploaded.length, 1)
+  assert.equal(uploaded[0]!.path, '/tmp/harness.txt')
+})
+
 test('an in-progress draft survives a destructive re-render (typing is never erased)', () => {
   const session = new InputSession({ submit: async () => reply('x') })
   const first = buildContainer()

@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>attach e2e fixture</title>
+  </head>
+  <body>
+    <!--
+      The REAL input block DOM (mirrors what surfaces/blocks/input.ts renders): the controller reads
+      `.in-text` / `.in-file`, POSTs on the `data-verb="input-submit"` button, and paints `.in-log` /
+      `.in-context` / `.in-status`. This fixture drives ONLY the attach edge, so `submit` is a no-op stub;
+      the point is that a REAL picked file (set by the driver over CDP) has its local path resolved by the
+      REAL preload bridge (window.openinfoFiles.getPathForFile → webUtils) and flows into the upload dep.
+    -->
+    <div class="hud">
+      <div class="input-block" data-target="chat" data-submit="/chat" data-mode="both">
+        <div class="in-log"></div>
+        <div class="in-context"></div>
+        <div class="in-row">
+          <textarea class="in-text"></textarea>
+          <label class="in-drop"><input type="file" class="in-file" /></label>
+          <button class="mini in-submit" data-verb="input-submit">Send</button>
+        </div>
+        <div class="in-status"></div>
+      </div>
+    </div>
+    <script type="module">
+      import { InputSession } from '../dist/surfaces/hud/input-submit.js'
+
+      // The driver reads these back over executeJavaScript. `failNext` lets phase 2 exercise a rejected
+      // ingest (honest visible failure) without changing the attach path.
+      const e2e = { uploads: [], failNext: false, ready: false }
+      window.__e2e = e2e
+
+      const session = new InputSession({
+        submit: async () => ({
+          answer: '',
+          citations: [],
+          budget: { contextTokens: 0, maxTokens: 0, turnsRemaining: 0, truncated: false, note: '' },
+        }),
+        // The client half of the fix stops here: it records the path resolveUploadFile handed it (the REAL
+        // OS path from webUtils in phase 1). We don't hit the engine — the e2e is about the client edge that
+        // File.path removal broke, not the pins/ingest substrate (covered by engine tests).
+        upload: async (file) => {
+          e2e.uploads.push({ name: file.name, path: file.path ?? null })
+          if (e2e.failNext) throw new Error(`attach: ${file.name} could not be ingested (v0-unsupported)`)
+          return { pinId: 'pin-e2e', title: file.name, summary: 'ingested (e2e stub)' }
+        },
+      })
+
+      const hud = document.querySelector('.hud')
+      session.install(hud)
+      e2e.ready = true
+    </script>
+  </body>
+</html>
