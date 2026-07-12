@@ -120,9 +120,12 @@ test('the shipped note-taker document renders three zones through the real rende
   assert.doesNotMatch(left, /nt-record/) // the record button is NOT in the left rail
   assert.doesNotMatch(left, /Rolling — Dana/) // the rolling summary is NOT in the left rail
 
-  // CENTER canvas: the relocated Record affordance (honest pending placeholder) + context + notes + summary
-  assert.match(center, /class="nt-record pending"[^>]*data-nt="record"/)
-  assert.match(center, /#136 session-control block/) // the placeholder links the gap it stands in for
+  // CENTER canvas: the relocated Record affordance (honest DISABLED placeholder) + context + notes + summary.
+  // #136/interaction-honesty: the record button is DISABLED (no live handler) and discloses where recording
+  // is actually controlled with an INLINE note (`.nt-record-note`), never a tooltip-only fake-live button.
+  assert.match(center, /class="nt-record pending"[^>]*data-nt="record"[^>]*disabled/)
+  assert.match(center, /class="nt-record-note">Controlled from the tray/) // inline, always-visible disclosure
+  assert.match(center, /#136 session-control block/) // the note links the gap it stands in for
   assert.match(center, /Q3 renewal — security review/) // the now context line
   assert.match(center, /Agreed to ship the quote Friday/) // the live note (moments)
   assert.match(center, /AI summary — renewal terms agreed/) // the center distillate summary
