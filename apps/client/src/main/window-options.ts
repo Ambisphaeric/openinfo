@@ -71,8 +71,14 @@ const WINDOW_MARGIN = 24
  */
 export const HUD_MIN_HEIGHT = 144
 
-export const hudWindowSpec = (opts: { startVisible?: boolean; width?: number } = {}): HudWindowSpec => {
+export const hudWindowSpec = (opts: { startVisible?: boolean; width?: number; focusable?: boolean } = {}): HudWindowSpec => {
   const startVisible = opts.startVisible ?? false
+  // `focusable` is a PER-SURFACE override, defaulting false (the inherited Glass glance never steals focus).
+  // A HUD-chrome surface the user TYPES in (the chat's `input` block, #134) MUST be able to become the key
+  // window — otherwise a `focusable:false` window can never accept keys, macOS NSBeeps every keystroke, and
+  // typing is impossible (the chat-keyboard bug). Focusability is orthogonal to the rest of the Glass
+  // signature (still frameless/transparent/content-protected/always-on-top), so we flip only this one flag.
+  const focusable = opts.focusable ?? false
   return {
     browserWindow: {
       width: opts.width ?? PANEL_WIDTH + WINDOW_MARGIN * 2,
@@ -86,7 +92,7 @@ export const hudWindowSpec = (opts: { startVisible?: boolean; width?: number } =
       fullscreenable: false,
       skipTaskbar: true,
       alwaysOnTop: true,
-      focusable: false,
+      focusable,
       show: startVisible,
       title: 'openinfo HUD',
       backgroundColor: '#00000000',
@@ -120,6 +126,13 @@ export interface SurfaceWindowConfig {
   chrome: WindowChrome
   /** Outer window width in px; omitted ⇒ the chrome's default (HUD panel width, or the app default). */
   width?: number
+  /**
+   * Whether this surface's window may become the key/focused window. Framed `app` chrome is always focusable
+   * (a normal window); HUD chrome defaults to NON-focusable (a glance). A HUD-chrome surface the user TYPES
+   * in must opt IN here (else macOS NSBeeps every keystroke into a window that can never accept it). Omitted
+   * ⇒ the chrome default. Ignored for `app` chrome (already focusable).
+   */
+  focusable?: boolean
 }
 
 /**
@@ -153,7 +166,9 @@ export const SURFACE_WINDOW_CONFIG: Record<string, SurfaceWindowConfig> = {
   // block and applied over the hud:panel-size bridge (the renderer installs the PanelController instead of
   // auto-resize for these), NOT the content-sizer. The chat is the HUD's own width so it sits flush
   // beneath it; the sidebar's width is driven by its panel (collapsed 0 → expanded 320).
-  'surf-openinfo-chat': { chrome: 'hud' },
+  // The chat carries an `input` block the user TYPES in, so it opts INTO focusability (S1) — otherwise the
+  // inherited Glass `focusable:false` makes the window unable to become key and every keystroke NSBeeps.
+  'surf-openinfo-chat': { chrome: 'hud', focusable: true },
   'surf-openinfo-sidebar': { chrome: 'hud', width: 320 },
 }
 
@@ -205,4 +220,20 @@ export const appWindowSpec = (opts: { width?: number; startVisible?: boolean } =
     },
     startVisible,
   }
+}
+
+/**
+ * The ONE place a surface's full window spec is resolved from its declared config — chrome, width override,
+ * AND the per-surface focusability override (S1). Used by the shell's single window factory and by the
+ * driven e2e so both build the EXACT same window a surface ships with (no drift between test and shell).
+ */
+export const surfaceWindowSpec = (surfaceId: string, opts: { startVisible?: boolean } = {}): HudWindowSpec => {
+  const cfg = configForSurface(surfaceId)
+  const startVisible = opts.startVisible ?? false
+  const widthOpt = cfg.width !== undefined ? { width: cfg.width } : {}
+  // Spread conditionally (exactOptionalPropertyTypes): an absent override must NOT be passed as `undefined`.
+  const focusableOpt = cfg.focusable !== undefined ? { focusable: cfg.focusable } : {}
+  return cfg.chrome === 'hud'
+    ? hudWindowSpec({ startVisible, ...widthOpt, ...focusableOpt })
+    : appWindowSpec({ startVisible, ...widthOpt })
 }

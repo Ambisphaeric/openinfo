@@ -357,10 +357,12 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   stage.appendChild(panel)
   doc.body.appendChild(stage)
 
-  // In the Electron shell only: let the header strip drag the frameless window (preload.cts bridge)…
+  // In the Electron shell only: let the header strip drag the frameless window (preload.cts bridge).
   if (g.openinfoDrag) installWindowDrag(doc as unknown as Parameters<typeof installWindowDrag>[0], g.openinfoDrag)
-  // …and content-size the frameless window to the painted panel (never the 100vh stage — see auto-resize.ts).
-  if (g.openinfoDrag) installAutoResize(panel as unknown as Parameters<typeof installAutoResize>[0], g.openinfoDrag)
+  // NOTE: the content-size auto-resizer is NOT installed unconditionally here anymore. A window has exactly
+  // ONE height authority (S1): a panel surface is sized by its PanelController, every other HUD window by
+  // the content auto-resizer. Installing both let the resize floor (HUD_MIN_HEIGHT) override the panel's
+  // extents (panel.ts). We now pick ONE in onSurfaceLoaded, once the surface (panel or not) is known.
 
   const copy = clipboardCopy(g.navigator, doc)
   // The verb write-paths (#15): both read-then-write against the live engine and reject on any HTTP
@@ -376,6 +378,8 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const inputSession = new InputSession({ submit: submitChat(baseUrl, workspace), upload: uploadAndIngest(baseUrl, workspace) })
   // #134: the attached-panel geometry controller — created from surface.panel once the doc loads (below).
   let panelController: PanelController | undefined
+  // S1: the window's ONE height authority (PanelController or auto-resize) is installed exactly once.
+  let sizerInstalled = false
   let mounted = false
   // Event-driven refresh failures re-enter the boot loop — visible, never an unhandled rejection.
   let onHudError: (error: unknown) => void = () => {}
@@ -388,17 +392,27 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     // reveal:'event' panel, subscribe to the trigger to open it as a dismissible suggestion. Electron-only
     // (needs the panel bridge); a plain browser page simply scrolls. Created once — hot-reloads keep it.
     onSurfaceLoaded: (surface) => {
-      if (panelController || surface.panel === undefined) return
+      // S1: install the window's ONE height authority, exactly once. A panel surface (the chat/sidebar) is
+      // sized by its PanelController along its edge; every other HUD window by the content auto-resizer. They
+      // are mutually exclusive — installing both let the resize floor override the panel's extents (panel.ts).
+      if (sizerInstalled) return
       const bridge = g.openinfoDrag
-      if (!bridge?.panel) return
-      panelController = new PanelController(surface.panel, { apply: (size) => bridge.panel!(size) }, transport)
-      panelController.start()
-      g.openinfoPanel = {
-        toggle: () => panelController?.toggle(),
-        expand: () => panelController?.expand(),
-        collapse: () => panelController?.collapse(),
-        dismissSuggestion: () => panelController?.dismissSuggestion(),
-        state: () => panelController?.state() ?? { expanded: false, suggested: false },
+      if (surface.panel !== undefined) {
+        if (!bridge?.panel) return // browser dev page has no bridge — nothing to size; retry on the next load
+        panelController = new PanelController(surface.panel, { apply: (size) => bridge.panel!(size) }, transport)
+        panelController.start()
+        g.openinfoPanel = {
+          toggle: () => panelController?.toggle(),
+          expand: () => panelController?.expand(),
+          collapse: () => panelController?.collapse(),
+          dismissSuggestion: () => panelController?.dismissSuggestion(),
+          state: () => panelController?.state() ?? { expanded: false, suggested: false },
+        }
+        sizerInstalled = true
+      } else {
+        // Content-size the frameless window to the painted panel (never the 100vh stage — see auto-resize.ts).
+        if (bridge) installAutoResize(panel as unknown as Parameters<typeof installAutoResize>[0], bridge)
+        sizerInstalled = true // in a plain browser (no bridge) there is nothing to install — the page scrolls
       }
     },
     onRender: (node) => {

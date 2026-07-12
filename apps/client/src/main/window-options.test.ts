@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { hudWindowSpec, configForSurface } from './window-options.js'
+import { hudWindowSpec, configForSurface, surfaceWindowSpec } from './window-options.js'
 
 test('the HUD window carries the inherited-Glass signature', () => {
   const spec = hudWindowSpec()
@@ -43,4 +43,39 @@ test('the #100 fields app takes Glass chrome (content-protected companion) at it
   assert.equal(cfg.width, 480, 'narrower than the HUD panel so the two sit side-by-side')
   // an unknown surface still falls through to the framed `app` default (disclosed)
   assert.equal(configForSurface('surf-unknown').chrome, 'app')
+})
+
+// ── S1: chat keyboard — the per-surface focusability override ─────────────────────────────────────────
+test('S1: a HUD window is NON-focusable by default (a glance), but the focusable override flips only that flag', () => {
+  assert.equal(hudWindowSpec().browserWindow.focusable, false, 'default HUD never steals focus')
+  const chat = hudWindowSpec({ focusable: true })
+  assert.equal(chat.browserWindow.focusable, true, 'a typed-in HUD surface can become the key window')
+  // the rest of the Glass signature is untouched — focusability is orthogonal
+  assert.equal(chat.browserWindow.frame, false)
+  assert.equal(chat.browserWindow.transparent, true)
+  assert.equal(chat.browserWindow.alwaysOnTop, true)
+  assert.equal(chat.hardening.contentProtection, true)
+})
+
+test('S1: the chat surface declares focusable (else macOS NSBeeps every keystroke into a window that can never accept it)', () => {
+  assert.equal(configForSurface('surf-openinfo-chat').focusable, true)
+  // the read-only HUD glances do NOT opt in
+  assert.notEqual(configForSurface('surf-openinfo-hud').focusable, true)
+  assert.notEqual(configForSurface('surf-openinfo-fields').focusable, true)
+})
+
+test('S1: surfaceWindowSpec resolves chrome + width + focusability from the surface config in one place', () => {
+  const chat = surfaceWindowSpec('surf-openinfo-chat', { startVisible: true })
+  assert.equal(chat.browserWindow.focusable, true, 'chat opts into focus')
+  assert.equal(chat.browserWindow.frame, false, 'chat is still HUD chrome')
+  assert.equal(chat.browserWindow.show, true)
+
+  const fields = surfaceWindowSpec('surf-openinfo-fields')
+  assert.equal(fields.browserWindow.width, 480, 'width override honored')
+  assert.equal(fields.browserWindow.focusable, false, 'a content-only HUD companion stays a glance')
+
+  const diag = surfaceWindowSpec('surf-openinfo-diagnostics')
+  assert.equal(diag.browserWindow.frame, true, 'diagnostics is framed app chrome')
+  assert.equal(diag.browserWindow.focusable, true, 'framed app windows are always focusable')
+  assert.equal(diag.browserWindow.width, 560)
 })
