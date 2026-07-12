@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type CaptureChunk, type ChatRequest, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatRequest, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
@@ -15,6 +15,7 @@ import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
+import { BundleDocuments } from '../bundles/index.js'
 import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
@@ -81,6 +82,7 @@ interface HandlerContext {
   guardHolds: GuardHoldStore
   todos: TodoDocuments
   workflow: WorkflowDocuments
+  bundles: BundleDocuments
   hints: HintsDocuments
   /** The STT track's spool — the capture backlog (#115). */
   queue: CaptureQueue
@@ -119,6 +121,9 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   const discovery = new DiscoveryDocuments(store)
   const starterModels = new StarterModelsDocuments(store)
   const workflow = new WorkflowDocuments(store)
+  // App bundles (bundle-as-runtime-object): the Standard App is a DOCUMENT bundling its faces (surface
+  // refs) + workflow/template refs + flag overlay + chat context-assembly plan — served like /workflows.
+  const bundles = new BundleDocuments(store)
   // Tier zero (ARCHITECTURE §8, slice c): the engine downloads + spawns managed local runtimes.
   // The model store maps a `local` endpoint's model ref to its on-disk path; the runtime manager
   // spawns llama.cpp/whisper.cpp on demand and is threaded into invoke/health so local endpoints
@@ -143,6 +148,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   discovery.ensureDefaults()
   starterModels.ensureDefaults()
   workflow.ensureDefaults()
+  bundles.ensureDefaults()
 
   const distiller = new Distiller({
     store,
@@ -584,7 +590,7 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('guard.hold.updated', (hold) => ws.broadcast('guard.hold.updated', hold))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handle(req, res, ctx).catch((error: unknown) =>
       send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
@@ -720,6 +726,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   const workflow = url.pathname.match(/^\/workflows\/([^/]+)$/)
   if (req.method === 'GET' && workflow?.[1]) return getWorkflow(res, ctx, decodeURIComponent(workflow[1]))
   if (req.method === 'PUT' && workflow?.[1]) return putWorkflow(req, res, ctx, decodeURIComponent(workflow[1]))
+  // App bundles (bundle-as-runtime-object) — served in the document-route idiom, exactly like /workflows:
+  // enumerate, read by id (default resolves via seed + code fallback; unknown ⇒ 404), and a validated PUT
+  // that create-on-unknown-id and version-stamps. The tray Apps catalog reads GET /bundles.
+  if (req.method === 'GET' && url.pathname === '/bundles') return send(res, 200, ctx.bundles.list())
+  const bundle = url.pathname.match(/^\/bundles\/([^/]+)$/)
+  if (req.method === 'GET' && bundle?.[1]) return getBundle(res, ctx, decodeURIComponent(bundle[1]))
+  if (req.method === 'PUT' && bundle?.[1]) return putBundle(req, res, ctx, decodeURIComponent(bundle[1]))
   // P4-T2: pins ingest/read + teach candidates — the P4D store/derivation seams over HTTP, no logic change.
   if (req.method === 'GET' && url.pathname === '/pins') return send(res, 200, readPins(ctx.store, url))
   if (req.method === 'POST' && url.pathname === '/pins') return createPin(req, res, ctx)
@@ -1377,6 +1390,38 @@ async function putWorkflow(req: IncomingMessage, res: ServerResponse, ctx: Handl
   const incoming = body as WorkflowSpec
   if (incoming.id !== id) return send(res, 400, { error: 'workflow id does not match route' })
   send(res, 200, ctx.workflow.save(incoming))
+}
+
+/**
+ * Serve an app-bundle document by id — the read seam the tray Apps catalog and (later) a bundle editor
+ * render (a resource route, no flag, mirroring GET /workflows/:id). `bundle-standard-app` always resolves
+ * (seeded + code fallback); an unknown id ⇒ 404 (only the Standard App exists today, until a user authors
+ * another via PUT).
+ */
+function getBundle(res: ServerResponse, ctx: HandlerContext, id: string): void {
+  const doc = ctx.bundles.get(id)
+  if (!doc) return send(res, 404, { error: `no such bundle: ${id}` })
+  send(res, 200, doc)
+}
+
+/**
+ * Persist an edited app-bundle document — the write half of the document seam. The body must validate as a
+ * Bundle (Tier-A gate: the CLOSED face-kind / chat-source unions reject an unrunnable face role or an
+ * ungatherable chat source AT WRITE TIME) and its id must match the route; the store stamps the next
+ * version and keeps history.
+ *
+ * PUT-unknown-id policy: an unknown id CREATES a new bundle (version 1), it does NOT 404 — mirroring PUT
+ * /workflows /todos /layouts/surfaces/:id (no other document write 404s on a fresh id). This slice is
+ * read-only consumption on the client; authoring a NEW named bundle over the API is a forward-compatible
+ * document write. A malformed body ⇒ 400 via save()'s validation, never persisted.
+ */
+async function putBundle(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('Bundle', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid Bundle', details: errors })
+  const incoming = body as Bundle
+  if (incoming.id !== id) return send(res, 400, { error: 'bundle id does not match route' })
+  send(res, 200, ctx.bundles.save(incoming))
 }
 
 /**

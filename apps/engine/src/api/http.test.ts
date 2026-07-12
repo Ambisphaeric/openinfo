@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FieldValue, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
+import type { Bundle, CaptureChunk, Distillate, Draft, Entity, Fabric, FabricProfile, FieldValue, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
 import { createEngineApp } from './http.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
@@ -3657,6 +3657,58 @@ test('the two #134 panel surfaces are seeded and served with their panel + input
     assert.equal(sidebar.panel?.edge, 'right')
     assert.equal(sidebar.panel?.reveal, 'event')
     assert.equal(sidebar.panel?.openOn, 'entity.updated')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('GET/PUT /bundles serves the Standard App bundle in the document-route idiom', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    // Enumerate — the tray Apps catalog read. The seeded Standard App is always present.
+    const list = (await (await fetch(`${base}/bundles`)).json()) as Bundle[]
+    const standard = list.find((b) => b.id === 'bundle-standard-app')
+    assert.ok(standard, 'GET /bundles lists the seeded Standard App')
+    assert.equal(standard!.faces[0]!.kind, 'hud')
+
+    // Read by id.
+    const byId = (await (await fetch(`${base}/bundles/bundle-standard-app`)).json()) as Bundle
+    assert.equal(byId.name, 'Standard App')
+
+    // Unknown id ⇒ 404 (a resource read, not a gated behavior).
+    assert.equal((await fetch(`${base}/bundles/bundle-nope`)).status, 404)
+
+    // Validated PUT edits the document, version-stamped by the store.
+    const put = await fetch(`${base}/bundles/bundle-standard-app`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...byId, description: 'edited over the API' }),
+    })
+    assert.equal(put.status, 200)
+    assert.equal(((await put.json()) as Bundle).version, 2, 'the store stamped the next version')
+
+    // A malformed body ⇒ 400 (the Tier-A gate: closed face-kind union), never persisted.
+    const bad = await fetch(`${base}/bundles/bundle-standard-app`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...byId, faces: [{ kind: 'sidebar', surfaceRef: 's' }] }),
+    })
+    assert.equal(bad.status, 400)
+
+    // An id/route mismatch ⇒ 400 (mirrors PUT /workflows).
+    const mismatch = await fetch(`${base}/bundles/bundle-standard-app`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...byId, id: 'bundle-other' }),
+    })
+    assert.equal(mismatch.status, 400)
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })
