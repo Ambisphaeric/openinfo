@@ -124,6 +124,28 @@ const paintFeedback = (el: ActionElement, outcome: void | Promise<void>, labels:
 }
 
 /**
+ * The verbs this mount layer's delegated click listener actually dispatches — the SINGLE source of truth
+ * for "a click on this verb does something here". It is consumed two ways so it can never drift from
+ * reality: wireActions GATES on it (a `data-verb` not in this set is ignored before the branches below, so
+ * a stray dispatch branch someone forgot to register here is inert and gets noticed), and the honesty
+ * interaction lint IMPORTS it (unioned with input-submit's verb) instead of hand-maintaining a parallel
+ * list. Keep it in lockstep with the branches in wireActions below — a verb this set claims but no branch
+ * handles is a dead button the lint would wrongly bless. `input-submit` is NOT here: that verb is
+ * dispatched by the input block's own controller (hud/input-submit.ts), which exports it separately.
+ */
+export const WIRED_VERBS: ReadonlySet<string> = new Set([
+  'copy',
+  'mark-done',
+  'accept',
+  'dismiss',
+  'clarify-confirm',
+  'clarify-rival',
+  'clarify-open',
+  'clarify-dismiss',
+  'mute-system-stream',
+])
+
+/**
  * Attach ONE delegated click listener that survives innerHTML replacement (it lives on the container,
  * not the buttons). Live verbs call their injected handler and paint the ACTUAL outcome onto the clicked
  * button (#43/#15): `copy` → the CopyFn; `mark-done` → `markDone` (needs data-session + data-todo);
@@ -137,6 +159,9 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
     const el = event.target?.closest('[data-verb]')
     if (!el) return
     const verb = el.getAttribute('data-verb')
+    // Gate on the source-of-truth set: a verb this layer does not claim is ignored here, so WIRED_VERBS
+    // stays honest about exactly which verbs reach a dispatch branch below.
+    if (verb === null || !WIRED_VERBS.has(verb)) return
     if (verb === 'copy') {
       paintFeedback(el, handlers.copy(el.getAttribute('data-copy') ?? ''), { ok: 'Copied', fail: 'Copy failed' })
       return
@@ -203,8 +228,10 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
       handlers.muteSystemStream()
       return
     }
-    // every other verb (pin, mark-for-follow-up, open, navigate, run-mode, draft-with) is visible-but-inert
-    // this slice — no write path yet (see PHASE4-NOTES / #15)
+    // Reached by a WIRED_VERBS verb whose handler was not injected, or whose button carries no payload:
+    // left untouched — visible-but-inert. Verbs outside WIRED_VERBS (pin, mark-for-follow-up, open,
+    // navigate, run-mode, draft-with) never get here — the gate above already ignored them (see
+    // PHASE4-NOTES / #15: no write path yet).
   })
 }
 

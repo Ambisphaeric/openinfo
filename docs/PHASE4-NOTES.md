@@ -4755,3 +4755,20 @@ Every window loads the SAME hud.html, whose hardcoded `<title>openinfo — HUD</
 ### Disclosed / out of scope
 - In-content self-identification (S4) is `document.title` driven from the surface name (no added glass chrome — respects glass parity / "no redundant chrome"); framed windows also show it in the titlebar.
 - The two new driven e2es need a GUI (darwin), like the existing hud-bounds/panel-bounds — not in the headless default `test`. The second BrowserWindow in a run can hit a sandbox mach-port limit on this host, so `clip-e2e.mjs` reuses ONE window across surfaces.
+
+## Corrective slice — interaction lint reads the wired-verb set from source  *(branch fix/interaction-lint-verb-source)*
+
+Fresh-eyes review of the merged basics wave found the honesty interaction lint (`surfaces/blocks/hud-interaction-lint.test.ts`) hand-maintained a `LIVE_VERBS` set duplicating the real dispatch set in `mount.ts wireActions` + `hud/input-submit.ts`. Two-way drift risk: a newly wired verb false-positives the lint (an honest live button flagged dead), and a verb removed from dispatch but left in `LIVE_VERBS` lets a genuinely dead button pass silently — the exact failure mode the lint exists to catch.
+
+- `block-renderer/mount.ts`: exported `WIRED_VERBS: ReadonlySet<string>` — the SINGLE source of truth for the verbs the mount layer's delegated click listener dispatches (copy · mark-done · accept · dismiss · clarify-confirm · clarify-rival · clarify-open · clarify-dismiss · mute-system-stream). `wireActions` now GATES on it (`if (verb === null || !WIRED_VERBS.has(verb)) return`) before the dispatch branches, so the set is load-bearing in production, not a floating const: a stray dispatch branch whose verb was never registered is inert and gets noticed. Behavior-identical — a verb outside the set was already a no-op (it fell through to the trailing inert comment); the gate just makes that ignore explicit and self-documenting. Re-exported from `block-renderer/index.ts`.
+- `hud/input-submit.ts`: exported `INPUT_SUBMIT_VERB = 'input-submit'` (the input block's dispatch path lives in this controller, not in wireActions, so it contributes its own verb) and consumed it in the controller's own submit selector.
+- `hud-interaction-lint.test.ts`: `LIVE_VERBS` is now `new Set([...WIRED_VERBS, INPUT_SUBMIT_VERB])` — no hand-maintained copy. Lint semantics unchanged (a button passes iff wired | ghost | disabled; a live-looking control with no wired verb still FAILS). The set now moves mechanically with production dispatch in both directions.
+
+### Rule-7 check (definition of done)
+No route, flag, or CONTRIBUTING-recipe surface changed (a test reading a production const straight instead of a copy is not a new rail). No contract touched. No flag (rule 3). CODE_MAP: the `wireActions` client row notes it now GATES on the exported `WIRED_VERBS`, and the interaction-lint mention notes it reads that set (unioned with input-submit's exported verb) rather than a hardcoded list.
+
+### Tests + verification
+`pnpm -r build && pnpm -r test` green before the commit — client **453** (all pass, incl. the 4 interaction-lint tests), contracts unchanged, engine unchanged by these edits. One pre-existing engine flake surfaced in the full `-r` run (`api/stt-distill-split.test.js` #115 cold-boot: an ENOENT on a per-run temp `queue/` dir under parallel execution) — it PASSES in isolation and is the same class of engine-suite flake the CI serialize/retry work (#126) addresses; untouched here (engine is out of scope). This is a test-plumbing/verb-gate change with no new user-facing runtime surface; the lint itself is the verification (it drives the real renderer + the served note-taker frame and still catches the old Record-button failure mode).
+
+### Deferred (out of this slice, by scope)
+Making `blocks/input.ts` (the renderer that EMITS `data-verb="input-submit"`) consume `INPUT_SUBMIT_VERB` too — the emit side is a separate ownership surface; the source of truth this slice needed is the DISPATCH side, which now owns the const.
