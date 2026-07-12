@@ -49,6 +49,44 @@
           }
         }
       }
+    },
+    "screenshot": {
+      "$id": "ChatScreenshot",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "contentType",
+        "data"
+      ],
+      "properties": {
+        "contentType": {
+          "description": "mime of a base64 screen frame carried on a CaptureChunk",
+          "anyOf": [
+            {
+              "const": "image/png",
+              "type": "string"
+            },
+            {
+              "const": "image/jpeg",
+              "type": "string"
+            },
+            {
+              "const": "image/webp",
+              "type": "string"
+            }
+          ]
+        },
+        "data": {
+          "minLength": 1,
+          "description": "base64-encoded image bytes of one screen frame",
+          "type": "string"
+        }
+      }
+    },
+    "turnId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
     }
   }
 }

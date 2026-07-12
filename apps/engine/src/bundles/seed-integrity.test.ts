@@ -85,14 +85,14 @@ test('every flag-overlay key is a real shipped flag key', async () => {
   })
 })
 
-test('the chat context-assembly declares all seven sources (honest, complete plan)', async () => {
+test('the chat context-assembly declares all eight sources (honest, complete plan)', async () => {
   await withOrgans(({ bundles }) => {
     const standard = bundles.get(DEFAULT_BUNDLE_ID)!
     const kinds = new Set((standard.chat?.sources ?? []).map((s) => s.kind))
     assert.deepEqual(
       [...kinds].sort(),
-      ['active-preset', 'attached-docs', 'bundle-prompt', 'insights', 'recent-turns', 'relevant-entities', 'transcript-window'],
-      'all seven declared chat context sources are present',
+      ['active-preset', 'attached-docs', 'bundle-prompt', 'insights', 'recent-turns', 'relevant-entities', 'screen', 'transcript-window'],
+      'all eight declared chat context sources are present',
     )
   })
 })

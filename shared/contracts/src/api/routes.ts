@@ -61,6 +61,7 @@ export const Routes: readonly RouteDef[] = [
   { method: 'PUT', path: '/bundles/:id', request: 'Bundle', response: 'Bundle', phase: 4 },
   { method: 'POST', path: '/query', request: 'BlockQuery', response: 'QueryResult', phase: 2 },
   { method: 'POST', path: '/chat', request: 'ChatRequest', response: 'ChatReply', phase: 4 },
+  { method: 'GET', path: '/chat/history', response: 'ChatHistory', phase: 4 },
   { method: 'POST', path: '/item-signals', request: 'ItemSignal', response: 'ItemSignal', phase: 4 },
   { method: 'POST', path: '/recall', request: 'BlockQuery', response: 'QueryResult', phase: 3 },
   { method: 'POST', path: '/sessions/:id/reroute', request: 'RerouteRequest', response: 'Session', phase: 3 },

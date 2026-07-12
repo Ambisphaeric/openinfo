@@ -8,7 +8,7 @@
   "properties": {
     "kind": {
       "$id": "ChatContextSourceKind",
-      "description": "append-only closed union of the seven chat context sources",
+      "description": "append-only closed union of the eight chat context sources",
       "anyOf": [
         {
           "const": "bundle-prompt",
@@ -36,6 +36,10 @@
         },
         {
           "const": "recent-turns",
+          "type": "string"
+        },
+        {
+          "const": "screen",
           "type": "string"
         }
       ]

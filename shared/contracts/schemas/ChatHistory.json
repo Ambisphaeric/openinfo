@@ -1,0 +1,51 @@
+{
+  "$id": "ChatHistory",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "turns",
+    "total",
+    "truncated"
+  ],
+  "properties": {
+    "turns": {
+      "type": "array",
+      "items": {
+        "$id": "ChatTurn",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "role": {
+            "anyOf": [
+              {
+                "const": "user",
+                "type": "string"
+              },
+              {
+                "const": "assistant",
+                "type": "string"
+              }
+            ]
+          },
+          "content": {
+            "minLength": 1,
+            "type": "string"
+          }
+        }
+      }
+    },
+    "total": {
+      "minimum": 0,
+      "description": "full persisted turn count for the workspace",
+      "type": "integer"
+    },
+    "truncated": {
+      "description": "true ⇒ turns is the capped tail of a longer thread",
+      "type": "boolean"
+    }
+  }
+}

@@ -8,6 +8,9 @@ export const Events = {
   'distillate.updated': 'Distillate',
   // Ephemeral live-transcript fast-path (#58) — payload is a TranscriptUpdate, NOT persisted anywhere.
   'transcript.updated': 'TranscriptUpdate',
+  // Ephemeral streaming chat-answer fast-path (the Ask face) — payload is a ChatDelta, NOT persisted;
+  // the POST /chat ChatReply (and the persisted thread) is the authoritative record (the #58 idiom).
+  'chat.delta': 'ChatDelta',
   'entity.updated': 'Entity',
   // A fast field's latest value changed (#61) — published immediately when a fan-out result lands,
   // mirroring transcript.updated; the value is ALSO persisted (FieldValue), unlike the ephemeral feed.

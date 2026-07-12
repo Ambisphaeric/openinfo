@@ -1,0 +1,31 @@
+{
+  "$id": "ChatDelta",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "turnId",
+    "seq",
+    "text",
+    "done"
+  ],
+  "properties": {
+    "turnId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "seq": {
+      "minimum": 0,
+      "description": "monotonic per-turn frame counter (0-based)",
+      "type": "integer"
+    },
+    "text": {
+      "description": "appendable answer text; empty on the terminal done frame",
+      "type": "string"
+    },
+    "done": {
+      "description": "true ⇒ the turn is over; the HTTP ChatReply is the authoritative answer",
+      "type": "boolean"
+    }
+  }
+}

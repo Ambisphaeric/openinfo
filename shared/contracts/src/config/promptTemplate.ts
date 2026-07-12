@@ -85,9 +85,9 @@ export const PromptTemplate = Type.Object(
   {
     id: Id,
     name: Type.String({ minLength: 1 }),
-    kind: Type.Union(['distill', 'extract', 'act', 'field', 'preset'].map((k) => Type.Literal(k)), {
+    kind: Type.Union(['distill', 'extract', 'act', 'field', 'preset', 'ask'].map((k) => Type.Literal(k)), {
       description:
-        'which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61; preset = a workspace-selectable CONTEXT preset overlay prepended to the distill pass, editable over the same /templates routes — the glass "five prompts" made an actual document, pill P2)',
+        'which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61; preset = a workspace-selectable CONTEXT preset overlay prepended to the distill pass, editable over the same /templates routes — the glass "five prompts" made an actual document, pill P2; ask = the Ask face default question an empty send with a captured screen asks — a shipped document, not a hardcoded string, editable over the same /templates routes)',
     }),
     slot: Type.Optional(SlotName),
     body: Type.String({ minLength: 1, description: 'template with {{var}} placeholders' }),
