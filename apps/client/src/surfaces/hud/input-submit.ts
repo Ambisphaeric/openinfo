@@ -17,15 +17,31 @@ import type { ChatReply, ChatTurn } from '@openinfo/contracts'
  */
 
 /**
- * The File subset the upload dep needs. `path` is the local filesystem path Electron exposes on a
- * dropped/picked File (`File.path`) — the engine's EXISTING file ingest reads that path, so this is how a
- * desktop upload rides the pins/ingest substrate without a new engine capability. A plain browser File has
- * no `path`, so the upload dep surfaces an honest "needs the desktop app" message rather than pretending.
+ * The File subset the upload dep needs. `path` is the local filesystem path the engine's EXISTING file
+ * ingest reads, so this is how a desktop upload rides the pins/ingest substrate without a new engine
+ * capability. It is RESOLVED at attach time (resolveUploadFile), not read off the raw File:
+ *   - Desktop shell (Electron 38): `File.path` was removed in Electron 32, so a picked/dropped File no
+ *     longer carries its path — the path comes from `webUtils.getPathForFile`, exposed on the preload
+ *     bridge as `window.openinfoFiles.getPathForFile` (basics wave B / S2). Reading `.path` directly is
+ *     the exact bug this slice fixes: it is always undefined now, so attach went silently inert.
+ *   - Dev-harness / served-test / plain browser: no preload bridge exists, so the FALLBACK is a `path`
+ *     already present on the File-like the caller supplies (a test/harness sets it explicitly). A real
+ *     plain-browser File has neither bridge nor `.path`, so the upload dep surfaces an honest
+ *     "needs the desktop app" message rather than pretending.
  */
 export interface UploadFile {
   name: string
   type?: string
   path?: string
+}
+
+/**
+ * The preload bridge (preload.cts → contextBridge) that resolves a picked/dropped File to its local
+ * filesystem path via Electron's `webUtils.getPathForFile`. Present only inside the desktop shell;
+ * `undefined` in a plain browser / served test, which is what the dev-harness fallback handles.
+ */
+interface FilePathBridge {
+  getPathForFile(file: unknown): string
 }
 
 /** A minimal FileList — real DOM `HTMLInputElement.files` satisfies this structurally. */
@@ -151,16 +167,43 @@ export class InputSession {
     }
   }
 
+  /**
+   * Resolve a picked/dropped File to the plain {name, type, path} the upload dep ingests. The path can no
+   * longer be read off the File (`File.path` gone since Electron 32) — in the desktop shell it comes from
+   * the preload's `webUtils.getPathForFile` bridge; outside it (dev harness / served test / plain browser)
+   * it falls back to any `path` already on the supplied File-like. We build a fresh plain object rather
+   * than spreading the File because a real DOM File's name/type/path are prototype getters, not own
+   * enumerable props, so a spread would drop them. An empty-string bridge result (a File with no disk
+   * backing) is treated as no path, so the upload dep raises its honest "needs the desktop app" failure.
+   */
+  private resolveUploadFile(file: UploadFile): UploadFile {
+    const bridge = (globalThis as { openinfoFiles?: FilePathBridge }).openinfoFiles
+    let path: string | undefined
+    try {
+      const viaBridge = bridge?.getPathForFile(file)
+      path = viaBridge !== undefined && viaBridge !== '' ? viaBridge : file.path
+    } catch {
+      // A bridge that throws (unexpected) must never eat the attach — fall back to whatever the File carries.
+      path = file.path
+    }
+    return {
+      name: file.name,
+      ...(file.type !== undefined ? { type: file.type } : {}),
+      ...(path !== undefined ? { path } : {}),
+    }
+  }
+
   private async onFile(block: InputDomNode, file: UploadFile): Promise<void> {
     if (!this.deps.upload) {
       this.status = { kind: 'error', text: 'file upload is not available here' }
       this.repaintFrom(block)
       return
     }
-    this.status = { kind: 'info', text: `Ingesting ${file.name}…` }
+    const resolved = this.resolveUploadFile(file)
+    this.status = { kind: 'info', text: `Ingesting ${resolved.name}…` }
     this.repaintFrom(block)
     try {
-      this.attached = await this.deps.upload(file)
+      this.attached = await this.deps.upload(resolved)
       this.status = { kind: 'ok', text: `Attached ${this.attached.title} — ${this.attached.summary}` }
     } catch (error) {
       this.attached = undefined

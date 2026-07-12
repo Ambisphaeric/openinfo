@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 /**
  * The HUD renderer's ONLY bridge to the main process — a two-verb drag channel, nothing more. The
@@ -18,6 +18,14 @@ import { contextBridge, ipcRenderer } from 'electron'
  * size along its edge ({height} for a below-panel, {width} for a right-sidebar) and the main process sets
  * exactly that axis, keeping the other — the same one-way shape. Only panel surfaces send it.
  *
+ * `openinfoFiles.getPathForFile` (basics wave B / S2) is the ONE thing the renderer genuinely cannot do
+ * itself post-Electron-32: `File.path` was removed, so a picked/dropped file no longer carries its local
+ * filesystem path, and the input block's attach flow (input-submit.ts → the engine's pins/ingest) went
+ * silently inert. Electron's replacement, `webUtils.getPathForFile(file)`, is a renderer-process API that
+ * must run behind the context-isolation boundary — so we expose it here (the pattern the Electron docs
+ * prescribe) and the attach module reads it off `window.openinfoFiles`. It returns '' for a File with no
+ * backing file on disk (one built in JS), which the attach module treats as "no path" → honest failure.
+ *
  * Authored as `.cts` (→ compiled `preload.cjs`): the client package is `type: module`, but Electron
  * loads a `.js` preload as CommonJS, so an ESM preload would fail to parse. `.cts` makes tsc emit real
  * CommonJS, which loads under the default sandbox with `contextBridge`/`ipcRenderer` available.
@@ -27,4 +35,8 @@ contextBridge.exposeInMainWorld('openinfoDrag', {
   end: () => ipcRenderer.send('hud:drag-end'),
   resize: (height: number) => ipcRenderer.send('hud:resize', height),
   panel: (size: { width?: number; height?: number }) => ipcRenderer.send('hud:panel-size', size),
+})
+
+contextBridge.exposeInMainWorld('openinfoFiles', {
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
 })
