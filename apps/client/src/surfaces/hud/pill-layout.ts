@@ -37,14 +37,25 @@ export interface PillFaceSources {
   chatError?: string
 }
 
+/**
+ * The TRUE current reason the disabled Ask affordance is disabled — never a static lie. While the resolve
+ * loop is still working (including between its retries: the engine may simply not have finished spawning),
+ * it is honestly "catching up"; once the resolve has TERMINALLY settled (the bundle answered with no chat
+ * face) the tooltip states that real reason. The old static title claimed "no chat face yet" even while the
+ * only problem was the engine-spawn race — the tooltip lied on every packaged cold boot.
+ */
+export const askDisabledTitle = (sources: PillFaceSources): string =>
+  sources.resolving ? 'Ask — catching up, chat will be ready in a moment' : `Ask — ${sources.chatError ?? 'this app has no chat face'}`
+
 /** The Listen/Ask face toggle button — active-styled for the current face, wired unless Ask is unavailable. */
-const faceButton = (label: string, face: 'listen' | 'ask', active: boolean, available: boolean): VNode => {
+const faceButton = (label: string, face: 'listen' | 'ask', active: boolean, available: boolean, disabledTitle?: string): VNode => {
   if (face === 'ask' && !available) {
     // HONEST disabled-with-disclosure (the note-taker Record posture): the OS paints it non-interactive and
-    // it never receives a click; the title says why. It lights up the instant the chat face resolves.
+    // it never receives a click; the title says the TRUE current reason (askDisabledTitle — catching up vs
+    // genuinely no chat face). It lights up the instant the chat face resolves (the retry loop keeps trying).
     return h(
       'button',
-      { class: 'pill-face-btn', 'data-face': 'ask', disabled: true, title: 'Ask — this app has no chat face yet' },
+      { class: 'pill-face-btn', 'data-face': 'ask', disabled: true, title: disabledTitle ?? 'Ask — catching up, chat will be ready in a moment' },
       label,
     )
   }
@@ -56,7 +67,7 @@ const faceButton = (label: string, face: 'listen' | 'ask', active: boolean, avai
 }
 
 /** The compact header rectangle: brand identity · Listen/Ask mode toggle · Show-Hide · settings-on-hover. */
-const pillBar = (state: { face: 'listen' | 'ask'; open: boolean; askAvailable: boolean }, name: string): VNode =>
+const pillBar = (state: { face: 'listen' | 'ask'; open: boolean; askAvailable: boolean }, name: string, sources: PillFaceSources): VNode =>
   h(
     'div',
     { class: 'pill-bar' },
@@ -65,7 +76,7 @@ const pillBar = (state: { face: 'listen' | 'ask'; open: boolean; askAvailable: b
       'div',
       { class: 'pill-faces' },
       faceButton('Listen', 'listen', state.open && state.face === 'listen', true),
-      faceButton('Ask', 'ask', state.open && state.face === 'ask', state.askAvailable),
+      faceButton('Ask', 'ask', state.open && state.face === 'ask', state.askAvailable, askDisabledTitle(sources)),
     ),
     h(
       'div',
@@ -87,7 +98,7 @@ const honestAskPanel = (sources: PillFaceSources): VElement =>
   h(
     'div',
     { class: 'hud' },
-    h('div', { class: 'pill-face-note' }, sources.resolving ? 'Resolving the chat face from the bundle…' : sources.chatError ?? 'This app has no chat face.'),
+    h('div', { class: 'pill-face-note' }, sources.resolving ? 'Catching up — chat will be ready in a moment.' : sources.chatError ?? 'This app has no chat face.'),
   )
 
 /**
@@ -114,7 +125,7 @@ export const createPillRenderer =
     return h(
       'div',
       { class: 'pill-app', 'data-face': state.face, 'data-open': state.open ? 'true' : 'false' },
-      pillBar(state, input.surface.name),
+      pillBar(state, input.surface.name, src),
       h('div', { class: 'pill-panel' }, body),
     )
   }

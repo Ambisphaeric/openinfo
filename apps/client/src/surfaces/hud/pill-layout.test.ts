@@ -90,8 +90,24 @@ test('Ask is honestly disabled (not a silent dead button) until the bundle chat 
   assert.equal(dataVerb(askTag), null, 'a disabled Ask carries no live verb')
 })
 
+test('the disabled Ask tooltip states the TRUE current reason — never the static no-chat-face lie', () => {
+  // While the resolve loop is still working (the engine-spawn race), the reason is "catching up" — the
+  // resolve retries until the engine answers, so claiming "no chat face" here would be a lie.
+  const resolving = render({ face: 'listen', open: true, askAvailable: false }, unresolved)
+  const resolvingTag = buttonTags(resolving).find((t) => /data-face="ask"/.test(t))!
+  assert.match(resolvingTag, /title="Ask — catching up, chat will be ready in a moment"/)
+  assert.doesNotMatch(resolvingTag, /no chat face/)
+  // Only the TERMINAL data answer (GET /bundles succeeded, no chat face) earns the no-chat-face wording.
+  const terminal = render(
+    { face: 'listen', open: true, askAvailable: false },
+    { chat: null, resolving: false, chatError: 'this app has no chat face' },
+  )
+  const terminalTag = buttonTags(terminal).find((t) => /data-face="ask"/.test(t))!
+  assert.match(terminalTag, /title="Ask — this app has no chat face"/)
+})
+
 test('an unresolved / absent chat face paints an HONEST Ask panel, never a blank one', () => {
-  assert.match(render({ face: 'ask', open: true, askAvailable: false }, unresolved), /Resolving the chat face/)
+  assert.match(render({ face: 'ask', open: true, askAvailable: false }, unresolved), /Catching up — chat will be ready in a moment\./)
   assert.match(
     render({ face: 'ask', open: true, askAvailable: false }, { chat: null, resolving: false, chatError: 'this app has no chat face' }),
     /this app has no chat face/,
