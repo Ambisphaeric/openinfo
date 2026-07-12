@@ -143,3 +143,33 @@ test('LocalModelStore: unknown model id ⇒ undefined (route 404s)', () => {
   const store = new LocalModelStore(tmp(), () => [])
   assert.equal(store.download('ghost'), undefined)
 })
+
+const llmModel: StarterModel = {
+  id: 'test-model', slot: 'llm', runtime: 'llama.cpp', name: 'Test',
+  filename: 'model.bin', url: 'http://127.0.0.1/model.bin', sizeBytes: blob.length,
+}
+
+test('LocalModelStore: an injected runtime resolver GOVERNS availability — available when it says so (no real PATH lookup)', () => {
+  // The resolver ignores its spec and always answers "here" — proving availability follows the injection,
+  // never a real llama-server on PATH (which the bare CI runner does not have; that is the whole point).
+  const store = new LocalModelStore(tmp(), () => [llmModel], { findBinary: () => '/injected/fake-runtime' })
+  const status = store.statuses()[0]!
+  assert.equal(status.runtimeAvailable, true)
+  assert.equal(status.installHint, undefined, 'available ⇒ no install hint')
+})
+
+test('LocalModelStore: an injected runtime resolver GOVERNS availability — unavailable when it says not (install hint shown)', () => {
+  // Resolver reports absent regardless of PATH ⇒ the lens must render the honest install hint, even if a
+  // real llama-server happens to be installed on the dev machine running this test.
+  const store = new LocalModelStore(tmp(), () => [llmModel], { findBinary: () => undefined })
+  const status = store.statuses()[0]!
+  assert.equal(status.runtimeAvailable, false)
+  assert.equal(status.installHint, 'brew install llama.cpp')
+})
+
+test('LocalModelStore: injected specs govern availability too — a runtime absent from the spec table is unavailable', () => {
+  // With an empty spec table there is no spec for llama.cpp, so availability is false regardless of what
+  // the (never-consulted) binary resolver would say — spec lookup and discovery both ride the injection.
+  const store = new LocalModelStore(tmp(), () => [llmModel], { specs: {}, findBinary: () => '/injected/fake-runtime' })
+  assert.equal(store.statuses()[0]!.runtimeAvailable, false)
+})

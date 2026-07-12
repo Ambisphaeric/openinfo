@@ -3,8 +3,8 @@ import { createWriteStream } from 'node:fs'
 import { mkdir, rename, rm, stat } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import type { LocalModelStatus, StarterModel } from '@openinfo/contracts'
-import { RUNTIME_SPECS, findRuntimeBinary, type LocalEndpoint } from './endpoints/local.js'
+import type { LocalModelStatus, LocalRuntime, StarterModel } from '@openinfo/contracts'
+import { RUNTIME_SPECS, findRuntimeBinary, type LocalEndpoint, type RuntimeSpec } from './endpoints/local.js'
 
 /**
  * Model acquisition for tier zero (ARCHITECTURE §8, slice c). Downloads a vetted starter model into the
@@ -125,11 +125,20 @@ interface Task {
  */
 export class LocalModelStore {
   private readonly tasks = new Map<string, Task>()
+  /** Runtime discovery, injectable for tests/e2e — mirrors LocalRuntimeManager's seam so ONE injected
+   *  resolver governs both what spawns AND what the Get-Started lens reports as available (no real PATH
+   *  lookup leaks in). Unset in production ⇒ real binary discovery on PATH + Homebrew locations. */
+  private readonly findBinary: (spec: RuntimeSpec) => string | undefined
+  private readonly specs: Partial<Record<LocalRuntime, RuntimeSpec>>
 
   constructor(
     private readonly modelsDir: string,
     private readonly catalog: () => StarterModel[],
-  ) {}
+    runtime: { findBinary?: (spec: RuntimeSpec) => string | undefined; specs?: Partial<Record<LocalRuntime, RuntimeSpec>> } = {},
+  ) {
+    this.findBinary = runtime.findBinary ?? findRuntimeBinary
+    this.specs = runtime.specs ?? RUNTIME_SPECS
+  }
 
   pathFor(model: StarterModel): string {
     return join(this.modelsDir, model.filename)
@@ -143,8 +152,8 @@ export class LocalModelStore {
   }
 
   private runtimeAvailable(model: StarterModel): boolean {
-    const spec = RUNTIME_SPECS[model.runtime]
-    return spec ? findRuntimeBinary(spec) !== undefined : false
+    const spec = this.specs[model.runtime]
+    return spec ? this.findBinary(spec) !== undefined : false
   }
 
   private statusFor(model: StarterModel): LocalModelStatus {
@@ -154,7 +163,7 @@ export class LocalModelStore {
       runtimeAvailable: available,
       state: 'absent',
     }
-    const hint = RUNTIME_SPECS[model.runtime]?.installHint
+    const hint = this.specs[model.runtime]?.installHint
     if (!available && hint) base.installHint = hint
     const task = this.tasks.get(model.id)
     if (existsSync(this.pathFor(model))) return { ...base, state: 'ready' }

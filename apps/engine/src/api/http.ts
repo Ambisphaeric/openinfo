@@ -123,7 +123,13 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   // The model store maps a `local` endpoint's model ref to its on-disk path; the runtime manager
   // spawns llama.cpp/whisper.cpp on demand and is threaded into invoke/health so local endpoints
   // ride the SAME seams as http ones. Models live under the data root models/ dir.
-  const models = new LocalModelStore(join(store.dataDir, 'models'), () => starterModels.models())
+  // The model store shares the runtime-discovery seam with the manager below: the SAME injected resolver
+  // that decides what spawns also decides what the Get-Started lens reports as available, so an e2e's
+  // injected fake governs availability with no real PATH lookup for llama-server leaking through.
+  const models = new LocalModelStore(join(store.dataDir, 'models'), () => starterModels.models(), {
+    ...(options.localRuntime?.findBinary ? { findBinary: options.localRuntime.findBinary } : {}),
+    ...(options.localRuntime?.specs ? { specs: options.localRuntime.specs } : {}),
+  })
   const runtime = new LocalRuntimeManager({
     modelPath: (endpoint) => models.resolvePath(endpoint),
     log,

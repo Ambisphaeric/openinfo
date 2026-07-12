@@ -4755,3 +4755,14 @@ Every window loads the SAME hud.html, whose hardcoded `<title>openinfo — HUD</
 ### Disclosed / out of scope
 - In-content self-identification (S4) is `document.title` driven from the surface name (no added glass chrome — respects glass parity / "no redundant chrome"); framed windows also show it in the titlebar.
 - The two new driven e2es need a GUI (darwin), like the existing hud-bounds/panel-bounds — not in the headless default `test`. The second BrowserWindow in a run can hit a sandbox mach-port limit on this host, so `clip-e2e.mjs` reuses ONE window across surfaces.
+
+## Slice: `runtimeAvailable` honors the injected runtime resolver — drop the CI PATH stub  *(#126 follow-up, branch fix/126-runtime-resolver)*
+
+The #126 CI gate (PR #153) shipped with a runtime-injection GAP: `LocalRuntimeManager` took an injected `findBinary` resolver (via `createEngineApp`'s `localRuntime.findBinary` seam), but `LocalModelStore.runtimeAvailable` did its OWN module-level `findRuntimeBinary` PATH lookup for `llama-server` — so injection governed what SPAWNS but NOT what the Get-Started lens reported as available. The tier-zero e2e (nothing-found → download button) therefore silently depended on a real llama.cpp on the host, and CI papered over it with a loudly-commented no-op `llama-server` PATH stub.
+
+- `fabric/local-models.ts`: `LocalModelStore` gained a third constructor arg — `runtime: { findBinary?, specs? }` — mirroring `LocalRuntimeManager`'s seam. `runtimeAvailable` and the install-hint lookup now read `this.findBinary`/`this.specs` (default to the real `findRuntimeBinary`/`RUNTIME_SPECS` when unset), so ONE injected resolver governs both spawn AND availability. No real PATH lookup leaks through when a fake is injected.
+- `api/http.ts`: `createEngineApp` threads `options.localRuntime.findBinary`/`.specs` into the `LocalModelStore` the same way it already threads them into the `LocalRuntimeManager` — the store and manager now share the injected discovery seam.
+- `.github/workflows/ci.yml`: DELETED the "Stub llama-server for runtime-availability probe" step (the environment-gate workaround) — the injection now covers it, so the CI run on this PR is itself the proof.
+
+### Tests + verification
+`fabric/local-models.test.ts` +3: an injected resolver governs availability (available-when-it-says-so with no install hint; unavailable-when-it-says-not with the honest `brew install llama.cpp` hint even though this dev host has a REAL `/opt/homebrew/bin/llama-server` — that assertion passing IS the no-real-PATH-dependence proof); injected empty `specs` ⇒ unavailable regardless of the (never-consulted) resolver. Engine 734 → 737, contracts 86, client 453 — all green (engine at `--test-concurrency=1`). The tier-zero e2e still downloads + spawns via the injected fake end-to-end.
