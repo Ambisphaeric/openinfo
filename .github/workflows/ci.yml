@@ -36,21 +36,6 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # ENVIRONMENT GATE (not a product bug): the tier-zero e2e in
-      # apps/engine/src/api/http.test.ts spawns an injected fake runtime, but
-      # LocalModelStore's *availability* probe does a real PATH lookup for
-      # llama.cpp's `llama-server` (present on dev machines, absent on bare
-      # runners) — without it the Get-started page renders the install hint
-      # instead of the download button and the test fails deterministically.
-      # A no-op stub on PATH satisfies the probe; it is never executed (the
-      # spawn path uses the injected fake binary).
-      - name: Stub llama-server for runtime-availability probe
-        run: |
-          mkdir -p "$RUNNER_TEMP/stub-bin"
-          printf '#!/bin/sh\nexit 0\n' > "$RUNNER_TEMP/stub-bin/llama-server"
-          chmod +x "$RUNNER_TEMP/stub-bin/llama-server"
-          echo "$RUNNER_TEMP/stub-bin" >> "$GITHUB_PATH"
-
       # FLAKE CONTROLS (environment-gated, not product bugs — both engine
       # e2es pass in isolation and in most full passes):
       #  * apps/engine is run with --test-concurrency=1: its timing e2es
