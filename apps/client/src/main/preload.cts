@@ -54,3 +54,15 @@ contextBridge.exposeInMainWorld('openinfoFiles', {
 contextBridge.exposeInMainWorld('openinfoScreen', {
   captureFrame: (): Promise<unknown> => ipcRenderer.invoke('hud:capture-frame'),
 })
+
+/**
+ * The pill's SHELL bridge (the-pill) — the renderer's one-way ask to open the EXISTING settings surface.
+ * The pill's settings-on-hover affordance must reach the SAME path the tray's "Settings…" opens (main
+ * process → `shell.openExternal(${engineUrl}/settings)`); a `contextIsolation` renderer cannot open an
+ * external URL itself, so — like drag/resize/capture — it sends a coordinate-free signal main honors. It
+ * is NOT a new settings UI: it opens the one the tray already opens. Fire-and-forget; a build without the
+ * main handler is an honest no-op.
+ */
+contextBridge.exposeInMainWorld('openinfoShell', {
+  openSettings: (): void => ipcRenderer.send('hud:open-settings'),
+})

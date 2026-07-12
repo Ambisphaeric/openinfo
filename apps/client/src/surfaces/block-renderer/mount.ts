@@ -78,6 +78,15 @@ export interface ActionHandlers {
    * bit of client state and the ensuing re-render reflects the new state on the button itself.
    */
   muteSystemStream?: () => void
+  /**
+   * Select the pill's face (Listen/Ask) — a client-local view toggle (the PillController flips state and
+   * re-paints), not a write path, so no paintFeedback: the re-render reflects the new active face.
+   */
+  pillFace?: (face: 'listen' | 'ask') => void
+  /** Show-Hide the pill's docked panel — client-local; collapses the panel to the bar and back. */
+  pillToggle?: () => void
+  /** Open the EXISTING settings path from the pill's settings-on-hover affordance (shell bridge). */
+  pillSettings?: () => void
 }
 
 /** Replace the target's content with a freshly rendered VNode (called on every live update). */
@@ -143,6 +152,9 @@ export const WIRED_VERBS: ReadonlySet<string> = new Set([
   'clarify-open',
   'clarify-dismiss',
   'mute-system-stream',
+  'pill-face',
+  'pill-toggle',
+  'pill-settings',
 ])
 
 /**
@@ -226,6 +238,24 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
       // #96: a client-local display toggle, not a write. No paintFeedback — the re-render it triggers
       // repaints the button in its new state (label flips hide↔show), which IS the feedback.
       handlers.muteSystemStream()
+      return
+    }
+    if (verb === 'pill-face' && handlers.pillFace) {
+      // The pill's Listen/Ask mode toggle — client-local view state (PillController), no write. The
+      // re-render reflects the new active face; an unrecognized data-face is ignored.
+      const face = el.getAttribute('data-face')
+      if (face === 'listen' || face === 'ask') handlers.pillFace(face)
+      return
+    }
+    if (verb === 'pill-toggle' && handlers.pillToggle) {
+      // Show-Hide: collapse the pill's docked panel to the bar and back. Client-local; no paintFeedback.
+      handlers.pillToggle()
+      return
+    }
+    if (verb === 'pill-settings' && handlers.pillSettings) {
+      // Settings-on-hover: open the EXISTING settings path over the shell bridge. Not a paintFeedback
+      // write — a fire-and-forget open handled in main; a missing bridge is an honest no-op there.
+      handlers.pillSettings()
       return
     }
     // Reached by a WIRED_VERBS verb whose handler was not injected, or whose button carries no payload:
