@@ -24,3 +24,4 @@ docs/research/
 
 # agent worktrees (session-local, never tracked)
 .claude/worktrees/
+.claude/skills/**/__pycache__/
