@@ -12,8 +12,11 @@ import { PANEL_SURFACES } from './panel-surfaces.js'
  * and `moments` (this session's typed-event stream). ledger/pinned-doc/hint blocks are real block
  * types but their backing stores (P3/P4) don't exist yet, so they are left out of the DEFAULT stack
  * rather than shipping cards that can't hydrate — the surface.hud-meeting.json example keeps them for
- * when they land. Actions demonstrate both a wired verb (`copy`) and a visible-but-inert one (`open`,
- * no navigation target yet — see PHASE2-NOTES).
+ * when they land. CHROME HONESTY (S7): the HUD is the minimal glance tier and carries NO text action
+ * buttons — the dead `open` verb (never wired, no navigation target) is gone, and `copy` is dropped here
+ * too (it belongs to the working SUPPORT surfaces below, not the whisper glance). What remains on the
+ * relevant-now row is the compact #66 glyph strip: `dismiss` (a real suppression write) plus the
+ * honestly-inert `pin` / `mark-for-follow-up` ghosts. Every verb SET stays document-configurable.
  */
 export const defaultHudSurface: Surface = {
   id: 'surf-openinfo-hud',
@@ -28,11 +31,10 @@ export const defaultHudSurface: Surface = {
       show: 'always',
       query: { source: 'relevant-now', params: { session: 'current' }, top: 4 },
       actions: [
-        { id: 'act-copy', label: 'Copy', verb: 'copy', params: {} },
-        { id: 'act-open', label: 'Open', verb: 'open', params: {} },
-        // The glyph verb strip (#66), shipped defaults: dismiss is a real write (a suppression record the
-        // query then excludes); pin / mark-for-follow-up render as honestly-inert glyphs (no write path
-        // this slice — the #15 pattern). The verb SET is document-configurable — a surface edits `actions`.
+        // Copy/Open stripped (S7): Open was never wired, and the HUD glance carries no text buttons. Only the
+        // glyph verb strip (#66) rides here — dismiss is a real write (a suppression record the query then
+        // excludes); pin / mark-for-follow-up render as honestly-inert glyphs (no write path this slice — the
+        // #15 pattern). The verb SET is document-configurable — a surface edits `actions`.
         { id: 'act-dismiss', label: 'Dismiss', verb: 'dismiss', params: {} },
         { id: 'act-pin', label: 'Pin', verb: 'pin', params: {} },
         { id: 'act-followup', label: 'Follow up', verb: 'mark-for-follow-up', params: {} },
@@ -47,13 +49,13 @@ export const defaultHudSurface: Surface = {
     // fast fields have produced values (distill.fields is OFF by default), then it renders each field's
     // current value with a provenance why-line and a provisional micro-state dot. This is the shipped
     // default bundle demonstrating the ≥3 concurrent fields (topic / entities-mentioned / work-items)
-    // rendering on a surface. `copy` is the wired verb (the app prepares; verbs never send).
+    // rendering on a surface. No actions on the HUD glance (S7 chrome honesty) — copy rides on the
+    // dedicated Fields APP (surf-openinfo-fields) below, the support tier where working verbs live.
     {
       block: 'fields',
       show: 'on-match',
       top: 8,
       query: { source: 'fields', params: { session: 'current' }, top: 8 },
-      actions: [{ id: 'act-copy-field', label: 'Copy', verb: 'copy', params: {} }],
     },
   ],
 }

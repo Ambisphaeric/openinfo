@@ -68,18 +68,26 @@ const renderZonePanel = (input: SurfaceRenderInput, zone: ZoneInput, registry: B
     registry,
   )
 
-/** The left-rail nav + folder chrome (NOT blocks — see the module header on the missing sessions block). */
+/**
+ * The left-rail nav + folder chrome (NOT blocks — see the module header on the missing sessions block).
+ * The home button and the feature-nav tabs (Notes/Summary/Search) have NO live handler yet — multi-view
+ * routing (#19 multi-window / the session-list block) is not built. Per the interaction-honesty policy
+ * (a rendered affordance with no live handler must not present as live), each is rendered `disabled` with
+ * a `title` that discloses why, rather than a fake-live tab. The `data-nt` hook stays so the day a handler
+ * lands (dev-entry) the same markup lights up. `Notes` keeps its `active` styling — it names the ONLY view
+ * this window renders today, so a disabled current-view indicator is the honest read.
+ */
 const leftRailChrome = (): VNode =>
   h(
     'div',
     { class: 'nt-rail-chrome' },
-    h('div', { class: 'nt-brand' }, h('button', { class: 'nt-home', 'data-nt': 'home', title: 'Home' }, '◆'), h('span', { class: 'nt-brand-name' }, 'openinfo')),
+    h('div', { class: 'nt-brand' }, h('button', { class: 'nt-home', 'data-nt': 'home', title: 'Home — navigation not wired yet', disabled: true }, '◆'), h('span', { class: 'nt-brand-name' }, 'openinfo')),
     h(
       'div',
       { class: 'nt-nav' },
-      h('button', { class: 'nt-navitem active', 'data-nt': 'nav-notes' }, 'Notes'),
-      h('button', { class: 'nt-navitem', 'data-nt': 'nav-summary' }, 'Summary'),
-      h('button', { class: 'nt-navitem', 'data-nt': 'nav-search' }, 'Search'),
+      h('button', { class: 'nt-navitem active', 'data-nt': 'nav-notes', title: 'Notes — the current view (only view this window renders today)', disabled: true }, 'Notes'),
+      h('button', { class: 'nt-navitem', 'data-nt': 'nav-summary', title: 'Summary — view not built yet', disabled: true }, 'Summary'),
+      h('button', { class: 'nt-navitem', 'data-nt': 'nav-search', title: 'Search — view not built yet', disabled: true }, 'Search'),
     ),
     // Meetings / Archives folders: the LABELS are chrome; the session list they should hold has no block
     // type yet (the `sessions` query source exists — see the module header). Honest placeholder, not blank.
@@ -95,8 +103,11 @@ const leftRailChrome = (): VNode =>
 /**
  * The center canvas header — carries the RECORD affordance (#133 relocated it here; the original placement
  * was disliked). Capture start/stop is the tray's session control today (consent boundary #41); an in-window
- * button needs the #136 session-control block, which is NOT built — so this is an honest, visibly-inert
- * placeholder (`.nt-record.pending`), not a fake-live button. Placement is flagged for the owner's review.
+ * button needs the #136 session-control-verb block dispatched through the shell tray start-session path so
+ * capture CONSENT flows — that is NOT built. Rather than a button that LOOKS live but does nothing (the only
+ * disclosure was a hover tooltip — the exact silent-dead-affordance the interaction-honesty policy forbids),
+ * the button is rendered `disabled` with an INLINE, always-visible note (`.nt-record-note`, not a tooltip)
+ * that says where recording is actually controlled. Placement is flagged for the owner's review.
  */
 const canvasHeaderChrome = (): VNode =>
   h(
@@ -104,10 +115,19 @@ const canvasHeaderChrome = (): VNode =>
     { class: 'nt-canvas-head' },
     h('span', { class: 'nt-canvas-title' }, 'Notes'),
     h(
-      'button',
-      { class: 'nt-record pending', 'data-nt': 'record', title: 'Recording is controlled from the tray today · in-window start/stop needs the #136 session-control block' },
-      h('span', { class: 'nt-record-dot' }),
-      'Record',
+      'div',
+      { class: 'nt-record-group' },
+      h(
+        'button',
+        { class: 'nt-record pending', 'data-nt': 'record', disabled: true },
+        h('span', { class: 'nt-record-dot' }),
+        'Record',
+      ),
+      h(
+        'span',
+        { class: 'nt-record-note' },
+        'Controlled from the tray · in-window start/stop needs the #136 session-control block',
+      ),
     ),
   )
 
