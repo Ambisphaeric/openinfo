@@ -79,6 +79,14 @@ export interface TrayState {
    */
   engineInfoLine?: string | undefined
   /**
+   * The reason a reachable engine was REFUSED for a version/build mismatch (S6). When set, the shell has
+   * declined to adopt an engine whose identity differs from this app's and is NOT driving sessions through
+   * it — the tray leads with the refusal (loud, not the old silent adoption) instead of the session state.
+   * A plain-language reason from assessEngineSkew; the "System info…" item opens the full explanation +
+   * override instructions. Undefined when there is no skew, or skew was dev-allowed (OPENINFO_ALLOW_ENGINE_SKEW).
+   */
+  engineSkewRefused?: string | undefined
+  /**
    * The per-sense capture-permission readout (mic / screen / system-audio) the user can reach to DEBUG
    * capture — rendered as a "Capture status" submenu of honest state lines + one-click links to the
    * System Settings panes the OS won't popup for. Assembled by captureStatuses (capture-status.ts) from
@@ -124,6 +132,10 @@ export const recSourcesLabel = (state: TrayState): string => {
  * refused (the session still runs, only audio is off).
  */
 export const trayStatusLabel = (state: TrayState): string => {
+  // A skew REFUSAL leads over everything (S6): an engine WAS reachable but was declined for a version/build
+  // mismatch, so "unreachable" would be a lie and the session state is moot (we won't drive sessions through
+  // it). Say so plainly and point at the System face for the full reason + override.
+  if (state.engineSkewRefused) return '⚠ engine refused — version mismatch (see System info…)'
   if (!state.connected) {
     // Tried and failed ⇒ lead with the honest unreachable state + the URL it aimed at (no "start
     // engine" — that is out of scope). Not yet tried ⇒ the transient connecting state.
@@ -148,6 +160,7 @@ export const trayStatusLabel = (state: TrayState): string => {
 export const trayTooltip = (state: TrayState): string => {
   const context = state.watchingContext ? ' · watching context' : ''
   const base = ((): string => {
+    if (state.engineSkewRefused) return `openinfo — engine refused (version mismatch): ${state.engineSkewRefused}`
     if (!state.connected) {
       if (!state.engineTried) return 'openinfo — connecting…'
       const url = state.engineUrl ? ` (${state.engineUrl})` : ''
@@ -216,9 +229,14 @@ export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => {
   const items: TrayMenuItem[] = [
     { id: 'status', type: 'header', label: trayStatusLabel(state), enabled: false },
   ]
-  // The engine version/disposition line, right under the status header — a disabled, at-a-glance
-  // "which engine am I on?" affordance (skew made plain when the adopted engine differs from this app).
-  if (state.engineInfoLine) {
+  // A skew REFUSAL reason, right under the status header — the loud replacement for the old silent
+  // adoption. Shown instead of the normal engine-info line (the engine was declined, so the "adopted
+  // vN" line would misrepresent it); the System info item below carries the full explanation + override.
+  if (state.engineSkewRefused) {
+    items.push({ id: 'engine-skew', type: 'header', label: `    ${state.engineSkewRefused}`, enabled: false })
+  } else if (state.engineInfoLine) {
+    // The engine version/disposition line, right under the status header — a disabled, at-a-glance
+    // "which engine am I on?" affordance (skew made plain when the adopted engine differs from this app).
     items.push({ id: 'engine-info', type: 'header', label: state.engineInfoLine, enabled: false })
   }
   items.push(
@@ -270,6 +288,10 @@ export const buildTrayMenu = (state: TrayState): TrayMenuItem[] => {
   }
   items.push(
     { id: 'open-setup', type: 'normal', label: setupItemLabel(state.needsModelSetup), command: 'open-setup', enabled: true },
+    // The System face (S6): version + build for this app AND the engine, plus the skew banner when an
+    // engine was refused. Always available — "which version + build am I actually running?" should never
+    // require a terminal. Prefixed with ⚠ while a refusal stands so the fix is one obvious click away.
+    { id: 'open-system', type: 'normal', label: state.engineSkewRefused ? '⚠ System info…' : 'System info…', command: 'open-system', enabled: true },
     { id: 'sep-3', type: 'separator' },
     { id: 'quit', type: 'normal', label: 'Quit openinfo', command: 'quit', enabled: true },
   )

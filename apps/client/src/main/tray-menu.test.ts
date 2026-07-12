@@ -36,6 +36,30 @@ test('no engine-info item when the handshake line is absent (e.g. unreachable / 
   assert.equal(item(buildTrayMenu(state({})), 'engine-info'), undefined)
 })
 
+test('a skew refusal LEADS the status + tooltip (loud, not the old silent adoption)', () => {
+  const reason = 'engine v0.0.10 is older than this app (v0.0.11)'
+  assert.match(trayStatusLabel(state({ engineSkewRefused: reason, connected: false })), /engine refused — version mismatch/)
+  assert.match(trayTooltip(state({ engineSkewRefused: reason, connected: false })), /engine refused \(version mismatch\).*older than this app/)
+})
+
+test('a skew refusal shows its reason line INSTEAD of the engine-info line', () => {
+  const reason = 'engine v0.0.10 is older than this app (v0.0.11)'
+  const menu = buildTrayMenu(state({ engineSkewRefused: reason, engineInfoLine: 'engine v0.0.10 · adopted at :8787' }))
+  assert.match(item(menu, 'engine-skew')?.label ?? '', /older than this app/)
+  assert.equal(item(menu, 'engine-info'), undefined) // the adopted-vN line would misrepresent a refused engine
+})
+
+test('the System info item is always present and carries its live open-system command', () => {
+  const sys = item(buildTrayMenu(state({})), 'open-system')
+  assert.equal(sys?.command, 'open-system')
+  assert.equal(sys?.label, 'System info…')
+  assert.equal(sys?.enabled, true)
+})
+
+test('the System info item is flagged with ⚠ while a skew refusal stands (the fix is one click away)', () => {
+  assert.equal(item(buildTrayMenu(state({ engineSkewRefused: 'mismatch' })), 'open-system')?.label, '⚠ System info…')
+})
+
 test('the status header + tooltip reflect live-session state', () => {
   assert.equal(trayStatusLabel(state({ sessionLive: true })), '● session live')
   assert.equal(trayStatusLabel(state({ sessionLive: false })), '○ no session')

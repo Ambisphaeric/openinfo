@@ -6,7 +6,8 @@ import { promisify } from 'node:util'
 import { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, screen, nativeImage, session as electronSession, shell as electronShell, systemPreferences, desktopCapturer, utilityProcess, type UtilityProcess, type MenuItemConstructorOptions } from 'electron'
 import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
-import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
+import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, assessEngineSkew, parseAllowSkew, readBuildStamp, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
+import { systemFaceDataUrl, type SystemFaceModel } from './system-face.js'
 import { hudWindowSpec, appWindowSpec, configForSurface, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
 import { resolveHudHeight } from './hud-height.js'
 import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
@@ -102,6 +103,17 @@ let spawnedEngine: UtilityProcess | undefined
 // note. Undefined until ensureEngine resolves. See engine-supervisor.ts (pure, tested headless).
 let engineDisposition: EngineDisposition | undefined
 let engineHealth: EngineHealth = {}
+// This app's own build id (git short sha), read once from the packaged build stamp. Undefined in a dev run
+// (no packaged resources). Forwarded to a spawned engine as OPENINFO_BUILD and shown on the System face.
+let appBuild: string | undefined
+// The skew-refusal state (S6): the plain-language reason a reachable engine was DECLINED for a version/build
+// mismatch. Set only when we refused (mismatch AND no dev flag); the shell then does not seed/drive sessions
+// through it, the tray leads with the refusal, and the System window auto-opens with the banner. Undefined
+// when there is no skew or skew was dev-allowed (OPENINFO_ALLOW_ENGINE_SKEW).
+let skewRefusal: string | undefined
+// The System window (S6) — a plain framed window showing version/build for app + engine, plus the skew
+// banner. Created on demand (tray "System info…" or auto-opened on a refusal); one at a time.
+let systemWindow: BrowserWindow | undefined
 let connected = false
 // Has the shell attempted the engine yet? Distinguishes first-boot "connecting…" from a genuine
 // "engine unreachable" leading state (set true once the first seed attempt resolves, success or fail).
@@ -221,6 +233,7 @@ const trayState = (): TrayState => ({
         ...(engineHealth.build !== undefined ? { build: engineHealth.build } : {}),
       })
     : undefined,
+  ...(skewRefusal !== undefined ? { engineSkewRefused: skewRefusal } : {}),
   captureStatus: captureStatuses(captureStatusInput()),
   // The Apps folder (#19/#98): the surfaces the engine serves + the user's favorites + which windows are
   // open now. The default HUD is "open" whenever its window is visible (it is the singular anchor, not in
@@ -303,6 +316,11 @@ const dispatch = (command: ShellCommand): void => {
       // a later client-settings concern).
       void electronShell.openExternal(`${cfg.engineUrl}/settings`).catch((err) => console.error('[shell] open settings failed:', err))
       return
+    case 'open-system':
+      // The System face (S6): version + build for app + engine, plus the skew banner when an engine was
+      // refused. A live handler for the tray affordance — no dead menu item (the adopted "handler ↔ text" rule).
+      openSystemWindow()
+      return
     case 'open-mic-settings':
     case 'open-accessibility-settings':
     case 'open-screen-settings':
@@ -382,6 +400,45 @@ const createSurfaceWindow = (
 const createHudWindow = (): void => {
   hudWindow = createSurfaceWindow(cfg.surfaceId, { chrome: 'hud', isDefaultHud: true, startVisible: false })
   hudWindow.on('closed', () => (hudWindow = undefined))
+}
+
+/** The current System-face model — this app's identity, the engine's, and any skew — read live from state. */
+const systemFaceState = (): SystemFaceModel => ({
+  appVersion: app.getVersion(),
+  ...(appBuild !== undefined ? { appBuild } : {}),
+  ...(engineDisposition !== undefined ? { engineDisposition } : {}),
+  ...(engineHealth.version !== undefined ? { engineVersion: engineHealth.version } : {}),
+  ...(engineHealth.build !== undefined ? { engineBuild: engineHealth.build } : {}),
+  engineUrl: cfg.engineUrl,
+  ...(skewRefusal !== undefined ? { skew: { refused: true, reason: skewRefusal } } : {}),
+})
+
+/**
+ * Open (or focus + refresh) the System window (S6) — a plain framed window that answers "which version +
+ * build am I running, and is my engine the one I expect?" It renders a self-contained data: URL built from
+ * the pure systemFaceDataUrl, so there is no HTML host, no preload, and nothing external to fetch. Auto-opened
+ * on a skew refusal (the banner is the fix-it), and reachable any time from the tray's "System info…" item.
+ */
+const openSystemWindow = (): void => {
+  if (systemWindow && !systemWindow.isDestroyed()) {
+    void systemWindow.loadURL(systemFaceDataUrl(systemFaceState())) // refresh with the latest facts
+    systemWindow.show()
+    systemWindow.focus()
+    return
+  }
+  systemWindow = new BrowserWindow({
+    width: 460,
+    height: 340,
+    title: 'openinfo — System',
+    resizable: true,
+    fullscreenable: false,
+    minimizable: true,
+    show: false,
+    webPreferences: { contextIsolation: true, nodeIntegration: false }, // display-only; no bridge needed
+  })
+  systemWindow.on('closed', () => (systemWindow = undefined))
+  void systemWindow.loadURL(systemFaceDataUrl(systemFaceState()))
+  systemWindow.once('ready-to-show', () => systemWindow?.show())
 }
 
 /**
@@ -1133,10 +1190,29 @@ const ensureEngine = async (): Promise<void> => {
   engineDisposition = disposition
   console.log(`[shell] engine ${cfg.engineUrl}: reachable=${reachable} bundled=${bundledEnginePresent} → ${disposition}`)
   if (disposition === 'adopt') {
-    // Adopted an already-running engine (the dev-rig case) — read its version so the tray can surface it
-    // and flag skew (a stale engine that predates our fixes reads as "older than this app"). Best-effort.
+    // A reachable engine — read its /health identity, then ASSESS it against ours before trusting it (S6).
+    // Silently adopting whatever answers is how a stale launchd/dev engine got used unnoticed. On a
+    // version/build mismatch we REFUSE by default (no seed, no sessions through it) and surface a blocking
+    // banner; a dev opts back in with OPENINFO_ALLOW_ENGINE_SKEW. Best-effort — an engine that reports no
+    // version reads as "predates version reporting" and is treated as a mismatch (it is an old build).
     engineHealth = await fetchEngineHealth(cfg.engineUrl)
+    const allowSkew = parseAllowSkew(process.env['OPENINFO_ALLOW_ENGINE_SKEW'])
+    const verdict = assessEngineSkew({
+      appVersion: app.getVersion(),
+      ...(appBuild !== undefined ? { appBuild } : {}),
+      ...(engineHealth.version !== undefined ? { engineVersion: engineHealth.version } : {}),
+      ...(engineHealth.build !== undefined ? { engineBuild: engineHealth.build } : {}),
+      allowSkew,
+    })
     console.log(`[shell] adopted engine version: ${engineHealth.version ?? 'unknown (predates the /health version field)'}`)
+    if (verdict.refused) {
+      skewRefusal = verdict.reason
+      console.error(`[shell] REFUSING to adopt a mismatched engine: ${verdict.reason} — set OPENINFO_ALLOW_ENGINE_SKEW=1 to adopt anyway`)
+      clientLog?.(`[shell] engine skew refused: ${verdict.reason}`)
+      openSystemWindow() // auto-open the System face so the mismatch is unmissable, with the fix in view
+    } else if (verdict.skewed) {
+      console.warn(`[shell] adopting a MISMATCHED engine because OPENINFO_ALLOW_ENGINE_SKEW is set: ${verdict.reason}`)
+    }
     return
   }
   if (disposition !== 'spawn') return // unreachable — the tray leads with the unreachable state; spawn nothing
@@ -1148,7 +1224,10 @@ const ensureEngine = async (): Promise<void> => {
     // pin only the PORT so the child answers the exact URL the client talks to. stdio piped so the engine's
     // log rides ours.
     const child = utilityProcess.fork(entry, [], {
-      env: { ...process.env, OPENINFO_PORT: String(port) },
+      // Forward this app's build stamp as OPENINFO_BUILD (S6) so the bundled engine we spawn echoes the SAME
+      // sha on /health — a packaged app inherits no env, so without this the engine's build reads empty and
+      // the System face / tray couldn't prove the two halves are the one build. Omitted in a dev run (no stamp).
+      env: { ...process.env, OPENINFO_PORT: String(port), ...(appBuild !== undefined ? { OPENINFO_BUILD: appBuild } : {}) },
       stdio: 'pipe',
       serviceName: 'openinfo-engine',
     })
@@ -1204,6 +1283,15 @@ const refreshSurfaces = async (): Promise<void> => {
 }
 
 const seedSessionState = async (): Promise<void> => {
+  // A refused (skewed) engine is NOT ours to drive (S6): skip the whole seed so Start/End stays disabled
+  // and no session, capture, or fabric state is read from the mismatched engine. The tray leads with the
+  // refusal; the System window carries the fix. This is the substantive half of "refuse to adopt".
+  if (skewRefusal !== undefined) {
+    engineTried = true
+    connected = false
+    refreshTray()
+    return
+  }
   try {
     liveState.seed(await session.liveSession(cfg.workspace))
     connected = true
@@ -1249,7 +1337,11 @@ app.whenReady().then(async () => {
   // Give the shell + capture lifecycle a durable log now that userData is resolvable (issue #41). The
   // packaged .app has no terminal; without this the whole capture-failure class is invisible.
   clientLog = createClientLog({ file: path.join(app.getPath('userData'), 'logs', 'client.log') })
-  clientLog(`[shell] launch — engine ${cfg.engineUrl}, workspace ${cfg.workspace}, capture opens STOPPED until you start a session`)
+  // Read this app's build stamp (S6) — the git short sha package.mjs wrote into the app resources. Undefined
+  // in a dev run. Used to forward OPENINFO_BUILD to a spawned engine, to assess build-level skew, and to show
+  // the build on the System face. Read before ensureEngine (which needs it for both the spawn env and skew).
+  appBuild = readBuildStamp(process.resourcesPath)
+  clientLog(`[shell] launch — engine ${cfg.engineUrl}, workspace ${cfg.workspace}, build ${appBuild ?? 'dev (unstamped)'}, capture opens STOPPED until you start a session`)
   // Grant only the media (mic) permission at the Chromium layer for our own windows; deny everything
   // else. The OS-level (TCC) gate is separate — requestMicPermission handles that before capture.
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(permission === 'media'))
