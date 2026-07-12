@@ -52,6 +52,23 @@ export const isLoopbackEndpoint = (endpoint: Endpoint): boolean => {
 }
 
 /**
+ * May this endpoint receive RAW SCREEN FRAMES (OCR/VLM image bytes)? The default is `isLoopbackEndpoint`
+ * — raw frames stay on this machine unless the USER explicitly widened it. The widening is the http
+ * endpoint's `trustRawFrames` flag: an explicit per-endpoint declaration that its host is trusted, and
+ * it is honored ONLY for LAN-local hosts (`classifyEndpoint` → `local`). A public host is denied even
+ * when flagged — trust widens loopback to the user's own network, never to the internet. Wildcard bind
+ * addresses (0.0.0.0 / ::) are bind targets, not destination hosts, so the flag never trusts them.
+ * Pure; the truth table lives in egress.test.ts.
+ */
+export const mayReceiveRawFrames = (endpoint: Endpoint): boolean => {
+  if (isLoopbackEndpoint(endpoint)) return true
+  if (endpoint.kind !== 'http' || endpoint.trustRawFrames !== true) return false
+  const host = hostOf(endpoint.url)
+  if (host === undefined || host === '0.0.0.0' || host === '::') return false // a wildcard bind is not a host
+  return classifyEndpoint(endpoint) === 'local'
+}
+
+/**
  * Is a hostname loopback or a private/link-local LAN address (or an mDNS `.local` name)? Such a host never
  * leaves the machine's own network, so it is `local`; everything else (a public hostname or routable IP)
  * is `egress`. Covers IPv4 loopback/private/link-local ranges, IPv6 loopback/ULA/link-local, `0.0.0.0`,
