@@ -6,10 +6,13 @@
  * Reuses the shared palette vars (--s-*, --accent) so it sits in the same visual system as the HUD.
  */
 export const pillStyles = `
-/* THE PILL FILLS ITS WINDOW — the same fluid-panel invariant every surface inherits from .hud
-   (styles.ts): width:100% up to the 660px cap, min-width:0 so its flex children can shrink. Without it
-   .pill-app shrink-wrapped to its intrinsic content and floated centered as a microsquare (measured: a
-   295px bar of naked buttons adrift in a 708px window). */
+/* THE PILL FILLS ITS FIXED-width WINDOW. The mount div (dev-entry tags it .pill-mount for the pill) is a
+   flex item of the centered .stage; giving it width:100% pins it to the stage's DEFINITE content box (the
+   window width minus the stage margin) instead of shrink-wrapping to the pill's narrow content — otherwise
+   the pill floated centered as a microsquare (measured: a 295px bar of naked buttons in a 708px window). */
+.pill-mount{width:100%}
+/* With a definite-width mount, .pill-app then takes the same fluid-panel invariant every surface inherits
+   from .hud (styles.ts): width:100% up to the 660px cap, min-width:0 so its flex children can shrink. */
 .pill-app{display:flex;flex-direction:column;gap:0;width:100%;max-width:660px;min-width:0}
 /* the header RECTANGLE — always visible, the compact bar the panel docks beneath. It carries the SAME
    glass-card idiom as .hud (styles.ts:41 — the shared --s-glass fill, backdrop blur, hairline border and

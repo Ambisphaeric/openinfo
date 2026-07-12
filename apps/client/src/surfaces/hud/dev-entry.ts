@@ -466,6 +466,11 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   const status = doc.createElement('div')
   status.className = 'hud-boot-status'
   const panel = doc.createElement('div')
+  // THE PILL fills its FIXED-width window (it is not content-sized like the HUD). The mount div is a flex
+  // item of the centered `.stage`, so by default it shrink-wraps to the pill's intrinsic content and the
+  // pill floats centered as a microsquare (a 295px bar in a 708px window). Tagging the mount lets pill-styles
+  // give it a definite width (the stage content box), so `.pill-app`'s width:100% finally resolves to a fill.
+  if (isPill) panel.className = 'pill-mount'
   stage.appendChild(status)
   stage.appendChild(panel)
   doc.body.appendChild(stage)
