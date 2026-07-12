@@ -1,8 +1,9 @@
 import { createServer, type Server } from 'node:http'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Entity, Fabric, PinChunk, RelevantEntity } from '@openinfo/contracts'
-import { assembleContext, computeBudget, estimateTokens, runChat, type ChatDeps } from './chat.js'
+import type { ChatContextSource, Entity, Fabric, PinChunk, RelevantEntity } from '@openinfo/contracts'
+import { BUNDLE_PROMPT, computeBudget, estimateTokens, runChat, type ChatDeps } from './chat.js'
+import { DEFAULT_CONTEXT_SOURCES } from './context-assembly.js'
 
 const entity = (name: string, kind: Entity['kind']): Entity => ({
   id: `ent-${name}`, workspaceId: 'default', kind, name, aliases: [], momentRefs: [], outboundCount: 0, mentions: 1,
@@ -16,43 +17,12 @@ const chunk = (ordinal: number, text: string, page?: number): PinChunk => ({
   id: `c-${ordinal}`, pinId: 'pin-1', workspaceId: 'default', ordinal, ...(page !== undefined ? { page } : {}), text, createdAt: '2026-07-10T14:00:00Z',
 })
 
-test('assembleContext names relevant entities and cites packed pin chunks', () => {
-  const out = assembleContext({
-    entities: [rel('Acme', 'org', 'renewal in Q3'), rel('Dana', 'person')],
-    pinId: 'pin-1',
-    pinTitle: 'contract.txt',
-    chunks: [chunk(0, 'the term is 12 months', 4), chunk(1, 'auto-renews unless cancelled', 5)],
-  })
-  assert.match(out.contextText, /Known in this session:/)
-  assert.match(out.contextText, /- Acme \(org\) — renewal in Q3/)
-  assert.match(out.contextText, /Excerpts from contract.txt/)
-  assert.match(out.contextText, /\[p\.4\] the term is 12 months/)
-  assert.equal(out.citations.length, 2)
-  assert.deepEqual(out.citations[0], { pinId: 'pin-1', pinTitle: 'contract.txt', ordinal: 0, page: 4, excerpt: 'the term is 12 months' })
-  assert.equal(out.truncated, false)
-  assert.equal(out.citedChunks, 2)
-})
-
-test('assembleContext truncates to the char budget and reports it (honest, never silent)', () => {
-  const big = Array.from({ length: 10 }, (_, i) => chunk(i, 'x'.repeat(200), i + 1))
-  const out = assembleContext({ entities: [], pinId: 'pin-1', pinTitle: 'big.txt', chunks: big, maxContextChars: 300 })
-  assert.equal(out.truncated, true)
-  assert.ok(out.citedChunks >= 1 && out.citedChunks < out.totalChunks)
-  assert.equal(out.totalChunks, 10)
-})
-
-test('assembleContext with nothing known yields an empty context (still answerable)', () => {
-  const out = assembleContext({ entities: [], chunks: [] })
-  assert.equal(out.contextText, '')
-  assert.equal(out.citations.length, 0)
-  assert.equal(out.truncated, false)
-})
-
-test('computeBudget discloses truncation and an honest turns-remaining estimate', () => {
-  const b = computeBudget({ contextTokens: 100, historyTokens: 20, truncated: true, citedChunks: 3, totalChunks: 40 })
+test('computeBudget prepends the assembly disclosure and an honest turns-remaining estimate', () => {
+  const b = computeBudget({ contextTokens: 100, historyTokens: 20, truncated: true, assemblyNote: 'Context: attached-docs(3 of 40, capped). Omitted: insights (empty).' })
   assert.equal(b.contextTokens, 120)
   assert.equal(b.truncated, true)
-  assert.match(b.note, /cited 3 of 40 chunks/)
+  assert.match(b.note, /attached-docs\(3 of 40, capped\)/)
+  assert.match(b.note, /Omitted: insights \(empty\)/)
   assert.match(b.note, /useful turn/)
   assert.ok(b.turnsRemaining >= 0)
 })
@@ -63,9 +33,13 @@ test('estimateTokens is chars/4, zero for empty', () => {
   assert.equal(estimateTokens('abcde'), 2)
 })
 
-const baseDeps = (fabric: Fabric): ChatDeps => ({
+const baseDeps = (fabric: Fabric, sources: readonly ChatContextSource[] = DEFAULT_CONTEXT_SOURCES): ChatDeps => ({
   fabric,
+  contextSources: sources,
+  bundlePrompt: BUNDLE_PROMPT,
   relevant: () => [rel('Acme', 'org')],
+  transcript: () => '',
+  insights: () => [],
   pinTitle: () => 'contract.txt',
   pinChunks: () => [chunk(0, 'the term is 12 months', 4)],
   workspaceDeniesEgress: () => false,
@@ -96,10 +70,42 @@ test('runChat answers over a live openai-compat endpoint with citations + honest
     assert.equal(reply.citations[0]!.page, 4)
     assert.ok(reply.budget.turnsRemaining >= 0)
     assert.match(reply.budget.note, /useful turn/)
-    // the system prompt actually carried the corpus (entities + cited excerpt)
+    // the system prompt actually carried the corpus (bundle prompt + entities + cited excerpt)
     const system = seen.messages.find((m) => m.role === 'system')!.content
-    assert.match(system, /Acme/)
-    assert.match(system, /the term is 12 months/)
+    assert.match(system, /openinfo assistant/) // the bundle-prompt source
+    assert.match(system, /Acme/) // the relevant-entities source
+    assert.match(system, /the term is 12 months/) // the attached-docs source
+    // the budget note discloses the per-source assembly (what entered, what was omitted and why)
+    assert.match(reply.budget.note, /Context:/)
+    assert.match(reply.budget.note, /active-preset \(unavailable\)/) // the P2 seam is unfilled — honest
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+test('runChat obeys a declaration that omits sources — assembly is data, not code', async () => {
+  const seen: { messages: { role: string; content: string }[] } = { messages: [] }
+  const server: Server = createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      seen.messages = (JSON.parse(body) as { messages: { role: string; content: string }[] }).messages
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, resolve))
+  const addr = server.address()
+  assert.ok(addr && typeof addr === 'object')
+  const fabric: Fabric = { slots: { stt: [], tts: [], llm: [{ kind: 'http', name: 'local', url: `http://127.0.0.1:${addr.port}`, api: 'openai-compat' }], vlm: [], ocr: [], embed: [] } }
+  try {
+    // A DIFFERENT declaration (only the bundle prompt) ⇒ a DIFFERENT assembly — no code change.
+    const reply = await runChat(baseDeps(fabric, [{ kind: 'bundle-prompt' }]), { message: 'hi', pinId: 'pin-1' })
+    const system = seen.messages.find((m) => m.role === 'system')!.content
+    assert.match(system, /openinfo assistant/)
+    assert.doesNotMatch(system, /Acme/) // relevant-entities was NOT declared
+    assert.doesNotMatch(system, /the term is 12 months/) // attached-docs was NOT declared
+    assert.equal(reply.citations.length, 0) // no attached-docs source ⇒ no citations
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
   }

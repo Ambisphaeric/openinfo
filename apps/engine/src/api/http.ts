@@ -15,14 +15,15 @@ import { isFlagEnabled } from '../flags/read.js'
 import { CaptureQueue, DEFAULT_MAX_AGE_MINUTES } from '../queue/spool.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
-import { BundleDocuments } from '../bundles/index.js'
+import { BundleDocuments, DEFAULT_BUNDLE_ID } from '../bundles/index.js'
 import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
-import { runChat, type ChatDeps } from './chat.js'
+import { runChat, BUNDLE_PROMPT, type ChatDeps } from './chat.js'
+import { DEFAULT_CONTEXT_SOURCES } from './context-assembly.js'
 import { readEngineVersion, readEngineBuild } from './version.js'
 import { EventSocketHub } from './ws.js'
 
@@ -1732,8 +1733,10 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
 }
 
 /**
- * POST /chat (#134) — the below-HUD chat shell's turn. Delegates the corpus assembly + honest budget + the
- * egress-gated invoke to chat.ts::runChat over a ChatDeps built from the store/fabric here. Reuses the SAME
+ * POST /chat (#134, context-assembly reads the declaration in pill P1) — the below-HUD chat shell's turn.
+ * Resolves the governing bundle's DECLARED context-assembly plan and delegates the ordered, per-source-capped
+ * corpus assembly + honest budget + the egress-gated invoke to chat.ts::runChat over a ChatDeps built from the
+ * store/fabric here (the gatherers do the impure per-source reads the pure assembler consumes). Reuses the SAME
  * #63 guard config the distiller builds (guard.egress flag + policy + the fabric guard slot), so the chat
  * hop is filtered exactly like a distill hop. A FAILURE (empty llm slot, guard hold, transport) is caught
  * and returned as a 502 whose `error` the input block paints as visible text — the QA doctrine, no silent
@@ -1752,11 +1755,31 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     ? { endpoints: fabric.slots.guard ?? [], behavior: policy.behavior, acknowledgeUnguardedEgress: policy.acknowledgeUnguardedEgress, resolveKey: (ref: string) => ctx.secrets.resolve(ref) }
     : undefined
 
+  // Resolve the GOVERNING bundle and read its declared chat context-assembly plan — assembly is DATA (the
+  // route reads the declaration), NOT code (pill P1). Chat is scoped to the workspace today and one app ships
+  // (the Standard App), so the governing bundle is the seeded standard-app; editing its `chat` plan over PUT
+  // /bundles changes assembly with no code change. A bundle that declares no plan falls back to the engine
+  // default order (a safety net — the shipped bundle always declares one).
+  const bundle = ctx.bundles.get(DEFAULT_BUNDLE_ID)
+  const contextSources = bundle?.chat?.sources ?? DEFAULT_CONTEXT_SOURCES
+
+  const known = (workspaceId: string): boolean => ctx.store.all().some((w) => w.id === workspaceId)
   const deps: ChatDeps = {
     fabric,
-    relevant: (workspaceId) => (ctx.store.all().some((w) => w.id === workspaceId) ? relevantNow(ctx.store, workspaceId, {}) : []),
+    contextSources,
+    // The Standard App carries no custom prompt document yet, so its priming is the shipped engine default,
+    // delivered through the declared `bundle-prompt` source (drop that source and the app runs without priming).
+    bundlePrompt: BUNDLE_PROMPT,
+    relevant: (workspaceId) => (known(workspaceId) ? relevantNow(ctx.store, workspaceId, {}) : []),
+    // The live-transcript ring is a process-global recent feed (not workspace-scoped, disclosed); join
+    // oldest-last so the assembler's rolling window keeps the MOST RECENT characters.
+    transcript: () => ctx.transcripts.recent().reverse().map((u) => u.text).filter((t) => t.trim() !== '').join('\n'),
+    // Session insights = the distillate summaries (oldest-first); the assembler keeps the most recent `limit`.
+    insights: (workspaceId) => (known(workspaceId) ? ctx.store.listDistillates(workspaceId).map((d) => d.text).filter((t) => t.trim() !== '') : []),
     pinTitle: (workspaceId, pinId) => ctx.store.getPin(workspaceId, pinId)?.title,
     pinChunks: (workspaceId, pinId) => (ctx.store.getPin(workspaceId, pinId) ? ctx.store.listPinChunks(workspaceId, pinId) : []),
+    // active-preset read-seam: P2 owns preset documents/selection. Left UNFILLED here, so the `active-preset`
+    // source degrades HONESTLY to `unavailable` in the accounting until P2 wires it in.
     workspaceDeniesEgress: (workspaceId) => ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true,
     ...(guard !== undefined ? { guard } : {}),
     resolveKey: (ref: string) => ctx.secrets.resolve(ref),
