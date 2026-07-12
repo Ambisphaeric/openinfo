@@ -191,6 +191,10 @@
                   },
                   "responseFormat": {
                     "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
+                  },
+                  "trustRawFrames": {
+                    "description": "explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.",
+                    "type": "boolean"
                   }
                 }
               },
@@ -418,6 +422,10 @@
                   },
                   "responseFormat": {
                     "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
+                  },
+                  "trustRawFrames": {
+                    "description": "explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.",
+                    "type": "boolean"
                   }
                 }
               },
@@ -645,6 +653,10 @@
                   },
                   "responseFormat": {
                     "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
+                  },
+                  "trustRawFrames": {
+                    "description": "explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.",
+                    "type": "boolean"
                   }
                 }
               },
@@ -872,6 +884,10 @@
                   },
                   "responseFormat": {
                     "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
+                  },
+                  "trustRawFrames": {
+                    "description": "explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.",
+                    "type": "boolean"
                   }
                 }
               },
@@ -1099,6 +1115,10 @@
                   },
                   "responseFormat": {
                     "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
+                  },
+                  "trustRawFrames": {
+                    "description": "explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.",
+                    "type": "boolean"
                   }
                 }
               },
@@ -1326,6 +1346,10 @@
                   },
                   "responseFormat": {
                     "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
+                  },
+                  "trustRawFrames": {
+                    "description": "explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.",
+                    "type": "boolean"
                   }
                 }
               },
@@ -1554,6 +1578,10 @@
                   },
                   "responseFormat": {
                     "description": "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint."
+                  },
+                  "trustRawFrames": {
+                    "description": "explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.",
+                    "type": "boolean"
                   }
                 }
               },

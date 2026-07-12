@@ -71,6 +71,17 @@ export const Endpoint = Type.Union(
         responseFormat: Type.Optional(
           Type.Unknown({ description: "passed as response_format on the completions request, e.g. {type:'json_object'} — verbatim, per-endpoint." }),
         ),
+        // The user's EXPLICIT declaration that this endpoint's host is trusted to receive raw screen
+        // frames (OCR/VLM image bytes). Default (absent/false): raw frames stay loopback-only — the
+        // posture is unchanged. The flag is only honored for LAN-local hosts (private/link-local/mDNS);
+        // a public host is denied regardless — trust widens loopback to the user's own network, never
+        // to the internet. Per-endpoint user config, never auto-set.
+        trustRawFrames: Type.Optional(
+          Type.Boolean({
+            description:
+              'explicit user trust: this host may receive raw screen frames. Absent ⇒ raw frames stay loopback-only (the default). Honored only for LAN-local hosts — a public host is denied even when set.',
+          }),
+        ),
       },
       { additionalProperties: false },
     ),
