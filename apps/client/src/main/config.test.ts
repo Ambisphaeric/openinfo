@@ -18,7 +18,9 @@ test('defaults to localhost:8787 and the meeting mode when the env is empty', ()
   assert.equal(cfg.engineUrl, 'http://127.0.0.1:8787')
   assert.equal(cfg.workspace, 'default')
   assert.equal(cfg.modeId, 'mode-meeting')
-  assert.equal(cfg.surfaceId, 'surf-openinfo-hud')
+  // The default anchor is THE PILL (the MVP Standard App glance face) — the window ⌘\ + tray Show/Hide act
+  // on. Pinned so a silent repoint of the discoverable surface can never ship unnoticed again.
+  assert.equal(cfg.surfaceId, 'surf-openinfo-pill')
 })
 
 test('OPENINFO_PORT and host build the engine URL', () => {

@@ -16,6 +16,17 @@
  *   6) the settings-on-hover affordance opens the EXISTING settings path (the hud:open-settings bridge
  *      fires — the same signal the tray's Settings command sends).
  *
+ * SCENE 0 — the ANCHOR PATH (the user's door). POLICY: a driven e2e must enter through the user's ENTRY
+ * POINTS, not reach past them. Scenes 1-6 drove the pill window DIRECTLY (surfaceWindowSpec(PILL) by hand),
+ * so they stayed green while the ⌘\/tray anchor still opened the OLD hud and the pill was undiscoverable
+ * (the owner's 0.0.14 live-QA gap). Scene 0 closes that hole: it resolves the shell config the way boot
+ * does (resolveShellConfig with an empty env → DEFAULTS) and builds the anchor window from cfg.surfaceId
+ * exactly as createHudWindow does, then proves (a) the anchor default IS the pill (not the old hud), (b)
+ * `.pill-app` actually FILLS the window width at the bar/listen/ask states — DOM rect ≥ window width minus
+ * the stage padding, so the shrink-wrapped microsquare class can never come back green, and (c) the anchor
+ * show/hide path (hide()/showInactive(), the ⌘\ toggle) just shows/hides the window without disturbing the
+ * pill's height (the PillController extents are not fought).
+ *
  * Probe main (the ask-face / panel-bounds precedent): recreates the window with the shell's exact
  * webPreferences + preload and mirrors shell.ts's hud:panel-size / hud:capture-frame / hud:open-settings
  * handlers verbatim. TCC cannot be granted to a throwaway harness, so the frame source is injected at the
@@ -29,6 +40,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, ipcMain, screen } from 'electron'
 import { surfaceWindowSpec, windowTitleFor } from '../dist/main/window-options.js'
+import { resolveShellConfig } from '../dist/main/config.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const CLIENT_DIR = path.join(__dirname, '..')
@@ -199,6 +211,103 @@ const makeWindow = (engineUrl) => {
   return w
 }
 
+// SCENE 0 — enter through the user's DOOR: build the anchor window the way the shell's createHudWindow does
+// (from the config-resolved default surface), and prove the pill loads there, fills its frame, and survives
+// the anchor show/hide toggle. This is the scene that would have caught the 0.0.14 anchor gap.
+const runAnchorScene = async (engineUrl) => {
+  // Resolve the shell config the way boot does, but with an EMPTY env so we read the shipped DEFAULTS
+  // (not a dev OPENINFO_SURFACE that might be set in the harness's own environment).
+  const cfg = resolveShellConfig({})
+  if (cfg.surfaceId !== PILL_SURFACE_ID) {
+    return fail(`the ANCHOR default is not the pill: cfg.surfaceId=${JSON.stringify(cfg.surfaceId)} (⌘\\ + tray Show/Hide would reveal the wrong surface — the pill would be undiscoverable)`)
+  }
+  console.log(`[e2e:anchor] resolveShellConfig → anchor surface ${cfg.surfaceId} (the pill)`)
+
+  // Build the anchor exactly as createHudWindow does: the config-resolved surface, startVisible:false, then
+  // revealed with showInactive() (the same glance-reveal showHud uses for the ⌘\ / tray Show command).
+  const spec = surfaceWindowSpec(cfg.surfaceId, { startVisible: false })
+  const aw = new BrowserWindow({
+    ...spec.browserWindow,
+    title: windowTitleFor(cfg.surfaceId),
+    webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
+  })
+  aw.webContents.on('console-message', (d) => {
+    if (d.level === 'error') console.error(`[hud:anchor] ${d.message}`)
+  })
+  aw.loadFile(HUD_HTML, { search: new URLSearchParams({ engine: engineUrl, surface: cfg.surfaceId }).toString() })
+  aw.showInactive()
+
+  const driveA = (expr) => aw.webContents.executeJavaScript(expr)
+  const waitForA = async (expr, what, tries = 100) => {
+    for (let i = 0; i < tries; i += 1) {
+      const ok = await driveA(expr).catch(() => false)
+      if (ok) return
+      await delay(100)
+    }
+    throw new Error(`${what} never became true (anchor pill wiring or boot broken)`)
+  }
+
+  // (a) the PILL loads at the anchor — not the old hud. Self-identifies + shows the header rectangle.
+  await waitForA('!!(window.openinfoPill && document.querySelector(".pill-bar"))', 'the anchor pill booting')
+  await delay(400)
+  const title = await driveA('document.title')
+  if (title !== 'openinfo') return fail(`[anchor] the pill did not load at the anchor (title=${JSON.stringify(title)} — the old hud, not the pill?)`)
+  if (await driveA('!!document.querySelector(".nowline") && !document.querySelector(".pill-bar")')) {
+    return fail('[anchor] the anchor rendered the old full HUD chrome, not the pill')
+  }
+  console.log('[e2e:anchor] the pill loaded AT the anchor default and self-identified')
+
+  // (b) `.pill-app` FILLS the window width — catches the shrink-wrapped microsquare forever. We measure the
+  // pill-app rect against the window's inner width minus the stage's horizontal padding; a fill leaves at
+  // most that padding of slack on each side, a microsquare leaves hundreds of px. Asserted at EVERY state
+  // (bar / listen / ask) because the collapsed bar is exactly what the owner saw adrift.
+  // The .stage floats its panel with a fixed horizontal margin each side (WINDOW_MARGIN=24, the same margin
+  // the 708px window wraps the 660px panel with). A FILLED pill covers the whole content box (window width
+  // minus 2×24); the microsquare (≈295 in a 708px window) leaves hundreds of px of slack and fails this hard.
+  const STAGE_MARGIN_EACH = 24
+  const measureFill = async (label) => {
+    const m = await driveA(`(() => {
+      const app = document.querySelector('.pill-app');
+      const r = app.getBoundingClientRect();
+      return { w: Math.round(r.width), inner: window.innerWidth };
+    })()`)
+    const floor = m.inner - STAGE_MARGIN_EACH * 2 - 8 // 8px anti-alias/rounding slack
+    console.log(`[e2e:anchor] .pill-app ${label}: width=${m.w} innerWidth=${m.inner} → fill-floor ${floor}`)
+    if (m.w < floor) throw new Error(`[anchor] .pill-app does NOT fill at ${label}: width ${m.w} < ${floor} (the microsquare class is back)`)
+  }
+
+  // listen state (the pill opens on the Listen face, startExpanded)
+  await measureFill('listen')
+
+  // bar state — collapse to the bar via Show-Hide; the naked-buttons microsquare was the COLLAPSED bar
+  await driveA(`document.querySelector('[data-verb="pill-toggle"]').click()`)
+  await delay(300)
+  if ((await driveA('window.openinfoPill.state().open')) !== false) return fail('[anchor] Show-Hide did not collapse the pill to the bar')
+  await measureFill('bar')
+
+  // ask state — reopen to a face; resolve the bundle Ask first, then measure at the ask extent
+  await waitForA('window.openinfoPill.state().askAvailable === true', 'the anchor pill Ask face resolving from the bundle')
+  await driveA(`document.querySelector('[data-verb="pill-face"][data-face="ask"]').click()`)
+  await delay(300)
+  await measureFill('ask')
+
+  // (c) the ANCHOR show/hide toggle path (⌘\ / tray Show-Hide = hide()/showInactive()) just shows/hides the
+  // window WITHOUT fighting the pill's height — the PillController extents must survive the visibility flip.
+  const heightBefore = aw.getBounds().height
+  aw.hide()
+  await delay(150)
+  if (aw.isVisible()) return fail('[anchor] hideHud did not hide the anchor window')
+  aw.showInactive()
+  await delay(250)
+  if (!aw.isVisible()) return fail('[anchor] showHud did not re-show the anchor window')
+  const heightAfter = aw.getBounds().height
+  if (!near(heightBefore, heightAfter, 4)) return fail(`[anchor] show/hide fought the panel height: ${heightBefore} → ${heightAfter}`)
+  console.log(`[e2e:anchor] anchor show/hide preserved the pill height (${heightBefore} → ${heightAfter}); no fight with the PillController`)
+
+  aw.destroy()
+  console.log('[e2e:anchor] PASS — the pill IS the anchor: loads at the default, fills its frame at bar/listen/ask, survives show/hide')
+}
+
 const run = async (engineUrl) => {
   // ---- 1) the pill boots, names itself, and shows the header rectangle ----
   await waitFor('!!(window.openinfoPill && document.querySelector(".pill-bar"))', 'openinfoPill / .pill-bar')
@@ -285,6 +394,11 @@ const run = async (engineUrl) => {
   app.exit(0)
 }
 
+// Scene 0 destroys its anchor window before scenes 1-6 build theirs; without this guard that momentary
+// zero-window gap trips Electron's default all-windows-closed quit and scenes 1-6 never run. The harness
+// controls its own lifetime via app.exit() on PASS/FAIL.
+app.on('window-all-closed', () => {})
+
 app.whenReady().then(async () => {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   const engineUrl = `http://127.0.0.1:${server.address().port}`
@@ -307,8 +421,13 @@ app.whenReady().then(async () => {
     settingsOpened += 1
   })
 
-  win = makeWindow(engineUrl)
-  run(engineUrl).catch((err) => fail(String(err?.stack ?? err)))
+  // SCENE 0 first — enter through the anchor (the user's door), THEN the direct-driven scenes 1-6.
+  runAnchorScene(engineUrl)
+    .then(() => {
+      win = makeWindow(engineUrl)
+      return run(engineUrl)
+    })
+    .catch((err) => fail(String(err?.stack ?? err)))
 })
 
 setTimeout(() => fail('timed out after 60s'), 60_000)
