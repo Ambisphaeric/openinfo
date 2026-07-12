@@ -182,6 +182,71 @@ test('invokeOcr sends raw frames only to loopback, skipping private-LAN and publ
   }
 })
 
+test('invokeOcr sends raw frames to a LAN endpoint the user explicitly flagged trustRawFrames', async () => {
+  const lanTarget = await startFakePaddle([{ text: 'read on the trusted box', confidence: 0.9, text_region: [[0, 0], [1, 0], [1, 1], [0, 1]] }])
+  const port = new URL(lanTarget.url).port
+  const documentedUrl = `http://192.168.1.50:${port}`
+  const originalFetch = globalThis.fetch
+  const attempted: string[] = []
+  // Keep the endpoint document honestly private-LAN for policy classification, while steering this test's
+  // transport to its loopback fake server (the invoke.test.ts documentedUrl idiom).
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    return originalFetch(url.replace(documentedUrl, lanTarget.url), init)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        ocr: [{ kind: 'http', name: 'trusted-lan-ocr', url: documentedUrl, api: 'paddle-serving', trustRawFrames: true }],
+      },
+    }
+    const result = await invokeOcr(fabric, params)
+    assert.equal(result.endpoint, 'trusted-lan-ocr')
+    assert.equal(result.text, 'read on the trusted box')
+    assert.deepEqual(attempted, [`${documentedUrl}/predict/ocr_system`])
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(lanTarget)
+  }
+})
+
+test('invokeOcr skips an untrusted LAN endpoint and a flagged PUBLIC endpoint before fetch, naming the real reasons', async () => {
+  const originalFetch = globalThis.fetch
+  const attempted: string[] = []
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    throw new Error(`no fetch may happen: ${url}`)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        ocr: [
+          { kind: 'http', name: 'lan-ocr', url: 'http://192.168.1.50:8000', api: 'paddle-serving' }, // no flag
+          { kind: 'http', name: 'public-ocr', url: 'https://ocr.example.test', api: 'paddle-serving', trustRawFrames: true }, // flag cannot cross the LAN cap
+        ],
+      },
+    }
+    await assert.rejects(
+      () => invokeOcr(fabric, params),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.failures.length, 2)
+        assert.ok(error.failures.every((f) => f.class === 'egress-denied'))
+        assert.match(error.message, /lan-ocr: raw screen frames are loopback-only — set trustRawFrames on this endpoint to allow it/)
+        assert.match(error.message, /public-ocr: raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames/)
+        return true
+      },
+    )
+    assert.deepEqual(attempted, []) // both skips happened BEFORE any fetch
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('invokeOcr injects a resolved keyRef as Authorization: Bearer on the paddle call', async () => {
   const seen: string[] = []
   const server = createServer((req, res) => {

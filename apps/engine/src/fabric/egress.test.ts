@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Endpoint } from '@openinfo/contracts'
-import { classifyEndpoint, classifyHost, egressDecision, isLoopbackEndpoint, resolveEgress } from './egress.js'
+import { classifyEndpoint, classifyHost, egressDecision, isLoopbackEndpoint, mayReceiveRawFrames, resolveEgress } from './egress.js'
 
 /* ---------- Layer 1: endpoint reach classification (pure, URL-derived) ---------- */
 
@@ -55,6 +55,36 @@ test('isLoopbackEndpoint: distinguishes this machine from private-LAN endpoints'
   }
   assert.equal(isLoopbackEndpoint({ kind: 'local', name: 'managed', runtime: 'mlx', model: 'm' }), true)
   assert.equal(isLoopbackEndpoint({ kind: 'cloud', name: 'cloud', provider: 'anthropic', auth: 'keychain' }), false)
+})
+
+test('mayReceiveRawFrames: the full truth table — loopback default, explicit LAN trust, an absolute LAN cap', () => {
+  const http = (url: string, trustRawFrames?: boolean): Endpoint => ({
+    kind: 'http',
+    name: url,
+    url,
+    api: 'openai-compat',
+    ...(trustRawFrames !== undefined ? { trustRawFrames } : {}),
+  })
+  // loopback needs NO flag — the default posture is unchanged
+  assert.equal(mayReceiveRawFrames(http('http://127.0.0.1:8000')), true)
+  assert.equal(mayReceiveRawFrames(http('http://localhost:8000')), true)
+  // a managed local runtime is engine-spawned on loopback — always allowed
+  assert.equal(mayReceiveRawFrames({ kind: 'local', name: 'managed', runtime: 'mlx', model: 'm' }), true)
+  // an explicitly trusted LAN host IS allowed — the user's opt-in, capped to the local network
+  assert.equal(mayReceiveRawFrames(http('http://192.168.1.50:8000', true)), true)
+  assert.equal(mayReceiveRawFrames(http('http://10.1.2.3:8000', true)), true)
+  assert.equal(mayReceiveRawFrames(http('http://vision-box.local:8000', true)), true)
+  // an UNtrusted LAN host stays denied — absent flag means loopback-only, exactly as before
+  assert.equal(mayReceiveRawFrames(http('http://192.168.1.50:8000')), false)
+  assert.equal(mayReceiveRawFrames(http('http://10.1.2.3:8000', false)), false)
+  // the LAN cap is ABSOLUTE: a public host is denied even when flagged
+  assert.equal(mayReceiveRawFrames(http('https://vision.example.com', true)), false)
+  assert.equal(mayReceiveRawFrames(http('http://8.8.8.8:8000', true)), false)
+  // a wildcard bind address is not a destination host — the flag never trusts it
+  assert.equal(mayReceiveRawFrames(http('http://0.0.0.0:8000', true)), false)
+  assert.equal(mayReceiveRawFrames(http('http://[::]:8000', true)), false)
+  // cloud endpoints never receive raw frames
+  assert.equal(mayReceiveRawFrames({ kind: 'cloud', name: 'cloud', provider: 'anthropic', auth: 'keychain' }), false)
 })
 
 /* ---------- Layers 2-4: content-side consent, most-specific denial wins ---------- */
