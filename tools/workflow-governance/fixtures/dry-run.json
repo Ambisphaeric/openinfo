@@ -1,0 +1,42 @@
+{
+  "tracker": {
+    "readable": true,
+    "order": [201, 202, 203, 204],
+    "checked": [204]
+  },
+  "unreadableIssueNumbers": [],
+  "issues": [
+    {
+      "number": 201,
+      "state": "CLOSED",
+      "dependsOn": [],
+      "ownerRequired": false
+    },
+    {
+      "number": 202,
+      "state": "OPEN",
+      "dependsOn": [900],
+      "ownerRequired": false
+    },
+    {
+      "number": 203,
+      "state": "OPEN",
+      "dependsOn": [],
+      "ownerRequired": true
+    },
+    {
+      "number": 204,
+      "state": "OPEN",
+      "dependsOn": [],
+      "ownerRequired": false,
+      "requiredCriteria": ["selection", "history"],
+      "requiredChecks": ["workflow dry run", "full test suite"]
+    },
+    {
+      "number": 900,
+      "state": "OPEN",
+      "dependsOn": [],
+      "ownerRequired": false
+    }
+  ]
+}

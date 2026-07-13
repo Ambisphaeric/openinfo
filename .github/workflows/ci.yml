@@ -33,6 +33,9 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
 
+      - name: Workflow governance dry run
+        run: pnpm workflow:dry-run
+
       - name: Build
         run: pnpm build
 

@@ -10,6 +10,8 @@
   DMG in its `~/Downloads`, relaunch, and re-seed the llm/stt fabric endpoints against
   this machine's live LAN IP (DHCP-safe). `DRY_RUN=1` prints instead of executing.
 - `schema-gen/` — TS types → JSON Schema into shared/contracts/schemas (the Rust-portable artifact)
+- `workflow-governance/` — pure, non-mutating `/next` selection and `/retro` close-out model plus a
+  deterministic fixture. Run `pnpm workflow:dry-run`; it never invokes `gh` or writes GitHub state.
 - `bench/` — endpoint benchmark harness; writes measured tok/s into fabric via the API
 - `fixtures/` — capture recorder/replayer: record a real meeting once, replay it into the
   engine deterministically. THE key tool: makes distill/extract/voice work testable without
