@@ -5295,3 +5295,84 @@ hud / live-transcript / transcript-inspector / register-lint **46/46**, engine
 live-senses-query / documents / query / surface-editor **28/28**; schema generation reproduces exactly the
 five changed schemas with no drift; `git diff --check` clean. No persistence schema, capture policy, or flag
 change; the default-pill surface version advances 1 → 2 under a conservative unedited-only migration.
+
+## Slice: deterministic tri-lane replay and the served entry-point gate  *(#174 slice E, 2026-07-13)*
+
+Slice E closes the last two acceptance criteria: a deterministic replay fixture proving all three lanes stay
+distinguishable end to end, and a driven test that enters through the user's real app entry point.
+
+The replay proof reuses the committed synthetic-converged fixture (#32 record/replay substrate), which
+already models the three independent evidence lanes — microphone→STT, system-audio→STT, screen→OCR/VLM —
+and replays them with no microphone, screen, model, or network call. A new engine test
+(`apps/engine/src/senses/live-replay.test.ts`) drives that fixture through the REAL pipeline components:
+mic and system-audio bytes flow through the real `transcribeChunks` stage using the capture-scoped replay
+STT invoker (which verifies request bytes against the named capture, so equal bytes could never cross lanes)
+and the real `buildTranscriptUpdates` aggregation into `SenseLaneTracker.recordTranscript`; the screen frame
+flows through the real `ScreenOcrProcessor` over a real `WorkspaceRegistry` (OcrResult and Distillate are
+actually persisted), whose `publishOcr` callback is the same `ocr.completed → recordOcr` wiring the engine
+mounts. The lanes are then read through `tracker.snapshotSet(workspace, session)` — the exact projection
+both read paths already return, `GET /senses/live` and the `live-senses` `POST /query` source — so the test
+exercises fixture → real stages → tracker → projection. It asserts three simultaneous lanes in canonical
+mic → system-audio → screen order, each correlating to ITS OWN replayed capture id by exact equality
+(`cap-mic-0001`, `cap-system-0001`, `cap-screen-image-0001`) with its own fixed-basis lag (3 s / 2 s / 1 s
+against the replay clock); that microphone and system audio never merge or swap attribution; that screen
+outcome truth is the fixture's processed result, anchored to the screen image frame the real OcrResult
+names; that every row still validates against the closed `SenseLaneSnapshot` schema; and that no capture
+bytes, transcript/OCR text, or endpoint identity are present. Determinism is proven directly: two
+independent in-process runs into fresh trackers and stores yield byte-identical lane truth and a
+byte-identical persisted OcrResult, because the replay clock and id factory make the whole path
+reproducible.
+
+"Muting or disabling one lane cannot silently relabel another" gains explicit replay-level coverage. The
+tracker has no per-lane disable verb; at the read-model level a muted lane is precisely one on which no
+capture or result ever arrives, so the case withholds the microphone lane entirely and asserts it stays
+honestly `waiting`/`awaiting-capture` with no capture or processing evidence while system audio and screen
+keep their own exact attribution — and that a transcript naming another lane's capture id is rejected
+outright, never relabeling the idle lane. A session-end case asserts all three lanes stop honestly as
+`stopped`/`session-ended`, relabeling none and dropping stale per-attempt provenance. This complements the
+prior-slice facets already proven at the unit and surface tiers: engine `senses/live.test.ts` (screen
+observations never alter audio lanes; workspace/session isolation), client `hud/sense-lane-cache.test.ts`
+(a payload patch replaces only the matching physical source), and client `blocks/sense-lanes.test.ts` (a
+missing or widened row degrades to "Status unavailable", never another lane's data).
+
+Because the client depends only on the contracts package and never the engine, the lane-to-surface half is
+split rather than importing engine code into a client test. A small shared projection,
+`tools/fixtures/lane-rows.mjs` (`senseLaneRowsFromFixture`), reduces the loaded fixture into the three
+canonical lane rows. The engine replay test asserts the REAL tracker emits byte-for-byte those rows, and a
+client surface test (`apps/client/src/surfaces/blocks/sense-lanes-replay.test.ts`) renders the SAME rows
+through the real `sanitizeSenseLaneSnapshot` and `renderSenseLanes`, asserting each physical lane paints in
+canonical order, binds its own distinct processing lag to its own row (a merge or swap would surface the
+wrong lag under a lane), and stays distinguishable without leaking any capture id or captured content. The
+two halves therefore meet on identical, fixture-derived truth without a cross-package import.
+
+The served entry-point gate is the driven pill e2e (`apps/client/scripts/pill-e2e.mjs`), extended to enter
+through the user's door and prove the live-sense organ in the real served window. It launches real Electron
+with the real `hud.html` and compiled preload against a minimal authenticated fake engine, and its anchor
+scene resolves the shipped shell config (empty env → defaults) and builds the anchor window exactly as the
+shell's `createHudWindow` does, proving the pill IS the anchor default. The live-sense scene then asserts
+the three physical lanes hydrate as the canonical mic / system-audio / screen trio through the real
+`sense-lanes` renderer, that hydration crosses the authenticated renderer boundary bound to the pill surface
+(the engine bearer is injected in the centralized `webRequest` listener, never in renderer JS, exactly as
+production does), that all three rows sit unclipped inside the real 300 px Listen viewport, and that a
+metadata-only `sense.lane.updated` frame repaints the visible screen row's capture time and measured lag
+with zero additional `/query` requests. A forbidden-key guard on the fixtures fails the harness before
+Electron starts if any captured/derived or machine-specific key is added, and the scene asserts no capture
+id, timestamp, basis, or endpoint string is copied into the HUD. The run is deterministic — twice
+consecutively green with byte-identical lane geometry — and needs no microphone or screen TCC grant, because
+the engine is faked and the Ask frame is injected at the IPC seam.
+
+Still unclaimed on #174 after slice E: nothing among the acceptance criteria — all are now met and proven.
+Real-device OCR/VLM quality remains #175; these tests prove the fixture pipeline and the read model keep the
+lanes distinguishable and honest, not that the configured local pipeline produces useful results on real
+captures. Lane liveness/health enrichment is a deliberate follow-up: the tracker projects `unknown`,
+`healthy`, or `failed` from observed evidence but has no producer yet for the `blocked` health or the
+`disabled` / `permission-denied` / `configuration-blocked` reasons the contract reserves, so a lane that is
+off reads as idle rather than explicitly disabled.
+
+Evidence: recursive build green; contracts **99/99**, full engine **855/855**, full client **554/554**,
+fixtures **15/15**; new focused tests — engine `live-replay` **4/4** (tri-lane distinguishability + exact
+capture-id attribution, byte-stable two-run determinism, mute-cannot-relabel, honest session-end) and client
+`sense-lanes-replay` **4/4** (sanitize identity, canonical per-lane render, per-lane lag binding, no-leak);
+the driven pill e2e (`test:e2e:pill`) green twice consecutively with byte-identical lane geometry;
+`git diff --check` clean. No new contract, schema, persistence, capture policy, or flag change; the only new
+runtime artifact is a shared test-side fixture projection under `tools/fixtures/`.
