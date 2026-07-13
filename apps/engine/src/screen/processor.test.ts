@@ -1,35 +1,13 @@
-import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, Fabric, OcrResult, VlmInvokeParams, WorkflowStep } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, OcrResult, VlmInvokeParams, WorkflowStep } from '@openinfo/contracts'
+import { createFixtureReplay, loadFixtureSync } from '../../../../tools/fixtures/model.mjs'
 import { AggregateInvokeError, FabricDocuments, type ClassifiedFailure, type ScreenTextResult } from '../fabric/index.js'
 import { WorkspaceRegistry } from '../store/index.js'
 import { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenVlmInvoke } from './processor.js'
-
-/** A PaddleHub ocr_system region — [box corners], text, confidence — as the real serving returns it. */
-interface PaddleRegion {
-  text: string
-  confidence: number
-  text_region: [number, number][]
-}
-
-const startFakePaddle = async (regions: PaddleRegion[]): Promise<{ server: Server; url: string }> => {
-  const server = createServer((req, res) => {
-    const chunks: Buffer[] = []
-    req.on('data', (c: Buffer) => chunks.push(c))
-    req.on('end', () => {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ status: '0', results: [regions] }))
-    })
-  })
-  await new Promise<void>((resolve) => server.listen(0, resolve))
-  const address = server.address()
-  assert.ok(address && typeof address === 'object')
-  return { server, url: `http://127.0.0.1:${address.port}` }
-}
 
 const withStore = async (fn: (store: WorkspaceRegistry) => Promise<void>): Promise<void> => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-screen-'))
@@ -73,63 +51,67 @@ const counterId = (): (() => string) => {
   return () => `id-${++n}`
 }
 
-test('recognizes a screen frame via the fabric ocr slot → OcrResult + distillate, both persisted + published', async () => {
+test('fixture replay: real screen processor persists byte-identical OCR/distillate records with no model or network call', async () => {
   await withStore(async (store) => {
-    const paddle = await startFakePaddle([
-      { text: 'File  Edit  View', confidence: 0.98, text_region: [[12, 8], [180, 8], [180, 30], [12, 30]] },
-      { text: 'error: build failed', confidence: 0.91, text_region: [[12, 44], [220, 44], [220, 66], [12, 66]] },
-    ])
-    // The live fabric (no active profile) reads the legacy config/fabric doc — put an ocr endpoint there.
-    const fabric: Fabric = {
-      slots: { stt: [], tts: [], llm: [], vlm: [], embed: [], ocr: [{ kind: 'http', name: 'paddle-box', url: paddle.url, api: 'paddle-serving', model: 'pp-ocrv4' }] },
-    }
-    store.layouts.put('config', 'fabric', fabric)
+    const fixture = loadFixtureSync(new URL('../../../../tools/fixtures/fixtures/synthetic-converged.v1.json', import.meta.url))
+    const replay = createFixtureReplay(fixture)
+    const frame = replay.captures('screen').find((chunk) => chunk.contentType === 'image/jpeg')
+    assert.ok(frame, 'synthetic fixture has a screen image')
     const distillates: Distillate[] = []
     const ocrs: OcrResult[] = []
-    try {
+    const run = async (): Promise<void> => {
       const processor = new ScreenOcrProcessor({
         store,
         fabric: new FabricDocuments(store),
         isEnabled: () => true,
+        // Capture-scoped lookup prevents identical bytes in another lane/frame from crossing provenance.
+        invoke: (params) => replay.invokeOcrFor(frame.id, params),
         publishDistillate: (d) => {
           distillates.push(d)
         },
         publishOcr: (r) => {
           ocrs.push(r)
         },
-        now: () => new Date('2026-07-08T10:00:01.000Z'),
-        newId: counterId(),
+        now: replay.now,
+        newId: replay.newId,
       })
-      await processor.process(imageChunk())
-
-      const stored = store.listOcrResults('default')
-      assert.equal(stored.length, 1)
-      assert.equal(stored[0]!.text, 'File  Edit  View\nerror: build failed')
-      assert.equal(stored[0]!.sourceChunks[0], 'scr-s1-000001')
-      assert.equal(stored[0]!.provenance.slot, 'ocr')
-      assert.equal(stored[0]!.provenance.endpoint, 'paddle-box')
-      assert.equal(stored[0]!.provenance.model, 'pp-ocrv4')
-      assert.equal(stored[0]!.blocks?.length, 2)
-      assert.deepEqual(stored[0]!.blocks?.[0]?.region, { x: 12, y: 8, width: 168, height: 22 })
-      // #102 keep-time: the record carries the frame's TRUE capture instant, distinct from createdAt
-      // (processing time) — so a direct OcrResult consumer never presents delayed OCR as real-time.
-      assert.equal(stored[0]!.capturedAt, '2026-07-08T10:00:00.000Z', 'capturedAt = the frame capture instant')
-      assert.equal(stored[0]!.createdAt, '2026-07-08T10:00:01.000Z', 'createdAt = when recognition finished (later)')
-
-      const distilled = store.listDistillates('default')
-      assert.equal(distilled.length, 1)
-      assert.equal(distilled[0]!.text, 'File  Edit  View\nerror: build failed')
-      assert.equal(distilled[0]!.windowStart, '2026-07-08T10:00:00.000Z')
-      assert.equal(distilled[0]!.windowEnd, '2026-07-08T10:00:00.000Z')
-      assert.equal(distilled[0]!.voice.scope, 'global')
-      assert.equal(distilled[0]!.provenance.slot, 'ocr')
-
-      assert.deepEqual([ocrs.length, distillates.length], [1, 1])
+      await processor.process(frame)
       const status = processor.status()
       assert.deepEqual([status.processed, status.blank, status.skipped, status.failed], [1, 0, 0, 0])
-    } finally {
-      await new Promise<void>((resolve) => paddle.server.close(() => resolve()))
     }
+
+    await run()
+
+    const stored = store.listOcrResults('workspace-synthetic')
+    assert.equal(stored.length, 1)
+    assert.equal(stored[0]!.text, 'Pull request 150 — checks passing')
+    assert.equal(stored[0]!.sourceChunks[0], 'cap-screen-image-0001')
+    assert.equal(stored[0]!.provenance.slot, 'ocr')
+    assert.equal(stored[0]!.provenance.endpoint, 'fixture-ocr')
+    assert.equal(stored[0]!.provenance.model, 'synthetic-ocr')
+    assert.equal(stored[0]!.provenance.usage?.durationMs, 180)
+    assert.equal(stored[0]!.provenance.egress?.decidedBy, 'content-class')
+    assert.equal(stored[0]!.blocks?.length, 2)
+    assert.deepEqual(stored[0]!.blocks?.[0]?.region, { x: 24, y: 30, width: 210, height: 28 })
+    assert.equal(stored[0]!.capturedAt, '2026-07-12T13:00:02.000Z', 'capturedAt = the frame capture instant')
+    assert.equal(stored[0]!.createdAt, '2026-07-12T13:00:03.000Z', 'createdAt = the fixture replay clock')
+
+    const distilled = store.listDistillates('workspace-synthetic')
+    assert.equal(distilled.length, 1)
+    assert.equal(distilled[0]!.text, 'Pull request 150 — checks passing')
+    assert.equal(distilled[0]!.windowStart, '2026-07-12T13:00:02.000Z')
+    assert.equal(distilled[0]!.windowEnd, '2026-07-12T13:00:02.000Z')
+    assert.equal(distilled[0]!.voice.scope, 'global')
+    assert.equal(distilled[0]!.provenance.slot, 'ocr')
+
+    const firstRecords = { ocr: structuredClone(stored[0]), distillate: structuredClone(distilled[0]) }
+    replay.reset()
+    await run()
+    assert.equal(store.listOcrResults('workspace-synthetic').length, 1, 'stable replay id replaces instead of duplicating')
+    assert.equal(store.listDistillates('workspace-synthetic').length, 1, 'stable replay id replaces instead of duplicating')
+    assert.deepEqual(store.listOcrResults('workspace-synthetic')[0], firstRecords.ocr)
+    assert.deepEqual(store.listDistillates('workspace-synthetic')[0], firstRecords.distillate)
+    assert.deepEqual([ocrs.length, distillates.length], [2, 2])
   })
 })
 

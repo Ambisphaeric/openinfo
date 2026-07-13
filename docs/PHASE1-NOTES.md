@@ -9,6 +9,24 @@
 - Store: `_meta.db` stores versioned config documents such as fabric and flags; each workspace gets its own SQLite file in the same data root.
 - Workbench: the package remains a Phase 4 scaffold. Its build/test scripts are no-ops in Phase 1 because there is no Vite app yet.
 
+## 2026-07-12 — deterministic pipeline fixtures (#32)
+
+- `tools/fixtures` is now a workspace package with `record`, `validate`, and `replay` CLI modes plus a
+  pure library seam. Format v1 records normalized capture chunks and canonical STT/OCR/VLM boundary
+  outputs; every entry retains an explicit mic, system-audio, or screen lane and references exactly one
+  earlier capture id. It does not claim live OCR quality — #175 still owns proof on real frames.
+- Replays are deterministic and isolated: canonical object-key ordering, contiguous ordinals,
+  content-derived entry/fixture ids, a fixed replay clock, a resettable stable id factory, and a digest
+  checked before callbacks. Capture-scoped invokers reject byte/source mismatch and never call a model or
+  network endpoint.
+- Privacy is structural rather than advisory: any inline audio/image payload is declared by
+  `privacy.rawMedia` and requires record-time opt-in; real media requires sensitive classification and an
+  owner-only gitignored path. The CLI emits payload-free summaries and re-pins `0600` on overwrite.
+- The committed fixture is synthetic and includes separate mic/system-audio audio, screen image/frame
+  metadata, two STT results, OCR blocks/provenance, and a VLM result. The first
+  `screen/processor.test.ts` case now consumes it through the real processor/store, replays twice, and
+  proves the resulting OcrResult + mirror Distillate are byte-identical and idempotent.
+
 ## Known flake (observed once, 2026-07-07)
 - `seam.test.ts` acquires a free port then releases it before the engine binds it (TOCTOU). Under
   parallel load another process can steal the port between release and bind → one spurious failure.

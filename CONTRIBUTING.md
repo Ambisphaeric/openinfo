@@ -118,6 +118,23 @@ shape, not files you can edit now. When P4 lands:
 kind is handled inline in `invoke.ts`/`health.ts`, and `cloud` is P7. Only `local` needs its own module
 (`endpoints/local.ts`) because it owns real process lifecycle. The recipe above matches that reality.
 
+### Record or update a pipeline fixture
+1. Start from `tools/fixtures/examples/synthetic-converged.jsonl`. Keep each normalized capture and its
+   STT/OCR/VLM result on the SAME explicit `mic`, `system-audio`, or `screen` lane. V1 accepts exactly one
+   earlier capture id per result and one result per `(stage, capture)`; never merge the lanes in a fixture.
+2. Prefer synthetic data for committed regressions. Inline audio/image bytes require the explicit
+   `--allow-raw-media` flag. Real bytes additionally use `media:"raw"`, `--privacy sensitive`, and an
+   owner-only output under `tools/fixtures/private/`; never commit it. `sanitized` is a human assertion,
+   not an automatic PII guarantee. See `tools/fixtures/README.md` before recording ambient data.
+3. Generate with `node tools/fixtures/cli.mjs record …`; do not hand-edit ids, ordinals, digest, or
+   `fixtureId`. Validate with `node tools/fixtures/cli.mjs validate --input <fixture>`.
+4. A pipeline test injects the capture-scoped replay method only at the model boundary and injects
+   `replay.now`/`replay.newId`; the real processor/store stays in the test. Replay twice and assert
+   byte-identical durable records with no duplicate ids and no external call.
+5. If `schema.mjs` changes, run `pnpm --filter @openinfo/fixtures schema` and commit
+   `fixture.schema.json` in the same change. Run `pnpm --filter @openinfo/fixtures test`, the converted
+   pipeline test, and `pnpm -r test`.
+
 ## The quality gate
 
 `pnpm test` (types, schema validation of every example document, unit tests) + `tools/evals` regression on the

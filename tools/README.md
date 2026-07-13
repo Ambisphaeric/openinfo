@@ -13,6 +13,8 @@
 - `workflow-governance/` — pure, non-mutating `/next` selection and `/retro` close-out model plus a
   deterministic fixture. Run `pnpm workflow:dry-run`; it never invokes `gh` or writes GitHub state.
 - `bench/` — endpoint benchmark harness; writes measured tok/s into fabric via the API
-- `fixtures/` — capture recorder/replayer: record a real meeting once, replay it into the
-  engine deterministically. THE key tool: makes distill/extract/voice work testable without
-  sitting in meetings, and turns dogfood findings into regression tests.
+- `fixtures/` — versioned, schema-validated capture/STT/OCR/VLM recorder/replayer. It keeps mic,
+  system-audio, and screen lanes distinct; derives stable ids/digests with canonical JSON; defaults to
+  privacy-safe fail-closed recording; and replaces model/network boundaries during replay. The committed
+  synthetic fixture drives the real screen processor twice to prove byte-identical, idempotent downstream
+  records. See `fixtures/README.md`; run `pnpm --filter @openinfo/fixtures test`.

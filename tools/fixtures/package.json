@@ -1,0 +1,13 @@
+{
+  "name": "@openinfo/fixtures",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cli": "node cli.mjs",
+    "schema": "node write-schema.mjs",
+    "test": "node --test '*.test.mjs'"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.49"
+  }
+}
