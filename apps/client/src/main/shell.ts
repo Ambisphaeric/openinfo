@@ -1,4 +1,4 @@
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { execFile } from 'node:child_process'
@@ -34,6 +34,18 @@ import { CaptureDispatcher, type DispatchChannel } from './capture-dispatcher.js
 import { createClientLog, type ClientLog } from './client-log.js'
 import { FocusPoller, detectEnabledFrom, ROUTE_DETECT_FLAG } from '../capture/focus-poller.js'
 import type { FrontmostWindow } from '../capture/focus.js'
+import {
+  configuredEngineCredentialSource,
+  engineWebSocketProtocols,
+  fetchEngineControl,
+  type EngineFetchLike,
+} from './engine-auth.js'
+import {
+  RendererEngineAuth,
+  pinTrustedSurface,
+  requestBrowserSettingsTicket,
+  type ElectronWebRequestLike,
+} from './renderer-engine-auth.js'
 
 /**
  * The Electron shell — the ONLY file that imports electron, and the one tests never import (all the
@@ -61,7 +73,9 @@ if (cfg.systemAudioMethod === 'loopback') {
   app.commandLine.appendSwitch('enable-features', 'MacCatapLoopbackAudioForScreenShare')
 }
 
-const session = new EngineSessionClient(cfg.engineUrl)
+const engineCredentials = configuredEngineCredentialSource(cfg.engineUrl)
+const session = new EngineSessionClient(cfg.engineUrl, undefined, engineCredentials)
+const rendererEngineAuth = new RendererEngineAuth(cfg.engineUrl, engineCredentials)
 const liveState = new SessionLiveState(cfg.workspace)
 // The boot guard (issue #41): capture only ever auto-starts on a live-session transition the USER
 // initiated this launch (Start Session), never on a leftover session seeded at boot. See capture-consent.ts.
@@ -276,6 +290,32 @@ const hideHud = (): void => {
   refreshTray()
 }
 
+const shellEngineFetch = (
+  requestPath: string,
+  init: { method: string; headers?: Record<string, string>; body?: string } = { method: 'GET' },
+) => fetchEngineControl({
+  baseUrl: cfg.engineUrl,
+  path: requestPath,
+  init,
+  credentials: engineCredentials,
+  fetchImpl: globalThis.fetch as unknown as EngineFetchLike,
+})
+
+/** Exchange the bearer in main for a one-use, 30-second browser ticket; never log the returned URL. */
+const openEngineSettings = async (context: 'tray' | 'first-run' | 'pill'): Promise<void> => {
+  try {
+    const ticketUrl = await requestBrowserSettingsTicket({
+      baseUrl: cfg.engineUrl,
+      credentials: engineCredentials,
+      fetchImpl: globalThis.fetch as unknown as EngineFetchLike,
+    })
+    await electronShell.openExternal(ticketUrl)
+  } catch {
+    // openExternal failures may reflect their URL; logging the error could leak the one-use ticket.
+    console.error(`[shell] open settings (${context}) failed`)
+  }
+}
+
 const dispatch = (command: ShellCommand): void => {
   // Parameterized app commands (the Apps folder, #19/#98) carry the surface id they act on.
   if (typeof command === 'object') {
@@ -319,7 +359,7 @@ const dispatch = (command: ShellCommand): void => {
       // here) — open it in the default browser. It is a sidebar of forms-over-documents sections,
       // roomier than any tray UI, and works even against a remote engine. No embedded webview (that is
       // a later client-settings concern).
-      void electronShell.openExternal(`${cfg.engineUrl}/settings`).catch((err) => console.error('[shell] open settings failed:', err))
+      void openEngineSettings('tray')
       return
     case 'open-system':
       // The System face (S6): version + build for app + engine, plus the skew banner when an engine was
@@ -369,6 +409,9 @@ const createSurfaceWindow = (
     // The one bridge the renderer needs: the drag channel (preload.cts). Nothing node-bound crosses.
     webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
   })
+  // The shared defaultSession auth listener is deny-by-default: only these built-in HUD/app renderers
+  // receive engine credentials, and only after headers leave renderer JS. Revoke the id on destruction.
+  pinTrustedSurface(rendererEngineAuth, window.webContents, pathToFileURL(HUD_HTML).toString())
   windowMeta.set(window, { surfaceId, chrome: opts.chrome, isDefaultHud: opts.isDefaultHud })
 
   // Method-only hardening (no constructor-option equivalent). Benign for app chrome (all false/off), so
@@ -918,7 +961,11 @@ const onCaptureFault = (source: CaptureSourceKind, reason: string): void => {
 }
 
 const setupCapture = (): void => {
-  engineLink = new EngineLink({ baseUrl: cfg.engineUrl, spoolDir: path.join(app.getPath('userData'), 'capture-spool') })
+  engineLink = new EngineLink({
+    baseUrl: cfg.engineUrl,
+    spoolDir: path.join(app.getPath('userData'), 'capture-spool'),
+    credentials: engineCredentials,
+  })
   engineLink.startFlushLoop() // drain spooled chunks once the engine is reachable again (offline-safe)
   const link = engineLink
   // The readiness/ack handshake (issue #41): every audio start flows through here, gated on the hidden
@@ -1141,44 +1188,53 @@ const applyDetectFlag = (on: boolean): void => {
 
 /** Push live-session state from the engine WS (session.started/ended) — no polling; see engine-session.ts. */
 const connectEvents = (): void => {
-  const wsUrl = `${cfg.engineUrl.replace(/^http/, 'ws')}/events`
-  const socket = new WebSocket(wsUrl)
-  socket.addEventListener('message', (event) => {
-    try {
-      const parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
-      if (typeof parsed.name !== 'string') return
-      if (liveState.applyEvent({ name: parsed.name, payload: parsed.payload })) refreshTray()
-      // A surface was created/renamed/edited (PUT /layouts/surfaces/:id) — refresh the Apps folder list
-      // so a new mini app appears (or a rename shows) without a restart (#98).
-      if (parsed.name === 'surface.updated') {
-        void refreshSurfaces()
-        // A face's label is the mapped surface's name, so a rename should refresh the bundle view too.
-        void refreshBundles()
+  void engineCredentials.credentialFor(cfg.engineUrl, { refresh: true }).then(
+    (credential) => {
+      if (!credential) {
+        setTimeout(connectEvents, 1500)
+        return
       }
-      // The live fabric changed (activate / PUT /fabric / active-profile edit) — recompute whether
-      // the "Set up models…" nudge should be prominent, without a refetch (the event carries the map).
-      if (parsed.name === 'fabric.changed' && parsed.payload) {
-        needsSetup = needsModelSetup(parsed.payload as Fabric)
-        refreshTray()
-        // The fabric's slots drive the engine-side sense gates (an stt/ocr endpoint added or removed) —
-        // re-evaluate so the capture readout's blocking gate stays accurate (issue #7).
-        void refreshSenses()
-      }
-      // The route.detect flag was flipped (PUT /flags/route.detect) — start/stop focus watching live,
-      // without a refetch (the event carries the Flag; its `default` is the effective value).
-      if (parsed.name === 'flag.changed' && parsed.payload) {
-        const flag = parsed.payload as Flag
-        if (flag.key === ROUTE_DETECT_FLAG) applyDetectFlag(flag.default)
-        // A processing flag flipped (distill.enabled/transcribe, screen.ocr) — the engine-side sense gates
-        // may have opened/closed, so refresh the capture readout (issue #7).
-        void refreshSenses()
-      }
-    } catch {
-      /* ignore malformed frames */
-    }
-  })
-  socket.addEventListener('close', () => setTimeout(connectEvents, 1500)) // reconnect + re-seed below
-  socket.addEventListener('open', () => void seedSessionState())
+      const wsUrl = `${cfg.engineUrl.replace(/^http/, 'ws')}/events`
+      const socket = new WebSocket(wsUrl, engineWebSocketProtocols(credential))
+      socket.addEventListener('message', (event) => {
+        try {
+          const parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
+          if (typeof parsed.name !== 'string') return
+          if (liveState.applyEvent({ name: parsed.name, payload: parsed.payload })) refreshTray()
+          // A surface was created/renamed/edited (PUT /layouts/surfaces/:id) — refresh the Apps folder list
+          // so a new mini app appears (or a rename shows) without a restart (#98).
+          if (parsed.name === 'surface.updated') {
+            void refreshSurfaces()
+            // A face's label is the mapped surface's name, so a rename should refresh the bundle view too.
+            void refreshBundles()
+          }
+          // The live fabric changed (activate / PUT /fabric / active-profile edit) — recompute whether
+          // the "Set up models…" nudge should be prominent, without a refetch (the event carries the map).
+          if (parsed.name === 'fabric.changed' && parsed.payload) {
+            needsSetup = needsModelSetup(parsed.payload as Fabric)
+            refreshTray()
+            // The fabric's slots drive the engine-side sense gates (an stt/ocr endpoint added or removed) —
+            // re-evaluate so the capture readout's blocking gate stays accurate (issue #7).
+            void refreshSenses()
+          }
+          // The route.detect flag was flipped (PUT /flags/route.detect) — start/stop focus watching live,
+          // without a refetch (the event carries the Flag; its `default` is the effective value).
+          if (parsed.name === 'flag.changed' && parsed.payload) {
+            const flag = parsed.payload as Flag
+            if (flag.key === ROUTE_DETECT_FLAG) applyDetectFlag(flag.default)
+            // A processing flag flipped (distill.enabled/transcribe, screen.ocr) — the engine-side sense gates
+            // may have opened/closed, so refresh the capture readout (issue #7).
+            void refreshSenses()
+          }
+        } catch {
+          /* ignore malformed frames */
+        }
+      })
+      socket.addEventListener('close', () => setTimeout(connectEvents, 1500)) // reconnect reloads auth + re-seeds below
+      socket.addEventListener('open', () => void seedSessionState())
+    },
+    () => setTimeout(connectEvents, 1500),
+  )
 }
 
 /**
@@ -1223,7 +1279,7 @@ const maybeOpenFirstRunSetup = (): void => {
     markFirstRunShown(userData, now)
     console.log('[shell] first run — llm slot empty, opening /settings once (Get started leads)')
     // /settings auto-selects the Get-started section when the llm slot is empty (the first-run condition).
-    void electronShell.openExternal(`${cfg.engineUrl}/settings`).catch((err) => console.error('[shell] open settings (first run) failed:', err))
+    void openEngineSettings('first-run')
   } else if (needsSetup !== undefined) {
     // Reached the engine and we KNOW the setup state (already shown, or a model exists) — done for this run.
     firstRunChecked = true
@@ -1327,7 +1383,7 @@ const refreshSenses = async (): Promise<void> => {
  */
 const refreshSurfaces = async (): Promise<void> => {
   try {
-    const res = await fetch(`${cfg.engineUrl}/layouts/surfaces`)
+    const res = await shellEngineFetch('/layouts/surfaces')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const list = (await res.json()) as Array<{ id?: unknown; name?: unknown }>
     appSurfaces = list
@@ -1348,7 +1404,7 @@ const refreshSurfaces = async (): Promise<void> => {
  */
 const refreshBundles = async (): Promise<void> => {
   try {
-    const res = await fetch(`${cfg.engineUrl}/bundles`)
+    const res = await shellEngineFetch('/bundles')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const list = (await res.json()) as Array<{ id?: unknown; name?: unknown; faces?: unknown }>
     appBundles = list
@@ -1434,6 +1490,9 @@ app.whenReady().then(async () => {
   // Grant only the media (mic) permission at the Chromium layer for our own windows; deny everything
   // else. The OS-level (TCC) gate is separate — requestMicPermission handles that before capture.
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => callback(permission === 'media'))
+  // Electron keeps only the last listener for each webRequest event. Install the ONE centralized engine
+  // auth listener before creating any HUD windows; individual built-in webContents are allowlisted at birth.
+  rendererEngineAuth.install(electronSession.defaultSession.webRequest as unknown as ElectronWebRequestLike)
   liveState.onChange((live) => {
     refreshTray()
     applyCaptureLifecycle(live)
@@ -1464,7 +1523,7 @@ app.whenReady().then(async () => {
   // tray's open-setup command opens (GET /settings in the default browser). Not a new settings UI; the pill
   // just reaches the one that already ships. Fire-and-forget; a failed open is logged, never a silent hang.
   ipcMain.on('hud:open-settings', () => {
-    void electronShell.openExternal(`${cfg.engineUrl}/settings`).catch((err) => console.error('[shell] open settings (pill) failed:', err))
+    void openEngineSettings('pill')
   })
   // Load the Apps-folder state (favorites + open set + per-app positions) before creating windows so a
   // reopened app restores its saved position (#19/#20/#98). Best-effort — a missing file reads as empty.

@@ -121,14 +121,14 @@ export const createAskResolveController = (deps: AskResolveDeps): { start: () =>
 
 /** A fetch + WebSocket transport — browser-safe, unlike EngineLink. */
 class BrowserTransport implements HudTransport {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly fetchFn: FetchLike = fetch) {}
 
   async surface(id: string): Promise<Surface> {
     return this.getJson(`/layouts/surfaces/${encodeURIComponent(id)}`) as Promise<Surface>
   }
 
   async query(query: BlockQuery): Promise<QueryResult> {
-    const response = await fetch(`${this.baseUrl}/query`, {
+    const response = await this.fetchFn(`${this.baseUrl}/query`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(query),
@@ -180,7 +180,7 @@ class BrowserTransport implements HudTransport {
   }
 
   private async getJson(path: string): Promise<unknown> {
-    const response = await fetch(`${this.baseUrl}${path}`)
+    const response = await this.fetchFn(`${this.baseUrl}${path}`)
     return response.json()
   }
 }
@@ -280,6 +280,15 @@ export const clipboardCopy =
 
 /** Injectable fetch so the served e2e can drive these against a live throwaway server (default: global). */
 type FetchLike = typeof fetch
+
+/** Renderer requests get their bearer in Electron's main-process webRequest listener, never in JS state. */
+export const retryOnceOnUnauthorized =
+  (fetchFn: FetchLike = fetch): FetchLike =>
+  async (input, init) => {
+    const first = await fetchFn(input, init)
+    if (first.status !== 401) return first
+    return fetchFn(input, init)
+  }
 
 /**
  * The `mark-done` write path (#15): read the session's to-do document, flip the addressed item's `done`,
@@ -480,7 +489,10 @@ export const uploadAndIngest =
     })
     if (!created.ok) throw new Error(`attach: could not create pin (HTTP ${created.status})`)
     const q = workspace !== undefined ? `?workspace=${encodeURIComponent(workspace)}` : ''
-    const ingested = await fetchFn(`${baseUrl}/pins/${encodeURIComponent(id)}/ingest${q}`, { method: 'POST' })
+    const ingested = await fetchFn(`${baseUrl}/pins/${encodeURIComponent(id)}/ingest${q}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+    })
     if (!ingested.ok) throw new Error(`attach: ingest failed (HTTP ${ingested.status})`)
     const result = (await ingested.json()) as Pin
     if (result.ingest.status !== 'ingested') throw new Error(result.ingest.error ?? `attach: ${file.name} could not be ingested`)
@@ -547,29 +559,32 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   // extents (panel.ts). We now pick ONE in onSurfaceLoaded, once the surface (panel or not) is known.
 
   const copy = clipboardCopy(g.navigator, doc)
+  // Electron main injects Authorization only after requests leave this trusted renderer. A 401 causes its
+  // centralized listener to reload discovery before this wrapper's one retry; no bearer enters JS state.
+  const engineFetch = retryOnceOnUnauthorized(fetch)
   // The verb write-paths (#15): both read-then-write against the live engine and reject on any HTTP
   // failure, so the mount layer paints visible success/failure text on the clicked button (never silent).
-  const markDone = markTodoDone(baseUrl)
-  const accept = acceptHintCandidate(baseUrl)
-  const dismiss = dismissItem(baseUrl)
-  const submitCorrection = submitEntityCorrection(baseUrl)
+  const markDone = markTodoDone(baseUrl, engineFetch)
+  const accept = acceptHintCandidate(baseUrl, engineFetch)
+  const dismiss = dismissItem(baseUrl, engineFetch)
+  const submitCorrection = submitEntityCorrection(baseUrl, engineFetch)
   const workspace = options.workspace ?? params.get('workspace') ?? undefined
-  const transport = new BrowserTransport(baseUrl)
+  const transport = new BrowserTransport(baseUrl, engineFetch)
   // #134: the input block's live conversation controller. Its state (turns/attachment/status) lives here,
   // not in the DOM, so a destructive panel re-render never eats it — repaint() re-injects after every render.
   // Ask face deps ride alongside the S2 attach bridge: one frame per send (captureScreenViaBridge), the
   // default-ask document for an empty send, and the streamed-delta ingest wired through the Hud below.
   const inputSession = new InputSession({
-    submit: submitChat(baseUrl, workspace),
-    upload: uploadAndIngest(baseUrl, workspace),
+    submit: submitChat(baseUrl, workspace, engineFetch),
+    upload: uploadAndIngest(baseUrl, workspace, engineFetch),
     captureScreen: captureScreenViaBridge,
-    defaultAsk: fetchDefaultAsk(baseUrl),
+    defaultAsk: fetchDefaultAsk(baseUrl, engineFetch),
   })
   // Ask-history: rehydrate the workspace's persisted thread so the chat window opens mid-conversation
   // (seedHistory never clobbers a live session; the paint lands with the next render). A failed read is
   // logged to the console (visible in the shell's log surface) — the thread simply starts empty, and the
   // engine's own responses still disclose their state per turn.
-  void fetchChatHistory(baseUrl, workspace)()
+  void fetchChatHistory(baseUrl, workspace, engineFetch)()
     .then((thread) => inputSession.seedHistory(thread))
     .catch((error: unknown) => console.error(`[chat] history rehydrate failed: ${error instanceof Error ? error.message : String(error)}`))
   // #134: the attached-panel geometry controller — created from surface.panel once the doc loads (below).
@@ -705,7 +720,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   // logged and retried with the boot controller's capped backoff. Each outcome re-paints via hud.rerender().
   if (isPill && resolvedSurfaceId !== undefined) {
     createAskResolveController({
-      resolve: () => resolvePillAskSurface(baseUrl, transport)(resolvedSurfaceId),
+      resolve: () => resolvePillAskSurface(baseUrl, transport, engineFetch)(resolvedSurfaceId),
       onResolved: (chatSurface) => {
         pillSources.chat = chatSurface
         pillSources.resolving = false

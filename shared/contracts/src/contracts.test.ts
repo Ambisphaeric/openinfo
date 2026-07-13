@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Value } from '@sinclair/typebox/value'
-import { AllSchemas } from './index.js'
+import { AllSchemas, Events } from './index.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const examplesDir = join(here, '..', 'examples')
@@ -15,7 +15,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   register: 'Register', fabric: 'Fabric', mode: 'Mode', surface: 'Surface', workflow: 'WorkflowSpec', bundle: 'Bundle', todo: 'TodoList',
   flag: 'Flag', workspaceHints: 'WorkspaceHints', commitment: 'Commitment', workspace: 'Workspace', moment: 'Moment',
   ocrInvokeParams: 'OcrInvokeParams', vlmInvokeParams: 'VlmInvokeParams',
-  captureChunk: 'CaptureChunk', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', transcriptUpdate: 'TranscriptUpdate', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
+  captureChunk: 'CaptureChunk', captureReceipt: 'CaptureReceipt', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', transcriptUpdate: 'TranscriptUpdate', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', ocrResult: 'OcrResult', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity', fieldValue: 'FieldValue',
   sessionAnnotation: 'SessionAnnotation',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', queryResult: 'QueryResult',
@@ -47,6 +47,26 @@ test('drift card steps always offer exactly two ways back', () => {
   const mode = JSON.parse(readFileSync(join(examplesDir, 'mode.meeting.json'), 'utf8'))
   const card = mode.drift.chain.find((s: { step: string }) => s.step === 'card')
   assert.equal(card.offer.length, 2)
+})
+
+test('CaptureReceipt is metadata-only and rejects raw or derived content fields', () => {
+  const receipt = {
+    id: 'scr-sess-1-000001', sessionId: 'sess-1', workspaceId: 'default', source: 'screen',
+    sequence: 1, capturedAt: '2026-07-12T12:00:00.000Z', contentType: 'image/jpeg',
+    encoding: 'base64', payloadBytes: 75000,
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.CaptureReceipt, receipt)], [], 'metadata-only receipt validates')
+  for (const forbidden of ['data', 'preview', 'hash']) {
+    const unsafe = { ...receipt, [forbidden]: 'secret-derived-value' }
+    assert.ok([...Value.Errors(AllSchemas.CaptureReceipt, unsafe)].length > 0, `${forbidden} is rejected`)
+  }
+})
+
+test('every public event names a registered payload schema', () => {
+  for (const [event, schema] of Object.entries(Events)) {
+    assert.ok(schema in AllSchemas, `${event} references missing schema ${schema}`)
+  }
+  assert.equal(Events['capture.received'], 'CaptureReceipt')
 })
 
 // #102 keep-time: OcrResult.capturedAt is append-only/optional — a record WITHOUT it must still validate

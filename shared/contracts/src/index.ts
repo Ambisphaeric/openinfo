@@ -65,7 +65,7 @@ import { WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate } from './config
 import { Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind } from './config/bundle.js'
 import { OcrInvokeParams, VlmInvokeParams } from './config/invoke.js'
 import { TodoList, TodoItem, TodoProvenance } from './config/todo.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest, ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest, ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory } from './api/payloads.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -78,7 +78,7 @@ export const AllSchemas = {
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind,
   TodoList, TodoItem, TodoProvenance,
-  Health, JsonSchema, CaptureSource, CaptureChunk, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest,
+  Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest,
   CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
   ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory,
 } as const

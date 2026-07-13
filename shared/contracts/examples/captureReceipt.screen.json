@@ -1,0 +1,11 @@
+{
+  "id": "scr-sess-1-000001",
+  "sessionId": "sess-1",
+  "workspaceId": "default",
+  "source": "screen",
+  "sequence": 1,
+  "capturedAt": "2026-07-12T12:00:00.000Z",
+  "contentType": "image/jpeg",
+  "encoding": "base64",
+  "payloadBytes": 75000
+}

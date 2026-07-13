@@ -93,6 +93,32 @@ export const CaptureChunk = Type.Object(
 )
 export type CaptureChunk = Static<typeof CaptureChunk>
 
+/**
+ * The public receipt for a captured chunk. The engine keeps the full CaptureChunk on its internal bus
+ * so OCR/STT/drain consumers retain the source bytes, but the WebSocket event feed exposes metadata
+ * only. `payloadBytes` is the decoded byte count (UTF-8 bytes or decoded base64 bytes); there is no
+ * data, preview, or hash field from which captured screen/audio content could escape.
+ */
+export const CaptureReceipt = Type.Object(
+  {
+    id: Id,
+    sessionId: Id,
+    workspaceId: Id,
+    source: CaptureSource,
+    sequence: Type.Integer({ minimum: 0 }),
+    capturedAt: IsoTime,
+    contentType: Type.String({ minLength: 1 }),
+    encoding: Type.Union([Type.Literal('utf8'), Type.Literal('base64')]),
+    payloadBytes: Type.Integer({ minimum: 0 }),
+  },
+  {
+    $id: 'CaptureReceipt',
+    additionalProperties: false,
+    description: 'data-less public metadata for capture.received; raw CaptureChunk bytes remain engine-internal',
+  },
+)
+export type CaptureReceipt = Static<typeof CaptureReceipt>
+
 export const Ack = Type.Object(
   {
     ok: Type.Boolean(),

@@ -8,13 +8,16 @@
   <body>
     <!--
       Dev harness for the live HUD. NOT a build artifact — it loads the compiled dev entry, which
-      injects the stylesheet, mounts the HUD, and connects to a running engine over the API.
+      injects the stylesheet and mounts the HUD. The hardened engine is authenticated: a standalone
+      browser cannot read its owner-only discovery token or inject WS Authorization, so this page does
+      not connect by default. Use the Electron app, or explicitly bootstrap a browser session and allow
+      this page's exact Origin. Never put the token in ?engine= or another URL.
 
       1. build the client:   pnpm --filter @openinfo/client build
       2. start the engine:    OPENINFO_PORT=8787 node apps/engine/dist/main.js
          (flip distill.enabled/moments/index on and start a session to see live data)
       3. serve this folder:   npx serve apps/client   (or any static server)
-      4. open:                http://localhost:3000/dev-hud.html?engine=http://127.0.0.1:8787
+      4. open the asset harness: http://localhost:3000/dev-hud.html?engine=http://127.0.0.1:8787
     -->
     <script type="module" src="./dist/surfaces/hud/dev-entry.js"></script>
   </body>

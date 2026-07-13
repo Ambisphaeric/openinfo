@@ -1,19 +1,39 @@
 import type { Ack, BlockQuery, CaptureChunk, Fabric, Flag, Health, QueryResult, Session, StartSessionRequest, Surface, Workspace } from '@openinfo/contracts'
+import {
+  EngineAuthDiscovery,
+  engineWebSocketProtocols,
+  fetchEngineControl,
+  maySendEngineCredential,
+  type EngineCredentialSource,
+  type EngineFetchLike,
+} from '../main/engine-auth.js'
 import { OfflineSpool } from './spool.js'
 
 export interface EngineLinkOptions {
   baseUrl: string
   spoolDir: string
   flushIntervalMs?: number
+  credentials?: EngineCredentialSource
+  fetchImpl?: EngineFetchLike
+  webSocketFactory?: (url: string, protocols?: string[]) => WebSocket
+  scheduleReconnect?: (callback: () => void, delayMs: number) => unknown
 }
 
 export class EngineLink {
   private baseUrl: string
   private flushing = false
+  private readonly credentials: EngineCredentialSource
+  private readonly fetchImpl: EngineFetchLike
+  private readonly webSocketFactory: (url: string, protocols?: string[]) => WebSocket
+  private readonly scheduleReconnect: (callback: () => void, delayMs: number) => unknown
   readonly spool: OfflineSpool
 
   constructor(options: EngineLinkOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '')
+    this.credentials = options.credentials ?? new EngineAuthDiscovery()
+    this.fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as EngineFetchLike)
+    this.webSocketFactory = options.webSocketFactory ?? ((url, protocols) => protocols ? new WebSocket(url, protocols) : new WebSocket(url))
+    this.scheduleReconnect = options.scheduleReconnect ?? ((callback, delayMs) => setTimeout(callback, delayMs))
     this.spool = new OfflineSpool(options.spoolDir)
   }
 
@@ -83,17 +103,52 @@ export class EngineLink {
    * dev entry uses its own fetch-based transport because EngineLink also pulls in node:fs for capture.
    */
   subscribe(handler: (event: { name: string; payload: unknown }) => void): () => void {
-    const socket = new WebSocket(`${this.baseUrl.replace(/^http/, 'ws')}/events`)
-    socket.addEventListener('message', (event) => {
-      let parsed: { name?: unknown; payload?: unknown }
+    let socket: WebSocket | undefined
+    let stopped = false
+    let retryMs = 1_000
+
+    const schedule = (): void => {
+      if (stopped) return
+      const delay = retryMs
+      retryMs = Math.min(retryMs * 2, 10_000)
+      this.scheduleReconnect(() => void connect(), delay)
+    }
+
+    const connect = async (): Promise<void> => {
+      if (stopped) return
       try {
-        parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
+        // Reload before EVERY connection, including reconnects: an engine restart rotates its token.
+        const credential = await this.credentials.credentialFor(this.baseUrl, { refresh: true })
+        if (stopped) return
+        if (!credential) throw new Error('engine websocket credential unavailable')
+        if (credential && !maySendEngineCredential(this.baseUrl)) throw new Error('engine websocket credential refused')
+        const protocols = engineWebSocketProtocols(credential)
+        const wsUrl = `${this.baseUrl.replace(/^http/, 'ws')}/events`
+        socket = this.webSocketFactory(wsUrl, protocols)
+        socket.addEventListener('open', () => {
+          retryMs = 1_000
+          handler({ name: 'ws.open', payload: undefined })
+        })
+        socket.addEventListener('message', (event) => {
+          let parsed: { name?: unknown; payload?: unknown }
+          try {
+            parsed = JSON.parse(String((event as { data: unknown }).data)) as { name?: unknown; payload?: unknown }
+          } catch {
+            return
+          }
+          if (typeof parsed.name === 'string') handler({ name: parsed.name, payload: parsed.payload })
+        })
+        socket.addEventListener('close', schedule, { once: true })
       } catch {
-        return
+        schedule()
       }
-      if (typeof parsed.name === 'string') handler({ name: parsed.name, payload: parsed.payload })
-    })
-    return () => socket.close()
+    }
+
+    void connect()
+    return () => {
+      stopped = true
+      socket?.close()
+    }
   }
 
   async capture(chunk: CaptureChunk): Promise<Ack | undefined> {
@@ -162,12 +217,20 @@ export class EngineLink {
   }
 
   private async requestRaw(method: string, path: string, body?: unknown): Promise<unknown> {
-    const init: RequestInit = { method }
-    if (body !== undefined) {
+    const init: { method: string; headers?: Record<string, string>; body?: string } = { method }
+    if (['POST', 'PUT', 'DELETE'].includes(method.toUpperCase())) {
       init.headers = { 'content-type': 'application/json' }
+    }
+    if (body !== undefined) {
       init.body = JSON.stringify(body)
     }
-    const response = await fetch(`${this.baseUrl}${path}`, init)
+    const response = await fetchEngineControl({
+      fetchImpl: this.fetchImpl,
+      credentials: this.credentials,
+      baseUrl: this.baseUrl,
+      path,
+      init,
+    })
     if (!response.ok) throw new Error(`engine ${method} ${path} failed: ${response.status}`)
     return (await response.json()) as unknown
   }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk, Distillate, Fabric, Flag, OcrResult, ScreenStatus } from '@openinfo/contracts'
-import { createEngineApp } from '../api/http.js'
+import { createSecureTestEngineApp as createEngineApp, secureTestFetch as fetch } from '../api/test-control-plane.js'
 import { wireScreenOcr } from './index.js'
 
 /**

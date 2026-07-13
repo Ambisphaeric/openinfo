@@ -206,7 +206,7 @@ export const renderFeatures = (data: SetupData): string => {
  */
 export const FEATURES_SCRIPT = `
 (function(){
-  function jf(method,path,body){var init={method:method,headers:{}};if(body!==undefined){init.headers['content-type']='application/json';init.body=JSON.stringify(body);}return fetch(path,init).then(function(r){return r.json().catch(function(){return null;}).then(function(j){return {ok:r.ok,status:r.status,json:j};});});}
+  function jf(method,path,body){var init={method:method,headers:{}};if(method==='POST'||method==='PUT'||method==='DELETE')init.headers['content-type']='application/json';if(body!==undefined)init.body=JSON.stringify(body);return fetch(path,init).then(function(r){return r.json().catch(function(){return null;}).then(function(j){return {ok:r.ok,status:r.status,json:j};});});}
   function flagsData(){var el=document.getElementById('flags-data'); if(!el)return []; try{return JSON.parse(el.textContent);}catch(e){return [];}}
   document.addEventListener('change',function(e){
     var t=e.target; if(!t||!t.classList||!t.classList.contains('flag-toggle'))return;

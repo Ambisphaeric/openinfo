@@ -640,8 +640,9 @@ node apps/engine/dist/main.js`; wired via `main.js`'s `wireScreenOcr`), NO workf
   endpoints today; no `RUNTIME_SPECS` entry). Same future as a managed local vlm; no `LocalRuntimeManager`
   in the screen wiring until then.
 - **Workflow-step integration** — DONE, see "## P4A×P4B JOINT SLICE" below.
-- **`capture.received` payload slimming** — `http.ts` rebroadcasts the FULL CaptureChunk (incl. the base64
-  image) over the event feed; slimming that is an http.ts-owned (P4A) concern, not this branch's.
+- **`capture.received` payload slimming** — at the time of this slice `http.ts` rebroadcast the FULL
+  CaptureChunk (incl. the base64 image) over the event feed; #123 later RESOLVED this at the WS edge with a
+  metadata-only `CaptureReceipt` while preserving the full chunk on the internal engine bus.
 - **A distillates read route / `/query` distillates source** — screen distillates currently surface only
   via `distillate.updated` + the workspace DB; a first-class read surface is unscoped here.
 
@@ -5082,3 +5083,70 @@ are both skipped BEFORE any fetch with the honest classified lines.
   table, trusted-LAN invoked ×2, skipped-before-fetch ×2), zero failures before each commit.
 - Scope: contracts (append-only optional field + regenerated schemas) + engine fabric (egress.ts predicate,
   invoke.ts gate wording) + tests. No route-shape, flag, persistence-schema, client, or version change.
+
+## Slice: authenticated loopback control plane and public-event minimization  *(#123, 2026-07-12)*
+
+The engine API can read ambient capture, mutate model endpoints/secrets, and release guard holds; treating
+“localhost” as authentication left that authority open to drive-by browser requests, DNS rebinding, and any
+untrusted local process. This slice makes product startup secure-by-construction and keeps the internal data
+plane distinct from the public event plane.
+
+### Listener and discovery boundary
+
+`api/control-plane.ts` resolves policy before the store or server is constructed. Default `local` mode binds
+loopback only and generates a new 256-bit URL-safe token per launch. After `listen` succeeds it atomically
+publishes `~/.openinfo/run/engine-<port>.json` in a repaired-to-`0700` directory as a `0600` file; cleanup is
+instance-id-safe so an old process cannot remove a replacement's record. Non-loopback binds are refused.
+
+`tunnel` mode still binds loopback and requires an exact HTTPS `OPENINFO_PUBLIC_ORIGIN` plus an explicitly
+provisioned `OPENINFO_CONTROL_TOKEN` or chmod-600 token file. This is the hardened boundary for a trusted
+TLS tunnel, not direct plaintext LAN mode. The product shell consumes the same explicit environment or
+token-file credential for the public HTTPS origin rather than guessing a discovery filename from its
+port. Keychain-backed setup UI is still future work; a token in `client.json` or a URL is never acceptable.
+
+### HTTP, browser, and WebSocket policy
+
+- `GET /health` is the only public route. All other reads require the exact Bearer or an authenticated
+  browser-session cookie. Every `POST`/`PUT`/`DELETE` requires `application/json`, including bodyless
+  actions; malformed JSON is a bounded `400`.
+- Boundary order is Host → request target → Origin → CORS preflight → authentication → media type →
+  router/body parse. Host and Origin admission are exact; CORS never emits `*`.
+- The native app exchanges its Bearer through `POST /auth/browser-ticket` for a one-use, ~30-second URL.
+  Consumption mints an independent in-memory `HttpOnly; SameSite=Strict` cookie (`Secure` in tunnel mode)
+  and redirects to clean `/settings`; an unauthenticated Settings request returns only a locked shell.
+  These two `/auth/*` paths are deliberately control-plane-internal and are not currently part of the
+  shared application `Routes` manifest/schema surface.
+- `/events` accepts Bearer or the browser-safe subprotocol pair
+  `openinfo.v1, openinfo.auth.<token>` (only `openinfo.v1` is echoed), rejects URL credentials, and can use
+  the Settings session cookie. The full internal `CaptureChunk` remains on the engine bus; public
+  `capture.received` is transformed at the WS edge into a metadata-only `CaptureReceipt` with no data,
+  preview, derived text, or hash.
+
+`trustRawFrames` is orthogonal: it is a per-model-endpoint fabric-egress decision allowing OCR/VLM raw
+frames to a specifically trusted private-LAN host (never public). It does not expose the control API, change
+HTTP/WS authentication, or make internal `CaptureChunk` bytes public.
+
+### Client and operational rails
+
+Electron main owns one credential source. Native fetches retry once after a `401`; every WS connect reloads
+discovery. A single exact-origin session listener strips renderer-supplied Authorization and injects the
+real Bearer only for explicitly trusted built-in `webContents`, after request headers leave renderer JS.
+The standalone plain-browser HUD cannot read the owner-only discovery file or inject a WS Authorization
+header, so it needs an explicit browser-session bootstrap and exact allowed Origin; production Electron is
+the supported path.
+
+The rule-7 rails moved with the boundary: root/API/client READMEs, CODE_MAP, CONTRIBUTING, and the shipped
+`add-a-block` skill now state authentication and JSON requirements. `tools/reset-app-remote.command` loads
+the owner-only discovery record and authenticates its `/fabric` reads/writes without printing the token;
+the redeploy tool probes only the intentionally public `/health`. Red-team review also caught the served
+Settings `jf` helper adding JSON Content-Type only when a body existed: profile activate/delete and session
+end would have hit `415`. All served mutation helpers now set the media type for every POST/PUT/DELETE, and
+the bodyless profile-activate browser path is test-pinned.
+
+### Evidence
+
+Engine build and the initial full engine suite were green at **822/822** after the control-plane
+integration; the final startup/HTTP/browser/WS security set was **26/26**. Client build and full suite were
+**510/510** with the authenticated cross-process seam green. After the red-team bodyless-mutation
+correction, the expanded security/Settings focus was **34/34** and the full engine suite was **824/824**.
+No flag, persistence schema, or version change.

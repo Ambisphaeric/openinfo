@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Bundle, CaptureChunk, ChatReply, Distillate, Draft, Entity, Fabric, FabricProfile, FieldValue, FocusSignal, HintCandidate, Mode, Moment, Pin, PinChunk, PromptTemplate, QueryResult, QueueStatus, Register, RelevantEntity, Session, Surface, TodoList, WorkflowSpec, WorkspaceHints } from '@openinfo/contracts'
-import { createEngineApp } from './http.js'
+import { createSecureTestEngineApp as createEngineApp, secureTestFetch as fetch, TEST_CONTROL_TOKEN, testWsProtocols } from './test-control-plane.js'
 import { TeachStore } from '../teach/index.js'
 import { detectSwitch, type TimedFocusSignal } from '../route/detector.js'
 
@@ -2321,7 +2321,7 @@ test('use-this-setup e2e: discover → config-1 written+activated → GET /fabri
 /** Collect named WS events off the engine's /events socket (server→client frames). */
 const openEvents = async (base: string): Promise<{ events: { name: string; payload: { sessionId?: string } }[]; close: () => void }> => {
   const events: { name: string; payload: { sessionId?: string } }[] = []
-  const socket = new WebSocket(base.replace(/^http/, 'ws') + '/events')
+  const socket = new WebSocket(base.replace(/^http/, 'ws') + '/events', testWsProtocols())
   socket.addEventListener('message', (event) => {
     const parsed = JSON.parse(String(event.data)) as { name: string; payload: { sessionId?: string } }
     events.push(parsed)

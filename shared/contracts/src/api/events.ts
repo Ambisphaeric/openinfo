@@ -1,5 +1,7 @@
 /** WS event names and which schema their payload validates against. Data, not code. */
 export const Events = {
+  // Public receipt only: raw CaptureChunk.data remains on the engine-internal bus for OCR/STT/drain.
+  'capture.received': 'CaptureReceipt',
   'session.started': 'Session',
   'session.ended': 'Session',
   'session.switched': 'Session',

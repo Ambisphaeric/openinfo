@@ -32,8 +32,8 @@ the checkbox — it never sends, commits, or replies on its own.
 ```
 ┌─────────────────────────────┐         ┌──────────────────────────────────────┐
 │  CLIENT (thin)              │  HTTP   │  ENGINE (daemon)                     │
-│  Electron shell from glass  │  + WS   │  localhost by default,               │
-│                             │◄───────►│  any host:port by config             │
+│  Electron shell from glass  │  + WS   │  authenticated loopback only;        │
+│                             │◄───────►│  remote via trusted HTTPS tunnel     │
 │  capture/   mic, screen Δ,  │         │                                      │
 │             calendar, focus │         │  api/        typed routes + events   │
 │  surfaces/  HUD, workbench, │         │  workflow/   DAG executor (loom      │
@@ -171,8 +171,8 @@ A **surface** is a document:
   engine. Custom buttons are the same idea one size down: an **action** document (label + verb + endpoint).
 - **The workbench** is the roomy companion the HUD links into: a web app (Vite) served by the engine itself —
   full ledger, session archive, explore canvas, analytics. Same API, bigger screen. Because the engine already
-  speaks HTTP, the workbench runs in any browser pointed at it — including on a machine that isn't running the
-  client at all.
+  speaks HTTP, the workbench can run in an authenticated browser session. A second machine additionally needs
+  the declared trusted HTTPS tunnel; direct unauthenticated LAN browsing is not a supported mode.
 
 **Feasibility:** this is the cheap kind of flexibility — the client never owned data, so every built-in block
 is already an API call. "Opening" the frontend = publishing the block schema + the layout document format +
@@ -446,8 +446,8 @@ honest sidestep is stated in user-facing copy: **headphones remove speaker→mic
    **surface/block** first. This document's schemas become code here.
 2. `apps/engine` skeleton — api + store (loom transplant, DB-per-workspace) + fabric with `local` and `http`
    endpoint kinds. No UI yet; test with curl.
-3. `apps/client` capture (glass transplant) → engine over localhost. Prove the seam: point the client at a
-   second machine before building anything else.
+3. `apps/client` capture (glass transplant) → authenticated engine over loopback. Prove the seam locally;
+   cross-machine control uses the same seam only through an authenticated trusted HTTPS tunnel.
 4. One mode (`meeting`), hardcoded surface (the HUD, State A) — end-to-end: mic → distill → moments → HUD.
 5. Router + second workspace. Then ledger + watchers (repo watcher first — it's the easiest evidence source).
 6. Workbench (Vite, served by engine) with the full ledger. Then the block system, then the editors.

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk, Fabric, Session, TranscriptUpdate } from '@openinfo/contracts'
-import { createEngineApp } from './http.js'
+import { createSecureTestEngineApp as createEngineApp, secureTestFetch as fetch } from './test-control-plane.js'
 
 // A fake openai-compat STT that answers each call with the NEXT queued transcript — so the system chunk,
 // its mic echo twin, and the control mic chunk each transcribe to a chosen text (calls are strictly

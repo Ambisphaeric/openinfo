@@ -1,5 +1,12 @@
 import type { Fabric, Session, StartSessionRequest } from '@openinfo/contracts'
 import type { EngineSenseVerdict, Sense } from './capture-status.js'
+import {
+  EngineAuthDiscovery,
+  fetchEngineControl,
+  type EngineCredentialSource,
+  type EngineFetchLike,
+  type EngineFetchResponse,
+} from './engine-auth.js'
 
 /**
  * The tray's session control, over the engine HTTP API — the client NEVER opens a DB (dependency
@@ -8,18 +15,17 @@ import type { EngineSenseVerdict, Sense } from './capture-status.js'
  * lets the tray-toggle calls be tested against a stub with no network and no display. Mirrors the
  * sessions routes: GET /sessions?live, POST /sessions, POST /sessions/:id/end.
  */
-export type FetchLike = (
-  url: string,
-  init?: { method?: string; headers?: Record<string, string>; body?: string },
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>
+export type FetchLike = EngineFetchLike
 
 export class EngineSessionClient {
   private readonly baseUrl: string
   private readonly fetchImpl: FetchLike
+  private readonly credentials: EngineCredentialSource
 
-  constructor(baseUrl: string, fetchImpl?: FetchLike) {
+  constructor(baseUrl: string, fetchImpl?: FetchLike, credentials?: EngineCredentialSource) {
     this.baseUrl = baseUrl.replace(/\/+$/, '')
     this.fetchImpl = fetchImpl ?? (globalThis.fetch as unknown as FetchLike)
+    this.credentials = credentials ?? new EngineAuthDiscovery()
   }
 
   /** The live (unended) session for a workspace, or undefined — seeds the tray's initial state. */
@@ -65,11 +71,19 @@ export class EngineSessionClient {
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
     const init: { method: string; headers?: Record<string, string>; body?: string } = { method }
-    if (body !== undefined) {
+    if (['POST', 'PUT', 'DELETE'].includes(method.toUpperCase())) {
       init.headers = { 'content-type': 'application/json' }
+    }
+    if (body !== undefined) {
       init.body = JSON.stringify(body)
     }
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, init)
+    const response: EngineFetchResponse = await fetchEngineControl({
+      fetchImpl: this.fetchImpl,
+      credentials: this.credentials,
+      baseUrl: this.baseUrl,
+      path,
+      init,
+    })
     if (!response.ok) throw new Error(`engine ${method} ${path} failed: ${response.status}`)
     return response.json()
   }

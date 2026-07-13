@@ -46,9 +46,35 @@ pnpm install
 pnpm -r build                  # contracts → engine + client
 pnpm -r test                   # contracts + engine + client suites
 
-# engine daemon — localhost:8787 by default, data under ~/.openinfo/data
+# engine daemon — authenticated loopback :8787 by default, data under ~/.openinfo/data
 node apps/engine/dist/main.js  # OPENINFO_PORT / OPENINFO_DATA override the port and data dir
 ```
+
+The control API is local-first, not an unauthenticated LAN service. In default `local` mode the engine
+binds loopback only, generates a new 256-bit credential per launch, then atomically publishes
+`~/.openinfo/run/engine-<port>.json` (directory `0700`, file `0600`) after the port is listening. The
+Electron app reads that record; the credential is never copied into `client.json`, renderer state, or a
+URL. `GET /health` is the only public route. Every other read and `/events` requires the Bearer/session
+credential, and every `POST`/`PUT`/`DELETE` requires `Content-Type: application/json`, even when bodyless.
+
+For cross-machine use, terminate a trusted TLS tunnel at the engine's loopback listener. Direct plaintext
+LAN/public binds are refused:
+
+```bash
+umask 077
+openssl rand -hex 32 > ~/.openinfo/control-token
+OPENINFO_CONTROL_MODE=tunnel \
+OPENINFO_PUBLIC_ORIGIN=https://openinfo.example.test \
+OPENINFO_CONTROL_TOKEN_FILE="$HOME/.openinfo/control-token" \
+node apps/engine/dist/main.js
+```
+
+The token file must contain at least 32 URL-safe characters. The tunnel must forward the exact HTTPS
+origin to the loopback listener; `OPENINFO_ALLOWED_ORIGINS` can admit additional exact browser origins but
+does not bypass auth. Do not expose port 8787 directly to another machine. A tunnel client must receive the
+same credential through `OPENINFO_CONTROL_TOKEN` or an owner-only `OPENINFO_CONTROL_TOKEN_FILE`; it does not
+use the loopback discovery filename derived from the public HTTPS port. Keychain-backed setup UI is still
+future work, so never bridge that UX gap with a token in `client.json`, renderer state, logs, or a URL.
 
 For a packaged macOS app, `pnpm --filter @openinfo/client package` builds an ad-hoc-signed `.app`
 bundle, and `pnpm --filter @openinfo/client dmg` wraps it into an arm64 `.dmg` (see
@@ -60,11 +86,19 @@ bundle, and `pnpm --filter @openinfo/client dmg` wraps it into an arm64 `.dmg` (
 typed HTTP surface, so `curl` is a first-class way in:
 
 ```bash
-curl localhost:8787/health                               # liveness + engine version
-curl localhost:8787/flags                                # every flag, all default:false
-curl localhost:8787/layouts/surfaces                     # every HUD layout (seeded + yours)
-curl localhost:8787/layouts/surfaces/surf-openinfo-hud   # the HUD, as a document
+curl localhost:8787/health # the sole public route: liveness + engine version
+
+# Local development: read the owner-only per-launch record without printing its token.
+ENGINE_RECORD="$HOME/.openinfo/run/engine-8787.json"
+ENGINE_TOKEN="$(node -e "const r=require(process.argv[1]);process.stdout.write(r.token)" "$ENGINE_RECORD")"
+AUTH=(-H "Authorization: Bearer ${ENGINE_TOKEN}")
+curl "${AUTH[@]}" localhost:8787/flags
+curl "${AUTH[@]}" localhost:8787/layouts/surfaces
+curl "${AUTH[@]}" localhost:8787/layouts/surfaces/surf-openinfo-hud
 ```
+
+Reload the record after an engine restart because the local token rotates. Keep it in the current shell,
+never paste it into a URL or log, and `unset ENGINE_TOKEN AUTH` when finished.
 
 **2. Author a surface.** A surface is a document. Its `stack` is a list of blocks, each a
 `query + renderer` the engine hydrates from the store and the client paints. This is the whole Glass
@@ -140,12 +174,19 @@ pnpm --filter @openinfo/client start   # builds, then launches electron .
 # Packaged app: a real .app so macOS attributes mic / Local Network prompts to the app, not the terminal
 pnpm --filter @openinfo/client package
 open apps/client/release/openinfo-darwin-arm64/openinfo.app
-# It reads its engine URL from ~/.openinfo/client.json, else an env var, else http://127.0.0.1:8787.
+# For the supported local path it reads its URL from config/env/defaults, then loads the matching
+# owner-only per-port discovery credential in Electron main.
 
-# Plain browser: same HUD, same transport, no Electron
+# Plain browser: serves/paints the HUD assets, but has no engine credential by default
 pnpm --filter @openinfo/client build
 npx serve apps/client   # http://localhost:3000/dev-hud.html?engine=http://127.0.0.1:8787
 ```
+
+Production Electron injects authentication only for trusted built-in windows and the exact engine origin;
+renderer JavaScript never receives the Bearer. A standalone browser cannot read the private discovery file
+or inject a WS Authorization header, so the command above does not connect directly to the hardened engine
+without an explicit authenticated browser-session bootstrap and exact allowed Origin. Never work around
+that limitation by putting the token in the query string.
 
 Against a bare engine the HUD renders the honest empty state — a Now line and an empty block stack —
 not a broken one, since the data a block shows is gated upstream.
@@ -155,7 +196,7 @@ restart), then drive capture:
 
 ```bash
 for f in distill.enabled distill.moments distill.index act.enabled; do
-  curl -sX PUT localhost:8787/flags/$f -H 'content-type: application/json' \
+  curl -sX PUT localhost:8787/flags/$f "${AUTH[@]}" -H 'content-type: application/json' \
     -d "{\"key\":\"$f\",\"default\":true,\"scope\":\"engine\",\"description\":\"on\"}"; done
 ```
 
@@ -183,15 +224,17 @@ BASIC → JUDGE tier ladder — tied to the feature flags' `minTier` gates — i
 [docs/model-support-matrix.md](docs/model-support-matrix.md).
 
 ```bash
-open http://localhost:8787/settings   # or visit it in any browser (/setup 301s here)
-curl localhost:8787/fabric/discover   # the same detection, as JSON (servers + a config-1 suggestion)
+# Use the app's tray/gear → Settings. It exchanges a one-use ~30s ticket, then opens a clean URL.
+curl "${AUTH[@]}" localhost:8787/fabric/discover # same detection as JSON
 ```
 
 Your **fabric** is a saveable, switchable document: `GET`/`PUT /fabric` is the active profile — a named,
 cloneable slot→endpoint map. Remote endpoints reference a key **by name, never a value** — the value is
 stored once (write-only, in a chmod-600 file) and injected as `Authorization: Bearer …` only at invoke
-time. Endpoints, profiles, keys, and per-endpoint testing are all driven by the `/settings` page, so you
-rarely need the raw curls. Localhost-only, no auth yet (a later-phase concern).
+time. Endpoints, profiles, keys, and per-endpoint testing are all driven by the authenticated `/settings`
+page, so you rarely need raw curls. Opening `/settings` without the app's one-use ticket renders only a
+locked shell; consuming the ticket creates an in-memory `HttpOnly; SameSite=Strict` cookie (`Secure` in
+tunnel mode) and redirects away from the credential-bearing URL.
 
 ## Architecture
 
@@ -201,8 +244,8 @@ isolation is a file boundary rather than a query predicate. Everything user-faci
 registers, flags, the pipeline itself) is a versioned document the engine validates on write.
 
 ```
-CLIENT (thin)  ──HTTP + WS──▶  ENGINE (daemon)          localhost by default,
-Electron/browser              api · distill · index      any host:port by config
+CLIENT (thin)  ──HTTP + WS──▶  ENGINE (daemon)          loopback-only listener;
+Electron                      api · distill · index      HTTPS tunnel (explicit env/token-file credential)
 never opens a DB              voice · surfaces · store · queue · fabric
         ╲                                    │
          ╲── shared/contracts ──────────────╱   the ONLY seam; nothing crosses it untyped
@@ -225,8 +268,10 @@ is exercised by the test suites and, for the served surfaces, driven end-to-end.
 
 ## HTTP surface
 
-Everything is the typed API. `GET /routes` lists the full set; `GET /contracts` lists every schema the
-engine serves. A representative slice:
+Everything is the typed API. `GET /health` alone is public; every route below requires Bearer or an
+authenticated browser session. `GET /routes` lists the shared application-route manifest and
+`GET /contracts` lists its schemas; the short-lived `/auth/browser-ticket` → `/auth/browser` bootstrap is
+an engine-internal control-plane exception, not application data. A representative slice:
 
 | Route | What it returns / does |
 |---|---|
@@ -242,6 +287,12 @@ engine serves. A representative slice:
 | `GET`/`POST /pins` · `POST /pins/:id/ingest` · `GET /pins/:id/chunks` | Canon pin ingestion and the page-anchored "cite p.42" excerpts. |
 | `GET /hints` · `GET`/`PUT /hints/:workspaceId` · `GET /teach/candidates` | The attribution teach loop — suggested hint candidates, applied by editing a document. |
 | `GET /settings` | The engine-served settings page (`/setup` 301s here). |
+
+The engine's internal bus retains the full `CaptureChunk` for local processors. The public
+`capture.received` WS payload is a metadata-only `CaptureReceipt`—no raw `data`, preview, derived text, or
+hash crosses the socket. That API boundary is separate from model-fabric egress: OCR/VLM raw frames remain
+loopback-only unless a specific private-LAN HTTP endpoint explicitly sets `trustRawFrames: true`; the opt-in
+never permits a public destination and never grants access to engine routes.
 
 ## Packages
 

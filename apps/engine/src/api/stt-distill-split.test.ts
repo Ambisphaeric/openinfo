@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk, Distillate, Fabric, Session, TranscriptUpdate } from '@openinfo/contracts'
-import { createEngineApp } from './http.js'
+import { createSecureTestEngineApp as createEngineApp, secureTestFetch as fetch } from './test-control-plane.js'
 
 // A fake openai-compat STT: any POST returns a fixed transcript INSTANTLY (parakeet is never the stall).
 const startFakeStt = async (text: string): Promise<{ server: Server; url: string; calls: number }> => {

@@ -27,6 +27,8 @@ import { runChat, BUNDLE_PROMPT, type ChatDeps } from './chat.js'
 import { DEFAULT_CONTEXT_SOURCES } from './context-assembly.js'
 import { readEngineVersion, readEngineBuild } from './version.js'
 import { EventSocketHub } from './ws.js'
+import { isPublicHealthRequest, type ControlPlaneAccess } from './control-plane.js'
+import { BrowserAuthSessions } from './browser-auth.js'
 
 // Read ONCE at module load ("at startup") — the engine's own version + an optional build id, echoed on
 // every /health so the client's version handshake needs no extra route. Static for the process lifetime.
@@ -55,6 +57,8 @@ export interface EngineApp {
 }
 
 export interface EngineOptions {
+  /** Required for every listening engine. There is no implicit unauthenticated product policy. */
+  controlPlane: ControlPlaneAccess
   dataRoot?: string
   dataDir?: string
   onCapture?: (chunk: CaptureChunk) => void
@@ -70,6 +74,8 @@ export interface EngineOptions {
     specs?: import('../fabric/index.js').LocalRuntimeSpecs
     readyTimeoutMs?: number
   }
+  /** Deterministic clock/token seam for browser-ticket HTTP tests. Production leaves this unset. */
+  browserAuth?: BrowserAuthSessions
 }
 
 interface HandlerContext {
@@ -98,15 +104,22 @@ interface HandlerContext {
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
   models: LocalModelStore
+  controlPlane: ControlPlaneAccess
+  browserAuth: BrowserAuthSessions
   onCapture?: (chunk: CaptureChunk) => void
   log: (message: string) => void
 }
 
-export function createEngineApp(options: EngineOptions = {}): EngineApp {
+export function createEngineApp(options: EngineOptions): EngineApp {
   const log = options.log ?? console.log
   const store = new WorkspaceRegistry(options.dataRoot ?? options.dataDir)
   const bus = new EventBus<EngineEvents>()
-  const ws = new EventSocketHub()
+  const browserAuth = options.browserAuth ?? new BrowserAuthSessions()
+  const socketPolicy = options.controlPlane.eventSocketPolicy()
+  const ws = new EventSocketHub({
+    ...socketPolicy,
+    authenticateBrowserSession: (cookie) => browserAuth.authenticateCookie(cookie),
+  })
   const fabric = new FabricDocuments(store)
   // Engine-side secret store: v0 chmod-600 file in its own secrets/ dir (see resolveSecretsPath),
   // never in a DB or workspace export. Values are injected ONLY at invoke time; the API is write-only.
@@ -611,11 +624,13 @@ export function createEngineApp(options: EngineOptions = {}): EngineApp {
   bus.subscribe('guard.hold.updated', (hold) => ws.broadcast('guard.hold.updated', hold))
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
-    void handle(req, res, ctx).catch((error: unknown) =>
-      send(res, 500, { error: error instanceof Error ? error.message : String(error) }),
-    )
+    void handleControlRequest(req, res, ctx).catch((error: unknown) => {
+      if (res.headersSent) return void res.destroy(error instanceof Error ? error : undefined)
+      if (error instanceof MalformedJsonError) return send(res, 400, { error: error.message })
+      send(res, 500, { error: error instanceof Error ? error.message : String(error) })
+    })
   })
   server.on('upgrade', (req, socket) => {
     if (!ws.handleUpgrade(req, socket as Socket)) socket.destroy()
@@ -661,6 +676,122 @@ async function surfacedQueueStatus(ctx: HandlerContext): Promise<QueueStatus> {
     ...(lastFailure !== undefined ? { lastFailure } : {}),
     ...(lastSuccessAt !== undefined ? { lastSuccessAt } : {}),
   }
+}
+
+class MalformedJsonError extends Error {}
+
+const singleHeader = (value: string | string[] | undefined): string | undefined =>
+  typeof value === 'string' ? value : undefined
+
+const isSettingsPath = (pathname: string): boolean =>
+  pathname === '/settings' || pathname.startsWith('/settings/') || pathname === '/setup' || pathname.startsWith('/setup/')
+
+const lockedSettings = (res: ServerResponse): void => {
+  res.statusCode = 401
+  res.setHeader('content-type', 'text/html; charset=utf-8')
+  res.setHeader('www-authenticate', 'Bearer')
+  res.end(
+    '<!doctype html><html><head><meta charset="utf-8"><title>openinfo settings locked</title></head>' +
+      '<body><main><h1>Settings are locked</h1><p>Open Settings from the openinfo app to start an authenticated browser session.</p></main></body></html>',
+  )
+}
+
+const unauthorized = (res: ServerResponse): void => {
+  res.setHeader('www-authenticate', 'Bearer')
+  send(res, 401, { error: 'authentication required' })
+}
+
+const bearerToken = (authorization: string | undefined): string | undefined => {
+  const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization ?? '')
+  return match?.[1]
+}
+
+const isJsonMutation = (req: IncomingMessage): boolean => {
+  if (req.method !== 'POST' && req.method !== 'PUT' && req.method !== 'DELETE') return true
+  return singleHeader(req.headers['content-type'])?.split(';', 1)[0]?.trim().toLowerCase() === 'application/json'
+}
+
+const applyCors = (res: ServerResponse, origin: string | undefined): void => {
+  if (origin === undefined) return
+  res.setHeader('access-control-allow-origin', origin)
+  res.setHeader('access-control-allow-credentials', 'true')
+  res.setHeader('vary', 'Origin')
+}
+
+const handlePreflight = (req: IncomingMessage, res: ServerResponse, origin: string | undefined): void => {
+  if (origin === undefined) return send(res, 403, { error: 'CORS preflight requires an allowed Origin' })
+  const requestedMethod = singleHeader(req.headers['access-control-request-method'])?.toUpperCase()
+  if (!requestedMethod || !['GET', 'POST', 'PUT', 'DELETE'].includes(requestedMethod)) {
+    return send(res, 403, { error: 'CORS method is not allowed' })
+  }
+  const requestedHeaders = (singleHeader(req.headers['access-control-request-headers']) ?? '')
+    .split(',')
+    .map((header) => header.trim().toLowerCase())
+    .filter(Boolean)
+  if (requestedHeaders.some((header) => header !== 'authorization' && header !== 'content-type')) {
+    return send(res, 403, { error: 'CORS header is not allowed' })
+  }
+  res.writeHead(204, {
+    'access-control-allow-methods': 'GET, POST, PUT, DELETE',
+    'access-control-allow-headers': 'Authorization, Content-Type',
+    'access-control-max-age': '600',
+  })
+  res.end()
+}
+
+/**
+ * Local-daemon boundary order is deliberate and test-pinned:
+ * Host → request target → Origin → preflight → auth → Content-Type → resource router/body parse.
+ * Authentication is evaluated before reading a request body, so a drive-by page cannot make the engine
+ * allocate/parse an attacker-controlled capture or configuration payload.
+ */
+async function handleControlRequest(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  res.setHeader('cache-control', 'no-store')
+  res.setHeader('referrer-policy', 'no-referrer')
+
+  const host = singleHeader(req.headers.host)
+  if (!ctx.controlPlane.validateHost(host)) return send(res, 421, { error: 'unrecognized control-plane Host' })
+  if (req.url === undefined || !req.url.startsWith('/') || req.url.startsWith('//')) {
+    return send(res, 400, { error: 'invalid request target' })
+  }
+
+  const origin = singleHeader(req.headers.origin)
+  if (!ctx.controlPlane.validateOrigin(origin)) return send(res, 403, { error: 'Origin is not allowed' })
+  applyCors(res, origin)
+  if (req.method === 'OPTIONS') return handlePreflight(req, res, origin)
+
+  const url = new URL(req.url, 'http://control.invalid')
+  if (isPublicHealthRequest(req.method, req.url)) return handle(req, res, ctx)
+
+  // A browser ticket is itself a short-lived one-use credential. Consume it before ordinary bearer/cookie
+  // auth, mint an independent in-memory session, and redirect to a clean URL that contains no credential.
+  if (req.method === 'GET' && url.pathname === '/auth/browser') {
+    const consumed = ctx.browserAuth.consume(url.searchParams.get('ticket'), ctx.controlPlane.mode === 'tunnel')
+    if (consumed === undefined) return lockedSettings(res)
+    res.writeHead(302, { location: '/settings', 'set-cookie': consumed.cookie })
+    res.end()
+    return
+  }
+
+  const token = bearerToken(singleHeader(req.headers.authorization))
+  const authenticated =
+    ctx.controlPlane.authenticate(token) || ctx.browserAuth.authenticateCookie(singleHeader(req.headers.cookie))
+  if (!authenticated) {
+    if (isSettingsPath(url.pathname)) return lockedSettings(res)
+    return unauthorized(res)
+  }
+
+  if (!isJsonMutation(req)) {
+    return send(res, 415, { error: 'POST, PUT, and DELETE require Content-Type: application/json' })
+  }
+
+  if (req.method === 'POST' && url.pathname === '/auth/browser-ticket') {
+    const browserOrigin = ctx.controlPlane.publicOrigin ?? `http://${host!}`
+    const ticket = ctx.browserAuth.issue(browserOrigin)
+    return send(res, 201, ticket)
+  }
+
+  return handle(req, res, ctx)
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
@@ -2064,7 +2195,11 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
   for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
   if (chunks.length === 0) return {}
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
+  } catch {
+    throw new MalformedJsonError('request body is not valid JSON')
+  }
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {

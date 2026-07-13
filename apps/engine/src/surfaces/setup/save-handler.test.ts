@@ -342,6 +342,7 @@ const parseTag = (raw: string): { tag: string; attrs: Attr[] } => {
 interface FetchCall {
   method: string
   path: string
+  headers: Record<string, string>
   body: unknown
 }
 
@@ -390,10 +391,11 @@ const buildHarness = (bodyHtml: string): Harness => {
     },
   }
 
-  const fetchStub = (path: string, init?: { method?: string; body?: string }) => {
+  const fetchStub = (path: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => {
     const call: FetchCall = {
       method: init?.method ?? 'GET',
       path,
+      headers: init?.headers ?? {},
       body: init?.body !== undefined ? JSON.parse(init.body) : undefined,
     }
     fetchCalls.push(call)
@@ -412,8 +414,8 @@ const buildHarness = (bodyHtml: string): Harness => {
   }
 
   // Execute the SERVED script (an IIFE) with our stubs injected as its free globals — not a copy of it.
-  const run = new Function('document', 'fetch', 'location', 'alert', 'window', SETUP_SCRIPT)
-  run(documentStub, fetchStub, locationStub, () => {}, {})
+  const run = new Function('document', 'fetch', 'location', 'alert', 'window', 'confirm', SETUP_SCRIPT)
+  run(documentStub, fetchStub, locationStub, () => {}, {}, () => true)
 
   return {
     root,
@@ -464,6 +466,31 @@ const addFreshRow = (h: Harness, slot: string): DomNode => {
 
 // --- the regressions ------------------------------------------------------------------------------
 const flush = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve))
+
+test('bodyless Settings POST and DELETE still send the control-plane JSON media type', async () => {
+  const h = buildHarness(
+    '<button data-act="activate" data-id="remote-http">Activate</button>' +
+      '<button data-act="delete" data-id="remote-http">Delete</button>',
+  )
+  h.click(h.root.querySelector('button[data-act="activate"]')!)
+  h.click(h.root.querySelector('button[data-act="delete"]')!)
+  await flush()
+
+  assert.deepEqual(h.fetchCalls, [
+    {
+      method: 'POST',
+      path: '/fabric/profiles/remote-http/activate',
+      headers: { 'content-type': 'application/json' },
+      body: undefined,
+    },
+    {
+      method: 'DELETE',
+      path: '/fabric/profiles/remote-http',
+      headers: { 'content-type': 'application/json' },
+      body: undefined,
+    },
+  ])
+})
 
 test('existing-row edit persists: the Save fetch fires with the edited endpoint', async () => {
   const h = buildHarness(editorPage(data(profileWithLlm())))

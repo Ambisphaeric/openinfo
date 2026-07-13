@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Distillate } from '@openinfo/contracts'
-import { createEngineApp } from './http.js'
+import { createSecureTestEngineApp as createEngineApp, secureTestFetch as fetch } from './test-control-plane.js'
 
 /**
  * DRIVEN served test for the Audit-ledger surface (#65), per the QA rule (a served-surface slice needs a

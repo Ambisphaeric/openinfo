@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk, Distillate, Fabric, Session, TranscriptUpdate } from '@openinfo/contracts'
-import { createEngineApp } from './http.js'
+import { createSecureTestEngineApp as createEngineApp, secureTestFetch as fetch, testWsProtocols } from './test-control-plane.js'
 
 // A fake openai-compat STT: any POST returns a fixed transcript ({text} is all the adapter needs).
 const startFakeStt = async (text: string): Promise<{ server: Server; url: string; calls: number }> => {
@@ -61,7 +61,7 @@ const eventually = async (assertion: () => void | Promise<void>, timeoutMs = 400
 // reaches a real client over the wire, not just the in-process bus (QA rule: served surfaces are driven).
 const openEvents = async (base: string): Promise<{ events: { name: string; payload: unknown }[]; close: () => void }> => {
   const events: { name: string; payload: unknown }[] = []
-  const socket = new WebSocket(`${base.replace(/^http/, 'ws')}/events`)
+  const socket = new WebSocket(`${base.replace(/^http/, 'ws')}/events`, testWsProtocols())
   socket.addEventListener('message', (event) => {
     events.push(JSON.parse(String((event as { data: unknown }).data)) as { name: string; payload: unknown })
   })

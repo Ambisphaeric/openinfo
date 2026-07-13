@@ -108,7 +108,8 @@ next phase's start). Cumulative to end of Phase 6: **~6 months**.
 
 ### Phase 1 — The seam (≈3 wk)
 
-**Goal:** client on machine A, engine on machine B, capture flowing — before anything is built on top.
+**Goal:** client and engine capture seam flowing over authenticated loopback before anything is built on
+top; the same protocol may cross machines only through the explicit trusted HTTPS tunnel mode.
 
 - **Engine skeleton:** api (HTTP+WS), store (loom `store` transplant + DB-file-per-workspace registry),
   bus (loom `bus`), fabric v0 (`local` + `http` endpoint kinds; slots `stt`, `llm`, `embed`), health +
@@ -117,7 +118,8 @@ next phase's start). Cumulative to end of Phase 6: **~6 months**.
   content-protection/hide-from-screenshare), `engine-link` with offline spool, engine address as config.
 - Queue v0: raw spool + idle drain loop (no UI, no analytics — just never lose capture).
 
-**Exit (the seam demo):** unplug the engine machine mid-capture; client spools; replug; engine catches up.
+**Exit (the seam demo):** stop the engine mid-capture; client spools; restart; engine catches up exactly
+once. A cross-machine variant must provision the tunnel credential and TLS boundary explicitly.
 **Risks:** glass transplant friction (Electron 30 → current; SystemAudioDump + AEC submodule builds). Mitigate:
 timebox a week; mic-only is an acceptable Phase-1 fallback, system audio can land in Phase 2.
 
@@ -174,7 +176,8 @@ pinned-PDF demo answers with a page citation.
   then doc-edit and outbound-mail heuristics (clipboard/window before any Gmail auth).
 - **Prepared action cards:** the Act pipeline drafts the artifact (email, excerpt, quote request) and attaches
   it; copy button; checkbox records completion. Overflow rule: HUD block shows top-K, links to workbench.
-- **Workbench:** Vite app served by the engine (any browser, any machine) — full ledger, session archive,
+- **Workbench:** Vite app served by the engine in an authenticated browser session (another machine also
+  requires the trusted HTTPS tunnel) — full ledger, session archive,
   pre-meeting brief (HUD state C logic lives engine-side, rendered both places).
 - Template #5 (Deep Work) ships — it's mostly router + ledger.
 

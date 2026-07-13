@@ -655,9 +655,9 @@ export const getStartedHtml = (discovery: DiscoverResult, localModels: LocalMode
  * The Try-it card — slice (b), "say something, watch it become a moment" (ARCHITECTURE §8, principle
  * 5). Onboarding's last step is not a Test button, it is the product: after config-1 is active (an llm
  * endpoint exists) the user types a sentence (or speaks, when an stt endpoint exists) and watches it
- * become a typed moment, live. The loop lives on /setup — engine-served, any browser — so the browser
- * owns the mic-permission UX (the simplest TCC story) and the user's remote-engine workflow works
- * unchanged. Pure and exported so its states are asserted headless.
+ * become a typed moment, live. The loop lives on /setup — engine-served inside an authenticated browser
+ * session — so the browser owns the mic-permission UX. A remote browser additionally requires the trusted
+ * HTTPS tunnel; direct LAN access is refused. Pure and exported so its states are asserted headless.
  *
  * States: llm empty ⇒ '' (hidden — the Get-Started lens/banner leads instead); llm present, stt empty
  * ⇒ the type path only, with an honest no-voice line; llm+stt ⇒ both paths. The card states plainly

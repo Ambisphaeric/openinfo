@@ -31,6 +31,16 @@ tiered by surface, and the lower tiers are mechanical: schema-validated document
    and recipes are rails a local model follows blindly; a route/flag change that leaves them stale is a
    broken rail, not a follow-up. (There is no root `CLAUDE.md`; this rule lives here.)
 
+### Engine control-plane rail (applies to every recipe)
+
+`GET /health` is the engine's only public route. Every other HTTP read/write and `/events` requires the
+per-launch control credential; every `POST`/`PUT`/`DELETE` also sends `Content-Type: application/json`,
+including bodyless actions. Local scripts load the token from the owner-only
+`~/.openinfo/run/engine-<port>.json` discovery record and send it as `Authorization: Bearer …`; they never
+print it, persist it in another config, or place it in a URL. Browser-facing Settings must be opened through
+the native client's one-use browser-ticket flow, not by weakening a route. A recipe that adds or changes an
+engine call must update its callers and auth instructions under rule 7.
+
 ## Recipes (Tier B)
 
 Each recipe lists exact files, in order. Follow them literally; deviation means the change is Tier C.
@@ -53,8 +63,10 @@ Each recipe lists exact files, in order. Follow them literally; deviation means 
    case in `apps/engine/src/surfaces/query.test.ts`. Run `pnpm -r test` and the evals smoke.
 
 ### Add a settings section
-The engine-served Settings surface (`GET /settings`, formerly `/setup`) is a sidebar of sections behind ONE
-registry — mirroring the block-renderer registry. Adding a section is a module + a line.
+The engine-served Settings surface (`GET /settings`, formerly `/setup`) is an authenticated sidebar of
+sections behind ONE registry — mirroring the block-renderer registry. The native client opens it through a
+one-use browser ticket; its same-origin browser script then uses the `HttpOnly` session cookie. Adding a
+section is a module + a line.
 1. `apps/engine/src/surfaces/settings/sections/<name>.ts` — the section body: a pure `render(data: SetupData)
    → string` function (no I/O, no DOM). Reuse the existing helpers (`escapeHtml`, `jsonForScript`) and the
    shared CSS classes (`.card`, `.sub`, `.stat-*`, `.feat-*`). If it needs live data the shell doesn't yet

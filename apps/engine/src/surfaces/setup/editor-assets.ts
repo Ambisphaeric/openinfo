@@ -47,7 +47,8 @@ export const SURFACE_EDITOR_SCRIPT = `
 (function(){
   function jf(method, path, body){
     var init={method:method,headers:{}};
-    if(body!==undefined){init.headers['content-type']='application/json';init.body=JSON.stringify(body);}
+    if(method==='POST'||method==='PUT'||method==='DELETE')init.headers['content-type']='application/json';
+    if(body!==undefined)init.body=JSON.stringify(body);
     return fetch(path,init).then(function(r){return r.json().catch(function(){return null;}).then(function(j){return {ok:r.ok,status:r.status,json:j};});});
   }
   function slug(s){return s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-\$/g,'');}

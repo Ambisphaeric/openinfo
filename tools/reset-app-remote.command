@@ -129,17 +129,65 @@ if [ -n "$DRY_RUN" ]; then
   echo "-- DRY RUN [seed]: would PUT /fabric/secrets/api_d and PUT /fabric on ${REMOTE} (llm ${FABRIC_IP}:${LLM_PORT}, stt ${FABRIC_IP}:${STT_PORT})"
 else
   ssh "$REMOTE" 'python3 -' <<PYEOF
-import json, urllib.request
+import ipaddress, json, os, re, stat, urllib.parse, urllib.request
 
-def call(method, path, body):
-    req = urllib.request.Request("http://127.0.0.1:8787" + path,
-        data=json.dumps(body).encode(), method=method,
-        headers={"Content-Type": "application/json"})
-    return urllib.request.urlopen(req, timeout=10).status
+record_path = os.path.expanduser("~/.openinfo/run/engine-8787.json")
+run_dir = os.path.dirname(record_path)
+
+def private_stat(path, want_dir):
+    value = os.lstat(path)
+    if stat.S_ISLNK(value.st_mode):
+        raise RuntimeError("engine discovery path must not be a symlink")
+    if want_dir and not stat.S_ISDIR(value.st_mode):
+        raise RuntimeError("engine discovery run path is not a directory")
+    if not want_dir and not stat.S_ISREG(value.st_mode):
+        raise RuntimeError("engine discovery record is not a regular file")
+    if value.st_uid != os.getuid() or stat.S_IMODE(value.st_mode) & 0o077:
+        raise RuntimeError("engine discovery path is not owner-only")
+    return value
+
+private_stat(run_dir, True)
+record_fd = os.open(record_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+with os.fdopen(record_fd, encoding="utf-8") as source:
+    record_stat = os.fstat(source.fileno())
+    if (not stat.S_ISREG(record_stat.st_mode) or record_stat.st_uid != os.getuid() or
+            stat.S_IMODE(record_stat.st_mode) & 0o077):
+        raise RuntimeError("engine discovery record is not an owner-only regular file")
+    if record_stat.st_size < 2 or record_stat.st_size > 16 * 1024:
+        raise RuntimeError("engine discovery record has an invalid size")
+    control = json.load(source)
+base_url = control.get("baseUrl", "").rstrip("/")
+parsed = urllib.parse.urlsplit(base_url)
+try:
+    parsed_port = parsed.port
+    loopback = parsed.hostname == "localhost" or ipaddress.ip_address(parsed.hostname).is_loopback
+except (TypeError, ValueError):
+    parsed_port = None
+    loopback = False
+if (control.get("version") != 1 or control.get("mode") != "local" or control.get("port") != 8787 or
+        parsed.scheme != "http" or parsed_port != 8787 or not loopback or parsed.path or
+        parsed.query or parsed.fragment or parsed.username or parsed.password):
+    raise RuntimeError("engine discovery record does not match the local reset target")
+token = control.get("token", "")
+if len(token.encode()) < 32 or len(token) > 4096 or not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+    raise RuntimeError("engine discovery credential is invalid")
+
+def request(method, path, body=None):
+    headers = {"Authorization": "Bearer " + token}
+    if method in ("POST", "PUT", "DELETE"):
+        headers["Content-Type"] = "application/json"
+    data = None if body is None else json.dumps(body).encode()
+    return urllib.request.urlopen(urllib.request.Request(
+        base_url + path, data=data, method=method, headers=headers), timeout=10)
+
+def call(method, path, body=None):
+    with request(method, path, body) as response:
+        return response.status
 
 print("   secret api_d:", call("PUT", "/fabric/secrets/api_d", {"value": "${API_KEY}"}))
 
-fabric = json.load(urllib.request.urlopen("http://127.0.0.1:8787/fabric", timeout=10))
+with request("GET", "/fabric") as response:
+    fabric = json.load(response)
 fabric["slots"]["llm"] = [{"kind": "http", "name": "host",
     "url": "http://${FABRIC_IP}:${LLM_PORT}", "api": "openai-compat",
     "model": "${LLM_MODEL}", "auth": {"keyRef": "api_d"}}]
@@ -147,7 +195,8 @@ fabric["slots"]["stt"] = [{"kind": "http", "name": "parakeet-mlx-audio",
     "url": "http://${FABRIC_IP}:${STT_PORT}", "api": "openai-compat",
     "model": "${STT_MODEL}"}]
 print("   fabric PUT:", call("PUT", "/fabric", fabric))
-cur = json.load(urllib.request.urlopen("http://127.0.0.1:8787/fabric", timeout=10))
+with request("GET", "/fabric") as response:
+    cur = json.load(response)
 print("   fabric now:", [(k, [e["name"] for e in v]) for k, v in cur["slots"].items() if v])
 PYEOF
 fi

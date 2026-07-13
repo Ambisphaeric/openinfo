@@ -12,8 +12,16 @@ it back. No application code, no new route. Every step below is a real engine ca
 **Prefer the forms editor when a human is driving.** `GET /settings/hud-layout?surface={id}` is an
 engine-served HUD-layout editor (forms over the surface document): reorder/add/remove blocks, toggle
 `collapsed`, set `top`/`show`, rename, clone, or edit raw JSON, then Save. Settings → HUD layout lists
-every surface. (The old `/setup?surface=` URL 301s here.) The steps below are the API path (for
-scripts/agents); the editor uses these exact routes.
+every surface. Open it from the native app so the engine can exchange a one-use browser ticket for its
+`HttpOnly` session; pasting an unauthenticated `/settings` URL shows only the locked shell. (The old
+`/setup?surface=` URL 301s here.) The steps below are the API path (for scripts/agents); the editor uses
+these exact routes.
+
+**Authenticate every API step.** `GET /health` is the only public route. Read the current per-launch
+credential from the owner-only `~/.openinfo/run/engine-<port>.json` record (or the configured
+`OPENINFO_CONTROL_RUN_DIR`), send it as `Authorization: Bearer <token>`, and reload that record once after a
+`401` because an engine restart rotates the token. Never print the token, store it in a surface/client
+document, or put it in a URL. Every PUT below also sends `Content-Type: application/json`.
 
 1. Enumerate surfaces with `GET /layouts/surfaces` (→ `Surface[]`), or fetch one directly:
    `GET /layouts/surfaces/{id}` (200 → a `Surface`; 404 if no such id — e.g. `surf-openinfo-hud` is the

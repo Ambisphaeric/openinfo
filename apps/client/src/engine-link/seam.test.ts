@@ -6,8 +6,9 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk } from '@openinfo/contracts'
+import type { CaptureReceipt } from '@openinfo/contracts'
 import { CaptureSimulator } from '../capture/sim.js'
+import { EngineAuthDiscovery, engineWebSocketProtocols, type EngineCredentialSource } from '../main/engine-auth.js'
 import { EngineLink } from './client.js'
 
 interface EngineProcess {
@@ -18,11 +19,15 @@ interface EngineProcess {
 test('seam streams, spools while engine is down, then flushes exactly once in order', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'openinfo-seam-engine-'))
   const spoolDir = await mkdtemp(join(tmpdir(), 'openinfo-seam-client-'))
+  const runDir = await mkdtemp(join(tmpdir(), 'openinfo-seam-run-'))
   const port = await randomPort()
-  const received: CaptureChunk[] = []
-  let engine = await startEngine(port, dataDir)
-  let stopEvents = await collectCaptureEvents(engine.url, received)
-  const link = new EngineLink({ baseUrl: engine.url, spoolDir })
+  const received: CaptureReceipt[] = []
+  const credentials = new EngineAuthDiscovery({ runDir })
+  let engine = await startEngine(port, dataDir, runDir)
+  let collector = await collectCaptureEvents(engine.url, received, credentials)
+  let stopEvents = collector.stop
+  let instanceId = collector.instanceId
+  const link = new EngineLink({ baseUrl: engine.url, spoolDir, credentials })
   const sim = new CaptureSimulator(link, { sessionId: 'session-seam', workspaceId: 'default', cadenceMs: 15 })
 
   try {
@@ -33,8 +38,10 @@ test('seam streams, spools while engine is down, then flushes exactly once in or
     await sleep(100)
     await sim.stop()
 
-    engine = await startEngine(port, dataDir)
-    stopEvents = await collectCaptureEvents(engine.url, received)
+    engine = await startEngine(port, dataDir, runDir)
+    collector = await collectCaptureEvents(engine.url, received, credentials, instanceId)
+    stopEvents = collector.stop
+    instanceId = collector.instanceId
     await eventually(async () => {
       await link.flush()
       assert.equal(await link.spool.pendingCount(), 0)
@@ -43,11 +50,14 @@ test('seam streams, spools while engine is down, then flushes exactly once in or
 
     assert.deepEqual(received.map((chunk) => chunk.sequence), sim.emitted.map((chunk) => chunk.sequence))
     assert.equal(new Set(received.map((chunk) => chunk.id)).size, received.length)
+    assert.ok(received.every((receipt) => receipt.payloadBytes > 0))
+    assert.ok(received.every((receipt) => !('data' in receipt)), 'public receipts must never expose capture bytes')
   } finally {
     stopEvents()
     await stopEngine(engine)
     await rm(dataDir, { recursive: true, force: true })
     await rm(spoolDir, { recursive: true, force: true })
+    await rm(runDir, { recursive: true, force: true })
   }
 })
 
@@ -64,9 +74,9 @@ async function randomPort(): Promise<number> {
   return port
 }
 
-async function startEngine(port: number, dataDir: string): Promise<EngineProcess> {
+async function startEngine(port: number, dataDir: string, runDir: string): Promise<EngineProcess> {
   const child = spawn(process.execPath, [engineMain], {
-    env: { ...process.env, OPENINFO_PORT: String(port), OPENINFO_DATA: dataDir },
+    env: { ...process.env, OPENINFO_PORT: String(port), OPENINFO_DATA: dataDir, OPENINFO_CONTROL_RUN_DIR: runDir },
     stdio: ['ignore', 'ignore', 'pipe'],
   })
   child.stderr?.on('data', (chunk) => process.stderr.write(chunk))
@@ -80,21 +90,36 @@ async function startEngine(port: number, dataDir: string): Promise<EngineProcess
 
 async function stopEngine(engine: EngineProcess): Promise<void> {
   if (engine.child.exitCode !== null) return
-  engine.child.kill('SIGTERM')
-  await new Promise<void>((resolve) => engine.child.once('exit', () => resolve()))
+  const exited = new Promise<void>((resolve) => engine.child.once('exit', () => resolve()))
+  // This seam deliberately simulates an abrupt engine outage. A graceful shutdown can keep accepting
+  // chunks while long-lived collectors drain, creating an unobservable middle interval after WS closes.
+  engine.child.kill('SIGKILL')
+  await exited
 }
 
-async function collectCaptureEvents(url: string, received: CaptureChunk[]): Promise<() => void> {
-  const socket = new WebSocket(url.replace(/^http/, 'ws') + '/events')
+async function collectCaptureEvents(
+  url: string,
+  received: CaptureReceipt[],
+  credentials: EngineCredentialSource,
+  previousInstanceId?: string,
+): Promise<{ stop: () => void; instanceId: string }> {
+  let credential: Awaited<ReturnType<EngineCredentialSource['credentialFor']>>
+  await eventually(async () => {
+    credential = await credentials.credentialFor(url, { refresh: true })
+    assert.ok(credential)
+    assert.ok(credential.instanceId)
+    assert.notEqual(credential.instanceId, previousInstanceId)
+  })
+  const socket = new WebSocket(url.replace(/^http/, 'ws') + '/events', engineWebSocketProtocols(credential!))
   socket.addEventListener('message', (event) => {
-    const parsed = JSON.parse(String(event.data)) as { name?: string; payload?: CaptureChunk }
+    const parsed = JSON.parse(String(event.data)) as { name?: string; payload?: CaptureReceipt }
     if (parsed.name === 'capture.received' && parsed.payload) received.push(parsed.payload)
   })
   await new Promise<void>((resolve, reject) => {
     socket.addEventListener('open', () => resolve(), { once: true })
     socket.addEventListener('error', () => reject(new Error('websocket failed')), { once: true })
   })
-  return () => socket.close()
+  return { stop: () => socket.close(), instanceId: credential!.instanceId! }
 }
 
 async function eventually(assertion: () => Promise<void>, timeoutMs = 3_000): Promise<void> {
