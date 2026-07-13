@@ -2,5 +2,8 @@
   "sessionId": "ses-live",
   "source": "mic",
   "text": "we should ship Thursday",
-  "capturedAtRange": { "start": "2026-07-09T12:00:00.000Z", "end": "2026-07-09T12:00:06.000Z" }
+  "sourceChunkIds": ["mic-ses-live-000001", "mic-ses-live-000002"],
+  "sourceSequenceRange": { "start": 1, "end": 2 },
+  "capturedAtRange": { "start": "2026-07-09T12:00:00.000Z", "end": "2026-07-09T12:00:06.000Z" },
+  "processedAt": "2026-07-09T12:00:06.420Z"
 }

@@ -125,13 +125,13 @@ test('echo-dedupe wiring: a mic fragment duplicating the system stream is droppe
     assert.ok(transcripts.some((u) => u.source === 'system-audio' && u.text.includes(farSide)))
     assert.ok(!transcripts.some((u) => u.source === 'mic' && u.text.includes(farSide)))
 
-    // (a) Persisted stream: the released distill prompt carries the far side as them: and the control mic
-    // as me:, and the echoed words NEVER appear as a me: line — the twin died before the text queue.
+    // (a) Persisted stream: the released distill prompt retains physical system-audio/microphone labels,
+    // and the echoed words NEVER appear as a microphone line — the twin died before the text queue.
     await eventually(() => assert.ok(llm.bodies.length >= 1))
     const prompt = llm.bodies.join('\n')
-    assert.ok(prompt.includes(`them: ${farSide}`))
-    assert.ok(prompt.includes(`me: ${controlMic}`))
-    assert.ok(!prompt.includes(`me: ${farSide}`))
+    assert.ok(prompt.includes(`system audio: ${farSide}`))
+    assert.ok(prompt.includes(`microphone: ${controlMic}`))
+    assert.ok(!prompt.includes(`microphone: ${farSide}`))
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })

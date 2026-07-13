@@ -61,16 +61,37 @@ test('a single session crossing the threshold does not drag another sub-threshol
   assert.equal(cadence.pending(), 1) // s2's tail stays buffered
 })
 
-test('buildTranscriptUpdates aggregates per (session, source) in first-seen order with the capturedAt span', () => {
+test('buildTranscriptUpdates preserves interleaved lane chronology and true provenance', () => {
   const at = (sec: number): string => new Date(Date.UTC(2026, 6, 9, 12, 0, sec)).toISOString()
   const updates = buildTranscriptUpdates([
-    { sessionId: 's1', source: 'mic' as CaptureSource, text: 'hello', capturedAt: at(0) },
-    { sessionId: 's1', source: 'system-audio' as CaptureSource, text: 'hi there', capturedAt: at(1) },
-    { sessionId: 's1', source: 'mic' as CaptureSource, text: 'how are you', capturedAt: at(3) },
+    { sourceChunkId: 'mic-1', sessionId: 's1', source: 'mic' as CaptureSource, sequence: 1, text: 'same words', capturedAt: at(0), processedAt: at(4) },
+    { sourceChunkId: 'sys-2', sessionId: 's1', source: 'system-audio' as CaptureSource, sequence: 2, text: 'same words', capturedAt: at(1), processedAt: at(5) },
+    { sourceChunkId: 'mic-3', sessionId: 's1', source: 'mic' as CaptureSource, sequence: 3, text: 'same words', capturedAt: at(3), processedAt: at(6) },
   ])
-  assert.equal(updates.length, 2) // mic + system-audio, not one-per-chunk
-  assert.deepEqual(updates[0], { sessionId: 's1', source: 'mic', text: 'hello how are you', capturedAtRange: { start: at(0), end: at(3) } })
-  assert.deepEqual(updates[1], { sessionId: 's1', source: 'system-audio', text: 'hi there', capturedAtRange: { start: at(1), end: at(1) } })
+  assert.deepEqual(updates.map((update) => update.source), ['mic', 'system-audio', 'mic'])
+  assert.deepEqual(updates.map((update) => update.sourceChunkIds), [['mic-1'], ['sys-2'], ['mic-3']])
+  assert.deepEqual(updates.map((update) => update.sourceSequenceRange), [{ start: 1, end: 1 }, { start: 2, end: 2 }, { start: 3, end: 3 }])
+  assert.deepEqual(updates.map((update) => update.processedAt), [at(4), at(5), at(6)])
+  assert.deepEqual(updates.map((update) => update.capturedAtRange.start), [at(0), at(1), at(3)])
+})
+
+test('buildTranscriptUpdates compacts only adjacent same-lane chunks and uses deterministic timestamp ties', () => {
+  const capturedAt = '2026-07-09T12:00:00.000Z'
+  const updates = buildTranscriptUpdates([
+    // Deliberately reversed input. Cross-lane order at the same instant is unknown; source gives a stable
+    // presentation tie-break, while sequence orders the two chunks inside the microphone lane only. The
+    // system lane's 1 must NOT claim it happened before microphone 99; those counters are independent.
+    { sourceChunkId: 'sys-1', sessionId: 's1', source: 'system-audio', sequence: 1, text: 'system', capturedAt, processedAt: '2026-07-09T12:00:03.000Z' },
+    { sourceChunkId: 'mic-100', sessionId: 's1', source: 'mic', sequence: 100, text: 'second', capturedAt, processedAt: '2026-07-09T12:00:02.000Z' },
+    { sourceChunkId: 'mic-99', sessionId: 's1', source: 'mic', sequence: 99, text: 'first', capturedAt, processedAt: '2026-07-09T12:00:01.000Z' },
+  ])
+  assert.equal(updates.length, 2)
+  assert.deepEqual(updates[0], {
+    sessionId: 's1', source: 'mic', text: 'first second', sourceChunkIds: ['mic-99', 'mic-100'],
+    sourceSequenceRange: { start: 99, end: 100 },
+    capturedAtRange: { start: capturedAt, end: capturedAt }, processedAt: '2026-07-09T12:00:02.000Z',
+  })
+  assert.equal(updates[1]?.source, 'system-audio')
 })
 
 test('buildTranscriptUpdates on no transcribed segments yields no events', () => {

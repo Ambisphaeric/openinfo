@@ -322,7 +322,12 @@ test('compileQuery resolves the transcript source from the INJECTED inspector sn
     const snapshot: TranscriptInspector = {
       ringLimit: 50,
       sttSlot: [{ endpoint: 'whisper-cpp', model: 'ggml-base.en' }],
-      chunks: [{ sessionId: 's-1', source: 'mic', text: 'hello there', capturedAtRange: { start: '2026-07-07T14:40:00Z', end: '2026-07-07T14:40:02Z' } }],
+      chunks: [{
+        sessionId: 's-1', source: 'mic', text: 'hello there', sourceChunkIds: ['mic-s-1-000001'],
+        sourceSequenceRange: { start: 1, end: 1 },
+        capturedAtRange: { start: '2026-07-07T14:40:00Z', end: '2026-07-07T14:40:02Z' },
+        processedAt: '2026-07-07T14:40:02.250Z',
+      }],
     }
     const resolved = compileQuery(store, { source: 'transcript', params: {} }, new Date(), { transcript: snapshot })
     assert.equal(resolved.source, 'transcript')

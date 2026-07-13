@@ -5,7 +5,7 @@ import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
 import { DistillDocuments } from './documents.js'
 import { FieldValueStore } from './field-values.js'
-import { speakerLabel } from './transcribe.js'
+import { captureLaneLabel } from './transcribe.js'
 
 /** Injected llm caller (mirrors distiller.LlmInvoke) — a fake in tests, the fabric llm slot in prod. */
 export type LlmInvoke = (messages: LlmMessage[], opts: InvokeOptions) => Promise<LlmResult>
@@ -129,15 +129,18 @@ export class FastFieldScheduler {
       const bindings = [...storedBindings, ...sessionBinding, ...modeDefault]
       const resolved = resolveVoice(registers, bindings, { sessionId, workspaceId, modeId: mode.id })
 
-      // ONE shared recent-material window per session (the released batch, tail-capped), speaker-labeled
-      // like the distiller's transcript so the model can attribute me/them. Gated per-field by minChars.
+      // ONE shared recent-material window per session (the released batch, tail-capped), physical-lane
+      // labeled like the distiller's transcript. Gated per-field by minChars.
       const full = sessionChunks
         .map((chunk) => {
-          const label = speakerLabel(chunk.source)
+          const label = captureLaneLabel(chunk.source)
           return label ? `${label}: ${chunk.data}` : chunk.data
         })
         .join('\n')
       const recent = full.length > CONTEXT_CHARS ? full.slice(-CONTEXT_CHARS) : full
+      // Relevance is about observed material, not our machine-owned label vocabulary. Counting
+      // "microphone" vs "system audio" would make a label rename spuriously cross minChars gates.
+      const evidenceChars = sessionChunks.map((chunk) => chunk.data).join('\n').length
       const { windowStart, windowEnd } = this.windowSpan(sessionChunks)
 
       // The inexpensive relevance gate (#61): a field is TRIGGERED only when the recent material meets its
@@ -147,8 +150,8 @@ export class FastFieldScheduler {
         const binding = tpl.field
         if (binding === undefined || binding.tier !== 'fast') return false
         const minChars = binding.trigger.minChars ?? 0
-        if (recent.length < minChars) {
-          this.log(`fast-field ${binding.fieldId} skipped: ${recent.length} < ${minChars} chars (relevance gate)`)
+        if (evidenceChars < minChars) {
+          this.log(`fast-field ${binding.fieldId} skipped: ${evidenceChars} < ${minChars} observed chars (relevance gate)`)
           return false
         }
         return true

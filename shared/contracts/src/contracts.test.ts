@@ -62,6 +62,22 @@ test('CaptureReceipt is metadata-only and rejects raw or derived content fields'
   }
 })
 
+test('TranscriptUpdate requires true capture provenance and processing time', () => {
+  const update = {
+    sessionId: 'ses-1', source: 'mic', text: 'same words',
+    sourceChunkIds: ['mic-ses-1-000001'],
+    sourceSequenceRange: { start: 1, end: 1 },
+    capturedAtRange: { start: '2026-07-12T12:00:00.000Z', end: '2026-07-12T12:00:01.000Z' },
+    processedAt: '2026-07-12T12:00:01.250Z',
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.TranscriptUpdate, update)], [], 'source-provenanced update validates')
+  assert.ok([...Value.Errors(AllSchemas.TranscriptUpdate, { ...update, sourceChunkIds: [] })].length > 0, 'an update cannot lose all source ids')
+  const { sourceSequenceRange: _sourceSequenceRange, ...withoutSequence } = update
+  assert.ok([...Value.Errors(AllSchemas.TranscriptUpdate, withoutSequence)].length > 0, 'source-local sequence evidence is required')
+  const { processedAt: _processedAt, ...withoutProcessedAt } = update
+  assert.ok([...Value.Errors(AllSchemas.TranscriptUpdate, withoutProcessedAt)].length > 0, 'processing time is required')
+})
+
 test('every public event names a registered payload schema', () => {
   for (const [event, schema] of Object.entries(Events)) {
     assert.ok(schema in AllSchemas, `${event} references missing schema ${schema}`)

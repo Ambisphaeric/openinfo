@@ -20,7 +20,10 @@
           "sessionId",
           "source",
           "text",
-          "capturedAtRange"
+          "sourceChunkIds",
+          "sourceSequenceRange",
+          "capturedAtRange",
+          "processedAt"
         ],
         "properties": {
           "sessionId": {
@@ -30,7 +33,7 @@
           },
           "source": {
             "$id": "CaptureSource",
-            "description": "mic = the user; system-audio = the far side of a call (loopback) — the free me/them split; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript",
+            "description": "the physical/data capture lane, not a person identity: mic = microphone input; system-audio = system-output loopback; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript",
             "anyOf": [
               {
                 "const": "mic",
@@ -66,6 +69,36 @@
             "description": "raw transcribed text for this drain window — a live feed, never persisted",
             "type": "string"
           },
+          "sourceChunkIds": {
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "exact CaptureChunk ids contributing to this update, in capture order — source provenance, never model-generated",
+            "type": "array",
+            "items": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            }
+          },
+          "sourceSequenceRange": {
+            "additionalProperties": false,
+            "description": "source-local CaptureChunk.sequence span for this contiguous run; orders equal-time updates only within the same session + source, never across physical lanes",
+            "type": "object",
+            "required": [
+              "start",
+              "end"
+            ],
+            "properties": {
+              "start": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "end": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            }
+          },
           "capturedAtRange": {
             "additionalProperties": false,
             "description": "the capturedAt span of the chunks aggregated into this update",
@@ -86,6 +119,11 @@
                 "type": "string"
               }
             }
+          },
+          "processedAt": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
           }
         }
       }

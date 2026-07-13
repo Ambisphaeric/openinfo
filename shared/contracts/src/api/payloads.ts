@@ -28,7 +28,11 @@ export type JsonSchema = Static<typeof JsonSchema>
 
 export const CaptureSource = Type.Union(
   ['mic', 'screen', 'calendar', 'repo', 'camera', 'system-audio', 'focus'].map((s) => Type.Literal(s)),
-  { $id: 'CaptureSource', description: 'mic = the user; system-audio = the far side of a call (loopback) — the free me/them split; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript' },
+  {
+    $id: 'CaptureSource',
+    description:
+      'the physical/data capture lane, not a person identity: mic = microphone input; system-audio = system-output loopback; focus = foreground-window context (P3 context-switch detection), utf8 JSON FocusSignal, never a transcript',
+  },
 )
 export type CaptureSource = Static<typeof CaptureSource>
 
@@ -137,18 +141,39 @@ export type Ack = Static<typeof Ack>
  * NOT persisted anywhere: the durable record still comes only from distill (the distillate/moments).
  * A mid-crash therefore loses only the undistilled live tail — the raw audio chunks remain the durable
  * source, re-transcribed on the next drain. `text` aggregates the chunks transcribed in one drain for a
- * single (session, source) pair; `capturedAtRange` is the capturedAt span of those chunks. `source`
- * carries the free me/them split (mic = me, system-audio = them) so the HUD can attribute the speaker.
+ * contiguous (session, source) run; `capturedAtRange` is the true capturedAt span of those chunks,
+ * `sourceChunkIds` points back to the exact capture inputs in order, `sourceSequenceRange` preserves their
+ * source-local sequence evidence (never a global cross-lane clock), and `processedAt` is when the last
+ * chunk in the run finished transcription. `source` identifies only the PHYSICAL capture lane. A mic
+ * lane is not necessarily one person, and system audio is not necessarily one other person; identity /
+ * diarization is a separate interpretation and must never be inferred from this transport field.
  */
 export const TranscriptUpdate = Type.Object(
   {
     sessionId: Id,
     source: CaptureSource,
     text: Type.String({ description: 'raw transcribed text for this drain window — a live feed, never persisted' }),
+    sourceChunkIds: Type.Array(Id, {
+      minItems: 1,
+      uniqueItems: true,
+      description: 'exact CaptureChunk ids contributing to this update, in capture order — source provenance, never model-generated',
+    }),
+    sourceSequenceRange: Type.Object(
+      {
+        start: Type.Integer({ minimum: 0 }),
+        end: Type.Integer({ minimum: 0 }),
+      },
+      {
+        additionalProperties: false,
+        description:
+          'source-local CaptureChunk.sequence span for this contiguous run; orders equal-time updates only within the same session + source, never across physical lanes',
+      },
+    ),
     capturedAtRange: Type.Object(
       { start: IsoTime, end: IsoTime },
       { additionalProperties: false, description: 'the capturedAt span of the chunks aggregated into this update' },
     ),
+    processedAt: IsoTime,
   },
   { $id: 'TranscriptUpdate', additionalProperties: false },
 )
@@ -170,8 +195,9 @@ export type SttSlotEndpoint = Static<typeof SttSlotEndpoint>
  * on a surface instead of over ssh:
  *
  * - `chunks`: the most recent EPHEMERAL TranscriptUpdates, newest-first, drawn from an in-memory ring the
- *   engine keeps (fed off the transcript.updated bus). Each carries its stream (mic = me / system-audio =
- *   them), captured-at span (⇒ a duration), and raw text. Like the live feed itself, this is NOT persisted:
+ *   engine keeps (fed off the transcript.updated bus). Each carries its physical mic/system-audio lane,
+ *   exact source chunk ids, captured-at span (⇒ a duration), processing time, and raw text. Like the live
+ *   feed itself, this is NOT persisted:
  *   the ring holds only the last `ringLimit` updates for the running process, cleared on restart.
  * - `sttSlot`: the CURRENT stt slot configuration (endpoint · model). This is DELIBERATELY separate from the
  *   chunks: per-chunk stt provenance is NOT recorded anywhere (the disclosed #65 gap — STT invokes persist
@@ -226,7 +252,7 @@ export type QueueFailure = Static<typeof QueueFailure>
 /**
  * The kind of work a spooled chunk represents — the typed-queue classification (P4A slice 3). A chunk
  * is classified by its `source`/`contentType` (queue/kinds.ts), NOT by importing any capture producer:
- * `audio` = mic/system-audio (the me/them split); `screen` = screen/camera frames (P4B adds the
+ * `audio` = physical mic/system-audio lanes; `screen` = screen/camera frames (P4B adds the
  * producers — a `screen` source or an image/* contentType lands here without the queue knowing about
  * P4B); `llm-work` = text/utf8 work destined for distill (calendar/repo/typed text). `source: 'focus'`
  * chunks are DELIBERATELY not a kind here — they are ephemeral routing context (consumed by the

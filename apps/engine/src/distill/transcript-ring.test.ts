@@ -7,7 +7,10 @@ const update = (sessionId: string, text: string): TranscriptUpdate => ({
   sessionId,
   source: 'mic',
   text,
+  sourceChunkIds: [`mic-${sessionId}`],
+  sourceSequenceRange: { start: 1, end: 1 },
   capturedAtRange: { start: '2026-07-12T12:00:00Z', end: '2026-07-12T12:00:01Z' },
+  processedAt: '2026-07-12T12:00:01.250Z',
 })
 
 test('recentForSessions returns only updates from the supplied workspace session set', () => {

@@ -252,13 +252,14 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     publish: (event, session) => bus.publish(event, session),
     log,
   })
-  // The pre-distill transcription stage (distill.transcribe): rewrites base64 audio/* chunks (mic →
-  // "me", system-audio → "them") to utf8 text via the stt slot BEFORE the distiller's utf8 filter;
+  // The pre-distill transcription stage (distill.transcribe): rewrites base64 audio/* chunks while
+  // preserving their physical mic/system-audio lane to utf8 text BEFORE the distiller's utf8 filter;
   // non-audio chunks pass through. A transcription transport failure propagates → the drain re-queues
   // the file (retry-at-idle), exactly like distill/moments. Shared verbatim by the legacy drain path
   // and the workflow executor's transcribe seam, so the two are byte-for-byte identical.
-  // Transcript fast-path (#58): as each audio chunk transcribes we collect (session, source, text,
-  // capturedAt), then publish EPHEMERAL transcript.updated events — one per (session, source) in the
+  // Transcript fast-path (#58): as each audio chunk transcribes we collect its id, sequence, session,
+  // physical source, text, capture time, and real processing time, then publish EPHEMERAL
+  // transcript.updated events — one per contiguous (session, source) run in the
   // drain — the instant transcription succeeds, BEFORE the throttled distill pass. This is the live
   // feed the HUD renders within one WS hop; it is never persisted (durable records still come only from
   // distill). Shared by both the legacy drain and the executor's transcribe seam, so both paths emit it.
@@ -279,21 +280,39 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   })()
   // Echo-dedupe (sys-audio arc, follow-up to #142): with the CoreAudio tap a speakers-on call yields the
   // SAME words on BOTH streams — the tap carries the clean far side while the physical mic picks up
-  // speaker bleed, so the live transcript shows near-duplicate lines (the mic copy garbled, mislabeled
-  // `mic · me`). Freshly-transcribed system-audio fragments feed a per-session rolling buffer; a mic
+  // speaker bleed, so the live transcript shows near-duplicate physical-lane lines (the mic copy often
+  // garbled). Freshly-transcribed system-audio fragments feed a per-session rolling buffer; a mic
   // fragment that near-duplicates a buffered system fragment is dropped inside runTranscribe, BEFORE the
   // text queue persists it and before the transcript.updated fan-out. OPENINFO_ECHO_DEDUPE=0 disables
   // (default ON — a no-op with no system stream). Resolved once at wiring time like the knobs above.
   const echoDedupe = echoDedupeEnabled(process.env) ? new EchoDedupe() : undefined
   const runTranscribe = async (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> => {
-    const segments: { id: string; sessionId: string; source: CaptureChunk['source']; text: string; capturedAt: string }[] = []
+    const segments: {
+      id: string
+      sourceChunkId: string
+      sessionId: string
+      source: CaptureChunk['source']
+      sequence: number
+      text: string
+      capturedAt: string
+      processedAt: string
+    }[] = []
     // Skipped-as-silence accounting (#69): count windows fully filtered to nothing and total segments
     // dropped across the drain, so filtered content is VISIBLE in a log line rather than silently vanished.
     let skippedWindows = 0
     let droppedSegments = 0
     const ready = await transcribeChunks(chunks, {
       invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }),
-      onTranscribed: (chunk, text) => segments.push({ id: chunk.id, sessionId: chunk.sessionId, source: chunk.source, text, capturedAt: chunk.capturedAt }),
+      onTranscribed: (chunk, text, processedAt) => segments.push({
+        id: chunk.id,
+        sourceChunkId: chunk.id,
+        sessionId: chunk.sessionId,
+        source: chunk.source,
+        sequence: chunk.sequence,
+        text,
+        capturedAt: chunk.capturedAt,
+        processedAt,
+      }),
       onSilenceSkipped: (_chunk, info) => {
         droppedSegments += info.dropped
         if (info.windowSkipped) skippedWindows += 1
@@ -1967,14 +1986,15 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     // The underlying live-transcript ring remains process-global for diagnostics, but chat sees only
     // updates from sessions currently owned by its workspace. TranscriptUpdate carries sessionId (not a
     // duplicated workspaceId), so resolve the workspace's persisted session set at gather time; a rerouted
-    // session therefore follows its current owner. Join oldest-first so the assembler's rolling window
-    // keeps the MOST RECENT characters.
+    // session therefore follows its current owner. Keep the structured records intact — the pure assembler
+    // orders by capturedAt and renders a machine-owned physical-source/provenance envelope. Flattening text
+    // here would make equal words from microphone and system audio indistinguishable.
     transcript: (workspaceId) => {
       const sessionIds = new Set(
         ctx.transcripts.recent().map((update) => update.sessionId)
           .filter((sessionId) => ctx.store.getSession(workspaceId, sessionId) !== undefined),
       )
-      return ctx.transcripts.recentForSessions(sessionIds).reverse().map((u) => u.text).filter((t) => t.trim() !== '').join('\n')
+      return ctx.transcripts.recentForSessions(sessionIds).filter((update) => update.text.trim() !== '')
     },
     // Session insights = the distillate summaries (oldest-first); the assembler keeps the most recent `limit`.
     insights: (workspaceId) => (known(workspaceId) ? ctx.store.listDistillates(workspaceId).map((d) => d.text).filter((t) => t.trim() !== '') : []),

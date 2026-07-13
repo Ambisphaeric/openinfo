@@ -11,8 +11,16 @@ const snapshot = (over: Partial<TranscriptInspector> = {}): TranscriptInspector 
   ringLimit: 50,
   sttSlot: [{ endpoint: 'whisper-cpp', model: 'ggml-base.en' }],
   chunks: [
-    { sessionId: 's-1', source: 'mic', text: 'quarterly numbers look strong', capturedAtRange: { start: '2026-07-07T14:40:00Z', end: '2026-07-07T14:40:03Z' } },
-    { sessionId: 's-1', source: 'system-audio', text: 'can you repeat the renewal date', capturedAtRange: { start: '2026-07-07T14:39:50.000Z', end: '2026-07-07T14:39:50.820Z' } },
+    {
+      sessionId: 's-1', source: 'mic', text: 'quarterly numbers look strong', sourceChunkIds: ['mic-s-1-000002'],
+      sourceSequenceRange: { start: 2, end: 2 },
+      capturedAtRange: { start: '2026-07-07T14:40:00Z', end: '2026-07-07T14:40:03Z' }, processedAt: '2026-07-07T14:40:03.250Z',
+    },
+    {
+      sessionId: 's-1', source: 'system-audio', text: 'can you repeat the renewal date', sourceChunkIds: ['sys-s-1-000001'],
+      sourceSequenceRange: { start: 1, end: 1 },
+      capturedAtRange: { start: '2026-07-07T14:39:50.000Z', end: '2026-07-07T14:39:50.820Z' }, processedAt: '2026-07-07T14:39:51.000Z',
+    },
   ],
   ...over,
 })
@@ -69,7 +77,10 @@ test('top caps the rendered chunk list', () => {
   const many = snapshot({
     chunks: Array.from({ length: 5 }, (_, i) => ({
       sessionId: 's-1', source: 'mic' as const, text: `line ${i}`,
+      sourceChunkIds: [`mic-s-1-${i}`],
+      sourceSequenceRange: { start: i, end: i },
       capturedAtRange: { start: '2026-07-07T14:40:00Z', end: '2026-07-07T14:40:01Z' },
+      processedAt: '2026-07-07T14:40:01.250Z',
     })),
   })
   const capped: Surface = {

@@ -23,7 +23,16 @@ export {
   type ExtractResult,
 } from './moments.js'
 export { parseJsonCandidates } from './parse.js'
-export { transcribeChunks, buildTranscriptUpdates, isAudioChunk, speakerLabel, type SttInvoke, type TranscribeDeps } from './transcribe.js'
+export {
+  transcribeChunks,
+  buildTranscriptUpdates,
+  isAudioChunk,
+  captureLaneLabel,
+  speakerLabel,
+  type SttInvoke,
+  type TranscribeDeps,
+  type TranscribedSegment,
+} from './transcribe.js'
 export {
   EchoDedupe,
   echoDedupeEnabled,

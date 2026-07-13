@@ -10,7 +10,7 @@ import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } f
 import { bucketIntoWindows } from './merge.js'
 import { DistillDocuments } from './documents.js'
 import { extractMoments, type ExtractInput } from './moments.js'
-import { speakerLabel } from './transcribe.js'
+import { captureLaneLabel } from './transcribe.js'
 
 export type LlmInvoke = (messages: LlmMessage[], opts: InvokeOptions) => Promise<LlmResult>
 
@@ -220,14 +220,12 @@ export class Distiller {
         // it. Built once per window; undefined ⇒ the guard is off (pre-#63 behavior).
         const guard = this.guardOptions()
         const egressInvoke: LlmInvoke = (messages, opts) => this.invoke(messages, { ...opts, egress, ...(guard !== undefined ? { guard } : {}) })
-        // Speaker attribution for free (see transcribe.ts::speakerLabel): mic → "me", system-audio →
-        // "them". Prefixing the transcript line is the least-invasive carry — it flows unchanged into
-        // {{transcript}} for the summary AND the moment/entity extraction prompts, so the model can
-        // attribute speakers (echoed into Moment.speaker) without a diarizer. Sources with no speaker
-        // (screen/calendar/repo/camera) are left bare.
+        // Physical source attribution (see transcribe.ts::captureLaneLabel): microphone/system audio.
+        // Prefixing the transcript line carries the lane into summary and extraction without claiming
+        // person identity (same-mic diarization is #137). Non-audio sources are left bare.
         const transcript = window.chunks
           .map((chunk) => {
-            const label = speakerLabel(chunk.source)
+            const label = captureLaneLabel(chunk.source)
             return label ? `${label}: ${chunk.data}` : chunk.data
           })
           .join('\n')

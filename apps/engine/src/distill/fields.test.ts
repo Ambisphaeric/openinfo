@@ -84,7 +84,7 @@ test('fan-out runs N triggered fast-field prompts CONCURRENTLY against the llm s
   }
 })
 
-test('the relevance gate skips a field whose new material is under its minChars trigger', async () => {
+test('the relevance gate counts observed text, never machine-owned physical-label length', async () => {
   const prompts: string[] = []
   const invoke = async (messages: LlmMessage[]): Promise<LlmResult> => {
     prompts.push(messages[0]!.content)
@@ -92,7 +92,8 @@ test('the relevance gate skips a field whose new material is under its minChars 
   }
   const { store, scheduler, dir } = await harness(invoke)
   try {
-    // 50-char material: topic (minChars 40) triggers; entities (60) and work-items (80) are gated out.
+    // 50 observed chars: topic (40) triggers; entities (60) and work-items (80) stay gated out even though
+    // the prompt adds the longer `microphone: ` machine label (which would otherwise push it over 60).
     const produced = await scheduler.runFields([chunk(0, 'x'.repeat(50))])
     assert.equal(produced.length, 1, 'only the topic field clears a 50-char window')
     assert.equal(prompts.length, 1, 'gated fields never reach the llm slot — no wasted invoke')

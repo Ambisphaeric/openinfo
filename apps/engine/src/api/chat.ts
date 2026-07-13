@@ -1,4 +1,4 @@
-import type { ChatBudget, ChatContextSource, ChatReply, ChatRequest, ChatScreenshot, ChatTurn, Fabric, PinChunk, RelevantEntity } from '@openinfo/contracts'
+import type { ChatBudget, ChatContextSource, ChatReply, ChatRequest, ChatScreenshot, ChatTurn, Fabric, PinChunk, RelevantEntity, TranscriptUpdate } from '@openinfo/contracts'
 import {
   invokeLlm,
   resolveEgress,
@@ -90,7 +90,8 @@ export interface ChatDeps {
   contextSources: readonly ChatContextSource[]
   bundlePrompt: string
   relevant(workspaceId: string): RelevantEntity[]
-  transcript(workspaceId: string): string
+  /** Ephemeral source-tagged transcript records for sessions owned by this workspace. */
+  transcript(workspaceId: string): TranscriptUpdate[]
   insights(workspaceId: string): string[]
   pinTitle(workspaceId: string, pinId: string): string | undefined
   pinChunks(workspaceId: string, pinId: string): PinChunk[]

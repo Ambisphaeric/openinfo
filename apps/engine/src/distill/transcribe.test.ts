@@ -11,7 +11,7 @@ import { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { Distiller } from './distiller.js'
 import { DistillDocuments } from './documents.js'
-import { isAudioChunk, speakerLabel, transcribeChunks, type SttInvoke } from './transcribe.js'
+import { captureLaneLabel, speakerLabel, transcribeChunks, isAudioChunk, type SttInvoke } from './transcribe.js'
 
 const b64 = (s: string): string => Buffer.from(s).toString('base64')
 
@@ -41,13 +41,14 @@ const fakeStt = (text: string): SttInvoke => async () => ({ text, endpoint: 'fak
 
 // ---- unit: the transformation, with an injected fake stt (no server) ----
 
-test('isAudioChunk / speakerLabel classify capture sources', () => {
+test('isAudioChunk / captureLaneLabel classify physical sources without inventing identity', () => {
   assert.equal(isAudioChunk(audioChunk('a', 'mic', 0)), true)
   assert.equal(isAudioChunk(screenChunk), false) // base64 but image/* — not audio
   assert.equal(isAudioChunk(textChunk), false) // utf8 already
-  assert.equal(speakerLabel('mic'), 'me')
-  assert.equal(speakerLabel('system-audio'), 'them')
-  assert.equal(speakerLabel('screen'), undefined)
+  assert.equal(captureLaneLabel('mic'), 'microphone')
+  assert.equal(captureLaneLabel('system-audio'), 'system audio')
+  assert.equal(captureLaneLabel('screen'), undefined)
+  assert.equal(speakerLabel('mic'), 'microphone', 'legacy import alias has the same physical-lane semantics')
 })
 
 test('transcribeChunks rewrites audio → utf8 text, preserving source', async () => {
@@ -56,8 +57,19 @@ test('transcribeChunks rewrites audio → utf8 text, preserving source', async (
   assert.equal(out[0]!.encoding, 'utf8')
   assert.equal(out[0]!.contentType, 'text/plain')
   assert.equal(out[0]!.data, 'agreed, ship Thursday')
-  assert.equal(out[0]!.source, 'system-audio') // source preserved → the me/them split survives
+  assert.equal(out[0]!.source, 'system-audio') // physical source lane is preserved
   assert.equal(out[0]!.id, 'a')
+})
+
+test('transcribeChunks stamps the real completion boundary and passes the original capture id through', async () => {
+  const seen: { id: string; processedAt: string }[] = []
+  const processedAt = '2026-07-07T14:00:01.250Z'
+  await transcribeChunks([audioChunk('mic-source-42', 'mic', 0)], {
+    invoke: fakeStt('same words'),
+    now: () => processedAt,
+    onTranscribed: (chunk, _text, at) => seen.push({ id: chunk.id, processedAt: at }),
+  })
+  assert.deepEqual(seen, [{ id: 'mic-source-42', processedAt }])
 })
 
 test('transcribeChunks drops silence (empty transcript) as a normal outcome', async () => {
@@ -228,13 +240,13 @@ const makeHarness = async (sttUrl: string | undefined, llmUrl: string, transcrib
   return { dir, store, fabric, queue, published }
 }
 
-test('e2e: audio chunks → transcribe (stt) → distill (llm), with me/them speaker tagging in the prompt', async () => {
+test('e2e: audio chunks → transcribe (stt) → distill (llm), with physical-lane tagging in the prompt', async () => {
   const stt = await startFakeStt(['we should ship Thursday', 'agreed, ship Thursday'])
   const llm = await startFakeLlm()
   const h = await makeHarness(stt.url, llm.url, true)
   try {
-    await h.queue.append(audioChunk('mic-1', 'mic', 0)) // → "me"
-    await h.queue.append(audioChunk('sys-1', 'system-audio', 20)) // → "them"
+    await h.queue.append(audioChunk('mic-1', 'mic', 0))
+    await h.queue.append(audioChunk('sys-1', 'system-audio', 20))
     await h.queue.drainNow(() => undefined)
 
     assert.equal(h.published.length, 1) // one merge window → one distillate
@@ -242,10 +254,11 @@ test('e2e: audio chunks → transcribe (stt) → distill (llm), with me/them spe
     assert.equal(stored.length, 1)
     assert.deepEqual(stored[0]!.sourceChunks, ['mic-1', 'sys-1'])
 
-    // speaker tagging is visible in the transcript that reached the llm
+    // physical-lane tagging is visible in the transcript that reached the llm
     const prompt = llm.prompts[0]!
-    assert.match(prompt, /me: we should ship Thursday/)
-    assert.match(prompt, /them: agreed, ship Thursday/)
+    assert.match(prompt, /microphone: we should ship Thursday/)
+    assert.match(prompt, /system audio: agreed, ship Thursday/)
+    assert.doesNotMatch(prompt, /\bme:|\bthem:/)
     assert.equal((await h.queue.status()).pendingFiles, 0) // drained after success
   } finally {
     h.store.close()

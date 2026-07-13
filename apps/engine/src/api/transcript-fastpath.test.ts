@@ -127,13 +127,17 @@ test('#58: transcribe success publishes an ephemeral transcript.updated on the b
     }
 
     // FAST-PATH: the transcribe drain stage ran and published a live transcript event within one drain,
-    // carrying the me-side raw text and a capturedAt range — NOT persisted anywhere.
+    // carrying the physical microphone-lane raw text and capture provenance — NOT persisted anywhere.
     await eventually(() => assert.ok(transcripts.length >= 1))
     const update = transcripts[0]!
     assert.equal(update.sessionId, started.id)
     assert.equal(update.source, 'mic')
     assert.match(update.text, /ship thursday/)
+    assert.ok(update.sourceChunkIds.length >= 1)
+    assert.ok(update.sourceChunkIds.every((id) => id === 'a-1' || id === 'a-2'), 'event refs only true input chunk ids')
+    assert.ok(update.sourceSequenceRange.start >= 1 && update.sourceSequenceRange.end <= 2)
     assert.ok(update.capturedAtRange.start <= update.capturedAtRange.end)
+    assert.ok(Date.parse(update.processedAt) >= Date.parse(update.capturedAtRange.end))
 
     // SERVED PROOF: the same event reached a real WS client (the feed the HUD's transport renders).
     await eventually(() => assert.ok(sub.events.some((e) => e.name === 'transcript.updated')))

@@ -3728,12 +3728,25 @@ test('POST /chat includes live transcript only from sessions owned by the reques
     app.store.saveSession(session('ses-a', 'ws-a'))
     app.store.saveSession(session('ses-b', 'ws-b'))
     await app.bus.publish('transcript.updated', {
-      sessionId: 'ses-a', source: 'mic', text: 'ALPHA_WORKSPACE_ONLY',
+      sessionId: 'ses-a', source: 'mic', text: 'ALPHA_SAME_WORDS',
+      sourceChunkIds: ['mic-ses-a-000001'],
+      sourceSequenceRange: { start: 1, end: 1 },
       capturedAtRange: { start: '2026-07-12T12:00:00Z', end: '2026-07-12T12:00:01Z' },
+      processedAt: '2026-07-12T12:00:01.250Z',
+    })
+    await app.bus.publish('transcript.updated', {
+      sessionId: 'ses-a', source: 'system-audio', text: 'ALPHA_SAME_WORDS',
+      sourceChunkIds: ['sys-ses-a-000002'],
+      sourceSequenceRange: { start: 2, end: 2 },
+      capturedAtRange: { start: '2026-07-12T12:00:02Z', end: '2026-07-12T12:00:03Z' },
+      processedAt: '2026-07-12T12:00:03.250Z',
     })
     await app.bus.publish('transcript.updated', {
       sessionId: 'ses-b', source: 'system-audio', text: 'BRAVO_WORKSPACE_ONLY',
-      capturedAtRange: { start: '2026-07-12T12:00:02Z', end: '2026-07-12T12:00:03Z' },
+      sourceChunkIds: ['sys-ses-b-000001'],
+      sourceSequenceRange: { start: 1, end: 1 },
+      capturedAtRange: { start: '2026-07-12T12:00:04Z', end: '2026-07-12T12:00:05Z' },
+      processedAt: '2026-07-12T12:00:05.250Z',
     })
 
     for (const workspace of ['ws-a', 'ws-b']) {
@@ -3746,10 +3759,14 @@ test('POST /chat includes live transcript only from sessions owned by the reques
 
     const systemA = seen[0]!.messages.find((message) => message.role === 'system')?.content ?? ''
     const systemB = seen[1]!.messages.find((message) => message.role === 'system')?.content ?? ''
-    assert.match(systemA, /ALPHA_WORKSPACE_ONLY/)
+    assert.equal(systemA.match(/ALPHA_SAME_WORDS/g)?.length, 2, 'identical words survive as two source-owned records')
+    assert.match(systemA, /"source":"mic","sourceLabel":"microphone"/)
+    assert.match(systemA, /"source":"system-audio","sourceLabel":"system audio"/)
+    assert.match(systemA, /"sourceChunkIds":\["mic-ses-a-000001"\]/)
+    assert.match(systemA, /"sourceChunkIds":\["sys-ses-a-000002"\]/)
     assert.doesNotMatch(systemA, /BRAVO_WORKSPACE_ONLY/, 'workspace B transcript must not leak into workspace A chat')
     assert.match(systemB, /BRAVO_WORKSPACE_ONLY/)
-    assert.doesNotMatch(systemB, /ALPHA_WORKSPACE_ONLY/, 'workspace A transcript must not leak into workspace B chat')
+    assert.doesNotMatch(systemB, /ALPHA_SAME_WORDS/, 'workspace A transcript must not leak into workspace B chat')
   } finally {
     await app.close()
     await new Promise<void>((resolve) => up.close(() => resolve()))

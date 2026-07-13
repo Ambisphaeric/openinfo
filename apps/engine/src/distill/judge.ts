@@ -6,7 +6,7 @@ import { interpolateTemplate } from '../voice/index.js'
 import { DistillDocuments } from './documents.js'
 import { FieldValueStore } from './field-values.js'
 import { parseJsonCandidates } from './parse.js'
-import { speakerLabel } from './transcribe.js'
+import { captureLaneLabel } from './transcribe.js'
 
 /** Injected llm caller (mirrors fields.LlmInvoke) — a fake in tests, the judge endpoint in prod. */
 export type LlmInvoke = (messages: LlmMessage[], opts: InvokeOptions) => Promise<LlmResult>
@@ -200,10 +200,10 @@ export class JudgeScheduler {
     const produced: FieldValue[] = []
     for (const [sessionId, sessionChunks] of groupBySession(text)) {
       const workspaceId = sessionChunks[0]!.workspaceId
-      // The SAME source shape the fast tier saw: speaker-labeled recent transcript window, tail-capped.
+      // The SAME source shape the fast tier saw: physical-lane-labeled recent transcript window, tail-capped.
       const full = sessionChunks
         .map((chunk) => {
-          const label = speakerLabel(chunk.source)
+          const label = captureLaneLabel(chunk.source)
           return label ? `${label}: ${chunk.data}` : chunk.data
         })
         .join('\n')

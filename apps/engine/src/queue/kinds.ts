@@ -12,7 +12,7 @@ export type WorkKind = 'audio' | 'screen' | 'llm-work'
  * alone — the queue never imports a capture producer, so P4B's screen chunks land in the `screen` kind
  * (a `screen`/`camera` source or an `image/*` contentType) without the queue knowing anything about P4B.
  *
- * - `audio`    — mic / system-audio (the me/them split), or any `audio/*` payload
+ * - `audio`    — physical mic / system-audio lanes, or any `audio/*` payload
  * - `screen`   — screen / camera frames, or any `image/*` payload (P4B adds the producers)
  * - `llm-work` — text/utf8 work destined for distill (calendar / repo / typed text — the default)
  * - `focus`    — NOT a work kind: `source: 'focus'` chunks are ephemeral routing context (consumed by

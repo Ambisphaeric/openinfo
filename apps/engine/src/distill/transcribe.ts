@@ -8,13 +8,15 @@ export interface TranscribeDeps {
   invoke: SttInvoke
   /** optional ISO-639-1 hint forwarded to the transcriber */
   language?: string
+  /** Wall clock used to stamp successful STT completion. Injected only for deterministic tests. */
+  now?: () => string
   /**
    * Fired per successfully-transcribed AUDIO chunk (silence and non-audio passthrough never fire). The
    * ORIGINAL chunk (its sessionId/source/capturedAt) plus the transcript text — the transcript fast-path
    * hook (#58). transcribeChunks stays pure of the bus; the wiring aggregates these into TranscriptUpdate
    * events. Never throws into the transcribe loop (the wiring keeps it side-effect-only).
    */
-  onTranscribed?: (chunk: CaptureChunk, text: string) => void
+  onTranscribed?: (chunk: CaptureChunk, text: string, processedAt: string) => void
   /**
    * No-speech probability (0..1) at/above which a whisper-class segment is dropped as silence before it
    * can enter the distill accumulator (#69). Defaults to DEFAULT_NO_SPEECH_THRESHOLD (0.8). Configurable
@@ -41,20 +43,19 @@ export const isAudioChunk = (chunk: CaptureChunk): boolean =>
   chunk.encoding === 'base64' && chunk.contentType.toLowerCase().startsWith('audio/')
 
 /**
- * Speaker attribution for free, from the capture source: the local mic is the user ("me"); loopback
- * system-audio is the far side of the call ("them"). Any other source (screen/calendar/repo/camera)
- * has no speaker in v0. This is NOT diarization — it is the physical capture split, so it costs
- * nothing. The distiller prefixes each transcript line with this label so both the summary and the
- * moment/entity extraction prompts can attribute; the moments extractor echoes it into Moment.speaker
- * when the model emits one (Moment.speaker is "person entity id or raw label" — 'me'/'them' is a raw
- * label until voice→person identity lands, which is P7).
+ * A physical audio-lane label, not speaker identity. A microphone can hear several nearby people and
+ * system audio can contain several remote speakers/media sources; same-mic diarization belongs to #137.
+ * Engine prompts use these labels so source survives distill/fields/judge without inventing “me/them”.
  */
-export const speakerLabel = (source: CaptureSource): 'me' | 'them' | undefined =>
-  source === 'mic' ? 'me' : source === 'system-audio' ? 'them' : undefined
+export const captureLaneLabel = (source: CaptureSource): 'microphone' | 'system audio' | undefined =>
+  source === 'mic' ? 'microphone' : source === 'system-audio' ? 'system audio' : undefined
+
+/** @deprecated Use captureLaneLabel; retained as an additive import alias with physical-lane semantics. */
+export const speakerLabel = captureLaneLabel
 
 /**
  * The pre-distill transcription stage. Audio chunks are transcribed via the `stt` slot and rewritten
- * as utf8 text chunks (source PRESERVED, so the speaker split survives into the distiller); non-audio
+ * as utf8 text chunks (source PRESERVED, so physical lanes survive into the distiller); non-audio
  * chunks pass through untouched. Runs BEFORE the distiller's utf8 filter, so transcribed audio then
  * flows through the ordinary distill pass.
  *
@@ -102,7 +103,11 @@ export const transcribeChunks = async (chunks: readonly CaptureChunk[], deps: Tr
       log(`transcribe: dropped ${filtered.dropped}/${filtered.total} no-speech segment(s) from ${chunk.source} chunk ${chunk.id} (${result.endpoint})`)
     }
     out.push({ ...chunk, encoding: 'utf8', contentType: 'text/plain', data: text })
-    deps.onTranscribed?.(chunk, text)
+    // Stamp the actual completion boundary, after STT + silence filtering succeeded and immediately
+    // before the transcript outcome leaves this stage. The caller threads this value into the public
+    // TranscriptUpdate; it must never guess a processing time from capturedAt.
+    const processedAt = (deps.now ?? (() => new Date().toISOString()))()
+    deps.onTranscribed?.(chunk, text, processedAt)
     log(`transcribe: ${chunk.source} chunk ${chunk.id} → ${text.length} chars via ${result.endpoint}`)
   }
   return out
@@ -110,29 +115,83 @@ export const transcribeChunks = async (chunks: readonly CaptureChunk[], deps: Tr
 
 /**
  * Aggregate per-chunk transcription outcomes into ephemeral TranscriptUpdate events (#58): one update
- * per (sessionId, source) pair seen in a single drain, in first-seen order. `text` joins that pair's
- * chunk texts with a single space (the drain's words, in capture order); `capturedAtRange` is the min→max
- * capturedAt of those chunks. Pure — the wiring publishes the result on the bus. NOT persisted.
+ * per CONTIGUOUS (sessionId, source) run in true capture order. Contiguous aggregation keeps adjacent
+ * same-lane chunks compact without destroying cross-lane chronology: mic(t0), system(t1), mic(t2) stays
+ * three ordered updates, never the false mic(t0+t2), system(t1) shape. At equal capture timestamps true
+ * cross-lane order is unknown (lane sequences are not global), so stable session/source keys decide only
+ * a deterministic presentation order; `sequence` orders chunks within that same physical source.
+ *
+ * `sourceChunkIds` carries the exact input ids in run order; `sourceSequenceRange` carries the true
+ * source-local sequence span (not a cross-lane clock); `capturedAtRange` is their min→max capture span;
+ * `processedAt` is the latest REAL completion stamp supplied by transcribeChunks. Pure — the wiring
+ * publishes the result on the bus. NOT persisted.
  */
+export interface TranscribedSegment {
+  sourceChunkId: string
+  sessionId: string
+  source: CaptureSource
+  sequence: number
+  text: string
+  capturedAt: string
+  processedAt: string
+}
+
+const compareSegments = (a: TranscribedSegment, b: TranscribedSegment): number =>
+  a.capturedAt.localeCompare(b.capturedAt) ||
+  a.sessionId.localeCompare(b.sessionId) ||
+  a.source.localeCompare(b.source) ||
+  a.sequence - b.sequence ||
+  a.sourceChunkId.localeCompare(b.sourceChunkId) ||
+  a.processedAt.localeCompare(b.processedAt)
+
 export const buildTranscriptUpdates = (
-  segments: readonly { sessionId: string; source: CaptureSource; text: string; capturedAt: string }[],
+  segments: readonly TranscribedSegment[],
 ): TranscriptUpdate[] => {
-  const order: string[] = []
-  const groups = new Map<string, { sessionId: string; source: CaptureSource; texts: string[]; start: string; end: string }>()
-  for (const seg of segments) {
-    const key = `${seg.sessionId}\u0000${seg.source}`
-    const existing = groups.get(key)
-    if (!existing) {
-      order.push(key)
-      groups.set(key, { sessionId: seg.sessionId, source: seg.source, texts: [seg.text], start: seg.capturedAt, end: seg.capturedAt })
+  const ordered = [...segments].sort(compareSegments)
+  const groups: Array<{
+    sessionId: string
+    source: CaptureSource
+    texts: string[]
+    sourceChunkIds: string[]
+    sequenceStart: number
+    sequenceEnd: number
+    start: string
+    end: string
+    processedAt: string
+  }> = []
+
+  for (const seg of ordered) {
+    const existing = groups.at(-1)
+    if (existing !== undefined && existing.sessionId === seg.sessionId && existing.source === seg.source) {
+      existing.texts.push(seg.text)
+      existing.sourceChunkIds.push(seg.sourceChunkId)
+      if (seg.sequence < existing.sequenceStart) existing.sequenceStart = seg.sequence
+      if (seg.sequence > existing.sequenceEnd) existing.sequenceEnd = seg.sequence
+      if (seg.capturedAt < existing.start) existing.start = seg.capturedAt
+      if (seg.capturedAt > existing.end) existing.end = seg.capturedAt
+      if (seg.processedAt > existing.processedAt) existing.processedAt = seg.processedAt
       continue
     }
-    existing.texts.push(seg.text)
-    if (seg.capturedAt < existing.start) existing.start = seg.capturedAt
-    if (seg.capturedAt > existing.end) existing.end = seg.capturedAt
+    groups.push({
+      sessionId: seg.sessionId,
+      source: seg.source,
+      texts: [seg.text],
+      sourceChunkIds: [seg.sourceChunkId],
+      sequenceStart: seg.sequence,
+      sequenceEnd: seg.sequence,
+      start: seg.capturedAt,
+      end: seg.capturedAt,
+      processedAt: seg.processedAt,
+    })
   }
-  return order.map((key) => {
-    const g = groups.get(key)!
-    return { sessionId: g.sessionId, source: g.source, text: g.texts.join(' '), capturedAtRange: { start: g.start, end: g.end } }
-  })
+
+  return groups.map((group) => ({
+    sessionId: group.sessionId,
+    source: group.source,
+    text: group.texts.join(' '),
+    sourceChunkIds: group.sourceChunkIds,
+    sourceSequenceRange: { start: group.sequenceStart, end: group.sequenceEnd },
+    capturedAtRange: { start: group.start, end: group.end },
+    processedAt: group.processedAt,
+  }))
 }
