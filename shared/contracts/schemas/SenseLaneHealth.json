@@ -1,0 +1,21 @@
+{
+  "$id": "SenseLaneHealth",
+  "anyOf": [
+    {
+      "const": "unknown",
+      "type": "string"
+    },
+    {
+      "const": "healthy",
+      "type": "string"
+    },
+    {
+      "const": "blocked",
+      "type": "string"
+    },
+    {
+      "const": "failed",
+      "type": "string"
+    }
+  ]
+}

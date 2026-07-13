@@ -1,0 +1,606 @@
+{
+  "$id": "SenseLaneSnapshot",
+  "description": "metadata-only live state for one physical sense",
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "workspaceId",
+        "source",
+        "disposition",
+        "health",
+        "reason",
+        "updatedAt"
+      ],
+      "properties": {
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "source": {
+          "const": "mic",
+          "type": "string"
+        },
+        "disposition": {
+          "$id": "SenseLaneDisposition",
+          "anyOf": [
+            {
+              "const": "stopped",
+              "type": "string"
+            },
+            {
+              "const": "waiting",
+              "type": "string"
+            },
+            {
+              "const": "queued",
+              "type": "string"
+            },
+            {
+              "const": "processed",
+              "type": "string"
+            },
+            {
+              "const": "delta-skipped",
+              "type": "string"
+            },
+            {
+              "const": "blank",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "health": {
+          "$id": "SenseLaneHealth",
+          "anyOf": [
+            {
+              "const": "unknown",
+              "type": "string"
+            },
+            {
+              "const": "healthy",
+              "type": "string"
+            },
+            {
+              "const": "blocked",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "reason": {
+          "$id": "SenseLaneReason",
+          "anyOf": [
+            {
+              "const": "no-session",
+              "type": "string"
+            },
+            {
+              "const": "awaiting-capture",
+              "type": "string"
+            },
+            {
+              "const": "awaiting-processing",
+              "type": "string"
+            },
+            {
+              "const": "processed",
+              "type": "string"
+            },
+            {
+              "const": "session-ended",
+              "type": "string"
+            },
+            {
+              "const": "delta-skipped",
+              "type": "string"
+            },
+            {
+              "const": "blank",
+              "type": "string"
+            },
+            {
+              "const": "capture-failed",
+              "type": "string"
+            },
+            {
+              "const": "processing-failed",
+              "type": "string"
+            },
+            {
+              "const": "disabled",
+              "type": "string"
+            },
+            {
+              "const": "permission-denied",
+              "type": "string"
+            },
+            {
+              "const": "configuration-blocked",
+              "type": "string"
+            }
+          ]
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "latestCapture": {
+          "$id": "SenseLaneCapture",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "id",
+            "capturedAt"
+          ],
+          "properties": {
+            "id": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "capturedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            }
+          }
+        },
+        "latestProcessing": {
+          "$id": "SenseLaneProcessing",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "captureId",
+            "capturedAt",
+            "completedAt",
+            "lagMs",
+            "basis"
+          ],
+          "properties": {
+            "captureId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "capturedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "completedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "lagMs": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "basis": {
+              "$id": "SenseLaneLagBasis",
+              "description": "latestProcessing.lagMs = max(0, latestProcessing.completedAt - latestProcessing.capturedAt)",
+              "const": "capture-to-processing-completion",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "workspaceId",
+        "source",
+        "disposition",
+        "health",
+        "reason",
+        "updatedAt"
+      ],
+      "properties": {
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "source": {
+          "const": "system-audio",
+          "type": "string"
+        },
+        "disposition": {
+          "$id": "SenseLaneDisposition",
+          "anyOf": [
+            {
+              "const": "stopped",
+              "type": "string"
+            },
+            {
+              "const": "waiting",
+              "type": "string"
+            },
+            {
+              "const": "queued",
+              "type": "string"
+            },
+            {
+              "const": "processed",
+              "type": "string"
+            },
+            {
+              "const": "delta-skipped",
+              "type": "string"
+            },
+            {
+              "const": "blank",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "health": {
+          "$id": "SenseLaneHealth",
+          "anyOf": [
+            {
+              "const": "unknown",
+              "type": "string"
+            },
+            {
+              "const": "healthy",
+              "type": "string"
+            },
+            {
+              "const": "blocked",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "reason": {
+          "$id": "SenseLaneReason",
+          "anyOf": [
+            {
+              "const": "no-session",
+              "type": "string"
+            },
+            {
+              "const": "awaiting-capture",
+              "type": "string"
+            },
+            {
+              "const": "awaiting-processing",
+              "type": "string"
+            },
+            {
+              "const": "processed",
+              "type": "string"
+            },
+            {
+              "const": "session-ended",
+              "type": "string"
+            },
+            {
+              "const": "delta-skipped",
+              "type": "string"
+            },
+            {
+              "const": "blank",
+              "type": "string"
+            },
+            {
+              "const": "capture-failed",
+              "type": "string"
+            },
+            {
+              "const": "processing-failed",
+              "type": "string"
+            },
+            {
+              "const": "disabled",
+              "type": "string"
+            },
+            {
+              "const": "permission-denied",
+              "type": "string"
+            },
+            {
+              "const": "configuration-blocked",
+              "type": "string"
+            }
+          ]
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "latestCapture": {
+          "$id": "SenseLaneCapture",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "id",
+            "capturedAt"
+          ],
+          "properties": {
+            "id": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "capturedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            }
+          }
+        },
+        "latestProcessing": {
+          "$id": "SenseLaneProcessing",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "captureId",
+            "capturedAt",
+            "completedAt",
+            "lagMs",
+            "basis"
+          ],
+          "properties": {
+            "captureId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "capturedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "completedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "lagMs": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "basis": {
+              "$id": "SenseLaneLagBasis",
+              "description": "latestProcessing.lagMs = max(0, latestProcessing.completedAt - latestProcessing.capturedAt)",
+              "const": "capture-to-processing-completion",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "workspaceId",
+        "source",
+        "disposition",
+        "health",
+        "reason",
+        "updatedAt"
+      ],
+      "properties": {
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "source": {
+          "const": "screen",
+          "type": "string"
+        },
+        "disposition": {
+          "$id": "SenseLaneDisposition",
+          "anyOf": [
+            {
+              "const": "stopped",
+              "type": "string"
+            },
+            {
+              "const": "waiting",
+              "type": "string"
+            },
+            {
+              "const": "queued",
+              "type": "string"
+            },
+            {
+              "const": "processed",
+              "type": "string"
+            },
+            {
+              "const": "delta-skipped",
+              "type": "string"
+            },
+            {
+              "const": "blank",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "health": {
+          "$id": "SenseLaneHealth",
+          "anyOf": [
+            {
+              "const": "unknown",
+              "type": "string"
+            },
+            {
+              "const": "healthy",
+              "type": "string"
+            },
+            {
+              "const": "blocked",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "type": "string"
+            }
+          ]
+        },
+        "reason": {
+          "$id": "SenseLaneReason",
+          "anyOf": [
+            {
+              "const": "no-session",
+              "type": "string"
+            },
+            {
+              "const": "awaiting-capture",
+              "type": "string"
+            },
+            {
+              "const": "awaiting-processing",
+              "type": "string"
+            },
+            {
+              "const": "processed",
+              "type": "string"
+            },
+            {
+              "const": "session-ended",
+              "type": "string"
+            },
+            {
+              "const": "delta-skipped",
+              "type": "string"
+            },
+            {
+              "const": "blank",
+              "type": "string"
+            },
+            {
+              "const": "capture-failed",
+              "type": "string"
+            },
+            {
+              "const": "processing-failed",
+              "type": "string"
+            },
+            {
+              "const": "disabled",
+              "type": "string"
+            },
+            {
+              "const": "permission-denied",
+              "type": "string"
+            },
+            {
+              "const": "configuration-blocked",
+              "type": "string"
+            }
+          ]
+        },
+        "updatedAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "latestCapture": {
+          "$id": "SenseLaneCapture",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "id",
+            "capturedAt"
+          ],
+          "properties": {
+            "id": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "capturedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            }
+          }
+        },
+        "latestProcessing": {
+          "$id": "SenseLaneProcessing",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "captureId",
+            "capturedAt",
+            "completedAt",
+            "lagMs",
+            "basis"
+          ],
+          "properties": {
+            "captureId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "capturedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "completedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "lagMs": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "basis": {
+              "$id": "SenseLaneLagBasis",
+              "description": "latestProcessing.lagMs = max(0, latestProcessing.completedAt - latestProcessing.capturedAt)",
+              "const": "capture-to-processing-completion",
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "$id": "SenseLaneProcessing",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "captureId",
+    "capturedAt",
+    "completedAt",
+    "lagMs",
+    "basis"
+  ],
+  "properties": {
+    "captureId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "capturedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "completedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "lagMs": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "basis": {
+      "$id": "SenseLaneLagBasis",
+      "description": "latestProcessing.lagMs = max(0, latestProcessing.completedAt - latestProcessing.capturedAt)",
+      "const": "capture-to-processing-completion",
+      "type": "string"
+    }
+  }
+}

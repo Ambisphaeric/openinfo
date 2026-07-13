@@ -1,0 +1,33 @@
+{
+  "$id": "SenseLaneDisposition",
+  "anyOf": [
+    {
+      "const": "stopped",
+      "type": "string"
+    },
+    {
+      "const": "waiting",
+      "type": "string"
+    },
+    {
+      "const": "queued",
+      "type": "string"
+    },
+    {
+      "const": "processed",
+      "type": "string"
+    },
+    {
+      "const": "delta-skipped",
+      "type": "string"
+    },
+    {
+      "const": "blank",
+      "type": "string"
+    },
+    {
+      "const": "failed",
+      "type": "string"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "$id": "PhysicalSenseSource",
+  "description": "a physical live-sense lane; never a speaker identity",
+  "anyOf": [
+    {
+      "const": "mic",
+      "type": "string"
+    },
+    {
+      "const": "system-audio",
+      "type": "string"
+    },
+    {
+      "const": "screen",
+      "type": "string"
+    }
+  ]
+}

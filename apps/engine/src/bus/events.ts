@@ -1,7 +1,10 @@
-import type { CaptureChunk, ChatDelta, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, Session, SessionAnnotation, Surface, TranscriptUpdate } from '@openinfo/contracts'
+import type { CaptureChunk, ChatDelta, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, SenseLaneSnapshot, Session, SessionAnnotation, Surface, TranscriptUpdate } from '@openinfo/contracts'
 
 export interface EngineEvents {
   'capture.received': CaptureChunk
+  // Metadata-only live state for one physical capture lane. Unlike capture.received, the internal and
+  // public payloads are the same safe shape: capture ids/timestamps/disposition only, never bytes/text.
+  'sense.lane.updated': SenseLaneSnapshot
   'flag.changed': Flag
   'queue.updated': QueueStatus
   'distillate.updated': Distillate

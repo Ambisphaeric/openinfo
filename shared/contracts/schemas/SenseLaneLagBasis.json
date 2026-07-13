@@ -1,0 +1,6 @@
+{
+  "$id": "SenseLaneLagBasis",
+  "description": "latestProcessing.lagMs = max(0, latestProcessing.completedAt - latestProcessing.capturedAt)",
+  "const": "capture-to-processing-completion",
+  "type": "string"
+}

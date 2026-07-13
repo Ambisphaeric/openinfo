@@ -5150,3 +5150,34 @@ integration; the final startup/HTTP/browser/WS security set was **26/26**. Clien
 **510/510** with the authenticated cross-process seam green. After the red-team bodyless-mutation
 correction, the expanded security/Settings focus was **34/34** and the full engine suite was **824/824**.
 No flag, persistence schema, or version change.
+
+## Slice: truthful live physical-sense projection  *(#174 slice B, 2026-07-13)*
+
+This slice builds the runtime truth substrate for the three physical lanes without claiming that the HUD
+already renders it. The closed contracts define mic, system-audio, and screen rows with atomic capture and
+processing evidence; `GET /senses/live` returns exactly those three rows in canonical order, and
+`sense.lane.updated` carries one metadata-only transition at a time.
+
+`apps/engine/src/senses/live.ts` is a pure, process-local reducer. Cold boot is always stopped—even if an
+unended session is present in the workspace database—until an explicit lifecycle event is observed during
+this launch. A qualifying physical-media receipt moves only its own lane to queued. Transcript/OCR output
+must correlate exactly to captures in the active workspace/session/lane before it can record processed
+evidence and capture-to-completion lag. Aggregate completions mark every correlated capture terminal in one
+operation, while the canonical last capture anchors the visible evidence; duplicate, overlapping, and
+regrouped retries cannot manufacture another transition. Session end stops all three lanes and rejects late
+capture or processing work.
+
+The hydration route uses the same control-plane authentication as other protected reads. Public WS rows are
+revalidated against `SenseLaneSnapshot` at egress and fail closed on invalid or extra fields. Capture bytes,
+transcript/OCR text, arbitrary errors, region blocks, and endpoint provenance never enter the projection;
+`ocr.completed` remains internal, and the existing public `capture.received` receipt remains metadata-only.
+
+Still remaining: the client HUD/pill does not yet hydrate or subscribe to these rows, and processor-specific
+screen outcomes such as delta-skipped, blank, and failed are contract vocabulary rather than wired runtime
+transitions. The automated test drives a synthetic correlated `ocr.completed` result; it does not establish
+real-model OCR/VLM quality or prove the owner's local OCR pipeline works. Those UI, outcome, and hardware
+dogfood steps remain explicit follow-on work rather than being inferred from this substrate.
+
+Evidence: schema generation/drift and contracts **96/96**; the focused reducer/authenticated-route/real-WS
+security set **30/30**; full engine **840/840**; recursive build/test and workflow-governance dry run green;
+`git diff --check` clean. No persistence schema, capture policy, flag, or version change.

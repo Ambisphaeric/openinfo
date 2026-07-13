@@ -1,0 +1,53 @@
+{
+  "$id": "SenseLaneReason",
+  "anyOf": [
+    {
+      "const": "no-session",
+      "type": "string"
+    },
+    {
+      "const": "awaiting-capture",
+      "type": "string"
+    },
+    {
+      "const": "awaiting-processing",
+      "type": "string"
+    },
+    {
+      "const": "processed",
+      "type": "string"
+    },
+    {
+      "const": "session-ended",
+      "type": "string"
+    },
+    {
+      "const": "delta-skipped",
+      "type": "string"
+    },
+    {
+      "const": "blank",
+      "type": "string"
+    },
+    {
+      "const": "capture-failed",
+      "type": "string"
+    },
+    {
+      "const": "processing-failed",
+      "type": "string"
+    },
+    {
+      "const": "disabled",
+      "type": "string"
+    },
+    {
+      "const": "permission-denied",
+      "type": "string"
+    },
+    {
+      "const": "configuration-blocked",
+      "type": "string"
+    }
+  ]
+}

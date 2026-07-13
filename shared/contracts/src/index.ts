@@ -33,6 +33,7 @@ export * from './config/todo.js'
 export * from './api/routes.js'
 export * from './api/events.js'
 export * from './api/payloads.js'
+export * from './api/senses.js'
 
 import { InvokeUsage } from './common.js'
 import { Moment, MomentKind } from './records/moment.js'
@@ -66,6 +67,7 @@ import { Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSou
 import { OcrInvokeParams, VlmInvokeParams } from './config/invoke.js'
 import { TodoList, TodoItem, TodoProvenance } from './config/todo.js'
 import { Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest, ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory } from './api/payloads.js'
+import { PhysicalSenseSource, SenseLaneDisposition, SenseLaneHealth, SenseLaneReason, SenseLaneLagBasis, SenseLaneCapture, SenseLaneProcessing, SenseLaneSnapshot, SenseLaneSnapshotSet } from './api/senses.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
@@ -81,4 +83,5 @@ export const AllSchemas = {
   Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest,
   CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
   ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory,
+  PhysicalSenseSource, SenseLaneDisposition, SenseLaneHealth, SenseLaneReason, SenseLaneLagBasis, SenseLaneCapture, SenseLaneProcessing, SenseLaneSnapshot, SenseLaneSnapshotSet,
 } as const

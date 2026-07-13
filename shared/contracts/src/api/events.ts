@@ -2,6 +2,8 @@
 export const Events = {
   // Public receipt only: raw CaptureChunk.data remains on the engine-internal bus for OCR/STT/drain.
   'capture.received': 'CaptureReceipt',
+  // Metadata-only live state for one physical lane; reconnect hydration is GET /senses/live (all 3 rows).
+  'sense.lane.updated': 'SenseLaneSnapshot',
   'session.started': 'Session',
   'session.ended': 'Session',
   'session.switched': 'Session',

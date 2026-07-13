@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
@@ -20,6 +20,7 @@ import { PresetDocuments } from '../presets/index.js'
 import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
+import { SenseLaneTracker } from '../senses/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -50,6 +51,9 @@ export interface EngineApp {
    * text stream here; this queue drains it on its OWN loop, so a parked LLM never blocks transcription.
    * Exposed so a test / embedder can inspect the LLM-track backlog independently of the audio backlog. */
   textQueue: CaptureQueue
+  /** Process-local metadata-only read model for mic, system-audio, and screen. It deliberately does not
+   * hydrate from persisted live sessions, so a fresh launch remains stopped until a lifecycle event. */
+  senseLanes: SenseLaneTracker
   /** True once the first live transcript has been published this process (#115) — the cold-boot gate the
    * calendar collector reads so it holds its first Calendar.app sample until a transcript has landed. */
   firstTranscriptSeen: () => boolean
@@ -99,6 +103,7 @@ interface HandlerContext {
   queue: CaptureQueue
   /** The distill/LLM track's spool (#115) — folded into the surfaced status so a distill failure still shows. */
   textQueue: CaptureQueue
+  senseLanes: SenseLaneTracker
   /** In-memory ring of recent ephemeral transcript updates (#101) — the diagnostics inspector's honest v0 source. */
   transcripts: TranscriptRing
   store: WorkspaceRegistry
@@ -110,10 +115,25 @@ interface HandlerContext {
   log: (message: string) => void
 }
 
+/** Publish only tracker-owned metadata rows. Keeping this helper narrow prevents raw capture/transcript
+ * payloads from ever being passed to the public sense event by an integration call site. */
+const publishSenseLaneUpdates = async (
+  bus: EventBus<EngineEvents>,
+  updates: SenseLaneSnapshot | readonly SenseLaneSnapshot[] | undefined,
+): Promise<void> => {
+  if (updates === undefined) return
+  const rows = Array.isArray(updates) ? updates : [updates]
+  for (const row of rows) await bus.publish('sense.lane.updated', row)
+}
+
 export function createEngineApp(options: EngineOptions): EngineApp {
   const log = options.log ?? console.log
   const store = new WorkspaceRegistry(options.dataRoot ?? options.dataDir)
   const bus = new EventBus<EngineEvents>()
+  // Runtime truth only: the tracker intentionally starts empty and never adopts store.liveSession(). A
+  // persisted unended session from a prior process therefore cannot turn a fresh launch into "waiting" or
+  // restart capture; only a lifecycle event observed during this process opens its three lanes.
+  const senseLanes = new SenseLaneTracker()
   const browserAuth = options.browserAuth ?? new BrowserAuthSessions()
   const socketPolicy = options.controlPlane.eventSocketPolicy()
   const ws = new EventSocketHub({
@@ -641,9 +661,29 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   // Egress guard (#63): rebroadcast a suspended/resolved hop so a subscribed surface refreshes its held
   // indicator + release/deny affordance. Payload carries span descriptors, never the raw value.
   bus.subscribe('guard.hold.updated', (hold) => ws.broadcast('guard.hold.updated', hold))
+  // Truthful physical-lane projection (#174). Register these AFTER the existing lifecycle/transcript WS
+  // broadcasters: clients see the underlying event first, then its metadata-only read-model transition.
+  // session.switched repeats the just-published session.started payload; SenseLaneTracker dedupes it.
+  bus.subscribe('session.started', (session) => publishSenseLaneUpdates(bus, senseLanes.startSession(session)))
+  bus.subscribe('session.switched', (session) => publishSenseLaneUpdates(bus, senseLanes.startSession(session)))
+  bus.subscribe('session.ended', (session) => publishSenseLaneUpdates(bus, senseLanes.endSession(session)))
+  bus.subscribe('transcript.updated', (update) => publishSenseLaneUpdates(bus, senseLanes.recordTranscript(update)))
+  // OcrResult stays engine-internal. Only the correlated metadata snapshot is allowed onto the public WS.
+  bus.subscribe('ocr.completed', (result) => publishSenseLaneUpdates(bus, senseLanes.recordOcr(result)))
+  bus.subscribe('sense.lane.updated', (snapshot) => {
+    // The internal bus is extensible and TypeScript types disappear at runtime. Revalidate at the public
+    // egress so an accidental/hostile publisher with extra text or bytes fails closed instead of relying
+    // on tracker construction discipline as a security boundary. Log schema paths only, never payloads.
+    const errors = validationErrors('SenseLaneSnapshot', snapshot)
+    if (errors.length > 0) {
+      log(`dropped invalid sense.lane.updated at public egress: ${errors.join('; ')}`)
+      return
+    }
+    ws.broadcast('sense.lane.updated', snapshot)
+  })
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, transcripts, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handleControlRequest(req, res, ctx).catch((error: unknown) => {
       if (res.headersSent) return void res.destroy(error instanceof Error ? error : undefined)
@@ -662,6 +702,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     guardHolds,
     attributor,
     textQueue,
+    senseLanes,
     firstTranscriptSeen: () => firstTranscriptAt !== undefined,
     close: async () => {
       ws.close()
@@ -829,6 +870,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/routes') return send(res, 200, Routes)
   if (req.method === 'GET' && url.pathname === '/flags') return send(res, 200, readFlags(ctx.store))
   if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, await surfacedQueueStatus(ctx))
+  if (req.method === 'GET' && url.pathname === '/senses/live') return getLiveSenses(res, ctx, url)
   if (req.method === 'GET' && url.pathname === '/senses') return getSenses(res, ctx)
   if (url.pathname === '/screen' || url.pathname.startsWith('/screen/')) return handleScreen(req, res, ctx) // P4B: screen-OCR results + status (router owned by screen/)
   // /setup is the former name of the Settings surface — 301 to /settings, preserving any subpath +
@@ -1077,6 +1119,24 @@ async function getSenses(res: ServerResponse, ctx: HandlerContext): Promise<void
     health,
   })
   send(res, 200, chains)
+}
+
+/**
+ * GET /senses/live (#174) — the process-local metadata read model for the three physical lanes. It is
+ * deliberately separate from GET /senses (configuration/health gate chains): this route answers what
+ * this engine process actually observed. With no lifecycle event this launch it always materializes
+ * mic/system-audio/screen as stopped, even when an old unended Session exists on disk.
+ *
+ * `workspace` defaults to `default`; an empty `session` is normalized to absent so the response always
+ * validates its Id contract. Supplying a session asks for that exact process-observed scope; an unknown
+ * id still returns all three stopped rows rather than borrowing another session's state.
+ */
+function getLiveSenses(res: ServerResponse, ctx: HandlerContext, url: URL): void {
+  const workspaceParam = url.searchParams.get('workspace')
+  const workspaceId = workspaceParam !== null && workspaceParam.length > 0 ? workspaceParam : 'default'
+  const sessionParam = url.searchParams.get('session')
+  const sessionId = sessionParam !== null && sessionParam.length > 0 ? sessionParam : undefined
+  send(res, 200, ctx.senseLanes.snapshotSet(workspaceId, sessionId))
 }
 
 /**
@@ -1362,6 +1422,10 @@ async function captureChunk(req: IncomingMessage, res: ServerResponse, ctx: Hand
   const chunk = body as CaptureChunk
   if (chunk.source !== source) return send(res, 400, { error: 'capture source does not match route' })
   await ctx.queue.append(chunk)
+  // Append succeeded: only now may the live read model claim the physical capture was queued. Publish the
+  // safe metadata row before capture.received wakes the fire-and-forget screen processor, so a very fast
+  // OCR completion can never overtake and then be visually regressed by a stale queued event.
+  await publishSenseLaneUpdates(ctx.bus, ctx.senseLanes.recordCapture(chunk))
   ctx.onCapture?.(chunk)
   await ctx.bus.publish('capture.received', chunk)
   ctx.queue.scheduleDrain(ctx.log)

@@ -62,6 +62,50 @@ test('CaptureReceipt is metadata-only and rejects raw or derived content fields'
   }
 })
 
+const senseLane = (source: 'mic' | 'system-audio' | 'screen') => ({
+  workspaceId: 'default', sessionId: 'session-live', source,
+  disposition: 'processed', health: 'healthy', reason: 'processed',
+  updatedAt: '2026-07-13T12:00:02.000Z',
+  latestCapture: { id: `${source}-capture`, capturedAt: '2026-07-13T12:00:00.000Z' },
+  latestProcessing: {
+    captureId: `${source}-capture`, capturedAt: '2026-07-13T12:00:00.000Z',
+    completedAt: '2026-07-13T12:00:01.250Z', lagMs: 1250,
+    basis: 'capture-to-processing-completion',
+  },
+})
+
+test('SenseLaneSnapshot/Set are atomic, metadata-only, and pin the canonical three-lane tuple', () => {
+  const mic = senseLane('mic')
+  const valid = {
+    workspaceId: 'default', sessionId: 'session-live',
+    lanes: [mic, senseLane('system-audio'), senseLane('screen')],
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.SenseLaneSnapshot, mic)], [], 'one complete metadata row validates')
+  assert.deepEqual([...Value.Errors(AllSchemas.SenseLaneSnapshotSet, valid)], [], 'canonical tuple validates')
+
+  const duplicate = { ...valid, lanes: [mic, senseLane('mic'), senseLane('screen')] }
+  assert.ok([...Value.Errors(AllSchemas.SenseLaneSnapshotSet, duplicate)].length > 0, 'duplicate lane is rejected')
+  const wrongOrder = { ...valid, lanes: [senseLane('system-audio'), mic, senseLane('screen')] }
+  assert.ok([...Value.Errors(AllSchemas.SenseLaneSnapshotSet, wrongOrder)].length > 0, 'wrong tuple position is rejected')
+
+  const { basis: _basis, ...partialProcessing } = mic.latestProcessing
+  assert.ok([
+    ...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...mic, latestProcessing: partialProcessing }),
+  ].length > 0, 'processing evidence is all-or-none')
+  const { capturedAt: _capturedAt, ...partialCapture } = mic.latestCapture
+  assert.ok([
+    ...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...mic, latestCapture: partialCapture }),
+  ].length > 0, 'capture evidence is all-or-none')
+
+  for (const forbidden of ['data', 'text', 'preview', 'hash', 'error']) {
+    assert.ok(
+      [...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...mic, [forbidden]: 'captured-or-unsanitized-content' })].length > 0,
+      `${forbidden} is rejected`,
+    )
+  }
+  assert.equal(Events['sense.lane.updated'], 'SenseLaneSnapshot')
+})
+
 test('TranscriptUpdate requires true capture provenance and processing time', () => {
   const update = {
     sessionId: 'ses-1', source: 'mic', text: 'same words',
