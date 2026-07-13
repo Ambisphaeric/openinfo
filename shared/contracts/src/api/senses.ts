@@ -57,11 +57,90 @@ export const SenseLaneCapture = Type.Object(
 )
 export type SenseLaneCapture = Static<typeof SenseLaneCapture>
 
+/**
+ * A client report about one screen-capture attempt. This deliberately carries only correlation and
+ * time metadata: pixels, extracted text, image hashes/previews, display details, delta scores, and
+ * exception strings are not legal at this control-plane boundary.
+ */
+export const ScreenCaptureObservation = Type.Union(
+  [
+    Type.Object(
+      {
+        workspaceId: Id,
+        sessionId: Id,
+        outcome: Type.Literal('queued'),
+        capture: SenseLaneCapture,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        workspaceId: Id,
+        sessionId: Id,
+        outcome: Type.Literal('delta-skipped'),
+        observationId: Id,
+        occurredAt: IsoTime,
+      },
+      { additionalProperties: false },
+    ),
+    Type.Object(
+      {
+        workspaceId: Id,
+        sessionId: Id,
+        outcome: Type.Literal('grab-failed'),
+        observationId: Id,
+        occurredAt: IsoTime,
+      },
+      { additionalProperties: false },
+    ),
+  ],
+  { $id: 'ScreenCaptureObservation', description: 'metadata-only outcome of one screen capture attempt' },
+)
+export type ScreenCaptureObservation = Static<typeof ScreenCaptureObservation>
+
+/** Exact client-attempt provenance retained when screen state comes from a non-capture observation. */
+export const ScreenLaneObservation = Type.Object(
+  {
+    id: Id,
+    occurredAt: IsoTime,
+    outcome: Type.Union([Type.Literal('delta-skipped'), Type.Literal('grab-failed')]),
+  },
+  {
+    $id: 'ScreenLaneObservation',
+    additionalProperties: false,
+    description: 'metadata-only derivation evidence for a visible screen delta-skip or failed grab',
+  },
+)
+export type ScreenLaneObservation = Static<typeof ScreenLaneObservation>
+
+/** Internal processor-to-read-model evidence. Failure details remain in private logs, never here. */
+export const ScreenProcessingOutcome = Type.Object(
+  {
+    workspaceId: Id,
+    sessionId: Id,
+    outcome: Type.Union(
+      [Type.Literal('processed'), Type.Literal('blank'), Type.Literal('failed')],
+    ),
+    capture: SenseLaneCapture,
+    completedAt: IsoTime,
+  },
+  {
+    $id: 'ScreenProcessingOutcome',
+    additionalProperties: false,
+    description: 'metadata-only terminal result for one correlated screen frame',
+  },
+)
+export type ScreenProcessingOutcome = Static<typeof ScreenProcessingOutcome>
+
 export const SenseLaneProcessing = Type.Object(
   {
     captureId: Id,
     capturedAt: IsoTime,
     completedAt: IsoTime,
+    outcome: Type.Union(
+      [Type.Literal('processed'), Type.Literal('blank'), Type.Literal('failed')],
+      { description: 'the terminal result supported by this exact processing evidence' },
+    ),
     lagMs: Type.Integer({ minimum: 0 }),
     basis: SenseLaneLagBasis,
   },
@@ -70,12 +149,11 @@ export const SenseLaneProcessing = Type.Object(
 export type SenseLaneProcessing = Static<typeof SenseLaneProcessing>
 
 /**
- * One metadata-only lane row. `latestProcessing.captureId + capturedAt` make lag provenance unambiguous
- * when an older capture finishes after a newer capture has queued. No captured text/bytes/preview/hash/
- * model output or arbitrary error string is legal in this closed object.
+ * One metadata-only lane row. `latestProcessing.captureId + capturedAt + outcome` make result and lag
+ * provenance unambiguous when an older capture finishes after a newer capture has queued. No captured
+ * text/bytes/preview/hash/model output or arbitrary error string is legal in this closed object.
  */
-const laneSnapshot = <Source extends PhysicalSenseSource>(source: Source) => Type.Object(
-  {
+const laneSnapshotProperties = <Source extends PhysicalSenseSource>(source: Source) => ({
     workspaceId: Id,
     sessionId: Type.Optional(Id),
     source: Type.Literal(source),
@@ -85,13 +163,18 @@ const laneSnapshot = <Source extends PhysicalSenseSource>(source: Source) => Typ
     updatedAt: IsoTime,
     latestCapture: Type.Optional(SenseLaneCapture),
     latestProcessing: Type.Optional(SenseLaneProcessing),
+})
+
+const MicSenseLaneSnapshot = Type.Object(laneSnapshotProperties('mic'), { additionalProperties: false })
+const SystemAudioSenseLaneSnapshot = Type.Object(laneSnapshotProperties('system-audio'), { additionalProperties: false })
+const ScreenSenseLaneSnapshot = Type.Object(
+  {
+    ...laneSnapshotProperties('screen'),
+    /** Present only while the visible value was derived from delta-skipped/grab-failed attempt metadata. */
+    latestObservation: Type.Optional(ScreenLaneObservation),
   },
   { additionalProperties: false },
 )
-
-const MicSenseLaneSnapshot = laneSnapshot('mic')
-const SystemAudioSenseLaneSnapshot = laneSnapshot('system-audio')
-const ScreenSenseLaneSnapshot = laneSnapshot('screen')
 
 export const SenseLaneSnapshot = Type.Union(
   [MicSenseLaneSnapshot, SystemAudioSenseLaneSnapshot, ScreenSenseLaneSnapshot],

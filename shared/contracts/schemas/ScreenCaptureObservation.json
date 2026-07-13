@@ -1,0 +1,127 @@
+{
+  "$id": "ScreenCaptureObservation",
+  "description": "metadata-only outcome of one screen capture attempt",
+  "anyOf": [
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "workspaceId",
+        "sessionId",
+        "outcome",
+        "capture"
+      ],
+      "properties": {
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "outcome": {
+          "const": "queued",
+          "type": "string"
+        },
+        "capture": {
+          "$id": "SenseLaneCapture",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "id",
+            "capturedAt"
+          ],
+          "properties": {
+            "id": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "capturedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "workspaceId",
+        "sessionId",
+        "outcome",
+        "observationId",
+        "occurredAt"
+      ],
+      "properties": {
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "outcome": {
+          "const": "delta-skipped",
+          "type": "string"
+        },
+        "observationId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "occurredAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    },
+    {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "workspaceId",
+        "sessionId",
+        "outcome",
+        "observationId",
+        "occurredAt"
+      ],
+      "properties": {
+        "workspaceId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "sessionId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "outcome": {
+          "const": "grab-failed",
+          "type": "string"
+        },
+        "observationId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "occurredAt": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        }
+      }
+    }
+  ]
+}

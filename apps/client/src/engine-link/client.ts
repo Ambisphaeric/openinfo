@@ -1,4 +1,4 @@
-import type { Ack, BlockQuery, CaptureChunk, Fabric, Flag, Health, QueryResult, Session, StartSessionRequest, Surface, Workspace } from '@openinfo/contracts'
+import type { Ack, BlockQuery, CaptureChunk, Fabric, Flag, Health, QueryResult, ScreenCaptureObservation, SenseLaneSnapshot, Session, StartSessionRequest, Surface, Workspace } from '@openinfo/contracts'
 import {
   EngineAuthDiscovery,
   engineWebSocketProtocols,
@@ -13,6 +13,8 @@ export interface EngineLinkOptions {
   baseUrl: string
   spoolDir: string
   flushIntervalMs?: number
+  /** Bounds the replace-latest screen observation request so a final report cannot hang forever. */
+  screenObservationTimeoutMs?: number
   credentials?: EngineCredentialSource
   fetchImpl?: EngineFetchLike
   webSocketFactory?: (url: string, protocols?: string[]) => WebSocket
@@ -20,8 +22,11 @@ export interface EngineLinkOptions {
 }
 
 export class EngineLink {
+  private static readonly DEFAULT_SCREEN_OBSERVATION_TIMEOUT_MS = 5_000
   private baseUrl: string
   private flushing = false
+  private screenObservationAbort: AbortController | undefined
+  private readonly screenObservationTimeoutMs: number
   private readonly credentials: EngineCredentialSource
   private readonly fetchImpl: EngineFetchLike
   private readonly webSocketFactory: (url: string, protocols?: string[]) => WebSocket
@@ -30,6 +35,8 @@ export class EngineLink {
 
   constructor(options: EngineLinkOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, '')
+    this.screenObservationTimeoutMs = options.screenObservationTimeoutMs
+      ?? EngineLink.DEFAULT_SCREEN_OBSERVATION_TIMEOUT_MS
     this.credentials = options.credentials ?? new EngineAuthDiscovery()
     this.fetchImpl = options.fetchImpl ?? (globalThis.fetch as unknown as EngineFetchLike)
     this.webSocketFactory = options.webSocketFactory ?? ((url, protocols) => protocols ? new WebSocket(url, protocols) : new WebSocket(url))
@@ -181,6 +188,27 @@ export class EngineLink {
     }
   }
 
+  /**
+   * Report the metadata-only result of one screen attempt. This is replaceable live-state telemetry,
+   * never captured content: it is authenticated through the normal control-plane path, retried once on
+   * a rotated credential, NEVER enters OfflineSpool, and drops harmlessly when the engine is unavailable.
+   */
+  async observeScreen(observation: ScreenCaptureObservation): Promise<SenseLaneSnapshot | undefined> {
+    this.screenObservationAbort?.abort()
+    const controller = new AbortController()
+    this.screenObservationAbort = controller
+    const timeout = setTimeout(() => controller.abort(), this.screenObservationTimeoutMs)
+    timeout.unref()
+    try {
+      return await this.request('POST', '/screen/observations', observation, controller.signal)
+    } catch {
+      return undefined
+    } finally {
+      clearTimeout(timeout)
+      if (this.screenObservationAbort === controller) this.screenObservationAbort = undefined
+    }
+  }
+
   async flush(): Promise<number> {
     if (this.flushing) return 0
     this.flushing = true
@@ -212,12 +240,15 @@ export class EngineLink {
     return this.request('POST', `/capture/${encodeURIComponent(chunk.source)}`, chunk)
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    return (await this.requestRaw(method, path, body)) as T
+  private async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    return (await this.requestRaw(method, path, body, signal)) as T
   }
 
-  private async requestRaw(method: string, path: string, body?: unknown): Promise<unknown> {
-    const init: { method: string; headers?: Record<string, string>; body?: string } = { method }
+  private async requestRaw(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
+    const init: { method: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal } = {
+      method,
+      ...(signal ? { signal } : {}),
+    }
     if (['POST', 'PUT', 'DELETE'].includes(method.toUpperCase())) {
       init.headers = { 'content-type': 'application/json' }
     }

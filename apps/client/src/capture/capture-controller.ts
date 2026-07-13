@@ -102,6 +102,11 @@ export class CaptureController {
     return this.state
   }
 
+  /** The run that would own a segment arriving now (copy prevents callers mutating controller state). */
+  get currentContext(): CaptureContext | undefined {
+    return this.context ? { ...this.context } : undefined
+  }
+
   /** A session went live — begin capturing under its ids (unless disabled or a run is still flushing). */
   async onSessionStarted(context: CaptureContext): Promise<void> {
     if (!this.deps.enabled) {
@@ -134,32 +139,54 @@ export class CaptureController {
     this.reset()
   }
 
-  /** A finished segment arrived from the renderer — wrap and send it while a run owns a context. */
-  async onSegment(segment: RawSegment): Promise<void> {
-    if (!this.context) return // no active run (stray segment after stop, or capture never started)
+  /**
+   * A finished segment arrived from the renderer — wrap and send it while a run owns a context.
+   * Returns the exact PRIMARY chunk only when `capture` resolved (direct ack or durable spool acceptance).
+   * Existing audio callers ignore the additive receipt; screen uses it to avoid claiming `queued` before
+   * pixels are durable. Screen also supplies `expectedContext`, atomically rejecting a frame whose async
+   * grab crossed a session switch. A companion ScreenFrameMeta failure never revokes an accepted image.
+   */
+  async onSegment(segment: RawSegment, expectedContext?: CaptureContext): Promise<CaptureChunk | undefined> {
+    if (!this.context) return undefined // no active run (stray segment after stop, or capture never started)
+    // A desktop grab is async. If run A ended and run B began while pixels were pending, those old pixels
+    // must be dropped — never re-tagged as B merely because B is current when the promise resumes.
+    if (expectedContext && (
+      this.context.sessionId !== expectedContext.sessionId ||
+      this.context.workspaceId !== expectedContext.workspaceId
+    )) return undefined
     // The FIRST real segment is when recording is genuinely happening — flip `starting → capturing`
     // so `● rec` lights up on real audio, not on the start intent. (No-op once already capturing.)
     if (this.state === 'starting') this.setState('capturing')
     this.updateSilence(segment) // system-audio honesty: present-but-silent vs genuinely flowing
+    const runContext = this.context
     this.sequence += 1
-    await this.sendChunk(segmentToChunk(segment, this.context, this.sequence))
+    const primary = segmentToChunk(segment, runContext, this.sequence)
+    // Reserve/build the adjacent metadata id BEFORE the network await so correlation stays explicit even
+    // if another producer calls in. (The shell additionally serializes its screen ticks.) A failed image
+    // may leave a harmless sequence gap; it must never emit orphan metadata.
+    const companion = segment.screenMeta
+      ? frameMetaToChunk(segment, runContext, ++this.sequence)
+      : undefined
+    const primaryAccepted = await this.sendChunk(primary)
     // Screen frames carry a companion typed descriptor (which display, pixel size, scale). Emit it as its
     // OWN adjacent `source:'screen'` utf8/json chunk (records/screen.ts) at the NEXT sequence, so the
     // image and its ScreenFrameMeta correlate by capture order. `screenMeta` is undefined for audio, so
     // this is a strict no-op on the mic/system-audio paths. Re-check context: an await above could have
     // let a stop/reset land in between (context cleared) — then there is nothing left to tag.
-    if (segment.screenMeta && this.context) {
-      this.sequence += 1
-      await this.sendChunk(frameMetaToChunk(segment, this.context, this.sequence))
+    if (primaryAccepted && companion && this.context === runContext) {
+      await this.sendChunk(companion)
     }
+    return primaryAccepted ? primary : undefined
   }
 
-  /** Send one chunk to the engine — EngineLink spools on POST failure, so this never throws fatally. */
-  private async sendChunk(chunk: CaptureChunk): Promise<void> {
+  /** Send one chunk to the engine; true means direct ack OR durable spool acceptance. */
+  private async sendChunk(chunk: CaptureChunk): Promise<boolean> {
     try {
       await this.deps.capture(chunk)
+      return true
     } catch (err) {
-      this.deps.log?.(`[${this.deps.source}] capture send failed (will spool): ${String(err)}`)
+      this.deps.log?.(`[${this.deps.source}] capture was not durably accepted (direct send/spool failed): ${String(err)}`)
+      return false
     }
   }
 

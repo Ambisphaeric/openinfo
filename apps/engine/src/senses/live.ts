@@ -2,6 +2,8 @@ import type {
   CaptureChunk,
   OcrResult,
   PhysicalSenseSource,
+  ScreenCaptureObservation,
+  ScreenProcessingOutcome,
   SenseLaneCapture,
   SenseLaneProcessing,
   SenseLaneSnapshot,
@@ -25,7 +27,18 @@ interface LaneState {
   snapshot: SenseLaneSnapshot
   captures: Map<string, CaptureRef>
   processedCaptureIds: Set<string>
+  screenOutcomes: Map<string, ScreenProcessingOutcome['outcome']>
+  screenProcessingAtMs: Map<string, number>
+  screenObservationIds: Set<string>
   latestCapture?: CaptureRef
+  latestScreenEvent?: ScreenEventRef
+}
+
+interface ScreenEventRef {
+  kind: 'capture' | 'observation'
+  id: string
+  occurredAt: string
+  occurredAtMs: number
 }
 
 interface SessionState {
@@ -54,7 +67,16 @@ const cloneLane = (lane: SenseLaneSnapshot): SenseLaneSnapshot => ({
   ...lane,
   ...(lane.latestCapture ? { latestCapture: { ...lane.latestCapture } } : {}),
   ...(lane.latestProcessing ? { latestProcessing: { ...lane.latestProcessing } } : {}),
+  ...(lane.source === 'screen' && lane.latestObservation
+    ? { latestObservation: { ...lane.latestObservation } }
+    : {}),
 }) as SenseLaneSnapshot
+
+const clearScreenObservation = (lane: SenseLaneSnapshot): SenseLaneSnapshot => {
+  if (lane.source !== 'screen') return lane
+  const { latestObservation: _latestObservation, ...withoutObservation } = lane
+  return withoutObservation as SenseLaneSnapshot
+}
 
 const makeLane = (
   source: PhysicalSenseSource,
@@ -105,6 +127,9 @@ export class SenseLaneTracker {
         snapshot: makeLane(source, session.workspaceId, updatedAt, session.id),
         captures: new Map<string, CaptureRef>(),
         processedCaptureIds: new Set<string>(),
+        screenOutcomes: new Map<string, ScreenProcessingOutcome['outcome']>(),
+        screenProcessingAtMs: new Map<string, number>(),
+        screenObservationIds: new Set<string>(),
       }]),
     ) as Record<PhysicalSenseSource, LaneState>
     this.sessions.set(key, { workspaceId: session.workspaceId, sessionId: session.id, startedAtMs, ended: false, lanes })
@@ -125,8 +150,11 @@ export class SenseLaneTracker {
     if (this.currentByWorkspace.get(session.workspaceId) === key) this.currentByWorkspace.delete(session.workspaceId)
     const updatedAt = this.now().toISOString()
     for (const source of PHYSICAL_SENSE_SOURCES) {
+      const snapshotBase = source === 'screen'
+        ? clearScreenObservation(state.lanes[source].snapshot)
+        : state.lanes[source].snapshot
       state.lanes[source].snapshot = {
-        ...state.lanes[source].snapshot,
+        ...snapshotBase,
         disposition: 'stopped',
         health: 'unknown',
         reason: 'session-ended',
@@ -149,17 +177,98 @@ export class SenseLaneTracker {
     if (lane.latestCapture && compareCapture(capture, lane.latestCapture) <= 0) return undefined
 
     lane.latestCapture = capture
+    const screenVisibleAdvances = chunk.source !== 'screen' || lane.latestScreenEvent === undefined ||
+      lane.latestScreenEvent.kind === 'capture' || timeMs(capture.capturedAt)! > lane.latestScreenEvent.occurredAtMs
+    if (chunk.source === 'screen' && screenVisibleAdvances) {
+      lane.latestScreenEvent = {
+        kind: 'capture', id: capture.id, occurredAt: capture.capturedAt,
+        occurredAtMs: timeMs(capture.capturedAt)!,
+      }
+    }
+    const snapshotBase = chunk.source === 'screen' && screenVisibleAdvances
+      ? clearScreenObservation(lane.snapshot)
+      : lane.snapshot
     lane.snapshot = {
-      ...lane.snapshot,
+      ...snapshotBase,
       latestCapture: { id: capture.id, capturedAt: capture.capturedAt },
-      disposition: 'queued',
-      // A queued capture proves receipt, not processing health. A prior completion is the only evidence
-      // that lets a later queue retain healthy rather than returning to unknown.
-      health: lane.snapshot.latestProcessing === undefined ? 'unknown' : 'healthy',
-      reason: 'awaiting-processing',
+      ...(screenVisibleAdvances ? {
+        disposition: 'queued',
+        // A queued capture proves receipt, not processing health. A prior completion is the only evidence
+        // that lets a later queue retain healthy rather than returning to unknown.
+        health: lane.snapshot.latestProcessing?.outcome === 'processed' || lane.snapshot.latestProcessing?.outcome === 'blank'
+          ? 'healthy'
+          : 'unknown',
+        reason: 'awaiting-processing',
+      } : {}),
       updatedAt: this.now().toISOString(),
     } as SenseLaneSnapshot
     return cloneLane(lane.snapshot)
+  }
+
+  /**
+   * Apply client-observable screen capture truth. A queued report may only confirm an exact physical
+   * image already accepted through recordCapture; this endpoint cannot manufacture queue state.
+   */
+  recordScreenCaptureObservation(observation: ScreenCaptureObservation): SenseLaneSnapshot | undefined {
+    const state = this.activeSession(observation.workspaceId, observation.sessionId)
+    if (!state) return undefined
+    const lane = state.lanes.screen
+
+    if (observation.outcome === 'queued') {
+      const capture = lane.captures.get(observation.capture.id)
+      if (
+        !capture || capture.capturedAt !== observation.capture.capturedAt ||
+        lane.latestCapture?.id !== capture.id ||
+        lane.latestScreenEvent?.kind !== 'capture' || lane.latestScreenEvent.id !== capture.id
+      ) return undefined
+      // Direct OCR/process reporting can win the race against this redundant acknowledgement. Never
+      // turn any terminal result back into a queue, even when it names the same capture.
+      if (lane.snapshot.disposition !== 'queued') return undefined
+      if (lane.snapshot.health === 'healthy' && lane.snapshot.reason === 'awaiting-processing') return undefined
+      lane.snapshot = {
+        ...lane.snapshot,
+        disposition: 'queued',
+        health: 'healthy',
+        reason: 'awaiting-processing',
+        updatedAt: this.now().toISOString(),
+      } as SenseLaneSnapshot
+      return cloneLane(lane.snapshot)
+    }
+
+    const occurredAtMs = timeMs(observation.occurredAt)
+    if (occurredAtMs === undefined || lane.screenObservationIds.has(observation.observationId)) return undefined
+    // Consume a valid active-session attempt id even when it is stale. A retry cannot alter occurredAt
+    // to manufacture a newer ordering position for an already-observed attempt.
+    lane.screenObservationIds.add(observation.observationId)
+    if (!this.screenObservationAdvances(lane, occurredAtMs)) return undefined
+    lane.latestScreenEvent = {
+      kind: 'observation', id: observation.observationId,
+      occurredAt: observation.occurredAt, occurredAtMs,
+    }
+    lane.snapshot = {
+      ...lane.snapshot,
+      ...(observation.outcome === 'delta-skipped'
+        ? { disposition: 'delta-skipped', health: 'healthy', reason: 'delta-skipped' }
+        : { disposition: 'failed', health: 'failed', reason: 'capture-failed' }),
+      latestObservation: {
+        id: observation.observationId,
+        occurredAt: observation.occurredAt,
+        outcome: observation.outcome,
+      },
+      updatedAt: this.now().toISOString(),
+    } as SenseLaneSnapshot
+    return cloneLane(lane.snapshot)
+  }
+
+  /** Apply one exact, metadata-only screen processor result with retry-safe terminal ordering. */
+  recordScreenProcessingOutcome(outcome: ScreenProcessingOutcome): SenseLaneSnapshot | undefined {
+    if (outcome.outcome !== 'processed' && outcome.outcome !== 'blank' && outcome.outcome !== 'failed') return undefined
+    const state = this.activeSession(outcome.workspaceId, outcome.sessionId)
+    if (!state) return undefined
+    const lane = state.lanes.screen
+    const capture = lane.captures.get(outcome.capture.id)
+    if (!capture || capture.capturedAt !== outcome.capture.capturedAt) return undefined
+    return this.recordProcessing(state, lane, [capture], capture, outcome.completedAt, outcome.outcome)
   }
 
   /** Complete an audio lane only when every claimed source id resolves to that exact lane/session. */
@@ -201,7 +310,7 @@ export class SenseLaneTracker {
     if (ordered.some((capture, index) => capture.id !== exact[index]?.id)) return undefined
     const capture = ordered.at(-1)!
     if (result.capturedAt !== undefined && result.capturedAt !== capture.capturedAt) return undefined
-    return this.recordProcessing(state, lane, exact, capture, result.createdAt)
+    return this.recordProcessing(state, lane, exact, capture, result.createdAt, 'processed')
   }
 
   /** Hydration snapshot: exactly mic, system-audio, screen, in that order. */
@@ -234,41 +343,104 @@ export class SenseLaneTracker {
     correlatedCaptures: readonly CaptureRef[],
     capture: CaptureRef,
     completedAt: string,
+    screenOutcome?: ScreenProcessingOutcome['outcome'],
   ): SenseLaneSnapshot | undefined {
     const capturedMs = timeMs(capture.capturedAt)
     const completedMs = timeMs(completedAt)
     if (capturedMs === undefined || completedMs === undefined) return undefined
-    if (state.ended || correlatedCaptures.every((item) => lane.processedCaptureIds.has(item.id))) return undefined
+    if (state.ended) return undefined
+    const isScreen = lane.snapshot.source === 'screen'
+    let anchorSemanticUpgrade = false
+    if (isScreen) {
+      const desired = screenOutcome ?? 'processed'
+      if (correlatedCaptures.some((item) => {
+        const previous = lane.screenOutcomes.get(item.id)
+        const priorCompletedMs = lane.screenProcessingAtMs.get(item.id)
+        return this.screenOutcomeAdvances(previous, desired) && priorCompletedMs !== undefined && completedMs < priorCompletedMs
+      })) return undefined
+      const advancing = correlatedCaptures.filter((item) => {
+        const previous = lane.screenOutcomes.get(item.id)
+        if (!this.screenOutcomeAdvances(previous, desired)) return false
+        const priorCompletedMs = lane.screenProcessingAtMs.get(item.id)
+        // A retry cannot claim a semantic upgrade with an older completion time than the result it
+        // supersedes. Equal-time upgrades are accepted below and atomically replace same-capture evidence.
+        return priorCompletedMs === undefined || completedMs >= priorCompletedMs
+      })
+      if (advancing.length === 0) {
+        return undefined
+      }
+      for (const item of advancing) {
+        if (item.id === capture.id && lane.screenOutcomes.get(item.id) !== undefined) anchorSemanticUpgrade = true
+        lane.screenOutcomes.set(item.id, desired)
+        lane.screenProcessingAtMs.set(item.id, completedMs)
+        if (desired !== 'failed') lane.processedCaptureIds.add(item.id)
+      }
+    } else if (correlatedCaptures.every((item) => lane.processedCaptureIds.has(item.id))) {
+      return undefined
+    }
     // Completion is atomic across the correlated source set. The canonical last capture anchors the
-    // public evidence, while every constituent id becomes terminal so regrouped/subset retries cannot
-    // manufacture a second transition.
-    for (const item of correlatedCaptures) lane.processedCaptureIds.add(item.id)
+    // public evidence. Successful constituents become terminal against regrouped retries; a failed
+    // screen frame remains eligible for a later successful workflow retry.
+    if (!isScreen) for (const item of correlatedCaptures) lane.processedCaptureIds.add(item.id)
 
     const prior = lane.snapshot.latestProcessing
     const priorCompletedMs = prior === undefined ? undefined : timeMs(prior.completedAt)
     const evidenceAdvances = prior === undefined || priorCompletedMs === undefined || completedMs > priorCompletedMs || (
       completedMs === priorCompletedMs && (
+        (isScreen && anchorSemanticUpgrade && prior.captureId === capture.id) ||
         lane.captures.get(prior.captureId) === undefined || compareCapture(capture, lane.captures.get(prior.captureId)!) > 0
       )
     )
     const isLatestCapture = lane.latestCapture?.id === capture.id
-    const visibleAdvances = isLatestCapture && lane.snapshot.disposition !== 'processed'
+    const desiredDisposition = screenOutcome ?? 'processed'
+    const visibleAdvances = isLatestCapture && (
+      !isScreen
+        ? lane.snapshot.disposition !== 'processed'
+        : lane.latestScreenEvent?.kind === 'capture' && lane.latestScreenEvent.id === capture.id && (
+          lane.snapshot.disposition !== desiredDisposition ||
+          lane.snapshot.health !== (desiredDisposition === 'failed' ? 'failed' : 'healthy') ||
+          lane.snapshot.reason !== (desiredDisposition === 'failed' ? 'processing-failed' : desiredDisposition)
+        )
+    )
     if (!evidenceAdvances && !visibleAdvances) return undefined
 
     const processing: SenseLaneProcessing = {
       captureId: capture.id,
       capturedAt: capture.capturedAt,
       completedAt,
+      outcome: desiredDisposition,
       lagMs: Math.max(0, completedMs - capturedMs),
       basis: 'capture-to-processing-completion',
     }
     lane.snapshot = {
       ...lane.snapshot,
       ...(evidenceAdvances ? { latestProcessing: processing } : {}),
-      ...(visibleAdvances ? { disposition: 'processed', health: 'healthy', reason: 'processed' } : {}),
+      ...(visibleAdvances ? {
+        disposition: desiredDisposition,
+        health: desiredDisposition === 'failed' ? 'failed' : 'healthy',
+        reason: desiredDisposition === 'failed' ? 'processing-failed' : desiredDisposition,
+      } : {}),
       updatedAt: this.now().toISOString(),
     } as SenseLaneSnapshot
     return cloneLane(lane.snapshot)
+  }
+
+  private screenObservationAdvances(lane: LaneState, occurredAtMs: number): boolean {
+    const current = lane.latestScreenEvent
+    if (!current) return true
+    if (occurredAtMs > current.occurredAtMs) return true
+    // Equal wall times from different attempts are ambiguous; fail closed instead of inventing order.
+    return false
+  }
+
+  private screenOutcomeAdvances(
+    previous: ScreenProcessingOutcome['outcome'] | undefined,
+    next: ScreenProcessingOutcome['outcome'],
+  ): boolean {
+    if (previous === undefined) return true
+    if (previous === 'processed') return false
+    if (previous === 'blank') return next === 'processed'
+    return next !== 'failed' // a failed frame may succeed on a workflow retry
   }
 
   private activeSession(workspaceId: string, sessionId: string): SessionState | undefined {

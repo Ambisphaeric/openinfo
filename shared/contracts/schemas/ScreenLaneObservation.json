@@ -1,0 +1,35 @@
+{
+  "$id": "ScreenLaneObservation",
+  "additionalProperties": false,
+  "description": "metadata-only derivation evidence for a visible screen delta-skip or failed grab",
+  "type": "object",
+  "required": [
+    "id",
+    "occurredAt",
+    "outcome"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "occurredAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "const": "delta-skipped",
+          "type": "string"
+        },
+        {
+          "const": "grab-failed",
+          "type": "string"
+        }
+      ]
+    }
+  }
+}

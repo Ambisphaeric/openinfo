@@ -32,11 +32,11 @@
     },
     "failed": {
       "minimum": 0,
-      "description": "frames whose OCR/VLM invoke threw (recorded in lastFailures)",
+      "description": "frames with recognition or persistence failure across legacy ingest and workflow drain",
       "type": "integer"
     },
     "lastFailures": {
-      "description": "bounded ring of the most-recent classified frame failures (newest last)",
+      "description": "bounded classified legacy-ingest failures (newest last); workflow-drain failure detail lives in QueueStatus",
       "type": "array",
       "items": {
         "$id": "QueueFailure",

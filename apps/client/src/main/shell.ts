@@ -29,6 +29,7 @@ import { CaptureController, type CaptureState } from '../capture/capture-control
 import { CAPTURE_CHANNELS, type CaptureSourceKind, type CaptureStatus, type RawSegment } from '../capture/protocol.js'
 import { startScreenCadence, type ScreenCadenceHandle } from '../capture/screen-source.js'
 import { FrameDeltaGate, DELTA_PROBE_WIDTH } from '../capture/frame-delta.js'
+import { runScreenCaptureAttempt } from '../capture/screen-observation.js'
 import { CaptureConsent } from './capture-consent.js'
 import { CaptureDispatcher, type DispatchChannel } from './capture-dispatcher.js'
 import { createClientLog, type ClientLog } from './client-log.js'
@@ -173,6 +174,9 @@ let screenController: CaptureController | undefined
 // The screen cadence loop's handle (issue #4) — startScreenCadence drives the grab timer at the
 // config-resolved, 3–6s-clamped cfg.screenIntervalMs; this holds the running loop so stopScreenLoop can end it.
 let screenCadence: ScreenCadenceHandle | undefined
+// desktopCapturer + JPEG + durable POST/spool is one atomic attempt. A slow attempt must not overlap the
+// next cadence tick and reorder image/meta pairs; the next regular tick will re-announce current truth.
+let screenAttemptRunning = false
 // The focus (foreground-window context) poller — main-process, session-INDEPENDENT, gated on the
 // engine's route.detect flag + the local OPENINFO_FOCUS opt-out. `focusActive` mirrors whether it is
 // currently watching, for the tray's quiet "· watching context" tooltip.
@@ -860,35 +864,61 @@ const grabPrimaryDisplayImage = async (): Promise<{ image: Electron.NativeImage;
 
 const captureScreenFrame = async (): Promise<void> => {
   const controller = screenController
-  if (!controller) return
+  const context = controller?.currentContext
+  if (!controller || !context || screenAttemptRunning) return
+  screenAttemptRunning = true
   try {
-    const grabbed = await grabPrimaryDisplayImage()
-    if (!grabbed) return
-    const { image, displayId, scale } = grabbed
-    // Δ-gate before the expensive steps: the probe (32px-wide resize → raw bitmap) is tiny next to the
-    // full-display JPEG encode + send + engine OCR it saves on every static tick.
-    const verdict = frameDeltaGate.assess(displayId, new Uint8Array(image.resize({ width: DELTA_PROBE_WIDTH }).toBitmap()))
-    if (!verdict.send) {
-      // Throttled skip log: every 5th consecutive skip — the 10-tick heartbeat resets the streak, so a
-      // once-per-10 line would never fire; 5 yields at most one line per heartbeat interval (~25s).
-      if (verdict.skipStreak % 5 === 0)
-        console.log(`[shell] screen Δ-gate: display ${displayId} static for ${verdict.skipStreak} ticks (deltaScore ${verdict.deltaScore.toFixed(4)})`)
-      return
-    }
-    const size = image.getSize()
-    const jpeg = image.toJPEG(70) // ~0.7 quality — still frames, not video
-    // Copy into a fresh, exactly-sized ArrayBuffer (a Node Buffer's .buffer is a shared pool typed
-    // ArrayBuffer|SharedArrayBuffer; RawSegment.bytes is a plain ArrayBuffer).
-    const bytes = new Uint8Array(jpeg).buffer
-    await controller.onSegment({
-      source: 'screen',
-      bytes,
-      mimeType: 'image/jpeg',
-      capturedAt: new Date().toISOString(),
-      screenMeta: { displayId, width: size.width, height: size.height, scale, deltaScore: verdict.deltaScore },
+    await runScreenCaptureAttempt({
+      context,
+      // Minted ONCE by runScreenCaptureAttempt before desktopCapturer starts; the same instant becomes the
+      // accepted image's capturedAt or the delta/grab outcome's occurredAt. The attempt id remains metadata.
+      capture: async ({ occurredAt }) => {
+        const grabbed = await grabPrimaryDisplayImage()
+        if (!grabbed) return undefined
+        const { image, displayId, scale } = grabbed
+        // Δ-gate before the expensive steps: the probe (32px-wide resize → raw bitmap) is tiny next to the
+        // full-display JPEG encode + send + engine OCR it saves on every static tick.
+        const verdict = frameDeltaGate.assess(displayId, new Uint8Array(image.resize({ width: DELTA_PROBE_WIDTH }).toBitmap()))
+        if (!verdict.send) {
+          // Throttled skip log: every 5th consecutive skip — the 10-tick heartbeat resets the streak, so a
+          // once-per-10 line would never fire; 5 yields at most one line per heartbeat interval (~25s).
+          if (verdict.skipStreak % 5 === 0)
+            console.log(`[shell] screen Δ-gate: display ${displayId} static for ${verdict.skipStreak} ticks (deltaScore ${verdict.deltaScore.toFixed(4)})`)
+          return { outcome: 'delta-skipped' }
+        }
+        try {
+          const size = image.getSize()
+          const jpeg = image.toJPEG(70) // ~0.7 quality — still frames, not video
+          // Copy into a fresh, exactly-sized ArrayBuffer (a Node Buffer's .buffer is a shared pool typed
+          // ArrayBuffer|SharedArrayBuffer; RawSegment.bytes is a plain ArrayBuffer).
+          const bytes = new Uint8Array(jpeg).buffer
+          const accepted = await controller.onSegment(
+            {
+              source: 'screen',
+              bytes,
+              mimeType: 'image/jpeg',
+              capturedAt: occurredAt,
+              screenMeta: { displayId, width: size.width, height: size.height, scale, deltaScore: verdict.deltaScore },
+            },
+            context,
+          )
+          if (accepted) return { outcome: 'accepted', capture: accepted }
+          // assess() committed this probe as the new baseline. If no pixels became durable, forget it so
+          // the next tick retries instead of calling the missing frame "unchanged" until the heartbeat.
+          frameDeltaGate.reset()
+          return undefined
+        } catch (error) {
+          frameDeltaGate.reset()
+          throw error
+        }
+      },
+      // Metadata-only and intentionally ephemeral. EngineLink authenticates + handles one token refresh,
+      // but does not spool this report; runScreenCaptureAttempt also contains any reporting failure.
+      observe: async (observation) => engineLink?.observeScreen(observation),
+      log: clientLog,
     })
-  } catch (err) {
-    console.error('[shell] screen frame capture failed:', err)
+  } finally {
+    screenAttemptRunning = false
   }
 }
 

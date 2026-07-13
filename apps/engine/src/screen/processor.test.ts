@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Distillate, OcrResult, VlmInvokeParams, WorkflowStep } from '@openinfo/contracts'
+import type { CaptureChunk, Distillate, OcrResult, ScreenProcessingOutcome, VlmInvokeParams, WorkflowStep } from '@openinfo/contracts'
 import { createFixtureReplay, loadFixtureSync } from '../../../../tools/fixtures/model.mjs'
 import { AggregateInvokeError, FabricDocuments, type ClassifiedFailure, type ScreenTextResult } from '../fabric/index.js'
 import { WorkspaceRegistry } from '../store/index.js'
@@ -72,6 +72,7 @@ test('fixture replay: real screen processor persists byte-identical OCR/distilla
         publishOcr: (r) => {
           ocrs.push(r)
         },
+        reportProcessingOutcome: () => assert.fail('successful OCR is reported only through ocr.completed'),
         now: replay.now,
         newId: replay.newId,
       })
@@ -135,27 +136,49 @@ test('flag off ⇒ the frame is left untouched — invoke never called, nothing 
 test('the companion ScreenFrameMeta chunk is skipped and counted, never recognized', async () => {
   await withStore(async (store) => {
     let called = false
+    const outcomes: ScreenProcessingOutcome[] = []
     const invoke: ScreenOcrInvoke = async () => {
       called = true
       throw new Error('should not be called')
     }
-    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke })
+    const processor = new ScreenOcrProcessor({
+      store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke,
+      reportProcessingOutcome: (outcome) => void outcomes.push(outcome),
+    })
     await processor.process(metaChunk())
     assert.equal(called, false)
     assert.equal(store.listOcrResults('default').length, 0)
     assert.equal(processor.status().skipped, 1)
     assert.equal(processor.status().processed, 0)
+    assert.deepEqual(outcomes, [], 'ScreenStatus.skipped remains local accounting for companion metadata only')
   })
 })
 
 test('empty recognized text is a blank frame — neither record persisted, counted as blank', async () => {
   await withStore(async (store) => {
     const invoke: ScreenOcrInvoke = async (): Promise<ScreenTextResult> => ({ text: '   ', endpoint: 'vlm', slot: 'ocr' })
-    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke })
+    const outcomes: ScreenProcessingOutcome[] = []
+    const logs: string[] = []
+    const processor = new ScreenOcrProcessor({
+      store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke,
+      now: () => new Date('2026-07-08T10:00:02.000Z'),
+      reportProcessingOutcome: async (outcome) => {
+        outcomes.push(outcome)
+        throw new Error('PRIVATE REPORTER FAILURE')
+      },
+      log: (line) => void logs.push(line),
+    })
     await processor.process(imageChunk())
     assert.equal(store.listOcrResults('default').length, 0)
     assert.equal(store.listDistillates('default').length, 0)
     assert.deepEqual([processor.status().blank, processor.status().processed], [1, 0])
+    assert.deepEqual(outcomes, [{
+      workspaceId: 'default', sessionId: 's1', outcome: 'blank',
+      capture: { id: 'scr-s1-000001', capturedAt: '2026-07-08T10:00:00.000Z' },
+      completedAt: '2026-07-08T10:00:02.000Z',
+    }])
+    assert.equal(JSON.stringify(outcomes).includes('JPEGDATA'), false)
+    assert.equal(logs.some((line) => line.includes('PRIVATE REPORTER FAILURE')), false, 'reporter errors are not copied into telemetry/logs')
   })
 })
 
@@ -180,7 +203,12 @@ test('an invoke failure is classified into the last-failures ring and never thro
     const invoke: ScreenOcrInvoke = async () => {
       throw new AggregateInvokeError('ocr', 'no ocr endpoint answered', [classified])
     }
-    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke, now: () => new Date('2026-07-08T10:00:01.000Z') })
+    const outcomes: ScreenProcessingOutcome[] = []
+    const processor = new ScreenOcrProcessor({
+      store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke,
+      now: () => new Date('2026-07-08T10:00:01.000Z'),
+      reportProcessingOutcome: (outcome) => void outcomes.push(outcome),
+    })
     await processor.process(imageChunk()) // must resolve, not reject
     const status = processor.status()
     assert.equal(status.failed, 1)
@@ -190,6 +218,11 @@ test('an invoke failure is classified into the last-failures ring and never thro
     assert.equal(status.lastFailures[0]!.endpoint, 'paddle-box')
     assert.equal(status.lastFailures[0]!.at, '2026-07-08T10:00:01.000Z')
     assert.equal(store.listOcrResults('default').length, 0)
+    assert.deepEqual(outcomes, [{
+      workspaceId: 'default', sessionId: 's1', outcome: 'failed',
+      capture: { id: 'scr-s1-000001', capturedAt: '2026-07-08T10:00:00.000Z' },
+      completedAt: '2026-07-08T10:00:01.000Z',
+    }])
   })
 })
 
@@ -261,23 +294,46 @@ test('runOnDrain: a vlm step invokes the VLM slot with the step prompt (not the 
 
 test('runOnDrain: an invoke throw PROPAGATES (real drain work → re-queue), NOT swallowed into the ring', async () => {
   await withStore(async (store) => {
+    const original = new AggregateInvokeError('ocr', 'no ocr endpoint answered', [{ class: 'unreachable', endpoint: 'paddle', url: 'u', hint: 'h' }])
     const invoke: ScreenOcrInvoke = async () => {
-      throw new AggregateInvokeError('ocr', 'no ocr endpoint answered', [{ class: 'unreachable', endpoint: 'paddle', url: 'u', hint: 'h' }])
+      throw original
     }
-    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke })
-    await assert.rejects(() => processor.runOnDrain([imageChunk()], ocrStep()), /no ocr endpoint answered/)
+    const outcomes: ScreenProcessingOutcome[] = []
+    const processor = new ScreenOcrProcessor({
+      store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke,
+      now: () => new Date('2026-07-08T10:00:04.000Z'),
+      reportProcessingOutcome: async (outcome) => {
+        outcomes.push(outcome)
+        throw new Error('reporter must not replace workflow failure')
+      },
+    })
+    await assert.rejects(
+      () => processor.runOnDrain([imageChunk()], ocrStep()),
+      (error: unknown) => error === original,
+    )
     // Drain failures are the QUEUE's health, not the processor ring — so the ring stays empty here.
     assert.equal(processor.status().lastFailures.length, 0)
+    assert.equal(processor.status().failed, 1)
     assert.equal(store.listOcrResults('default').length, 0)
+    assert.deepEqual(outcomes, [{
+      workspaceId: 'default', sessionId: 's1', outcome: 'failed',
+      capture: { id: 'scr-s1-000001', capturedAt: '2026-07-08T10:00:00.000Z' },
+      completedAt: '2026-07-08T10:00:04.000Z',
+    }])
   })
 })
 
 test('runOnDrain: an empty recognition is a blank frame — neither record persisted, counted as blank', async () => {
   await withStore(async (store) => {
     const invoke: ScreenOcrInvoke = async (): Promise<ScreenTextResult> => ({ text: '', endpoint: 'paddle', slot: 'ocr' })
-    const processor = new ScreenOcrProcessor({ store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke })
+    const outcomes: ScreenProcessingOutcome[] = []
+    const processor = new ScreenOcrProcessor({
+      store, fabric: new FabricDocuments(store), isEnabled: () => true, invoke,
+      reportProcessingOutcome: (outcome) => void outcomes.push(outcome),
+    })
     await processor.runOnDrain([imageChunk()], ocrStep())
     assert.equal(store.listOcrResults('default').length, 0)
     assert.deepEqual([processor.status().blank, processor.status().processed], [1, 0])
+    assert.equal(outcomes[0]?.outcome, 'blank')
   })
 })

@@ -69,7 +69,7 @@ const senseLane = (source: 'mic' | 'system-audio' | 'screen') => ({
   latestCapture: { id: `${source}-capture`, capturedAt: '2026-07-13T12:00:00.000Z' },
   latestProcessing: {
     captureId: `${source}-capture`, capturedAt: '2026-07-13T12:00:00.000Z',
-    completedAt: '2026-07-13T12:00:01.250Z', lagMs: 1250,
+    completedAt: '2026-07-13T12:00:01.250Z', outcome: 'processed', lagMs: 1250,
     basis: 'capture-to-processing-completion',
   },
 })
@@ -92,6 +92,10 @@ test('SenseLaneSnapshot/Set are atomic, metadata-only, and pin the canonical thr
   assert.ok([
     ...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...mic, latestProcessing: partialProcessing }),
   ].length > 0, 'processing evidence is all-or-none')
+  const { outcome: _outcome, ...outcomelessProcessing } = mic.latestProcessing
+  assert.ok([
+    ...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...mic, latestProcessing: outcomelessProcessing }),
+  ].length > 0, 'processing evidence always names its terminal outcome')
   const { capturedAt: _capturedAt, ...partialCapture } = mic.latestCapture
   assert.ok([
     ...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...mic, latestCapture: partialCapture }),
@@ -104,6 +108,79 @@ test('SenseLaneSnapshot/Set are atomic, metadata-only, and pin the canonical thr
     )
   }
   assert.equal(Events['sense.lane.updated'], 'SenseLaneSnapshot')
+})
+
+test('ScreenCaptureObservation is a closed, metadata-only discriminated union', () => {
+  const common = { workspaceId: 'default', sessionId: 'session-live' }
+  const queued = {
+    ...common,
+    outcome: 'queued',
+    capture: { id: 'screen-1', capturedAt: '2026-07-13T12:00:00.000Z' },
+  }
+  const skipped = {
+    ...common,
+    outcome: 'delta-skipped',
+    observationId: 'screen-attempt-2',
+    occurredAt: '2026-07-13T12:00:01.000Z',
+  }
+  const failed = {
+    ...common,
+    outcome: 'grab-failed',
+    observationId: 'screen-attempt-3',
+    occurredAt: '2026-07-13T12:00:02.000Z',
+  }
+  for (const value of [queued, skipped, failed]) {
+    assert.deepEqual([...Value.Errors(AllSchemas.ScreenCaptureObservation, value)], [], `${value.outcome} validates`)
+  }
+
+  assert.ok([...Value.Errors(AllSchemas.ScreenCaptureObservation, { ...queued, observationId: 'not-allowed' })].length > 0)
+  assert.ok([...Value.Errors(AllSchemas.ScreenCaptureObservation, { ...skipped, capture: queued.capture })].length > 0)
+  assert.ok([...Value.Errors(AllSchemas.ScreenCaptureObservation, { ...failed, outcome: 'made-up' })].length > 0)
+  for (const forbidden of ['data', 'text', 'preview', 'hash', 'display', 'deltaScore', 'error']) {
+    assert.ok(
+      [...Value.Errors(AllSchemas.ScreenCaptureObservation, { ...skipped, [forbidden]: 'private-or-derived' })].length > 0,
+      `${forbidden} is rejected`,
+    )
+  }
+
+  const processing = {
+    ...common,
+    outcome: 'blank',
+    capture: queued.capture,
+    completedAt: '2026-07-13T12:00:03.000Z',
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.ScreenProcessingOutcome, processing)], [])
+  assert.ok([...Value.Errors(AllSchemas.ScreenProcessingOutcome, { ...processing, error: 'private' })].length > 0)
+})
+
+test('ScreenLaneObservation gives attempt provenance only to the screen lane', () => {
+  const latestObservation = {
+    id: 'screen-attempt-4',
+    occurredAt: '2026-07-13T12:00:04.000Z',
+    outcome: 'delta-skipped',
+  }
+  const screen = { ...senseLane('screen'), disposition: 'delta-skipped', reason: 'delta-skipped', latestObservation }
+  assert.deepEqual([...Value.Errors(AllSchemas.ScreenLaneObservation, latestObservation)], [])
+  assert.deepEqual([...Value.Errors(AllSchemas.SenseLaneSnapshot, screen)], [], 'screen row retains exact attempt derivation')
+  assert.ok(
+    [...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...senseLane('mic'), latestObservation })].length > 0,
+    'microphone row cannot claim screen-attempt provenance',
+  )
+  assert.ok(
+    [...Value.Errors(AllSchemas.SenseLaneSnapshot, { ...senseLane('system-audio'), latestObservation })].length > 0,
+    'system-audio row cannot claim screen-attempt provenance',
+  )
+  const { occurredAt: _occurredAt, ...partial } = latestObservation
+  assert.ok([...Value.Errors(AllSchemas.ScreenLaneObservation, partial)].length > 0, 'observation evidence is atomic')
+  assert.ok([
+    ...Value.Errors(AllSchemas.ScreenLaneObservation, { ...latestObservation, outcome: 'queued' }),
+  ].length > 0, 'queued provenance belongs to latestCapture, not latestObservation')
+  for (const forbidden of ['data', 'text', 'preview', 'hash', 'display', 'deltaScore', 'error']) {
+    assert.ok(
+      [...Value.Errors(AllSchemas.ScreenLaneObservation, { ...latestObservation, [forbidden]: 'private-or-derived' })].length > 0,
+      `${forbidden} is rejected from retained attempt provenance`,
+    )
+  }
 })
 
 test('TranscriptUpdate requires true capture provenance and processing time', () => {

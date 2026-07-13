@@ -2,6 +2,7 @@ import { EventBus, type EngineEvents } from '../bus/index.js'
 import { FabricDocuments, FileSecretStore } from '../fabric/index.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { isFlagEnabled } from '../flags/read.js'
+import type { SenseLaneTracker } from '../senses/index.js'
 import { ScreenOcrProcessor, type ScreenOcrInvoke } from './processor.js'
 import { registerScreenProcessor } from './registry.js'
 
@@ -13,6 +14,7 @@ export { getScreenProcessor, registerScreenProcessor } from './registry.js'
 export interface ScreenWiringApp {
   bus: EventBus<EngineEvents>
   store: WorkspaceRegistry
+  senseLanes: SenseLaneTracker
 }
 
 export interface ScreenWiringOptions {
@@ -45,6 +47,10 @@ export const wireScreenOcr = (app: ScreenWiringApp, options: ScreenWiringOptions
     resolveKey: (ref) => secrets.resolve(ref),
     publishDistillate: (distillate) => app.bus.publish('distillate.updated', distillate),
     publishOcr: (result) => app.bus.publish('ocr.completed', result),
+    reportProcessingOutcome: async (outcome) => {
+      const update = app.senseLanes.recordScreenProcessingOutcome(outcome)
+      if (update !== undefined) await app.bus.publish('sense.lane.updated', update)
+    },
     ...(options.log ? { log: options.log } : {}),
     ...(options.invoke ? { invoke: options.invoke } : {}),
   })

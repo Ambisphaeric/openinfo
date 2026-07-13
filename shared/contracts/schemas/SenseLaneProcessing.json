@@ -6,6 +6,7 @@
     "captureId",
     "capturedAt",
     "completedAt",
+    "outcome",
     "lagMs",
     "basis"
   ],
@@ -24,6 +25,23 @@
       "format": "date-time",
       "description": "ISO-8601 timestamp",
       "type": "string"
+    },
+    "outcome": {
+      "description": "the terminal result supported by this exact processing evidence",
+      "anyOf": [
+        {
+          "const": "processed",
+          "type": "string"
+        },
+        {
+          "const": "blank",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "type": "string"
+        }
+      ]
     },
     "lagMs": {
       "minimum": 0,

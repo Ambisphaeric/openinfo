@@ -60,6 +60,175 @@ test('EngineLink bodyless mutations still declare JSON at the secured boundary',
   assert.equal(calls[0]?.body, undefined)
 })
 
+test('screen observations use Bearer auth, exact JSON, and the shared one-refresh-on-401 path', async () => {
+  const refreshes: Array<boolean | undefined> = []
+  const credentials: EngineCredentialSource = {
+    credentialFor: async (_baseUrl, options) => {
+      refreshes.push(options?.refresh)
+      return { token: options?.refresh ? TOKEN_B : TOKEN_A }
+    },
+  }
+  const calls: Array<{ url: string; method?: string; headers?: Record<string, string>; body?: string }> = []
+  const fetchImpl: EngineFetchLike = async (url, init) => {
+    calls.push({ url, ...init })
+    const status = calls.length === 1 ? 401 : 200
+    return {
+      ok: status === 200,
+      status,
+      json: async () => ({
+        workspaceId: 'ws',
+        sessionId: 'session-1',
+        source: 'screen',
+        disposition: 'delta-skipped',
+        health: 'healthy',
+        reason: 'delta-skipped',
+        updatedAt: '2026-07-13T10:11:12.345Z',
+      }),
+    }
+  }
+  const observation = {
+    workspaceId: 'ws',
+    sessionId: 'session-1',
+    outcome: 'delta-skipped' as const,
+    observationId: 'observation-1',
+    occurredAt: '2026-07-13T10:11:12.345Z',
+  }
+
+  await withLink({ baseUrl: 'http://127.0.0.1:8787', credentials, fetchImpl }, async (link) => {
+    assert.equal((await link.observeScreen(observation))?.source, 'screen')
+  })
+  assert.deepEqual(refreshes, [undefined, true])
+  assert.equal(calls[0]?.url, 'http://127.0.0.1:8787/screen/observations')
+  assert.equal(calls[0]?.method, 'POST')
+  assert.equal(calls[0]?.headers?.['content-type'], 'application/json')
+  assert.equal(calls[0]?.headers?.['authorization'], `Bearer ${TOKEN_A}`)
+  assert.equal(calls[1]?.headers?.['authorization'], `Bearer ${TOKEN_B}`)
+  assert.deepEqual(JSON.parse(calls[0]?.body ?? '{}'), observation)
+})
+
+test('failed screen observation reports are dropped and never enter the capture spool', async () => {
+  await withLink({
+    baseUrl: 'http://127.0.0.1:8787',
+    credentials: { credentialFor: async () => ({ token: TOKEN_A }) },
+    fetchImpl: async () => {
+      throw new Error('offline')
+    },
+  }, async (link) => {
+    const result = await link.observeScreen({
+      workspaceId: 'ws',
+      sessionId: 'session-1',
+      outcome: 'grab-failed',
+      observationId: 'observation-1',
+      occurredAt: '2026-07-13T10:11:12.345Z',
+    })
+    assert.equal(result, undefined)
+    assert.equal(await link.spool.pendingCount(), 0)
+  })
+})
+
+test('screen observations replace an older in-flight report instead of accumulating requests', async () => {
+  let inFlight = 0
+  let maxInFlight = 0
+  const started: string[] = []
+  const aborted: string[] = []
+  const fetchImpl: EngineFetchLike = async (_url, init) => {
+    const observationId = (JSON.parse(init?.body ?? '{}') as { observationId?: string }).observationId ?? 'unknown'
+    started.push(observationId)
+    inFlight += 1
+    maxInFlight = Math.max(maxInFlight, inFlight)
+
+    if (observationId === 'observation-2') {
+      inFlight -= 1
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          workspaceId: 'ws',
+          sessionId: 'session-1',
+          source: 'screen',
+          disposition: 'delta-skipped',
+          health: 'healthy',
+          reason: 'delta-skipped',
+          updatedAt: '2026-07-13T10:11:13.345Z',
+        }),
+      }
+    }
+
+    return new Promise((_resolve, reject) => {
+      const onAbort = (): void => {
+        inFlight -= 1
+        aborted.push(observationId)
+        reject(new Error('aborted'))
+      }
+      if (init?.signal?.aborted) onAbort()
+      else init?.signal?.addEventListener('abort', onAbort, { once: true })
+    })
+  }
+
+  await withLink({
+    baseUrl: 'http://127.0.0.1:8787',
+    credentials: { credentialFor: async () => ({ token: TOKEN_A }) },
+    fetchImpl,
+    screenObservationTimeoutMs: 60_000,
+  }, async (link) => {
+    const first = link.observeScreen({
+      workspaceId: 'ws',
+      sessionId: 'session-1',
+      outcome: 'delta-skipped',
+      observationId: 'observation-1',
+      occurredAt: '2026-07-13T10:11:12.345Z',
+    })
+    await turn()
+
+    const second = link.observeScreen({
+      workspaceId: 'ws',
+      sessionId: 'session-1',
+      outcome: 'delta-skipped',
+      observationId: 'observation-2',
+      occurredAt: '2026-07-13T10:11:13.345Z',
+    })
+
+    const [firstResult, secondResult] = await Promise.all([first, second])
+    assert.equal(firstResult, undefined, 'the superseded request settles harmlessly')
+    assert.equal(secondResult?.source, 'screen', 'the latest observation reaches the engine')
+    assert.deepEqual(started, ['observation-1', 'observation-2'])
+    assert.deepEqual(aborted, ['observation-1'])
+    assert.equal(maxInFlight, 1)
+    assert.equal(inFlight, 0)
+    assert.equal(await link.spool.pendingCount(), 0)
+  })
+})
+
+test('the latest screen observation times out harmlessly when fetch never answers', async () => {
+  let aborted = false
+  const fetchImpl: EngineFetchLike = async (_url, init) => new Promise((_resolve, reject) => {
+    const onAbort = (): void => {
+      aborted = true
+      reject(new Error('aborted'))
+    }
+    if (init?.signal?.aborted) onAbort()
+    else init?.signal?.addEventListener('abort', onAbort, { once: true })
+  })
+
+  await withLink({
+    baseUrl: 'http://127.0.0.1:8787',
+    credentials: { credentialFor: async () => ({ token: TOKEN_A }) },
+    fetchImpl,
+    screenObservationTimeoutMs: 5,
+  }, async (link) => {
+    const result = await link.observeScreen({
+      workspaceId: 'ws',
+      sessionId: 'session-1',
+      outcome: 'grab-failed',
+      observationId: 'observation-timeout',
+      occurredAt: '2026-07-13T10:11:12.345Z',
+    })
+    assert.equal(result, undefined)
+    assert.equal(aborted, true)
+    assert.equal(await link.spool.pendingCount(), 0)
+  })
+})
+
 type Listener = (event: { data?: unknown }) => void
 
 class FakeSocket {

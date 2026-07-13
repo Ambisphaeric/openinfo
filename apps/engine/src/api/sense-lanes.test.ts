@@ -135,6 +135,7 @@ test('authenticated live-sense route + WS preserve three metadata-only physical 
       completedAt: transcript.processedAt,
       lagMs: 275,
       basis: 'capture-to-processing-completion',
+      outcome: 'processed',
     })
 
     // A ScreenFrameMeta companion is accepted by the generic capture transport but is not a physical

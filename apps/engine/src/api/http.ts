@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
@@ -872,6 +872,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, await surfacedQueueStatus(ctx))
   if (req.method === 'GET' && url.pathname === '/senses/live') return getLiveSenses(res, ctx, url)
   if (req.method === 'GET' && url.pathname === '/senses') return getSenses(res, ctx)
+  if (req.method === 'POST' && url.pathname === '/screen/observations') return postScreenCaptureObservation(req, res, ctx)
   if (url.pathname === '/screen' || url.pathname.startsWith('/screen/')) return handleScreen(req, res, ctx) // P4B: screen-OCR results + status (router owned by screen/)
   // /setup is the former name of the Settings surface — 301 to /settings, preserving any subpath +
   // query (?edit=, ?surface=, ?discover=). The old URL must keep working (README/skills/first-run).
@@ -1137,6 +1138,29 @@ function getLiveSenses(res: ServerResponse, ctx: HandlerContext, url: URL): void
   const sessionParam = url.searchParams.get('session')
   const sessionId = sessionParam !== null && sessionParam.length > 0 ? sessionParam : undefined
   send(res, 200, ctx.senseLanes.snapshotSet(workspaceId, sessionId))
+}
+
+/**
+ * POST /screen/observations (#174) — accept one closed, metadata-only account of a client capture
+ * attempt. Pixels and derived content are structurally impossible at this boundary: TypeBox rejects
+ * every extra field before the observation reaches the live read model. The route is mounted inside the
+ * ordinary control-plane router, so Host/Origin/auth/JSON checks have already run before the body is read.
+ *
+ * A queued observation normally follows POST /capture/screen, whose durable append already announced the
+ * same capture. Its first exact confirmation may emit a second transition because it adds capture-side
+ * health evidence; duplicate confirmations are strict no-ops. Invalid, stale, or otherwise non-advancing
+ * observations likewise cannot mutate or emit. Returning the current row gives this best-effort client
+ * telemetry a stable closed response without inventing a new error/content channel.
+ */
+async function postScreenCaptureObservation(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('ScreenCaptureObservation', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid ScreenCaptureObservation', details: errors })
+  const observation = body as ScreenCaptureObservation
+  const update = ctx.senseLanes.recordScreenCaptureObservation(observation)
+  await publishSenseLaneUpdates(ctx.bus, update)
+  const current = update ?? ctx.senseLanes.snapshotSet(observation.workspaceId, observation.sessionId).lanes[2]
+  send(res, 200, current)
 }
 
 /**

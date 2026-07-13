@@ -6,6 +6,7 @@ import type {
   OcrResult,
   QueueFailure,
   ScreenContentType,
+  ScreenProcessingOutcome,
   ScreenStatus,
   VlmInvokeParams,
   WorkflowStep,
@@ -57,6 +58,11 @@ export interface ScreenOcrProcessorDeps {
   publishDistillate?: (distillate: Distillate) => void | Promise<void>
   /** publish the raw OcrResult on the engine-internal bus (ocr.completed); optional. */
   publishOcr?: (result: OcrResult) => void | Promise<void>
+  /**
+   * Report a metadata-only terminal screen outcome to the live read model. Successful nonblank OCR uses
+   * the existing `ocr.completed` path as its one canonical signal; this seam reports only blank/failed.
+   */
+  reportProcessingOutcome?: (outcome: ScreenProcessingOutcome) => void | Promise<void>
   now?: () => Date
   newId?: () => string
   log?: (message: string) => void
@@ -102,6 +108,7 @@ export class ScreenOcrProcessor {
   private readonly invokeVlmFn: ScreenVlmInvoke
   private readonly publishDistillate: ((d: Distillate) => void | Promise<void>) | undefined
   private readonly publishOcr: ((r: OcrResult) => void | Promise<void>) | undefined
+  private readonly reportProcessingOutcome: ((outcome: ScreenProcessingOutcome) => void | Promise<void>) | undefined
   private readonly now: () => Date
   private readonly newId: () => string
   private readonly log: (message: string) => void
@@ -118,6 +125,7 @@ export class ScreenOcrProcessor {
     this.runtimeManager = deps.runtimeManager
     this.publishDistillate = deps.publishDistillate
     this.publishOcr = deps.publishOcr
+    this.reportProcessingOutcome = deps.reportProcessingOutcome
     this.now = deps.now ?? (() => new Date())
     this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
@@ -144,6 +152,9 @@ export class ScreenOcrProcessor {
       await this.recognize(chunk)
     } catch (error) {
       // Belt-and-suspenders: a store write or any unexpected throw must not propagate into the ingest path.
+      this.counts.failed++
+      this.recordFailure(error)
+      await this.reportOutcome(chunk, 'failed')
       this.log(`screen ocr processor error on chunk ${chunk.id}: ${message(error)}`)
     }
   }
@@ -192,15 +203,25 @@ export class ScreenOcrProcessor {
         this.counts.skipped++
         continue
       }
-      const result = await this.invokeSlot(slot, chunk, prompt) // throws PROPAGATE → the drain re-queues
-      if (result.text.trim() === '') {
-        this.counts.blank++
-        this.log(`screen frame ${chunk.id} recognized as blank (no text) [${slot}]`)
-        continue
+      try {
+        const result = await this.invokeSlot(slot, chunk, prompt) // throws PROPAGATE → the drain re-queues
+        if (result.text.trim() === '') {
+          this.counts.blank++
+          await this.reportOutcome(chunk, 'blank')
+          this.log(`screen frame ${chunk.id} recognized as blank (no text) [${slot}]`)
+          continue
+        }
+        await this.persist(chunk, result)
+        this.counts.processed++
+        this.log(`screen frame ${chunk.id} → ${slot} (${result.text.length} chars) via ${result.endpoint} on the drain`)
+      } catch (error) {
+        // This is real workflow work: record the safe terminal metadata, then preserve the queue's exact
+        // original rejection so retry/classification semantics remain unchanged. Reporter errors are
+        // swallowed inside reportOutcome and therefore can never replace this error.
+        this.counts.failed++
+        await this.reportOutcome(chunk, 'failed')
+        throw error
       }
-      await this.persist(chunk, result)
-      this.counts.processed++
-      this.log(`screen frame ${chunk.id} → ${slot} (${result.text.length} chars) via ${result.endpoint} on the drain`)
     }
   }
 
@@ -221,6 +242,7 @@ export class ScreenOcrProcessor {
     } catch (error) {
       this.counts.failed++
       this.recordFailure(error)
+      await this.reportOutcome(chunk, 'failed')
       this.log(`screen ocr failed on frame ${chunk.id}: ${message(error)}`)
       return
     }
@@ -229,6 +251,7 @@ export class ScreenOcrProcessor {
     // (nothing to say) but count it so status is honest about how many frames were seen.
     if (result.text.trim() === '') {
       this.counts.blank++
+      await this.reportOutcome(chunk, 'blank')
       this.log(`screen frame ${chunk.id} recognized as blank (no text)`)
       return
     }
@@ -236,6 +259,28 @@ export class ScreenOcrProcessor {
     await this.persist(chunk, result)
     this.counts.processed++
     this.log(`screen frame ${chunk.id} → ocr (${result.text.length} chars) via ${result.endpoint} [${result.slot}]`)
+  }
+
+  /**
+   * Send only the closed correlation/timing record. This helper deliberately cannot accept extracted
+   * text, pixels, endpoint/model provenance, or exception strings. Reporting is observational: a broken
+   * tracker/bus must never change whether legacy OCR resolves or workflow OCR throws its original error.
+   */
+  private async reportOutcome(chunk: CaptureChunk, outcome: 'blank' | 'failed'): Promise<void> {
+    if (!this.reportProcessingOutcome) return
+    const report: ScreenProcessingOutcome = {
+      workspaceId: chunk.workspaceId,
+      sessionId: chunk.sessionId,
+      outcome,
+      capture: { id: chunk.id, capturedAt: chunk.capturedAt },
+      completedAt: this.now().toISOString(),
+    }
+    try {
+      await this.reportProcessingOutcome(report)
+    } catch {
+      // Do not interpolate the thrown value: arbitrary reporter/server text is not safe telemetry.
+      this.log(`screen processing outcome reporter failed for frame ${chunk.id}`)
+    }
   }
 
   /**

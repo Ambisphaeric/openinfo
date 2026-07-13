@@ -390,15 +390,15 @@ export const QueueStatus = Type.Object(
 export type QueueStatus = Static<typeof QueueStatus>
 
 /**
- * The screen-OCR processor's status (GET /screen/status; P4B). The screen processor rides capture
- * ingest (NOT the queue drain — it is not owned by queue/), so its health has no home on QueueStatus;
- * this is that home. `enabled` echoes the `screen.ocr` flag (read per-frame). The counters are the
- * frames the processor has seen since the engine started: `processed` produced an OcrResult + a
- * distillate; `blank` were recognized as empty (a blank frame — persisted as neither, see PHASE4-NOTES);
- * `skipped` were the companion ScreenFrameMeta chunks (utf8/json) it correctly ignores; `failed` threw
- * an invoke error. `lastFailures` is a bounded ring of the most-recent classified failures — the same
- * QueueFailure taxonomy the drain records, so "why nothing was recognized" reads identically. In-memory
- * (resets on restart), value-free re keys (a QueueFailure carries a keyRef, never a value).
+ * The screen-OCR processor's status (GET /screen/status; P4B), shared by legacy capture-ingest and
+ * workflow-drain recognition. `enabled` echoes the `screen.ocr` flag (read per-frame). The counters are
+ * the frames the processor has seen since the engine started: `processed` produced an OcrResult + a
+ * distillate; `blank` were recognized as empty (persisted as neither, see PHASE4-NOTES); `skipped` were
+ * companion ScreenFrameMeta chunks (utf8/json), never client-side delta skips; `failed` hit recognition
+ * or persistence failure on either path. `lastFailures` is only the bounded classified detail ring for
+ * the best-effort legacy-ingest path. Workflow-drain failure detail belongs to QueueStatus, which owns
+ * its retry lifecycle. In-memory (resets on restart), value-free re keys (a QueueFailure carries a
+ * keyRef, never a value).
  */
 export const ScreenStatus = Type.Object(
   {
@@ -406,8 +406,8 @@ export const ScreenStatus = Type.Object(
     processed: Type.Integer({ minimum: 0, description: 'frames that produced an OcrResult + distillate' }),
     blank: Type.Integer({ minimum: 0, description: 'frames recognized as empty (a blank frame; no record persisted)' }),
     skipped: Type.Integer({ minimum: 0, description: 'companion ScreenFrameMeta (utf8/json) chunks correctly ignored' }),
-    failed: Type.Integer({ minimum: 0, description: 'frames whose OCR/VLM invoke threw (recorded in lastFailures)' }),
-    lastFailures: Type.Array(QueueFailure, { description: 'bounded ring of the most-recent classified frame failures (newest last)' }),
+    failed: Type.Integer({ minimum: 0, description: 'frames with recognition or persistence failure across legacy ingest and workflow drain' }),
+    lastFailures: Type.Array(QueueFailure, { description: 'bounded classified legacy-ingest failures (newest last); workflow-drain failure detail lives in QueueStatus' }),
   },
   { $id: 'ScreenStatus', additionalProperties: false },
 )

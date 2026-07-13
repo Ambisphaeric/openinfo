@@ -1,6 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, OcrResult, Session, TranscriptUpdate } from '@openinfo/contracts'
+import type {
+  CaptureChunk,
+  OcrResult,
+  ScreenCaptureObservation,
+  ScreenProcessingOutcome,
+  Session,
+  TranscriptUpdate,
+} from '@openinfo/contracts'
 import { SenseLaneTracker } from './live.js'
 
 const session = (
@@ -31,6 +38,23 @@ const ocr = (over: Partial<OcrResult> = {}): OcrResult => ({
   id: 'ocr-1', sessionId: 's1', workspaceId: 'w1', sourceChunks: ['screen-1'],
   text: 'PRIVATE OCR', provenance: { slot: 'ocr', endpoint: 'local-test' }, schemaVersion: 1,
   createdAt: '2026-07-13T10:00:03.000Z', capturedAt: '2026-07-13T10:00:02.000Z',
+  ...over,
+})
+
+const screenObservation = (
+  over: Partial<ScreenCaptureObservation> = {},
+): ScreenCaptureObservation => ({
+  workspaceId: 'w1', sessionId: 's1', outcome: 'queued',
+  capture: { id: 'screen-1', capturedAt: '2026-07-13T10:00:02.000Z' },
+  ...over,
+} as ScreenCaptureObservation)
+
+const screenProcessing = (
+  over: Partial<ScreenProcessingOutcome> = {},
+): ScreenProcessingOutcome => ({
+  workspaceId: 'w1', sessionId: 's1', outcome: 'processed',
+  capture: { id: 'screen-1', capturedAt: '2026-07-13T10:00:02.000Z' },
+  completedAt: '2026-07-13T10:00:03.000Z',
   ...over,
 })
 
@@ -152,9 +176,11 @@ test('transcript completion requires exact canonical source ids/ranges and clamp
   assert.equal(processed?.disposition, 'processed')
   assert.deepEqual(processed?.latestProcessing, {
     captureId: 'mic-2', capturedAt: '2026-07-13T10:00:02.000Z',
-    completedAt: '2026-07-13T10:00:01.500Z', lagMs: 0, basis: 'capture-to-processing-completion',
+    completedAt: '2026-07-13T10:00:01.500Z', outcome: 'processed', lagMs: 0, basis: 'capture-to-processing-completion',
   })
   assert.equal(tracker.recordTranscript(exact), undefined, 'same completion retry is idempotent')
+  const afterRetry = tracker.snapshotSet('w1').lanes[0]
+  assert.deepEqual(afterRetry, processed, 'audio retry cannot mutate state after the screen outcome refactor')
 
   const serialized = JSON.stringify(tracker.snapshotSet('w1'))
   for (const forbidden of ['PRIVATE', 'TRANSCRIPT', 'text', 'data', 'preview', 'hash', 'error']) {
@@ -235,4 +261,272 @@ test('OCR exact correlation: older late completion advances evidence but never c
   const laterQueue = tracker.recordCapture(capture({ id: 'screen-c', source: 'screen', sequence: 3, capturedAt: '2026-07-13T10:00:10.000Z', contentType: 'image/jpeg' }))
   assert.equal(laterQueue?.disposition, 'queued')
   assert.equal(laterQueue?.health, 'healthy', 'a prior processing success is retained as lane health evidence')
+})
+
+test('screen capture observations are ordered, metadata-only, and cannot manufacture queue truth', () => {
+  const time = clock()
+  const tracker = new SenseLaneTracker({ now: time.now })
+  tracker.startSession(session())
+  const before = tracker.snapshotSet('w1')
+
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation()), undefined, 'unknown capture cannot claim queued')
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'delta-skipped', observationId: 'cross', occurredAt: '2026-07-13T10:00:01.000Z',
+    workspaceId: 'other',
+  })), undefined)
+  assert.deepEqual(tracker.snapshotSet('w1'), before)
+
+  tracker.recordCapture(capture({
+    id: 'screen-1', source: 'screen', sequence: 1,
+    capturedAt: '2026-07-13T10:00:02.000Z', contentType: 'image/jpeg',
+  }))
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation({
+    capture: { id: 'screen-1', capturedAt: '2026-07-13T10:00:02.001Z' },
+  })), undefined, 'capturedAt must correlate exactly')
+  time.tick()
+  const queued = tracker.recordScreenCaptureObservation(screenObservation())
+  assert.equal(queued?.disposition, 'queued')
+  assert.equal(queued?.health, 'healthy')
+  assert.equal(queued?.reason, 'awaiting-processing')
+  assert.deepEqual(queued?.latestCapture, { id: 'screen-1', capturedAt: '2026-07-13T10:00:02.000Z' })
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation()), undefined, 'queue confirmation is idempotent')
+
+  time.tick()
+  const skipped = tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'delta-skipped', observationId: 'attempt-2', occurredAt: '2026-07-13T10:00:04.000Z',
+  }))
+  assert.equal(skipped?.disposition, 'delta-skipped')
+  assert.equal(skipped?.health, 'healthy')
+  assert.equal(skipped?.reason, 'delta-skipped')
+  assert.deepEqual(skipped?.latestCapture, queued?.latestCapture, 'a delta skip is not a physical capture')
+  assert.equal(skipped?.source, 'screen')
+  if (skipped?.source === 'screen') {
+    assert.deepEqual(skipped.latestObservation, {
+      id: 'attempt-2', occurredAt: '2026-07-13T10:00:04.000Z', outcome: 'delta-skipped',
+    })
+    ;(skipped.latestObservation as { id: string }).id = 'mutated-return-value'
+  }
+  assert.equal(tracker.snapshotSet('w1').lanes[2].latestObservation?.id, 'attempt-2', 'nested attempt evidence is cloned')
+
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'grab-failed', observationId: 'attempt-old', occurredAt: '2026-07-13T10:00:03.000Z',
+  })), undefined, 'older attempt cannot overwrite a newer observation')
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'grab-failed', observationId: 'attempt-old', occurredAt: '2026-07-13T10:00:06.000Z',
+  })), undefined, 'a stale attempt cannot be replayed with a manufactured newer time')
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'grab-failed', observationId: 'attempt-2', occurredAt: '2026-07-13T10:00:05.000Z',
+  })), undefined, 'an observation id is single-use even if retried with altered time')
+
+  time.tick()
+  const failed = tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'grab-failed', observationId: 'attempt-3', occurredAt: '2026-07-13T10:00:05.000Z',
+  }))
+  assert.equal(failed?.disposition, 'failed')
+  assert.equal(failed?.health, 'failed')
+  assert.equal(failed?.reason, 'capture-failed')
+  assert.deepEqual(failed?.latestCapture, queued?.latestCapture, 'a failed grab is not a physical capture')
+  assert.equal(failed?.source, 'screen')
+  if (failed?.source === 'screen') {
+    assert.deepEqual(failed.latestObservation, {
+      id: 'attempt-3', occurredAt: '2026-07-13T10:00:05.000Z', outcome: 'grab-failed',
+    })
+  }
+  assert.ok(tracker.snapshotSet('w1').lanes.slice(0, 2).every((lane) => lane.disposition === 'waiting'), 'screen observations never alter audio lanes')
+
+  time.tick()
+  const latePhysical = tracker.recordCapture(capture({
+    id: 'screen-late', source: 'screen', sequence: 2,
+    capturedAt: '2026-07-13T10:00:04.500Z', contentType: 'image/jpeg',
+  }))
+  assert.equal(latePhysical?.latestCapture?.id, 'screen-late', 'source sequence still advances physical capture evidence')
+  assert.equal(latePhysical?.reason, 'capture-failed', 'an older frame time cannot repaint a newer failed-grab observation')
+  assert.equal(latePhysical?.source, 'screen')
+  if (latePhysical?.source === 'screen') assert.equal(latePhysical.latestObservation?.id, 'attempt-3')
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation({
+    capture: { id: 'screen-late', capturedAt: '2026-07-13T10:00:04.500Z' },
+  })), undefined, 'a late accepted frame cannot use queue confirmation to repaint the newer observation')
+  const lateProcessed = tracker.recordScreenProcessingOutcome(screenProcessing({
+    capture: { id: 'screen-late', capturedAt: '2026-07-13T10:00:04.500Z' },
+    completedAt: '2026-07-13T10:00:06.000Z',
+  }))
+  assert.equal(lateProcessed?.reason, 'capture-failed', 'late processing may advance evidence without repainting newer attempt truth')
+  assert.equal(lateProcessed?.latestProcessing?.captureId, 'screen-late')
+  assert.equal(lateProcessed?.latestProcessing?.outcome, 'processed')
+  assert.equal(lateProcessed?.source, 'screen')
+  if (lateProcessed?.source === 'screen') assert.equal(lateProcessed.latestObservation?.id, 'attempt-3')
+
+  const serialized = JSON.stringify(tracker.snapshotSet('w1'))
+  for (const forbidden of ['PRIVATE', 'text', 'data', 'preview', 'hash', 'display', 'deltaScore', 'error']) {
+    assert.equal(serialized.includes(forbidden), false, `${forbidden} never enters the read model`)
+  }
+
+  const visiblyNewerCapture = tracker.recordCapture(capture({
+    id: 'screen-new', source: 'screen', sequence: 3,
+    capturedAt: '2026-07-13T10:00:07.000Z', contentType: 'image/jpeg',
+  }))
+  assert.equal(visiblyNewerCapture?.disposition, 'queued')
+  assert.equal(visiblyNewerCapture?.source, 'screen')
+  if (visiblyNewerCapture?.source === 'screen') {
+    assert.equal(visiblyNewerCapture.latestObservation, undefined, 'new visible physical truth clears older attempt provenance')
+  }
+})
+
+test('screen processing outcomes preserve exact evidence across races and allow only safe retry upgrades', () => {
+  const time = clock()
+  const tracker = new SenseLaneTracker({ now: time.now })
+  tracker.startSession(session())
+  tracker.recordCapture(capture({
+    id: 'screen-a', source: 'screen', sequence: 1,
+    capturedAt: '2026-07-13T10:00:02.000Z', contentType: 'image/jpeg',
+  }))
+  tracker.recordCapture(capture({
+    id: 'screen-b', source: 'screen', sequence: 2,
+    capturedAt: '2026-07-13T10:00:04.000Z', contentType: 'image/jpeg',
+  }))
+
+  time.tick()
+  const olderFailed = tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'failed', capture: { id: 'screen-a', capturedAt: '2026-07-13T10:00:02.000Z' },
+    completedAt: '2026-07-13T10:00:08.000Z',
+  }))
+  assert.equal(olderFailed?.disposition, 'queued', 'older processing never clears a newer capture queue')
+  assert.deepEqual(olderFailed?.latestProcessing, {
+    captureId: 'screen-a', capturedAt: '2026-07-13T10:00:02.000Z',
+    completedAt: '2026-07-13T10:00:08.000Z', outcome: 'failed', lagMs: 6_000,
+    basis: 'capture-to-processing-completion',
+  })
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'failed', capture: { id: 'screen-a', capturedAt: '2026-07-13T10:00:02.000Z' },
+    completedAt: '2026-07-13T10:00:09.000Z',
+  })), undefined, 'same failure retry is a no-op')
+
+  time.tick()
+  const olderRecovered = tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'processed', capture: { id: 'screen-a', capturedAt: '2026-07-13T10:00:02.000Z' },
+    completedAt: '2026-07-13T10:00:10.000Z',
+  }))
+  assert.equal(olderRecovered?.disposition, 'queued', 'successful retry of older frame still leaves newer queue visible')
+  assert.equal(olderRecovered?.latestProcessing?.captureId, 'screen-a')
+  assert.equal(olderRecovered?.latestProcessing?.completedAt, '2026-07-13T10:00:10.000Z')
+  assert.equal(olderRecovered?.latestProcessing?.outcome, 'processed')
+
+  time.tick()
+  const blank = tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'blank', capture: { id: 'screen-b', capturedAt: '2026-07-13T10:00:04.000Z' },
+    completedAt: '2026-07-13T10:00:09.000Z',
+  }))
+  assert.equal(blank?.disposition, 'blank')
+  assert.equal(blank?.health, 'healthy')
+  assert.equal(blank?.reason, 'blank')
+  assert.equal(blank?.latestProcessing?.captureId, 'screen-a', 'visible result and latest completion evidence remain independently truthful')
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'failed', capture: { id: 'screen-b', capturedAt: '2026-07-13T10:00:04.000Z' },
+    completedAt: '2026-07-13T10:00:11.000Z',
+  })), undefined, 'successful terminal cannot regress to failure')
+
+  time.tick()
+  const upgraded = tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'processed', capture: { id: 'screen-b', capturedAt: '2026-07-13T10:00:04.000Z' },
+    completedAt: '2026-07-13T10:00:12.000Z',
+  }))
+  assert.equal(upgraded?.disposition, 'processed', 'a blank retry may upgrade when OCR later finds content')
+  assert.equal(upgraded?.latestProcessing?.captureId, 'screen-b')
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'blank', capture: { id: 'screen-b', capturedAt: '2026-07-13T10:00:04.000Z' },
+    completedAt: '2026-07-13T10:00:13.000Z',
+  })), undefined, 'processed never regresses to blank')
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({
+    capture: { id: 'screen-b', capturedAt: 'wrong-time' },
+  })), undefined, 'capture timestamp correlation is exact')
+
+  tracker.recordCapture(capture({
+    id: 'screen-c', source: 'screen', sequence: 3,
+    capturedAt: '2026-07-13T10:00:14.000Z', contentType: 'image/jpeg',
+  }))
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'failed', capture: { id: 'screen-c', capturedAt: '2026-07-13T10:00:14.000Z' },
+    completedAt: '2026-07-13T10:00:15.000Z',
+  }))?.reason, 'processing-failed')
+  const recoveredBlank = tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'blank', capture: { id: 'screen-c', capturedAt: '2026-07-13T10:00:14.000Z' },
+    completedAt: '2026-07-13T10:00:16.000Z',
+  }))
+  assert.equal(recoveredBlank?.disposition, 'blank', 'a failed frame may become honestly blank after retry')
+  assert.equal(recoveredBlank?.latestProcessing?.outcome, 'blank')
+})
+
+test('direct OCR can beat redundant queue observation and ended sessions reject all late screen work', () => {
+  const tracker = new SenseLaneTracker({ now: () => new Date('2026-07-13T12:00:00.000Z') })
+  tracker.startSession(session())
+  tracker.recordCapture(capture({
+    id: 'screen-1', source: 'screen', sequence: 1,
+    capturedAt: '2026-07-13T10:00:02.000Z', contentType: 'image/jpeg',
+  }))
+  assert.equal(tracker.recordOcr(ocr())?.disposition, 'processed')
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation()), undefined, 'late queue ack cannot regress direct OCR')
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({ outcome: 'failed' })), undefined, 'direct OCR success cannot regress')
+
+  const observed = tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'delta-skipped', observationId: 'before-end', occurredAt: '2026-07-13T10:00:04.000Z',
+  }))
+  assert.equal(observed?.source, 'screen')
+  if (observed?.source === 'screen') assert.equal(observed.latestObservation?.id, 'before-end')
+  const ended = tracker.endSession({ ...session(), endedAt: '2026-07-13T10:01:00.000Z' })
+  assert.equal(ended[2]?.source, 'screen')
+  if (ended[2]?.source === 'screen') {
+    assert.equal(ended[2].latestObservation, undefined, 'session-ended truth replaces attempt-derived visible provenance')
+  }
+  assert.equal(tracker.recordScreenCaptureObservation(screenObservation({
+    outcome: 'delta-skipped', observationId: 'late', occurredAt: '2026-07-13T10:01:01.000Z',
+  })), undefined)
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'blank', completedAt: '2026-07-13T10:01:01.000Z',
+  })), undefined)
+})
+
+test('same-frame outcome upgrades keep evidence atomic and a prior failure never paints a new queue healthy', () => {
+  const tracker = new SenseLaneTracker({ now: () => new Date('2026-07-13T12:00:00.000Z') })
+  tracker.startSession(session())
+  tracker.recordCapture(capture({
+    id: 'screen-1', source: 'screen', sequence: 1,
+    capturedAt: '2026-07-13T10:00:02.000Z', contentType: 'image/jpeg',
+  }))
+  const failed = tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'failed', completedAt: '2026-07-13T10:00:05.000Z',
+  }))
+  assert.equal(failed?.latestProcessing?.outcome, 'failed')
+
+  const beforeStaleUpgrade = tracker.snapshotSet('w1').lanes[2]
+  assert.equal(tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'processed', completedAt: '2026-07-13T10:00:04.999Z',
+  })), undefined, 'an older completion cannot rewrite a newer failure')
+  assert.deepEqual(tracker.snapshotSet('w1').lanes[2], beforeStaleUpgrade)
+
+  const equalTimeUpgrade = tracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'blank', completedAt: '2026-07-13T10:00:05.000Z',
+  }))
+  assert.equal(equalTimeUpgrade?.disposition, 'blank')
+  assert.deepEqual(equalTimeUpgrade?.latestProcessing, {
+    captureId: 'screen-1', capturedAt: '2026-07-13T10:00:02.000Z',
+    completedAt: '2026-07-13T10:00:05.000Z', outcome: 'blank', lagMs: 3_000,
+    basis: 'capture-to-processing-completion',
+  }, 'an accepted equal-time semantic upgrade replaces its same-capture evidence atomically')
+
+  const failedTracker = new SenseLaneTracker({ now: () => new Date('2026-07-13T12:00:00.000Z') })
+  failedTracker.startSession(session())
+  failedTracker.recordCapture(capture({
+    id: 'failed-a', source: 'screen', sequence: 1,
+    capturedAt: '2026-07-13T10:00:06.000Z', contentType: 'image/jpeg',
+  }))
+  failedTracker.recordScreenProcessingOutcome(screenProcessing({
+    outcome: 'failed', capture: { id: 'failed-a', capturedAt: '2026-07-13T10:00:06.000Z' },
+    completedAt: '2026-07-13T10:00:07.000Z',
+  }))
+  const nextQueue = failedTracker.recordCapture(capture({
+    id: 'after-failure', source: 'screen', sequence: 2,
+    capturedAt: '2026-07-13T10:00:08.000Z', contentType: 'image/jpeg',
+  }))
+  assert.equal(nextQueue?.disposition, 'queued')
+  assert.equal(nextQueue?.health, 'unknown', 'failed processing is not evidence that the next frame processor is healthy')
 })

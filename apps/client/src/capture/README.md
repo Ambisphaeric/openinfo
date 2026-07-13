@@ -71,6 +71,15 @@ system silent)`**) rather than pretending to record. Once audio flows it reads *
 Install BlackHole with `brew install blackhole-2ch`. Disable the second stream entirely with
 `OPENINFO_SYSTEM_AUDIO=0` (mic stays on); it is otherwise a no-op when no device is present.
 
+**Screen capture — SHIPPED, opt-in.** While a consented session is live, the main process grabs a still
+frame every 3–6 seconds, applies the per-display delta gate, and durably POSTs/spools accepted JPEGs plus
+their adjacent `ScreenFrameMeta` chunks. `screen-observation.ts` wraps each tick with one canonical id/time
+and reports a metadata-only outcome to authenticated `POST /screen/observations`: `queued` only after the
+exact image chunk is durably accepted, otherwise `delta-skipped` or `grab-failed`. Observation reports
+contain no pixels/text/preview/hash/error/display metadata and are deliberately ephemeral (never spooled),
+so a read-model outage cannot interrupt capture. `CaptureController.onSegment` returns the exact accepted
+primary chunk for this correlation; companion metadata failure cannot revoke a durable image receipt.
+
 **Focus capture — SHIPPED (foreground-window context, P3).** A main-process poller samples the
 frontmost app + window title on a modest cadence (~3s) and emits a `FocusSignal` ONLY on change. It is
 CONTEXT, not media: no hidden renderer, no getUserMedia, no session — it watches to feed the engine's
@@ -105,6 +114,6 @@ Still to come (glass transplant / later phases):
   default there), and an auto-fallback to `device` when the tap yields silence.
 - `audio-tap/` — a from-source native CoreAudio process-tap, only if the Chromium tap ever proves
   insufficient (no user routing; ARCHITECTURE §8 route (b)-native)
-  · `aec/` (P1–2, pending the AEC spike) · `screen.ts` (Δ-diff gate, P1/P3) · `calendar.ts` (P2,
+  · `aec/` (P1–2, pending the AEC spike) · `calendar.ts` (P2,
   read-only) · `camera.ts` (P7, flagged).
 Inputs are user-configurable sources: each exposes on/off + cadence to the palette (P6).

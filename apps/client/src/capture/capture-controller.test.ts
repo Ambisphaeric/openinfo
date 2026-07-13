@@ -369,6 +369,55 @@ test('screen: each frame emits TWO adjacent chunks — the image then its compan
   assert.deepEqual(JSON.parse(meta?.data ?? '{}'), { displayId: 'display-1', width: 1920, height: 1080, scale: 2 })
 })
 
+test('screen: onSegment returns the exact durable image receipt; a companion-meta failure cannot revoke it', async () => {
+  const attempted: CaptureChunk[] = []
+  const h = harness({
+    source: 'screen',
+    capture: async (chunk) => {
+      attempted.push(chunk)
+      if (chunk.encoding === 'utf8') throw new Error('metadata spool unavailable')
+    },
+  })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  const accepted = await h.controller.onSegment(screenSeg())
+  assert.equal(accepted?.id, 'scr-A-000001')
+  assert.equal(accepted?.capturedAt, '2026-07-07T10:00:00.000Z')
+  assert.deepEqual(attempted.map((chunk) => chunk.id), ['scr-A-000001', 'scr-A-000002'])
+})
+
+test('screen: primary capture/spool rejection returns no receipt and does not send orphan metadata', async () => {
+  const attempted: CaptureChunk[] = []
+  const h = harness({
+    source: 'screen',
+    capture: async (chunk) => {
+      attempted.push(chunk)
+      throw new Error('capture and spool unavailable')
+    },
+  })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(await h.controller.onSegment(screenSeg()), undefined)
+  assert.deepEqual(attempted.map((chunk) => chunk.id), ['scr-A-000001'])
+})
+
+test('screen: pixels grabbed under run A are rejected if run B becomes current before onSegment', async () => {
+  const h = harness({ source: 'screen' })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  const attemptContext = h.controller.currentContext
+  assert.deepEqual(attemptContext, { sessionId: 'A', workspaceId: 'ws' })
+
+  h.controller.onSessionEnded()
+  await h.controller.onCaptureStopped()
+  await h.controller.onSessionStarted({ sessionId: 'B', workspaceId: 'ws' })
+
+  assert.equal(await h.controller.onSegment(screenSeg(), attemptContext), undefined)
+  assert.deepEqual(h.captured, [], 'old pixels must never be emitted under B')
+  assert.equal(h.controller.currentState, 'starting', 'a rejected stale frame must not claim B is capturing')
+
+  const accepted = await h.controller.onSegment(screenSeg(), h.controller.currentContext)
+  assert.equal(accepted?.sessionId, 'B')
+  assert.equal(accepted?.id, 'scr-B-000001')
+})
+
 test('screen: consecutive frames keep advancing the shared sequence (image/meta/image/meta…)', async () => {
   const h = harness({ source: 'screen' })
   await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })

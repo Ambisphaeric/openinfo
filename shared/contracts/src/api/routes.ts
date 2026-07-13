@@ -79,6 +79,7 @@ export const Routes: readonly RouteDef[] = [
   { method: 'GET', path: '/queue', response: 'QueueStatus', phase: 3 },
   { method: 'GET', path: '/senses', response: 'SenseGateChain[]', phase: 4 },
   { method: 'GET', path: '/senses/live', response: 'SenseLaneSnapshotSet', phase: 4 },
+  { method: 'POST', path: '/screen/observations', request: 'ScreenCaptureObservation', response: 'SenseLaneSnapshot', phase: 4 },
   { method: 'GET', path: '/screen/results', response: 'OcrResult[]', phase: 4 },
   { method: 'GET', path: '/screen/status', response: 'ScreenStatus', phase: 4 },
 ] as const

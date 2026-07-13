@@ -187,6 +187,7 @@
                 "captureId",
                 "capturedAt",
                 "completedAt",
+                "outcome",
                 "lagMs",
                 "basis"
               ],
@@ -205,6 +206,23 @@
                   "format": "date-time",
                   "description": "ISO-8601 timestamp",
                   "type": "string"
+                },
+                "outcome": {
+                  "description": "the terminal result supported by this exact processing evidence",
+                  "anyOf": [
+                    {
+                      "const": "processed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "blank",
+                      "type": "string"
+                    },
+                    {
+                      "const": "failed",
+                      "type": "string"
+                    }
+                  ]
                 },
                 "lagMs": {
                   "minimum": 0,
@@ -387,6 +405,7 @@
                 "captureId",
                 "capturedAt",
                 "completedAt",
+                "outcome",
                 "lagMs",
                 "basis"
               ],
@@ -405,6 +424,23 @@
                   "format": "date-time",
                   "description": "ISO-8601 timestamp",
                   "type": "string"
+                },
+                "outcome": {
+                  "description": "the terminal result supported by this exact processing evidence",
+                  "anyOf": [
+                    {
+                      "const": "processed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "blank",
+                      "type": "string"
+                    },
+                    {
+                      "const": "failed",
+                      "type": "string"
+                    }
+                  ]
                 },
                 "lagMs": {
                   "minimum": 0,
@@ -587,6 +623,7 @@
                 "captureId",
                 "capturedAt",
                 "completedAt",
+                "outcome",
                 "lagMs",
                 "basis"
               ],
@@ -606,6 +643,23 @@
                   "description": "ISO-8601 timestamp",
                   "type": "string"
                 },
+                "outcome": {
+                  "description": "the terminal result supported by this exact processing evidence",
+                  "anyOf": [
+                    {
+                      "const": "processed",
+                      "type": "string"
+                    },
+                    {
+                      "const": "blank",
+                      "type": "string"
+                    },
+                    {
+                      "const": "failed",
+                      "type": "string"
+                    }
+                  ]
+                },
                 "lagMs": {
                   "minimum": 0,
                   "type": "integer"
@@ -615,6 +669,41 @@
                   "description": "latestProcessing.lagMs = max(0, latestProcessing.completedAt - latestProcessing.capturedAt)",
                   "const": "capture-to-processing-completion",
                   "type": "string"
+                }
+              }
+            },
+            "latestObservation": {
+              "$id": "ScreenLaneObservation",
+              "additionalProperties": false,
+              "description": "metadata-only derivation evidence for a visible screen delta-skip or failed grab",
+              "type": "object",
+              "required": [
+                "id",
+                "occurredAt",
+                "outcome"
+              ],
+              "properties": {
+                "id": {
+                  "minLength": 1,
+                  "description": "opaque identifier",
+                  "type": "string"
+                },
+                "occurredAt": {
+                  "format": "date-time",
+                  "description": "ISO-8601 timestamp",
+                  "type": "string"
+                },
+                "outcome": {
+                  "anyOf": [
+                    {
+                      "const": "delta-skipped",
+                      "type": "string"
+                    },
+                    {
+                      "const": "grab-failed",
+                      "type": "string"
+                    }
+                  ]
                 }
               }
             }

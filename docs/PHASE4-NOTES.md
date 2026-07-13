@@ -5172,12 +5172,61 @@ revalidated against `SenseLaneSnapshot` at egress and fail closed on invalid or 
 transcript/OCR text, arbitrary errors, region blocks, and endpoint provenance never enter the projection;
 `ocr.completed` remains internal, and the existing public `capture.received` receipt remains metadata-only.
 
-Still remaining: the client HUD/pill does not yet hydrate or subscribe to these rows, and processor-specific
-screen outcomes such as delta-skipped, blank, and failed are contract vocabulary rather than wired runtime
-transitions. The automated test drives a synthetic correlated `ocr.completed` result; it does not establish
-real-model OCR/VLM quality or prove the owner's local OCR pipeline works. Those UI, outcome, and hardware
-dogfood steps remain explicit follow-on work rather than being inferred from this substrate.
+At the Slice B boundary, the client HUD/pill did not yet hydrate or subscribe to these rows, and
+processor-specific screen outcomes such as delta-skipped, blank, and failed were contract vocabulary rather
+than wired runtime transitions. Its automated test drove a synthetic correlated `ocr.completed` result; it
+did not establish real-model OCR/VLM quality or prove the owner's local OCR pipeline works. Slice C below
+closes the runtime-outcome gap while leaving UI rendering and real-hardware dogfood explicitly unclaimed.
 
 Evidence: schema generation/drift and contracts **96/96**; the focused reducer/authenticated-route/real-WS
 security set **30/30**; full engine **840/840**; recursive build/test and workflow-governance dry run green;
 `git diff --check` clean. No persistence schema, capture policy, flag, or version change.
+
+## Slice: truthful screen observations and processor outcomes  *(#174 slice C, 2026-07-13)*
+
+The engine now accepts client-observable capture truth through authenticated JSON
+`POST /screen/observations`. Its closed `ScreenCaptureObservation` union admits only `queued`,
+`delta-skipped`, and `grab-failed`: a queued report must exactly confirm a screen frame already accepted by
+the capture route, while the other two carry a unique attempt id and occurrence time. The route cannot
+manufacture queue state, ignores duplicate/stale/non-advancing observations, returns the current closed
+screen row, and emits `sense.lane.updated` only for a real transition. It inherits the control plane's
+Host, Origin, authentication, and JSON-media-type checks.
+
+The client now produces that truth at the physical-capture edge. `screen-observation.ts` mints one canonical
+attempt id/time around each tick and reports `queued` only from the exact image chunk returned after direct
+POST or durable local-spool acceptance; a delta rejection reports `delta-skipped`, while an empty grab,
+encode failure, or failed durable acceptance reports `grab-failed`. `CaptureController` rejects pixels when
+the expected workspace/session changed during an asynchronous grab, never emits orphan companion metadata,
+and returns the accepted image's own workspace/session/capture id/time as the queue provenance. The shell
+serializes screen attempts and resets the delta baseline after failed durability so a missing frame is
+retried. `EngineLink.observeScreen` uses the normal Bearer + one-refresh path but never the offline spool.
+Delivery stays detached from physical cadence but is bounded replace-latest: a newer report aborts its
+predecessor, and a five-second timeout aborts the final hung request, so requests cannot accumulate or stop
+physical sensing.
+
+The resulting live row truthfully distinguishes queued, delta-skipped, capture failure, blank processing,
+processing failure, and processed success. Every public transition is metadata-only audit evidence. Queued
+truth is derived from `latestCapture`; a visible delta skip or failed grab carries screen-only
+`latestObservation {id, occurredAt, outcome}` as its exact derivation evidence; processing carries the
+correlated capture id/captured time plus completion time, outcome, and fixed-basis capture-to-completion
+lag. A visibly newer physical capture clears the older attempt evidence, while late older capture or
+processing evidence cannot erase a newer visible observation. Pixels, OCR/VLM text, previews/hashes,
+endpoint/model provenance, delta scores, and arbitrary exception strings are structurally excluded. Exact
+correlation and terminal ordering make retries idempotent and ensure a later failed report cannot regress a
+capture already known to have succeeded.
+
+Successful nonblank recognition still has one canonical path: the existing internal `ocr.completed` event
+is the sole processed-success signal. The processor's new outcome seam therefore reports only `blank` and
+`failed`. On the legacy ingest path, an OCR failure is reported and then swallowed as before; on the
+workflow drain path it is reported and the exact original error is rethrown so queue retry/classification
+semantics remain intact. A reporter failure is isolated and can neither fail successful OCR nor replace the
+workflow error. Companion `ScreenFrameMeta` chunks remain status-only `skipped` counts and never fabricate a
+live processing outcome.
+
+Still unclaimed: the client HUD/pill does not yet hydrate, subscribe to, or render this truth as a
+composable live surface. Real-device OCR/VLM quality also remains unverified; these tests prove contracts,
+correlation, privacy, route/WS behavior, and processor control flow, not that the owner's configured local
+OCR/VLM pipeline produces useful results on actual screen captures.
+
+Evidence: schema generation/drift and contracts **98/98**; full engine **846/846**; full client **530/530**;
+builds green; `git diff --check` clean. No persistence schema, screen-capture policy, flag, or version change.
