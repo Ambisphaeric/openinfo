@@ -21,11 +21,12 @@ import type { Surface } from '@openinfo/contracts'
  * `startExpanded:true` so the pill opens showing its Listen glance rather than a lone bar.
  *
  * Registered as the Standard App bundle's `hud` face (bundle.standard-app.json) and seeded via
- * SEEDED_SURFACES (defaults.ts). No new block type, no renderer branch in the generic block renderer —
- * the pill's header + face switch is a per-surface LAYOUT (pill-layout.ts, selected by surface id in
+ * SEEDED_SURFACES (defaults.ts). The `sense-lanes` block is a declarative runtime-data organ — its
+ * `live-senses` query returns the same closed, metadata-only lane rows as GET /senses/live — while the
+ * pill's header + face switch remains a per-surface LAYOUT (pill-layout.ts, selected by surface id in
  * dev-entry) exactly like the note-taker's three-zone frame.
  */
-export const defaultPillSurface: Surface = {
+export const LEGACY_DEFAULT_PILL_SURFACE: Surface = {
   id: 'surf-openinfo-pill',
   name: 'openinfo',
   context: 'meeting',
@@ -63,5 +64,34 @@ export const defaultPillSurface: Surface = {
       top: 8,
       query: { source: 'fields', params: { session: 'current' }, top: 8 },
     },
+  ],
+}
+
+/**
+ * Exact serialized body shipped before the live lane organ. SurfaceDocuments uses this only as a
+ * conservative one-time migration fingerprint: record version 1 AND byte-identical body, or hands off.
+ */
+export const PREVIOUS_DEFAULT_PILL_BODY = JSON.stringify(LEGACY_DEFAULT_PILL_SURFACE)
+
+/**
+ * Current Standard pill. Version 2 adds the composable live-sense organ immediately after `now`, so the
+ * user sees capture truth before inferred/recalled content. The query is instance-bindable and asks for
+ * this process's current session; three rows are the natural full result, not an arbitrary truncation.
+ */
+export const defaultPillSurface: Surface = {
+  ...LEGACY_DEFAULT_PILL_SURFACE,
+  version: 2,
+  stack: [
+    LEGACY_DEFAULT_PILL_SURFACE.stack[0]!,
+    {
+      block: 'sense-lanes',
+      id: 'pill-listen-sense-lanes',
+      show: 'always',
+      top: 3,
+      query: { source: 'live-senses', params: { session: 'current' }, top: 3 },
+    },
+    ...LEGACY_DEFAULT_PILL_SURFACE.stack.slice(1).map((block) =>
+      block.id === 'pill-listen-moments' ? { ...block, show: 'on-match' as const } : block,
+    ),
   ],
 }

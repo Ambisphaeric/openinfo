@@ -148,8 +148,8 @@ body{margin:0;background:var(--page-bg);
 .lt-rows{display:flex;flex-direction:column;gap:3px;max-height:132px;overflow:hidden}
 .lt-line{display:grid;grid-template-columns:62px 1fr;gap:9px;align-items:baseline;font-size:11.5px;line-height:1.45;transition:opacity .4s ease}
 .lt-line .lt-who{font-family:var(--s-mono);font-size:9.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--s-faint);text-align:right}
-.lt-line.me .lt-who{color:var(--m-artifact)}
-.lt-line.them .lt-who{color:var(--m-quest)}
+.lt-line.mic .lt-who{color:var(--m-artifact)}
+.lt-line.system .lt-who{color:var(--m-quest)}
 .lt-line .lt-tx{color:#b7bcc6;font-family:var(--s-mono);font-size:11px}
 .lt-line.fade{opacity:.42}
 @media (prefers-reduced-motion: reduce){.lt-line{transition:none}}

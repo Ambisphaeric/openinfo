@@ -106,6 +106,10 @@
               {
                 "const": "custom",
                 "type": "string"
+              },
+              {
+                "const": "sense-lanes",
+                "type": "string"
               }
             ]
           },
@@ -179,6 +183,10 @@
                   },
                   {
                     "const": "senses",
+                    "type": "string"
+                  },
+                  {
+                    "const": "live-senses",
                     "type": "string"
                   }
                 ]

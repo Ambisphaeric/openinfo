@@ -1,0 +1,116 @@
+import type { PhysicalSenseSource, SenseLaneHealth, SenseLaneSnapshot } from '@openinfo/contracts'
+import { clockLabel } from '../block-renderer/format.js'
+import type { BlockRenderer } from '../block-renderer/registry.js'
+import { h, type VNode } from '../block-renderer/vnode.js'
+import { SENSE_LANE_SOURCES, sanitizeSenseLaneSnapshot } from '../sense-lane-snapshot.js'
+
+const LABEL = 'Live senses'
+
+const SOURCE_LABEL: Record<PhysicalSenseSource, string> = {
+  mic: 'Microphone',
+  'system-audio': 'System audio',
+  screen: 'Screen',
+}
+
+const DISPOSITION_LABEL: Record<SenseLaneSnapshot['disposition'], string> = {
+  stopped: 'Stopped',
+  waiting: 'Waiting',
+  queued: 'Queued',
+  processed: 'Processed',
+  'delta-skipped': 'No screen change',
+  blank: 'No content found',
+  failed: 'Failed',
+}
+
+const HEALTH_LABEL: Record<SenseLaneHealth, string> = {
+  unknown: 'Status unknown',
+  healthy: 'Healthy',
+  blocked: 'Blocked',
+  failed: 'Needs attention',
+}
+
+const HEALTH_MARK: Record<SenseLaneHealth, { glyph: string; tone: string }> = {
+  unknown: { glyph: '○', tone: 'p' },
+  healthy: { glyph: '●', tone: 'd' },
+  blocked: { glyph: '●', tone: 'q' },
+  failed: { glyph: '●', tone: 'c' },
+}
+
+const lagLabel = (lagMs: number): string => {
+  if (lagMs < 1_000) return `${lagMs} ms`
+  const seconds = lagMs / 1_000
+  const value = seconds < 10 ? seconds.toFixed(1).replace(/\.0$/, '') : Math.round(seconds).toString()
+  return `${value} s`
+}
+
+const timePhrase = (prefix: string, iso: string): string => {
+  const time = clockLabel(iso)
+  return time === '' ? prefix : `${prefix} ${time}`
+}
+
+const detailLine = (lane: SenseLaneSnapshot): string => {
+  const details: string[] = []
+  if (lane.latestCapture) details.push(timePhrase('Last captured', lane.latestCapture.capturedAt))
+  if (lane.latestProcessing) {
+    const outcome = lane.latestProcessing.outcome === 'processed'
+      ? 'Processing complete'
+      : lane.latestProcessing.outcome === 'blank'
+        ? 'No content found'
+        : 'Processing failed'
+    details.push(`${outcome} in ${lagLabel(lane.latestProcessing.lagMs)}`)
+  }
+  if (lane.source === 'screen' && lane.latestObservation) {
+    const outcome = lane.latestObservation.outcome === 'delta-skipped'
+      ? 'No screen change observed'
+      : 'Screen capture failed'
+    details.push(timePhrase(outcome, lane.latestObservation.occurredAt))
+  }
+  return details.length > 0 ? details.join(' · ') : 'No capture yet'
+}
+
+const laneRow = (source: PhysicalSenseSource, lane: SenseLaneSnapshot | undefined): VNode => {
+  if (!lane) {
+    return h(
+      'div',
+      { class: 'rel sense-lane', 'data-sense-source': source },
+      h('span', { class: 'mk p' }, '○'),
+      h(
+        'span',
+        { class: 'body' },
+        h('span', { class: 'ttl' }, `${SOURCE_LABEL[source]} · Status unavailable`),
+        h('span', { class: 'why' }, 'Waiting for a live snapshot'),
+      ),
+    )
+  }
+
+  const mark = HEALTH_MARK[lane.health]!
+  return h(
+    'div',
+    { class: 'rel sense-lane', 'data-sense-source': source },
+    h('span', { class: `mk ${mark.tone}` }, mark.glyph),
+    h(
+      'span',
+      { class: 'body' },
+      h('span', { class: 'ttl' }, `${SOURCE_LABEL[source]} · ${DISPOSITION_LABEL[lane.disposition]} · ${HEALTH_LABEL[lane.health]}`),
+      h('span', { class: 'why' }, detailLine(lane)),
+    ),
+  )
+}
+
+/**
+ * Compact, human-facing live-sense telemetry. It reads only the closed snapshot fields needed for the
+ * glance and deliberately never renders correlation ids, captured content, endpoint/model data, or
+ * arbitrary failure text. Source means the physical lane, never an inferred speaker identity.
+ */
+export const renderSenseLanes: BlockRenderer = ({ block, result }) => {
+  if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL))
+  const items = (result?.items ?? [])
+    .map(sanitizeSenseLaneSnapshot)
+    .filter((item): item is SenseLaneSnapshot => item !== undefined)
+  return h(
+    'div',
+    { class: 'hgroup sense-lanes' },
+    h('div', { class: 'glbl' }, LABEL),
+    ...SENSE_LANE_SOURCES.map((source) => laneRow(source, items.find((item) => item.source === source))),
+  )
+}

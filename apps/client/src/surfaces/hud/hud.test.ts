@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { BlockQuery, Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
+import type { BlockQuery, Moment, QueryResult, SenseLaneSnapshot, Session, Surface } from '@openinfo/contracts'
 import { renderToHtml, mountSurface, renderInto, type VElement, type MountTarget } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import type { HudTransport } from './transport.js'
@@ -22,10 +22,13 @@ const surface: Surface = {
 class FakeTransport implements HudTransport {
   live: Session[] = []
   moments: Moment[] = []
+  liveSenses: SenseLaneSnapshot[] = []
   /** the surface document served — the test can swap it to simulate a /setup layout edit */
   surfaceDoc: Surface = surface
   private handler: ((event: { name: string; payload: unknown }) => void) | undefined
   surfaceCalls = 0
+  queryCalls = 0
+  lastQuerySurfaceId: string | undefined
   lastSurfaceId: string | undefined
 
   surface(id: string): Promise<Surface> {
@@ -33,8 +36,10 @@ class FakeTransport implements HudTransport {
     this.lastSurfaceId = id
     return Promise.resolve(this.surfaceDoc)
   }
-  query(query: BlockQuery): Promise<QueryResult> {
-    const items = query.source === 'moments' ? this.moments : []
+  query(query: BlockQuery, surfaceId?: string): Promise<QueryResult> {
+    this.queryCalls += 1
+    this.lastQuerySurfaceId = surfaceId
+    const items = query.source === 'moments' ? this.moments : query.source === 'live-senses' ? this.liveSenses : []
     return Promise.resolve({ source: query.source, items, truncated: false })
   }
   sessions(): Promise<Session[]> {
@@ -59,6 +64,37 @@ const moment = (text: string, at: string): Moment => ({
   id: `mom-${text}`, sessionId: 'ses-live', workspaceId: 'acme', at, kind: 'commitment', text, refs: [], source: 'mic', confidence: 0.8,
 })
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 10))
+
+const senseSurface: Surface = {
+  id: 'surf-openinfo-hud',
+  name: 'openinfo HUD',
+  context: 'meeting',
+  version: 1,
+  stack: [
+    { block: 'now' },
+    { block: 'sense-lanes', show: 'always', query: { source: 'live-senses', params: { session: 'current' } } },
+  ],
+}
+
+const senseLane = <Source extends SenseLaneSnapshot['source']>(
+  source: Source,
+  over: Partial<Extract<SenseLaneSnapshot, { source: Source }>> = {},
+): Extract<SenseLaneSnapshot, { source: Source }> => ({
+  workspaceId: 'acme',
+  sessionId: 'ses-live',
+  source,
+  disposition: 'waiting',
+  health: 'healthy',
+  reason: 'awaiting-capture',
+  updatedAt: '2026-07-07T14:47:00Z',
+  ...over,
+}) as Extract<SenseLaneSnapshot, { source: Source }>
+
+const hydratedSenses = (): SenseLaneSnapshot[] => [
+  senseLane('mic'),
+  senseLane('system-audio'),
+  senseLane('screen'),
+]
 
 test('the HUD loads a surface, renders once, and re-queries on live WS events', async () => {
   const transport = new FakeTransport()
@@ -174,10 +210,206 @@ test("'ws.open' (a transport (re)connect) re-hydrates data missed while disconne
   hud.stop()
 })
 
+// --- #174: live-sense payload cache ---------------------------------------------------------------
+
+test('sense.lane.updated patches the hydrated source in canonical order and repaints with zero query calls', async () => {
+  const transport = new FakeTransport()
+  transport.surfaceDoc = senseSurface
+  transport.live = [session()]
+  transport.liveSenses = hydratedSenses()
+  let panel: VElement | undefined
+  let renders = 0
+  const hud = new Hud({
+    transport,
+    onRender: (p) => { panel = p; renders += 1 },
+    workspace: 'acme',
+    now: () => new Date('2026-07-07T14:47:00Z'),
+  })
+
+  await hud.start()
+  assert.equal(transport.queryCalls, 1, 'the authenticated initial query hydrates the lane cache once')
+  assert.equal(transport.lastQuerySurfaceId, 'surf-openinfo-hud', 'hydration carries the app-instance surface binding')
+  const initialRenders = renders
+
+  transport.fire('sense.lane.updated', senseLane('screen', {
+    disposition: 'delta-skipped',
+    reason: 'delta-skipped',
+    updatedAt: '2026-07-07T14:47:01Z',
+    latestObservation: { id: 'obs-private', occurredAt: '2026-07-07T14:47:01Z', outcome: 'delta-skipped' },
+  }))
+
+  const html = renderToHtml(panel!)
+  assert.equal(transport.queryCalls, 1, 'one payload update must never refetch /query')
+  assert.equal(renders, initialRenders + 1, 'the accepted payload repaints synchronously')
+  assert.match(html, /Screen · No screen change · Healthy/)
+  assert.match(html, /No screen change observed 2:47p/)
+  assert.doesNotMatch(html, /obs-private/)
+  assert.ok(html.indexOf('Microphone') < html.indexOf('System audio'))
+  assert.ok(html.indexOf('System audio') < html.indexOf('Screen'))
+
+  // A reconnect remains an authoritative catch-up query for events missed while the socket was down.
+  transport.liveSenses = [
+    senseLane('mic', { disposition: 'processed', reason: 'processed', updatedAt: '2026-07-07T14:47:01Z' }),
+    senseLane('system-audio'),
+    senseLane('screen'),
+  ]
+  transport.fire('ws.open')
+  await tick()
+  assert.equal(transport.queryCalls, 2)
+  assert.match(renderToHtml(panel!), /Microphone · Processed · Healthy/)
+
+  // A session boundary invalidates the old hydrated scope before its catch-up query, so a late old-session
+  // payload cannot repaint while the new session is loading.
+  transport.live = [session({ id: 'ses-next' })]
+  transport.liveSenses = [
+    senseLane('mic', { sessionId: 'ses-next', disposition: 'queued', reason: 'awaiting-processing' }),
+    senseLane('system-audio', { sessionId: 'ses-next' }),
+    senseLane('screen', { sessionId: 'ses-next' }),
+  ]
+  transport.fire('session.started')
+  transport.fire('sense.lane.updated', senseLane('mic', {
+    disposition: 'failed',
+    health: 'failed',
+    reason: 'processing-failed',
+    updatedAt: '2026-07-07T14:47:02Z',
+  }))
+  await tick()
+  assert.equal(transport.queryCalls, 3)
+  assert.match(renderToHtml(panel!), /Microphone · Queued · Healthy/)
+  assert.doesNotMatch(renderToHtml(panel!), /Microphone · Failed/)
+  hud.stop()
+})
+
+test('a surface-bound live-sense cache is event authority even when Hud constructor workspace stays default', async () => {
+  const transport = new FakeTransport()
+  transport.surfaceDoc = { ...senseSurface, workspaceId: 'bound-workspace' }
+  transport.liveSenses = [
+    senseLane('mic', { workspaceId: 'bound-workspace', sessionId: 'bound-session' }),
+    senseLane('system-audio', { workspaceId: 'bound-workspace', sessionId: 'bound-session' }),
+    senseLane('screen', { workspaceId: 'bound-workspace', sessionId: 'bound-session' }),
+  ]
+  let panel: VElement | undefined
+  const hud = new Hud({ transport, onRender: (p) => { panel = p } })
+  await hud.start()
+  assert.equal(transport.queryCalls, 1)
+  assert.equal(transport.lastQuerySurfaceId, 'surf-openinfo-hud')
+
+  transport.fire('sense.lane.updated', senseLane('mic', {
+    workspaceId: 'bound-workspace',
+    sessionId: 'bound-session',
+    disposition: 'processed',
+    reason: 'processed',
+    updatedAt: '2026-07-07T14:47:01Z',
+  }))
+
+  assert.equal(transport.queryCalls, 1, 'surface-bound event patching does not refetch')
+  assert.match(renderToHtml(panel!), /Microphone · Processed · Healthy/)
+  hud.stop()
+})
+
+test('a delayed older hydration response cannot overwrite a newer same-scope lane event', async () => {
+  const transport = new FakeTransport()
+  transport.surfaceDoc = senseSurface
+  transport.live = [session()]
+  transport.liveSenses = hydratedSenses()
+  let panel: VElement | undefined
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme' })
+  await hud.start()
+
+  const staleSnapshot: SenseLaneSnapshot[] = [
+    senseLane('mic', { disposition: 'queued', reason: 'awaiting-processing', updatedAt: '2026-07-07T14:47:01Z' }),
+    senseLane('system-audio'),
+    senseLane('screen'),
+  ]
+  let release: (() => void) | undefined
+  transport.query = (query, surfaceId) => {
+    transport.queryCalls += 1
+    transport.lastQuerySurfaceId = surfaceId
+    return new Promise<QueryResult>((resolve) => {
+      release = () => resolve({ source: query.source, items: staleSnapshot, truncated: false })
+    })
+  }
+
+  transport.fire('ws.open')
+  assert.equal(transport.queryCalls, 2, 'the catch-up hydration is now in flight')
+  transport.fire('sense.lane.updated', senseLane('mic', {
+    disposition: 'processed',
+    reason: 'processed',
+    updatedAt: '2026-07-07T14:47:02Z',
+  }))
+  assert.match(renderToHtml(panel!), /Microphone · Processed · Healthy/)
+
+  release?.()
+  await tick()
+  assert.equal(transport.queryCalls, 2, 'reconciliation does not add a retry query')
+  assert.match(renderToHtml(panel!), /Microphone · Processed · Healthy/)
+  assert.doesNotMatch(renderToHtml(panel!), /Microphone · Queued/)
+  hud.stop()
+})
+
+test('live-sense events reject cold, cross-scope, malformed, and widened payloads without repaint or refetch', async () => {
+  const transport = new FakeTransport()
+  transport.surfaceDoc = senseSurface
+  transport.live = [session()]
+  transport.liveSenses = hydratedSenses()
+  let panel: VElement | undefined
+  let renders = 0
+  const hud = new Hud({ transport, onRender: (p) => { panel = p; renders += 1 }, workspace: 'acme' })
+  await hud.start()
+  const original = renderToHtml(panel!)
+  const originalRenders = renders
+  const originalQueries = transport.queryCalls
+
+  const widened = {
+    ...senseLane('mic', { disposition: 'processed', reason: 'processed' }),
+    text: 'private transcript leak',
+    endpoint: 'private-endpoint',
+  }
+  const nestedWidened = {
+    ...senseLane('screen', {
+      disposition: 'delta-skipped',
+      reason: 'delta-skipped',
+      latestObservation: { id: 'obs', occurredAt: '2026-07-07T14:47:01Z', outcome: 'delta-skipped' },
+    }),
+    latestObservation: {
+      id: 'obs',
+      occurredAt: '2026-07-07T14:47:01Z',
+      outcome: 'delta-skipped',
+      pixels: 'private-pixels',
+    },
+  }
+  for (const payload of [
+    senseLane('mic', { workspaceId: 'another-workspace' }),
+    senseLane('mic', { sessionId: 'another-session' }),
+    { ...senseLane('mic'), disposition: 'invented' },
+    widened,
+    nestedWidened,
+  ]) transport.fire('sense.lane.updated', payload)
+
+  assert.equal(transport.queryCalls, originalQueries)
+  assert.equal(renders, originalRenders)
+  assert.equal(renderToHtml(panel!), original)
+  assert.doesNotMatch(renderToHtml(panel!), /private transcript|private-endpoint|private-pixels/)
+  hud.stop()
+
+  // A valid event cannot synthesize authority when initial hydration did not contain the canonical set.
+  const cold = new FakeTransport()
+  cold.surfaceDoc = senseSurface
+  cold.live = [session()]
+  let coldRenders = 0
+  const coldHud = new Hud({ transport: cold, onRender: () => { coldRenders += 1 }, workspace: 'acme' })
+  await coldHud.start()
+  const beforeColdEvent = coldRenders
+  cold.fire('sense.lane.updated', senseLane('mic', { disposition: 'processed', reason: 'processed' }))
+  assert.equal(coldRenders, beforeColdEvent)
+  assert.equal(cold.queryCalls, 1)
+  coldHud.stop()
+})
+
 // --- #58: the event-fed live-transcript feed ---------------------------------------------------
 const iso = (ms: number): string => new Date(ms).toISOString()
 
-test('the HUD renders live-transcript lines from injected transcript.updated events (raw feed, me/them split)', async () => {
+test('the HUD renders live-transcript lines from injected transcript.updated events with physical stream labels', async () => {
   const transport = new FakeTransport()
   transport.live = [session()]
   let panel: VElement | undefined
@@ -192,10 +424,11 @@ test('the HUD renders live-transcript lines from injected transcript.updated eve
   const html = renderToHtml(panel!)
   assert.match(html, /data-live-transcript/)
   assert.match(html, /Live transcript · raw, not saved/) // honestly labeled as raw/live, distinct from distilled
-  assert.match(html, /class="lt-line me"/) // mic → me
-  assert.match(html, /class="lt-line them"/) // system-audio → them
-  assert.match(html, /mic · me/) // #96: each fragment carries its SOURCE-STREAM label (inspector idiom)
-  assert.match(html, /sys · them/)
+  assert.match(html, /class="lt-line mic"/)
+  assert.match(html, /class="lt-line system"/)
+  assert.match(html, /Microphone/)
+  assert.match(html, /System audio/)
+  assert.doesNotMatch(html, /mic · me|sys · them|class="lt-line (?:me|them)"|speaker/i)
   assert.match(html, /we should ship Thursday/)
   assert.match(html, /agreed/)
   // payload feed did NOT trigger the query path (the coalescing discipline): surface fetched once
@@ -295,7 +528,7 @@ test('the system-stream mute toggle hides system audio from the strip without di
   // both streams present and attributed — the interleave the owner saw, but each fragment is labelled
   assert.match(stage.target.innerHTML, /lets ship it/)
   assert.match(stage.target.innerHTML, /BREAKING NEWS tonight/)
-  assert.match(stage.target.innerHTML, /sys · them/)
+  assert.match(stage.target.innerHTML, /System audio/)
 
   // drive the ACTUAL mute click through the delegated listener the mount installed
   stage.click('mute-system-stream')

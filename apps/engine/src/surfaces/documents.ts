@@ -1,6 +1,7 @@
 import type { Surface } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { defaultHudSurface, SEEDED_SURFACES } from './defaults.js'
+import { defaultPillSurface, PREVIOUS_DEFAULT_PILL_BODY } from './pill.js'
 
 const SURFACE_KIND = 'surface'
 
@@ -16,8 +17,22 @@ export class SurfaceDocuments {
 
   ensureDefaults(): void {
     for (const surface of SEEDED_SURFACES) {
-      if (!this.store.layouts.getLatest<Surface>(SURFACE_KIND, surface.id)) {
+      const existing = this.store.layouts.getLatest<Surface>(SURFACE_KIND, surface.id)
+      if (!existing) {
         this.store.layouts.put(SURFACE_KIND, surface.id, surface)
+        continue
+      }
+      // One narrowly-scoped seed refresh for #174: an existing install gets the live-lane pill organ only
+      // when the stored record is provably the exact untouched v1 pill we shipped. Any user save advances
+      // the LayoutStore record version; any direct customization changes the serialized body. Either signal
+      // means the surface belongs to the user and remains untouched. The refresh itself becomes record v2,
+      // while the new surface body carries its shipped version 2, so it cannot repeat.
+      if (
+        surface.id === defaultPillSurface.id &&
+        existing.version === 1 &&
+        JSON.stringify(existing.body) === PREVIOUS_DEFAULT_PILL_BODY
+      ) {
+        this.store.layouts.put(SURFACE_KIND, surface.id, defaultPillSurface)
       }
     }
   }

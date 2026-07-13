@@ -16,19 +16,19 @@ const html = (lines: TranscriptLine[], over: { live?: boolean; nowMs?: number; s
   return node ? renderToHtml(node) : ''
 }
 
-test('streamLabel reuses the transcript-inspector idiom — mic·me / sys·them, raw for other sources', () => {
-  assert.equal(streamLabel('mic'), 'mic · me')
-  assert.equal(streamLabel('system-audio'), 'sys · them')
+test('streamLabel uses physical source names, never inferred speaker identities', () => {
+  assert.equal(streamLabel('mic'), 'Microphone')
+  assert.equal(streamLabel('system-audio'), 'System audio')
   assert.equal(streamLabel('screen'), 'screen') // not a speech stream — labeled by raw source
 })
 
 test('every fragment is attributed to its source stream — mic and system render as distinct labelled lanes', () => {
   const out = html([line(1, 'mic', 'we should ship Thursday'), line(2, 'system-audio', 'breaking news tonight')])
   // both streams present, each carrying its own source-stream label — never a single undifferentiated line
-  assert.match(out, /class="lt-line me"/)
-  assert.match(out, /class="lt-line them"/)
-  assert.match(out, /mic · me/)
-  assert.match(out, /sys · them/)
+  assert.match(out, /class="lt-line mic"/)
+  assert.match(out, /class="lt-line system"/)
+  assert.match(out, /Microphone/)
+  assert.match(out, /System audio/)
   assert.match(out, /we should ship Thursday/)
   assert.match(out, /breaking news tonight/)
 })
@@ -39,7 +39,7 @@ test('muting the system stream hides system-audio lines from the strip but keeps
   assert.match(out, /we should ship Thursday/) // mic stays
   assert.match(out, /agreed/)
   assert.doesNotMatch(out, /breaking news tonight/) // ambient media hidden — not interleaved into the strip
-  assert.doesNotMatch(out, /class="lt-line them"/)
+  assert.doesNotMatch(out, /class="lt-line system"/)
   // honest disclosure: how many are hidden, and that capture continues
   assert.match(out, /system audio hidden · 1 line not shown \(still captured\)/)
 })
@@ -56,7 +56,12 @@ test('the mute toggle is present and reflects state — capture is never disable
 test('muted with ONLY system audio explains itself rather than looking empty/broken', () => {
   const out = html([line(1, 'system-audio', 'a podcast playing')], { systemMuted: true })
   assert.doesNotMatch(out, /a podcast playing/)
-  assert.match(out, /only system audio right now — hidden by the mute toggle \(still captured\)/)
+  assert.match(out, /only system audio right now; hidden by the mute toggle \(still captured\)/)
+})
+
+test('the strip never relabels physical streams as me, them, or a speaker identity', () => {
+  const out = html([line(1, 'mic', 'alpha'), line(2, 'system-audio', 'beta')])
+  assert.doesNotMatch(out, /mic · me|sys · them|class="lt-line (?:me|them)"|speaker/i)
 })
 
 test('idle with no lines renders nothing (no dead chrome); live-but-silent explains itself', () => {

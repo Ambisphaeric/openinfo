@@ -54,6 +54,8 @@ export const defaultBlockFor = (type: string): Block => {
       return { block: 'transcript-inspector', show: 'always', query: { source: 'transcript', params: {}, top: 1 } }
     case 'sense-gates':
       return { block: 'sense-gates', show: 'always', query: { source: 'senses', params: {}, top: 1 } }
+    case 'sense-lanes':
+      return { block: 'sense-lanes', show: 'always', top: 3, query: { source: 'live-senses', params: { session: 'current' }, top: 3 } }
     case 'ask':
       return { block: 'ask' }
     case 'custom':

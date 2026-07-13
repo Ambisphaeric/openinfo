@@ -38,8 +38,9 @@ test('the inspector renders each transcript chunk newest-first: clock · stream 
   assert.match(html, /Transcription · inspector/) // the group label
   assert.match(html, /quarterly numbers look strong/) // the raw text (only via result.items)
   assert.match(html, /can you repeat the renewal date/)
-  assert.match(html, /mic · me/) // the mic stream is attributed as "me"
-  assert.match(html, /sys · them/) // system-audio is attributed as "them"
+  assert.match(html, /Microphone/)
+  assert.match(html, /System audio/)
+  assert.doesNotMatch(html, /mic · me|sys · them|speaker identity/i)
   assert.match(html, /3\.0s/) // the 3s captured span of the first chunk
   assert.match(html, /820ms/) // the sub-second span of the second chunk renders in ms
 })

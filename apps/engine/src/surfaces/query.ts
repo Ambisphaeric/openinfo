@@ -1,4 +1,4 @@
-import type { BlockQuery, QueryResult, QueueStatus, TranscriptInspector } from '@openinfo/contracts'
+import type { BlockQuery, QueryResult, QueueStatus, SenseLaneSnapshot, TranscriptInspector } from '@openinfo/contracts'
 import type { SenseGateChain } from './settings/sense-gates.js'
 import { relevantNow } from '../index/index.js'
 import { FieldValueStore } from '../distill/index.js'
@@ -31,6 +31,12 @@ export interface QuerySources {
    * store record. Absent (a unit test, or a non-senses query) ⇒ the arm reads [], explainable-empty.
    */
   senseGates?: SenseGateChain[]
+  /**
+   * The process-local, metadata-only physical-lane rows for `live-senses` (#174). These are the SAME
+   * canonical mic/system-audio/screen snapshots GET /senses/live serves, resolved and injected by the
+   * route because the tracker is runtime state, not a persisted store. Absent ⇒ explainable-empty.
+   */
+  liveSenses?: SenseLaneSnapshot[]
 }
 
 /**
@@ -46,7 +52,7 @@ export interface QuerySources {
  * instance's own silo without editing the block — the per-instance workspace is named on the surface, not
  * baked into every block's params.
  */
-const resolveScope = (
+export const resolveQueryScope = (
   store: WorkspaceRegistry,
   params: BlockQuery['params'],
   defaultWorkspaceId?: string,
@@ -79,7 +85,7 @@ export const compileQuery = (
   sources: QuerySources = {},
   defaultWorkspaceId?: string,
 ): QueryResult => {
-  const { workspaceId, sessionId } = resolveScope(store, query.params, defaultWorkspaceId)
+  const { workspaceId, sessionId } = resolveQueryScope(store, query.params, defaultWorkspaceId)
   const known = store.all().some((ws) => ws.id === workspaceId)
   const top = query.top
 
@@ -218,6 +224,14 @@ export const compileQuery = (
       // injected here (computed state, not a store record). One row per sense; the block renders the first
       // blocking gate + its fix, or all-pass. Not injected (a unit caller) ⇒ [], explainable-empty.
       return cap(sources.senseGates ?? [])
+    case 'live-senses':
+      // The composable HUD view of runtime capture truth (#174): exactly the metadata rows the process-
+      // local SenseLaneTracker owns, injected by POST /query after resolving the block/app-instance scope.
+      // No captured bytes, transcript/OCR text, endpoint material, or arbitrary errors can enter this
+      // source because every row is the existing closed SenseLaneSnapshot contract. The tracker supplies
+      // canonical mic → system-audio → screen order; cap preserves it. No injection ⇒ [], never invented
+      // persisted truth from an old unended session.
+      return cap(sources.liveSenses ?? [])
     case 'ledger':
       // Backing store not built yet (ledger P4): empty, explainable, not an error.
       return cap([])

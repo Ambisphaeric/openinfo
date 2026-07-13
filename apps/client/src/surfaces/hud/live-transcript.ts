@@ -12,14 +12,14 @@ import { h, type VElement, type VNode } from '../block-renderer/vnode.js'
  * why-line convention (nothing surfaces without a one-line why) does not apply — this is unjudged raw
  * capture, not an engine inference.
  *
- * STREAM SEPARATION — the merge rule (#96). Two capture streams reach this strip: `mic` (the user) and
- * `system-audio` (loopback — the far side of a call, OR whatever media is playing). They arrive as
+ * STREAM SEPARATION — the merge rule (#96). Two capture streams reach this strip: `mic` and
+ * `system-audio` (loopback audio, which may be a call, media, or another source). They arrive as
  * SEPARATE `transcript.updated` events (one per (session, source)); the owner's recorded audio-pipeline
  * decision is that the streams stay SEPARATE end-to-end and are merged ONLY when an ongoing conversation
  * actually spans both — ambient media playing alongside speech is exactly the case that must NOT blend.
  * So at this join point the strip:
- *   1. renders every fragment with its SOURCE-STREAM label (`mic · me` / `sys · them`, the same idiom the
- *      transcript-inspector uses, #101) — never an undifferentiated interleave; and
+ *   1. renders every fragment with its physical SOURCE-STREAM label (`Microphone` / `System audio`, the
+ *      same idiom the transcript-inspector uses, #101) — never an inferred speaker identity; and
  *   2. offers a client-local MUTE for the system-audio stream (hide it from THIS strip without disabling
  *      capture) so the "watching a video while talking" case can be silenced with one click.
  * WEAVING two streams into one conversational thread (the actual merge) is downstream distill-accumulator
@@ -44,20 +44,18 @@ export interface TranscriptLine {
 }
 
 /**
- * The visible per-line SOURCE-STREAM label. Reuses the transcript-inspector idiom (#101) so the live
- * strip and the diagnostics surface speak one vocabulary: mic = me (the user), system-audio = them (the
- * far side / ambient media). Other capture sources are not speech and are labeled by their raw source.
+ * The visible per-line physical SOURCE-STREAM label. A microphone can contain several people and system
+ * audio can be a call or media, so neither is ever presented as a speaker identity.
  */
 export const streamLabel = (source: CaptureSource): string =>
-  source === 'mic' ? 'mic · me' : source === 'system-audio' ? 'sys · them' : source
+  source === 'mic' ? 'Microphone' : source === 'system-audio' ? 'System audio' : source
 
 /**
- * The speaker CSS lane for a line — mic=me, system-audio=them (the free capture split colors them
- * distinctly), any other source renders unclassed. Kept separate from `streamLabel` so the visible text
- * carries the full stream idiom while the class stays a stable, short color hook.
+ * Neutral physical-stream CSS hooks. They preserve the existing distinct colours without implying who
+ * spoke. Kept separate from `streamLabel` so visible copy and styling remain independently stable.
  */
-const speakerClass = (source: CaptureSource): string =>
-  source === 'mic' ? 'me' : source === 'system-audio' ? 'them' : 'other'
+const streamClass = (source: CaptureSource): string =>
+  source === 'mic' ? 'mic' : source === 'system-audio' ? 'system' : 'other'
 
 /**
  * Drop lines older than the window relative to `nowMs`, then keep only the newest MAX_LINES. Pure — the
@@ -85,7 +83,7 @@ const muteToggle = (muted: boolean): VNode =>
       'data-verb': 'mute-system-stream',
       title: muted
         ? 'Show the system-audio stream in this strip (it is still being captured)'
-        : 'Hide the system-audio stream from this strip — capture, the inspector, and distill keep running',
+        : 'Hide the system-audio stream from this strip. Capture, the inspector, and distill keep running',
     },
     muted ? 'show system audio' : 'hide system audio',
   )
@@ -113,15 +111,15 @@ export const renderLiveTranscript = (
   if (shown.length === 0) {
     const message =
       ctx.systemMuted && systemCount > 0
-        ? 'only system audio right now — hidden by the mute toggle (still captured)'
-        : 'listening — spoken words appear here live, before they are distilled'
+        ? 'only system audio right now; hidden by the mute toggle (still captured)'
+        : 'listening; spoken words appear here live, before they are distilled'
     return h('div', { class: 'lt', 'data-live-transcript': true }, header, h('div', { class: 'lt-empty' }, message))
   }
   const rows = shown.map((line) => {
     const faded = ctx.nowMs - line.at >= FADE_AFTER_MS
     return h(
       'div',
-      { class: `lt-line ${speakerClass(line.source)}${faded ? ' fade' : ''}` },
+      { class: `lt-line ${streamClass(line.source)}${faded ? ' fade' : ''}` },
       h('span', { class: 'lt-who' }, streamLabel(line.source)),
       h('span', { class: 'lt-tx' }, line.text),
     )

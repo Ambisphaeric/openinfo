@@ -5230,3 +5230,68 @@ OCR/VLM pipeline produces useful results on actual screen captures.
 
 Evidence: schema generation/drift and contracts **98/98**; full engine **846/846**; full client **530/530**;
 builds green; `git diff --check` clean. No persistence schema, screen-capture policy, flag, or version change.
+
+## Slice: composable live-sense lanes in the default pill  *(#174 slice D, 2026-07-13)*
+
+The three physical senses now surface as a composable organ in the default pill, not as bespoke chrome. A
+new `sense-lanes` block type and a `live-senses` query source join the existing append-only unions; the
+block is an ordinary Surface stack entry with an ordinary `BlockQuery`, and its rows are the exact closed,
+metadata-only `SenseLaneSnapshot` contract that `GET /senses/live` already serves. No new row shape and no
+renderer branch in the generic engine were introduced — the whole surface is data. `POST /query` grows a
+`live-senses` arm that resolves scope exactly like every persisted source: an explicit `params.workspace`
+outranks the bound app-instance workspace, then `default`. Session truth is deliberately different —
+`current`, or an omitted session, means the process-local `SenseLaneTracker`'s current session, never a
+persisted Session resurrected from disk after a restart. A concrete session id passes through verbatim and,
+when the tracker never observed it this launch, yields three honest stopped/no-session rows rather than
+another session's state. The route reuses the shared `resolveQueryScope`; the tracker owns canonical
+mic → system-audio → screen ordering; `compileQuery` only wraps and caps, and with no injection returns
+explainable-empty, never persisted truth invented from an old unended session.
+
+The block renderer is calm, glanceable telemetry. Each lane is a health dot plus a
+`source · disposition · health` line (Microphone / System audio / Screen, never a speaker identity) and a
+why-line stating capture freshness, the correlated processing outcome and lag, and — for screen — the
+latest delta-skip or failed-grab time. It reads only the closed snapshot fields: no correlation id,
+captured content, transcript/OCR text, endpoint or model identity, delta score, hash, preview, or arbitrary
+error string is ever composed into the DOM. A shared strict boundary, `sense-lane-snapshot.ts`, rebuilds
+every row and every nested object key by key and rejects any widened, malformed, cross-source, or
+unknown-key payload; a rejected row degrades to an honest "Status unavailable" line that can never borrow
+another lane's data. Muting or disabling one lane therefore cannot silently relabel another: a missing row
+is explicitly unavailable, and the payload patch path only touches the row whose physical source matches.
+
+Live updates keep the engine as the thinker. Ranked and joined data still updates by re-query, but two
+closed fast paths are payload-fed: the existing raw transcript strip and, now, metadata-only lane
+snapshots. A `sense.lane.updated` event patches exactly one already-hydrated lane whose workspace and
+session scope match, in canonical order, with no query; a stale or older-timestamp payload is dropped, and
+a valid event can never synthesize authority when the initial hydration did not contain the canonical
+three-lane set. Reconnect and session boundaries stay authoritative — a boundary invalidates the hydrated
+lane cache before its catch-up query so a late old-session payload cannot repaint, and refresh reconciles an
+in-flight query against payloads that landed while it was outstanding, keeping the newer per-source truth
+while still letting a genuinely new query scope replace it. Initial hydration now carries the app-instance
+binding through `POST /query?surface=<id>`. The live transcript strip and the transcription inspector were
+relabelled in the same change: `mic`/`system-audio` render as `Microphone`/`System audio`, dropping the old
+`me`/`them` idiom, because one physical input can carry several people and is never a speaker identity.
+
+The default pill advances to version 2 with the organ inserted immediately after `now`, so a glance shows
+live capture truth before recalled or inferred content, and the former `moments` block relaxes to
+`on-match`. The pre-organ body is preserved as `LEGACY_DEFAULT_PILL_SURFACE` and its serialized form as
+`PREVIOUS_DEFAULT_PILL_BODY`. Existing installs receive exactly one conservative seed refresh: a stored
+pill is advanced only when its LayoutStore record is version 1 AND its body is byte-identical to the shipped
+v1 body. Any save (which bumps the record version) or any customization (which changes the body) is treated
+as user-owned and left untouched; the refresh itself becomes record version 2 carrying the version-2 body,
+so it cannot repeat. The compact pill styling keeps the shared type, colour, hairline, and glass tokens,
+tightens only the lane vertical rhythm for the glance-height window, adds no motion, and honours reduced
+transparency.
+
+Still unclaimed on #174: the served surface still has no driven test entering through the user's real
+Electron entry point, and there is no deterministic tri-lane replay fixture proving all three lanes remain
+distinguishable end to end — both are slice E. Real-device OCR/VLM quality remains #175; these tests prove
+contract closure, scope and launch-stopped-consent semantics, privacy, the migration's two directions, and
+the payload/hydration reconciliation, not that the configured local pipeline produces useful results on real
+captures.
+
+Evidence: recursive build green; contracts **99/99**, full engine **851/851**, full client **550/550**,
+fixtures **15/15**; focused new/changed files — client sense-lanes / sense-lane-cache / pill-styles plus
+hud / live-transcript / transcript-inspector / register-lint **46/46**, engine
+live-senses-query / documents / query / surface-editor **28/28**; schema generation reproduces exactly the
+five changed schemas with no drift; `git diff --check` clean. No persistence schema, capture policy, or flag
+change; the default-pill surface version advances 1 → 2 under a conservative unedited-only migration.

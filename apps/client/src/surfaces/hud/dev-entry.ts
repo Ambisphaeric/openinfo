@@ -127,8 +127,9 @@ class BrowserTransport implements HudTransport {
     return this.getJson(`/layouts/surfaces/${encodeURIComponent(id)}`) as Promise<Surface>
   }
 
-  async query(query: BlockQuery): Promise<QueryResult> {
-    const response = await this.fetchFn(`${this.baseUrl}/query`, {
+  async query(query: BlockQuery, surfaceId?: string): Promise<QueryResult> {
+    const suffix = surfaceId === undefined ? '' : `?surface=${encodeURIComponent(surfaceId)}`
+    const response = await this.fetchFn(`${this.baseUrl}/query${suffix}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(query),
@@ -536,7 +537,7 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   if (params.get('outline')) style.textContent += hudOutlineStyles
   doc.head.appendChild(style)
   const stage = doc.createElement('div')
-  stage.className = 'stage'
+  stage.className = isPill ? 'stage pill-stage' : 'stage'
   // The boot-status chip: every boot/runtime failure paints here as text (a transparent window must
   // never fail invisibly — the same honesty rule the settings save strip follows). Empty when healthy.
   const status = doc.createElement('div')

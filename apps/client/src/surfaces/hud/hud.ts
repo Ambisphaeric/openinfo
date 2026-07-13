@@ -2,6 +2,7 @@ import type { CaptureSource, Moment, QueryResult, Session, Surface } from '@open
 import { renderSurface, clockLabel, elapsedLabel, type BlockRegistry, type NowContext, type SurfaceRenderInput, type VElement } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
 import { pruneTranscript, renderLiveTranscript, type TranscriptLine } from './live-transcript.js'
+import { patchLiveSenseResults, reconcileLiveSenseHydration, sanitizeSenseLaneSnapshot } from './sense-lane-cache.js'
 import type { HudTransport } from './transport.js'
 
 const DEFAULT_SURFACE_ID = 'surf-openinfo-hud'
@@ -16,6 +17,8 @@ const REFRESH_EVENTS = new Set(['moment.created', 'entity.updated', 'distillate.
 
 /** The ephemeral live-transcript fast-path event (#58) — PAYLOAD-fed, not a query-refresh trigger. */
 const TRANSCRIPT_EVENT = 'transcript.updated'
+/** Metadata-only live-sense fast path. The authenticated query remains the hydration authority. */
+const SENSE_LANE_EVENT = 'sense.lane.updated'
 /** The ephemeral streamed-chat-answer event (the Ask face) — PAYLOAD-fed exactly like the transcript. */
 const CHAT_DELTA_EVENT = 'chat.delta'
 /** Session boundaries reset the live feed — a new/ended session starts a fresh transcript. */
@@ -62,10 +65,10 @@ export interface HudOptions {
  * The live HUD controller. It loads the surface DOCUMENT once, hydrates each block's query through the
  * engine, renders the panel via the (document-driven) block renderer, and re-renders on live WS events.
  *
- * Live updates are RE-QUERY, not patch-in-place (PHASE2-NOTES): the block query is the single source of
- * truth and the engine owns ranking/joining — patching rows client-side would duplicate that logic and
- * violate "the engine thinks, the block renders". A data event re-hydrates the block queries; a session
- * event also re-derives the Now line. Rapid events are coalesced so a burst causes one refresh.
+ * Ranked/joined data updates by RE-QUERY (PHASE2-NOTES): the engine owns that logic. Two closed fast paths
+ * are payload-fed: raw transcript lines and metadata-only live-sense snapshots. A lane event can replace
+ * one source only after an authenticated canonical query hydrated its scope; reconnect/session boundaries
+ * reset that cache and re-query. Rapid invalidation events are coalesced so a burst causes one refresh.
  */
 export class Hud {
   private readonly transport: HudTransport
@@ -137,6 +140,12 @@ export class Hud {
         this.ingestTranscript(event.payload)
         return
       }
+      // A live-sense update patches only an already-hydrated, matching lane cache. Runtime validation is
+      // strict and closed: malformed, cross-scope, or widened payloads are ignored without a query.
+      if (event.name === SENSE_LANE_EVENT) {
+        this.ingestSenseLane(event.payload)
+        return
+      }
       // The streamed-chat fast-path (the Ask face) rides the same discipline: payload out to its consumer
       // (the InputSession's in-flight turn), no query, handled-and-returned before the refresh set.
       if (event.name === CHAT_DELTA_EVENT) {
@@ -144,7 +153,10 @@ export class Hud {
         return
       }
       // A session boundary starts a fresh live feed; fall through to the normal refresh below.
-      if (TRANSCRIPT_RESET_EVENTS.has(event.name)) this.transcriptLines = []
+      if (TRANSCRIPT_RESET_EVENTS.has(event.name)) {
+        this.transcriptLines = []
+        this.resetLiveSenseHydration()
+      }
       if (REFRESH_EVENTS.has(event.name)) this.scheduleRefresh().catch((err: unknown) => this.onError?.(err))
     })
   }
@@ -216,12 +228,15 @@ export class Hud {
   /** Re-derive the live session and re-hydrate every block query, then render. */
   async refresh(): Promise<void> {
     if (!this.surface) return
+    const surface = this.surface
     const [live, results] = await Promise.all([
       this.transport.sessions({ workspace: this.workspace, live: true }),
-      Promise.all(this.surface.stack.map((block) => (block.query ? this.transport.query(block.query) : Promise.resolve(undefined)))),
+      Promise.all(surface.stack.map((block) => (block.query ? this.transport.query(block.query, surface.id) : Promise.resolve(undefined)))),
     ])
+    // A lane event can land while this query is in flight. Reconcile same-scope rows by updatedAt so the
+    // older response snapshot cannot overwrite newer payload truth; a different query scope still wins.
     this.session = live[0]
-    this.results = results
+    this.results = reconcileLiveSenseHydration(surface, this.results, results)
     this.render()
   }
 
@@ -268,6 +283,27 @@ export class Hud {
     if (!line) return
     this.transcriptLines.push(line)
     this.render()
+  }
+
+  private ingestSenseLane(payload: unknown): void {
+    if (!this.surface) return
+    const lane = sanitizeSenseLaneSnapshot(payload)
+    if (!lane) return
+    const results = patchLiveSenseResults({
+      surface: this.surface,
+      results: this.results,
+      lane,
+    })
+    if (!results) return
+    this.results = results
+    this.render()
+  }
+
+  private resetLiveSenseHydration(): void {
+    if (!this.surface) return
+    this.results = this.results.map((result, index) =>
+      this.surface?.stack[index]?.query?.source === 'live-senses' ? undefined : result,
+    )
   }
 
   private toTranscriptLine(payload: unknown): TranscriptLine | undefined {

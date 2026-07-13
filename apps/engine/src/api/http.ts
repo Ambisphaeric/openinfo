@@ -17,7 +17,7 @@ import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
 import { BundleDocuments, DEFAULT_BUNDLE_ID } from '../bundles/index.js'
 import { PresetDocuments } from '../presets/index.js'
-import { SurfaceDocuments, compileQuery, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor } from '../screen/index.js'
 import { SenseLaneTracker } from '../senses/index.js'
@@ -2023,7 +2023,7 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
   // Injected sources are operational/computed engine state, NOT store records (the `queue` pattern): built
   // by the route and handed to compileQuery for exactly the source that needs them. status() and the ring
   // are cheap, but async status() is awaited only when needed. Every other source reads through store/.
-  const sources = await buildQuerySources(query, ctx)
+  const sources = await buildQuerySources(query, ctx, boundWorkspace)
   send(res, 200, compileQuery(ctx.store, query, new Date(), sources, boundWorkspace))
 }
 
@@ -2173,11 +2173,11 @@ function sttSlotEndpoints(fabric: Fabric): SttSlotEndpoint[] {
 
 /**
  * Build the injected QuerySources for a query, per source (the `queue` operational-state pattern extended to
- * #101's `transcript` inspector + `senses` gate chains). Each arm is operational/computed engine state, not a
- * store record, so the route composes it and compileQuery just wraps it into the QueryResult. A source that
- * needs no injection returns {} (unchanged behavior).
+ * #101's `transcript` inspector + `senses` gate chains and #174's live sense lanes). Each arm is operational/
+ * computed engine state, not a store record, so the route composes it and compileQuery just wraps it into
+ * the QueryResult. A source that needs no injection returns {} (unchanged behavior).
  */
-async function buildQuerySources(query: BlockQuery, ctx: HandlerContext): Promise<QuerySources> {
+async function buildQuerySources(query: BlockQuery, ctx: HandlerContext, defaultWorkspaceId?: string): Promise<QuerySources> {
   if (query.source === 'queue') return { queueStatus: await surfacedQueueStatus(ctx) }
   if (query.source === 'transcript') {
     return { transcript: { chunks: ctx.transcripts.recent(), sttSlot: sttSlotEndpoints(ctx.fabric.load()), ringLimit: ctx.transcripts.capacity } }
@@ -2194,6 +2194,19 @@ async function buildQuerySources(query: BlockQuery, ctx: HandlerContext): Promis
         ...(status.lastFailure ? { lastFailure: status.lastFailure } : {}),
       }),
     }
+  }
+  if (query.source === 'live-senses') {
+    // Scope exactly like every persisted query source: an explicit params.workspace wins over the bound
+    // app-instance workspace, then `default`. Session truth is deliberately different: `current` (and an
+    // omitted session) means the TRACKER'S current session for this process, never a stale persisted live
+    // Session. Only a concrete id is passed through. snapshotSet owns canonical lane ordering and returns
+    // the closed metadata-only SenseLaneSnapshot rows used by GET /senses/live.
+    const { workspaceId } = resolveQueryScope(ctx.store, query.params, defaultWorkspaceId)
+    const sessionParam = query.params['session']
+    const explicitSessionId = typeof sessionParam === 'string' && sessionParam !== 'current' && sessionParam.length > 0
+      ? sessionParam
+      : undefined
+    return { liveSenses: [...ctx.senseLanes.snapshotSet(workspaceId, explicitSessionId).lanes] }
   }
   return {}
 }

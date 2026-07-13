@@ -64,6 +64,10 @@
         {
           "const": "senses",
           "type": "string"
+        },
+        {
+          "const": "live-senses",
+          "type": "string"
         }
       ]
     },

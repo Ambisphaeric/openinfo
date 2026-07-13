@@ -6,6 +6,11 @@
  * Reuses the shared palette vars (--s-*, --accent) so it sits in the same visual system as the HUD.
  */
 export const pillStyles = `
+/* The fixed 300px Listen window needs a bounded content box, not the generic HUD's roomy page framing.
+   Horizontal padding stays unchanged; the tighter vertical inset leaves the three physical lanes plainly
+   visible and makes the remaining glance stack scroll inside the panel instead of below the window. */
+.pill-stage{height:100vh;min-height:0;padding:8px 24px}
+.pill-stage .pill-mount,.pill-stage .pill-app{height:100%;min-height:0}
 /* THE PILL FILLS ITS FIXED-width WINDOW. The mount div (dev-entry tags it .pill-mount for the pill) is a
    flex item of the centered .stage; giving it width:100% pins it to the stage's DEFINITE content box (the
    window width minus the stage margin) instead of shrink-wrapping to the pill's narrow content — otherwise
@@ -43,10 +48,21 @@ export const pillStyles = `
 /* the docked panel beneath the bar — its height is owned by the PillController (bar/listen/ask extents) */
 .pill-panel{flex:1;min-height:0;overflow-y:auto}
 .pill-panel .hud{padding:8px 4px}
+/* Density 7: the lane organ keeps the shared type, colour, hairline and glass tokens, with only its
+   vertical rhythm tightened for the glance-height pill. There is no decorative motion. */
+.pill-panel .sense-lanes{padding:6px 14px 2px}
+.pill-panel .sense-lanes .glbl{margin-bottom:3px}
+.pill-panel .sense-lane{gap:8px;padding:3px 0}
+.pill-panel .sense-lane .body{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:6px}
+.pill-panel .sense-lane .ttl{font-size:11.5px;line-height:1.3}
+.pill-panel .sense-lane .why{font-size:10.5px;line-height:1.35}
 .pill-collapsed{display:none}
 /* honest face note (Ask unresolved/absent) — visible text, never a blank panel */
 .pill-face-note{font-size:12px;color:var(--s-muted);padding:14px 16px;line-height:1.5}
 /* the #58 live-transcript strip the Hud appends: only meaningful on the Listen face; hidden on Ask */
 .pill-app[data-face="ask"] .lt{display:none}
 .pill-app[data-open="false"] .lt{display:none}
+@media (prefers-reduced-transparency: reduce){
+  .pill-bar,.pill-panel .hud{background:var(--s-bg0);backdrop-filter:none}
+}
 `

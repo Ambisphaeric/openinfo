@@ -3,9 +3,11 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import type { Surface } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { SurfaceDocuments } from './documents.js'
 import { defaultHudSurface, defaultFieldsSurface } from './defaults.js'
+import { defaultPillSurface, LEGACY_DEFAULT_PILL_SURFACE } from './pill.js'
 
 test('SurfaceDocuments seeds the openinfo HUD and serves it by id', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-'))
@@ -18,11 +20,72 @@ test('SurfaceDocuments seeds the openinfo HUD and serves it by id', async () => 
     assert.equal(hud.name, 'openinfo HUD')
     assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'relevant-now', 'moments', 'fields'])
     assert.equal(hud.stack.find((b) => b.block === 'relevant-now')?.top, 4)
+    const pill = docs.get(defaultPillSurface.id)
+    assert.ok(pill)
+    assert.equal(pill.version, 2)
+    assert.deepEqual(pill.stack.map((b) => b.block), ['now', 'sense-lanes', 'relevant-now', 'moments', 'fields'])
+    assert.deepEqual(pill.stack[1]?.query, { source: 'live-senses', params: { session: 'current' }, top: 3 })
     // unknown id ⇒ undefined (the route turns this into a 404)
     assert.equal(docs.get('surf-nope'), undefined)
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SurfaceDocuments migrates only the exact untouched legacy pill seed, once', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-pill-refresh-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // Simulate an existing install whose sole pill record is the exact previously shipped body.
+    store.layouts.put('surface', LEGACY_DEFAULT_PILL_SURFACE.id, LEGACY_DEFAULT_PILL_SURFACE)
+    const docs = new SurfaceDocuments(store)
+    docs.ensureDefaults()
+
+    const latest = store.layouts.getLatest<Surface>('surface', defaultPillSurface.id)
+    assert.ok(latest)
+    assert.equal(latest.version, 2, 'the refresh is a versioned document write')
+    assert.equal(latest.body.version, 2, 'the refreshed body carries the new shipped surface version')
+    assert.deepEqual(latest.body.stack.map((block) => block.block), ['now', 'sense-lanes', 'relevant-now', 'moments', 'fields'])
+
+    docs.ensureDefaults()
+    assert.equal(store.layouts.getLatest<Surface>('surface', defaultPillSurface.id)?.version, 2, 'the migration is idempotent')
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SurfaceDocuments never migrates a customized v1 or any user-version pill', async () => {
+  const customDir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-pill-custom-'))
+  const customStore = new WorkspaceRegistry(customDir)
+  try {
+    const customized: Surface = { ...LEGACY_DEFAULT_PILL_SURFACE, name: 'My deliberately customized pill' }
+    customStore.layouts.put('surface', customized.id, customized)
+    new SurfaceDocuments(customStore).ensureDefaults()
+    const kept = customStore.layouts.getLatest<Surface>('surface', customized.id)
+    assert.equal(kept?.version, 1)
+    assert.equal(kept?.body.name, customized.name)
+    assert.deepEqual(kept?.body.stack.map((block) => block.block), ['now', 'relevant-now', 'moments', 'fields'])
+  } finally {
+    customStore.close()
+    await rm(customDir, { recursive: true, force: true })
+  }
+
+  const userVersionDir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-pill-user-version-'))
+  const userVersionStore = new WorkspaceRegistry(userVersionDir)
+  try {
+    // Even a body that happens to be byte-identical is user-owned once it has document history.
+    userVersionStore.layouts.put('surface', LEGACY_DEFAULT_PILL_SURFACE.id, LEGACY_DEFAULT_PILL_SURFACE)
+    userVersionStore.layouts.put('surface', LEGACY_DEFAULT_PILL_SURFACE.id, LEGACY_DEFAULT_PILL_SURFACE)
+    new SurfaceDocuments(userVersionStore).ensureDefaults()
+    const kept = userVersionStore.layouts.getLatest<Surface>('surface', LEGACY_DEFAULT_PILL_SURFACE.id)
+    assert.equal(kept?.version, 2)
+    assert.equal(kept?.body.version, 1)
+    assert.deepEqual(kept?.body.stack.map((block) => block.block), ['now', 'relevant-now', 'moments', 'fields'])
+  } finally {
+    userVersionStore.close()
+    await rm(userVersionDir, { recursive: true, force: true })
   }
 })
 

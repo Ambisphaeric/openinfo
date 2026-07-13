@@ -92,6 +92,21 @@ const fixtures: Record<string, unknown[]> = {
       blocking: { id: 'ocr', label: 'Reading (ocr) endpoint', pass: false, fix: DIAG_FIX },
     },
   ],
+  'sense-lanes': [
+    {
+      workspaceId: 'ws',
+      sessionId: 'ses',
+      source: 'mic',
+      disposition: 'failed',
+      health: 'failed',
+      reason: 'processing-failed',
+      updatedAt: '2026-07-09T15:30:31Z',
+      latestCapture: { id: 'capture-lint-1', capturedAt: '2026-07-09T15:30:00Z' },
+      endpoint: 'lint-endpoint-x',
+      model: 'lint-model-9b',
+      templateId: 'tpl-lint-1',
+    },
+  ],
   // A prepared Draft with the lint markers riding on its provenance (endpoint/model/template) — the block
   // must render its human why-line (act kind + source counts) WITHOUT leaking any of them (#118).
   drafts: [

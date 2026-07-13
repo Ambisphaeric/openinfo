@@ -14,6 +14,7 @@ import { renderFields } from './fields.js'
 import { renderQueue } from './queue.js'
 import { renderTranscriptInspector } from './transcript-inspector.js'
 import { renderSenseGates } from './sense-gates.js'
+import { renderSenseLanes } from './sense-lanes.js'
 import { renderInput } from './input.js'
 import { renderCustom } from './custom.js'
 
@@ -42,6 +43,7 @@ export const defaultBlockRegistry: BlockRegistry = {
   queue: renderQueue,
   'transcript-inspector': renderTranscriptInspector,
   'sense-gates': renderSenseGates,
+  'sense-lanes': renderSenseLanes,
   input: renderInput,
   custom: renderCustom,
 }

@@ -9,7 +9,8 @@ import type { BlockQuery, QueryResult, Session, Surface } from '@openinfo/contra
  */
 export interface HudTransport {
   surface(id: string): Promise<Surface>
-  query(query: BlockQuery): Promise<QueryResult>
+  /** Surface id carries the app-instance workspace binding into POST /query?surface=<id>. */
+  query(query: BlockQuery, surfaceId?: string): Promise<QueryResult>
   sessions(opts: { workspace?: string; live?: boolean }): Promise<Session[]>
   /** Subscribe to the engine WS event feed; returns an unsubscribe. */
   subscribe(handler: (event: { name: string; payload: unknown }) => void): () => void

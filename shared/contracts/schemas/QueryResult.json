@@ -65,11 +65,15 @@
         {
           "const": "senses",
           "type": "string"
+        },
+        {
+          "const": "live-senses",
+          "type": "string"
         }
       ]
     },
     "items": {
-      "description": "hydrated rows; element shape is keyed by `source` (fields → FieldValue, #61; transcript → TranscriptInspector, #101; senses → SenseGateChain, #7/#101)",
+      "description": "hydrated rows; element shape is keyed by `source` (fields → FieldValue, #61; transcript → TranscriptInspector, #101; senses → SenseGateChain, #7/#101; live-senses → existing SenseLaneSnapshot rows, #174)",
       "type": "array",
       "items": {}
     },

@@ -74,6 +74,44 @@ const senseLane = (source: 'mic' | 'system-audio' | 'screen') => ({
   },
 })
 
+test('sense-lanes is a closed surface block over the live-senses query source', () => {
+  const query = { source: 'live-senses', params: { workspace: 'default', session: 'session-live' } }
+  const block = { block: 'sense-lanes', show: 'always', query }
+  const surface = {
+    id: 'surf-live-senses', name: 'Live senses', context: 'any', version: 1,
+    stack: [block],
+  }
+  const rows = [senseLane('mic'), senseLane('system-audio'), senseLane('screen')]
+  const result = { source: 'live-senses', items: rows, truncated: false }
+
+  assert.deepEqual([...Value.Errors(AllSchemas.BlockTypeName, 'sense-lanes')], [], 'block kind is registered')
+  assert.deepEqual([...Value.Errors(AllSchemas.BlockQuery, query)], [], 'query source is registered')
+  assert.deepEqual([...Value.Errors(AllSchemas.Block, block)], [], 'block composes the registered query')
+  assert.deepEqual([...Value.Errors(AllSchemas.Surface, surface)], [], 'surface embeds the new block')
+  assert.deepEqual([...Value.Errors(AllSchemas.QueryResult, result)], [], 'query result accepts existing lane rows')
+  for (const row of rows) {
+    assert.deepEqual(
+      [...Value.Errors(AllSchemas.SenseLaneSnapshot, row)],
+      [],
+      'live-senses reuses the canonical SenseLaneSnapshot row',
+    )
+  }
+
+  assert.ok([...Value.Errors(AllSchemas.BlockTypeName, 'sense-lane')].length > 0, 'invented block kind is rejected')
+  assert.ok(
+    [...Value.Errors(AllSchemas.BlockQuery, { ...query, source: 'ambient-senses' })].length > 0,
+    'invented query source is rejected',
+  )
+  assert.ok(
+    [...Value.Errors(AllSchemas.QueryResult, { ...result, source: 'ambient-senses' })].length > 0,
+    'invented result source is rejected',
+  )
+  assert.ok(
+    [...Value.Errors(AllSchemas.BlockQuery, { ...query, rawFrames: true })].length > 0,
+    'query contract remains closed',
+  )
+})
+
 test('SenseLaneSnapshot/Set are atomic, metadata-only, and pin the canonical three-lane tuple', () => {
   const mic = senseLane('mic')
   const valid = {

@@ -10,7 +10,8 @@ const LABEL = 'Transcription · inspector'
  * was diagnosable only over ssh; this puts the exact probes on a surface. It reads the hydrated `transcript`
  * query (`source: 'transcript'`, ONE row: the TranscriptInspector snapshot the engine injects — recent
  * ephemeral chunks from an in-memory ring + the CURRENT stt slot config) and renders, newest-first, one row
- * per transcript chunk: clock · stream (mic = me / sys = them) · duration · raw text.
+ * per transcript chunk: clock · physical stream · duration · raw text. A physical input is never
+ * presented as a speaker identity because one microphone or system stream can contain several people.
  *
  * HONESTY (the whole point): per-chunk stt provenance is NOT recorded anywhere — STT invokes persist no
  * provenance row, unlike DISTILLATE records (the disclosed #65 gap). So the block does NOT stamp a per-chunk
@@ -20,7 +21,7 @@ const LABEL = 'Transcription · inspector'
  * line; a missing snapshot (the source unwired — only in a unit caller) ⇒ an explainable "unavailable" line.
  */
 const streamLabel = (source: CaptureSource): string =>
-  source === 'mic' ? 'mic · me' : source === 'system-audio' ? 'sys · them' : source
+  source === 'mic' ? 'Microphone' : source === 'system-audio' ? 'System audio' : source
 
 /** The captured-audio span of the chunks aggregated into this update, humanised. Malformed range ⇒ ''. */
 const durationLabel = (range: TranscriptUpdate['capturedAtRange']): string => {

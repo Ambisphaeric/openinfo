@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Distillate, Draft, Moment, Pin, QueueStatus, RelevantEntity, Session, TeachSignal, TodoItem, TodoList, TranscriptInspector } from '@openinfo/contracts'
+import type { Distillate, Draft, Moment, Pin, QueueStatus, RelevantEntity, SenseLaneSnapshot, Session, TeachSignal, TodoItem, TodoList, TranscriptInspector } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { TodoDocuments } from '../act/index.js'
 import { TeachStore, type HintCandidate } from '../teach/index.js'
@@ -361,6 +361,37 @@ test('compileQuery resolves the senses source from the INJECTED gate chains, els
 
     // not injected (a unit caller) ⇒ [] explainable-empty
     assert.deepEqual(compileQuery(store, { source: 'senses', params: {} }).items, [])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('compileQuery wraps injected live-senses rows in canonical order, honors top, and invents no fallback', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-live-senses-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const lanes: SenseLaneSnapshot[] = [
+      { workspaceId: 'ws-live', sessionId: 'ses-live', source: 'mic', disposition: 'queued', health: 'healthy', reason: 'awaiting-processing', updatedAt: '2026-07-13T14:00:00.000Z', latestCapture: { id: 'mic-1', capturedAt: '2026-07-13T13:59:59.000Z' } },
+      { workspaceId: 'ws-live', sessionId: 'ses-live', source: 'system-audio', disposition: 'waiting', health: 'unknown', reason: 'awaiting-capture', updatedAt: '2026-07-13T14:00:00.000Z' },
+      { workspaceId: 'ws-live', sessionId: 'ses-live', source: 'screen', disposition: 'waiting', health: 'unknown', reason: 'awaiting-capture', updatedAt: '2026-07-13T14:00:00.000Z' },
+    ]
+
+    const resolved = compileQuery(
+      store,
+      { source: 'live-senses', params: { session: 'current' }, top: 2 },
+      new Date(),
+      { liveSenses: lanes },
+    )
+    assert.equal(resolved.source, 'live-senses')
+    assert.deepEqual((resolved.items as SenseLaneSnapshot[]).map((lane) => lane.source), ['mic', 'system-audio'])
+    assert.deepEqual(resolved.items, lanes.slice(0, 2))
+    assert.equal(resolved.top, 2)
+    assert.equal(resolved.truncated, true)
+
+    // Runtime truth must be injected by the route. A pure/unit caller cannot fall back to persisted
+    // sessions or manufacture rows — cold process truth is owned by SenseLaneTracker.
+    assert.deepEqual(compileQuery(store, { source: 'live-senses', params: {} }).items, [])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })

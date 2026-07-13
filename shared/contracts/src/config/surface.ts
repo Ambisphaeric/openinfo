@@ -3,7 +3,7 @@ import { Id } from '../common.js'
 
 /** Append-only. Adding a name here is step 1 of the CONTRIBUTING "add a block type" recipe. */
 export const BlockTypeName = Type.Union(
-  ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom'].map((b) => Type.Literal(b)),
+  ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes'].map((b) => Type.Literal(b)),
   { $id: 'BlockTypeName' },
 )
 export type BlockTypeName = Static<typeof BlockTypeName>
@@ -16,7 +16,7 @@ export type BlockTypeName = Static<typeof BlockTypeName>
 export const BlockQuery = Type.Object(
   {
     source: Type.Union(
-      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue', 'transcript', 'senses'].map((s) => Type.Literal(s)),
+      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue', 'transcript', 'senses', 'live-senses'].map((s) => Type.Literal(s)),
     ),
     params: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
     top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),

@@ -27,7 +27,7 @@ const blob = (html: string, id: string): unknown => {
 }
 
 test('blockTypeNames enumerates the append-only BlockTypeName union', () => {
-  assert.deepEqual(blockTypeNames(), ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom'])
+  assert.deepEqual(blockTypeNames(), ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes'])
 })
 
 test('defaultBlockFor gives sensible per-type seeds mirroring the shipped docs', () => {
@@ -52,6 +52,12 @@ test('defaultBlockFor gives sensible per-type seeds mirroring the shipped docs',
   assert.equal(defaultBlockFor('fields').show, 'on-match')
   assert.equal(defaultBlockFor('queue').query?.source, 'queue')
   assert.equal(defaultBlockFor('queue').show, 'always')
+  assert.deepEqual(defaultBlockFor('sense-lanes'), {
+    block: 'sense-lanes',
+    show: 'always',
+    top: 3,
+    query: { source: 'live-senses', params: { session: 'current' }, top: 3 },
+  })
   assert.equal(defaultBlockFor('custom').custom?.htmlEndpoint, '/custom/example.html')
 })
 

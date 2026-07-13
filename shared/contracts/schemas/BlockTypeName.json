@@ -68,6 +68,10 @@
     {
       "const": "custom",
       "type": "string"
+    },
+    {
+      "const": "sense-lanes",
+      "type": "string"
     }
   ]
 }
