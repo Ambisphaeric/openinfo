@@ -46,7 +46,7 @@ test('seam streams, spools while engine is down, then flushes exactly once in or
       await link.flush()
       assert.equal(await link.spool.pendingCount(), 0)
       assert.equal(received.length, sim.emitted.length)
-    })
+    }, 20_000)
 
     assert.deepEqual(received.map((chunk) => chunk.sequence), sim.emitted.map((chunk) => chunk.sequence))
     assert.equal(new Set(received.map((chunk) => chunk.id)).size, received.length)
@@ -55,9 +55,9 @@ test('seam streams, spools while engine is down, then flushes exactly once in or
   } finally {
     stopEvents()
     await stopEngine(engine)
-    await rm(dataDir, { recursive: true, force: true })
-    await rm(spoolDir, { recursive: true, force: true })
-    await rm(runDir, { recursive: true, force: true })
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    await rm(spoolDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    await rm(runDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 
@@ -84,7 +84,7 @@ async function startEngine(port: number, dataDir: string, runDir: string): Promi
   await eventually(async () => {
     const response = await fetch(`${url}/health`)
     assert.equal(response.status, 200)
-  })
+  }, 20_000)
   return { child, url }
 }
 
@@ -109,7 +109,7 @@ async function collectCaptureEvents(
     assert.ok(credential)
     assert.ok(credential.instanceId)
     assert.notEqual(credential.instanceId, previousInstanceId)
-  })
+  }, 20_000)
   const socket = new WebSocket(url.replace(/^http/, 'ws') + '/events', engineWebSocketProtocols(credential!))
   socket.addEventListener('message', (event) => {
     const parsed = JSON.parse(String(event.data)) as { name?: string; payload?: CaptureReceipt }

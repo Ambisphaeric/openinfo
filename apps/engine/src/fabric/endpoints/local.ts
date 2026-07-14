@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { accessSync, constants, existsSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { delimiter, join } from 'node:path'
+import { homedir } from 'node:os'
+import { delimiter, extname, join } from 'node:path'
 import type { Endpoint, LocalRuntime } from '@openinfo/contracts'
 
 /**
@@ -99,8 +100,29 @@ export const RUNTIME_SPECS: Partial<Record<LocalRuntime, RuntimeSpec>> = {
 /** The runtime spec table shape (a partial map — only the managed v0 runtimes are present). */
 export type LocalRuntimeSpecs = Partial<Record<LocalRuntime, RuntimeSpec>>
 
-/** Additional directories to search beyond PATH — common Homebrew/manual install locations on macOS. */
-const EXTRA_BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', join(process.env['HOME'] ?? '', '.local', 'bin')]
+const isWindows = process.platform === 'win32'
+
+/**
+ * Additional directories to search beyond PATH. On macOS/Linux these are the common Homebrew/manual
+ * install locations; on Windows PATH discovery carries the load (installers put runtimes on PATH), so
+ * there is nothing OS-standard to add. (HOME is undefined on Windows, so `homedir()` is used, not
+ * `$HOME`, to keep `.local/bin` a real absolute path off darwin/linux.)
+ */
+const EXTRA_BIN_DIRS = isWindows ? [] : ['/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.local', 'bin')]
+
+/**
+ * The executable name variants to probe for a bare runtime name. On Windows a runtime discovered as
+ * `llama-server` is really `llama-server.exe`, so each PATHEXT extension is appended (a name that already
+ * carries an extension is left as-is). On POSIX the name is used verbatim.
+ */
+const candidateNames = (name: string): string[] => {
+  if (!isWindows || extname(name)) return [name]
+  const exts = (process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD')
+    .split(';')
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.length > 0)
+  return exts.map((e) => name + e)
+}
 
 const isExecutable = (path: string): boolean => {
   try {
@@ -111,13 +133,15 @@ const isExecutable = (path: string): boolean => {
   }
 }
 
-/** Discover a usable binary for a spec on PATH + common Homebrew locations. Absolute path, or undefined. */
+/** Discover a usable binary for a spec on PATH + common install locations. Absolute path, or undefined. */
 export const findRuntimeBinary = (spec: RuntimeSpec): string | undefined => {
   const dirs = [...(process.env['PATH'] ?? '').split(delimiter), ...EXTRA_BIN_DIRS].filter((d) => d.length > 0)
   for (const name of spec.binaryNames) {
     for (const dir of dirs) {
-      const candidate = join(dir, name)
-      if (existsSync(candidate) && isExecutable(candidate)) return candidate
+      for (const candidateName of candidateNames(name)) {
+        const candidate = join(dir, candidateName)
+        if (existsSync(candidate) && isExecutable(candidate)) return candidate
+      }
     }
   }
   return undefined

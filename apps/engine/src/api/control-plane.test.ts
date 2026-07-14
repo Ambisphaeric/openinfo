@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import {
   controlTokenDigest,
   generateControlToken,
@@ -34,7 +34,7 @@ test('local defaults are authenticated, per-launch, and deterministically loopba
   assert.equal(control.port, 8787)
   assert.equal(control.baseUrl, 'http://127.0.0.1:8787')
   assert.equal(control.tokenSource, 'generated')
-  assert.equal(control.discoveryPath, '/tmp/openinfo-control-home/.openinfo/run/engine-8787.json')
+  assert.equal(control.discoveryPath, resolve('/tmp/openinfo-control-home', '.openinfo', 'run', 'engine-8787.json'))
   assert.equal(control.authenticate(TOKEN_A), true)
   assert.equal(control.authenticate(TOKEN_B), false)
   assert.equal(control.authenticate(undefined), false)

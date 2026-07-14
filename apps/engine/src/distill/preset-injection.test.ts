@@ -52,7 +52,7 @@ const setup = async (): Promise<{ dir: string; store: WorkspaceRegistry; presets
 }
 
 test('pill P2: an UNSET preset is byte-identical to today (regression guard)', async () => {
-  const { dir, prompts, distiller } = await setup()
+  const { dir, store, prompts, distiller } = await setup()
   try {
     const [distillate] = await distiller.distillChunks([speech(1, 'we should ship on Thursday')])
     assert.equal(prompts.length, 1, 'one summary invoke')
@@ -62,7 +62,8 @@ test('pill P2: an UNSET preset is byte-identical to today (regression guard)', a
     assert.ok(!prompts[0]!.startsWith('Context:'), 'no preset context prepended')
     assert.equal(distillate!.provenance.presetId, undefined, 'no presetId stamped when none was active')
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    store.close()
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 
@@ -90,6 +91,7 @@ test('pill P2: flipping the active preset changes the distill prompt AND stamps 
     // A different workspace with no selection is unaffected (per-workspace isolation of the seam).
     assert.equal(store.getActivePreset('another-ws'), undefined)
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    store.close()
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })

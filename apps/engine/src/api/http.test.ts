@@ -2571,9 +2571,9 @@ test('e2e (tier zero): nothing found → download a starter model → local endp
     dataRoot: dir,
     log: () => undefined,
     localRuntime: {
-      findBinary: () => fakeBin,
-      specs: { 'llama.cpp': { runtime: 'llama.cpp', binaryNames: ['fake-runtime'], installHint: 'x', args: (m, p) => ['--port', String(p), '-m', m], healthPath: '/health', chat: true } },
-      readyTimeoutMs: 6_000,
+      findBinary: () => process.execPath,
+      specs: { 'llama.cpp': { runtime: 'llama.cpp', binaryNames: ['fake-runtime'], installHint: 'x', args: (m, p) => [fakeBin, '--port', String(p), '-m', m], healthPath: '/health', chat: true } },
+      readyTimeoutMs: 20_000,
     },
   })
   await new Promise<void>((resolve) => app.server.listen(0, resolve))

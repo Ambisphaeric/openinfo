@@ -38,8 +38,13 @@ test('set/resolve/has/listRefs/delete round-trip', async () => {
 test('the file is 0600 and values persist across store instances (reload)', async () => {
   await withFile((file) => {
     new FileSecretStore(file).set('k', 'v')
-    const mode = statSync(file).mode & 0o777
-    assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`)
+    // POSIX permission bits only: Windows has no 0600 equivalent (statSync reports 0666), so the file-mode
+    // guard is asserted only off-Windows. On Windows the secrets file is NOT chmod-restricted — a documented
+    // platform gap (protect ~/.openinfo via NTFS ACLs / a per-user profile instead).
+    if (process.platform !== 'win32') {
+      const mode = statSync(file).mode & 0o777
+      assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`)
+    }
     // a fresh instance reads the persisted value from disk
     assert.equal(new FileSecretStore(file).resolve('k'), 'v')
   })

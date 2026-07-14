@@ -6,7 +6,7 @@
   "main": "dist/main/shell.js",
   "scripts": {
     "build": "tsc -p .",
-    "test": "node --test 'dist/**/*.test.js'",
+    "test": "node --test \"dist/**/*.test.js\"",
     "test:e2e:hud": "pnpm build && electron scripts/hud-bounds-e2e.mjs",
     "test:e2e:panel": "pnpm build && electron scripts/panel-bounds-e2e.mjs",
     "test:e2e:chat": "pnpm build && electron scripts/chat-input-e2e.mjs",

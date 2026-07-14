@@ -5,7 +5,7 @@
   "scripts": {
     "build": "tsc -p .",
     "dev": "node --watch dist/main.js",
-    "test": "node --test 'dist/**/*.test.js'"
+    "test": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
     "@openinfo/contracts": "workspace:*",

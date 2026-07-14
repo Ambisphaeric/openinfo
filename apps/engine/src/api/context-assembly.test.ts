@@ -201,8 +201,8 @@ test('estimateTokens is chars/4', () => {
 // changes assembly with NO code change. Edit the bundle doc, re-read it, assemble — observe the difference.
 test('a stored bundle edit changes assembly with no code change (declaration is data)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-ctx-'))
+  const store = new WorkspaceRegistry(dir)
   try {
-    const store = new WorkspaceRegistry(dir)
     const bundles = new BundleDocuments(store)
     bundles.ensureDefaults()
 
@@ -229,7 +229,8 @@ test('a stored bundle edit changes assembly with no code change (declaration is 
     assert.doesNotMatch(edited.contextText, /Known in this session/)
     assert.match(edited.contextText, /You are the assistant\./)
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    store.close()
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 

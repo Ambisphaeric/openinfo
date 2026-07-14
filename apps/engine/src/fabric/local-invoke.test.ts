@@ -38,21 +38,24 @@ chmodSync(fakeBin, 0o755)
 const modelFile = join(tmp, 'model.bin')
 writeFileSync(modelFile, 'bytes')
 
+// The fake is a node script, so it is spawned as `node <script> …` (via findBinary → process.execPath).
+// Windows cannot exec a shebang script directly; routing through node keeps the real spawn/ready/kill
+// machinery exercised on every OS. The runtime arg list therefore leads with the script path.
 const llamaSpec: RuntimeSpec = {
   runtime: 'llama.cpp', binaryNames: ['fake-server'], installHint: 'x',
-  args: (m, p) => ['--port', String(p), '-m', m], healthPath: '/health', chat: true,
+  args: (m, p) => [fakeBin, '--port', String(p), '-m', m], healthPath: '/health', chat: true,
 }
 const whisperSpec: RuntimeSpec = {
   runtime: 'whisper.cpp', binaryNames: ['fake-server'], installHint: 'x',
-  args: (m, p) => ['--port', String(p), '-m', m], healthPath: '/health', transcribePath: '/inference',
+  args: (m, p) => [fakeBin, '--port', String(p), '-m', m], healthPath: '/health', transcribePath: '/inference',
 }
 
 const manager = () =>
   new LocalRuntimeManager({
     modelPath: () => modelFile,
-    findBinary: () => fakeBin,
+    findBinary: () => process.execPath,
     specs: { 'llama.cpp': llamaSpec, 'whisper.cpp': whisperSpec },
-    readyTimeoutMs: 5_000,
+    readyTimeoutMs: 20_000,
   })
 
 const llmEndpoint: LocalEndpoint = { kind: 'local', name: 'starter-llm', runtime: 'llama.cpp', model: 'model.bin' }

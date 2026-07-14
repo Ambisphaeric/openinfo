@@ -1,12 +1,17 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Pin } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../../store/index.js'
 import { ingestPin } from './ingest.js'
 import { createFileFetcher, createUrlFetcher, defaultFetchers, pdfFetcher } from './fetcher.js'
+
+// A host-valid file:// URL (drive-lettered on Windows) — a bare POSIX 'file:///doc.txt' has no drive
+// letter and fileURLToPath rejects it off POSIX. The referenced file need not exist: readFile is mocked.
+const fileUri = (name: string): string => pathToFileURL(join(tmpdir(), name)).href
 
 const pin = (over: Partial<Pin> & { id: string; kind: Pin['kind']; uri: string }): Pin => ({
   workspaceId: 'ws-canon',
@@ -18,12 +23,13 @@ const pin = (over: Partial<Pin> & { id: string; kind: Pin['kind']; uri: string }
 
 const withStore = async (fn: (store: WorkspaceRegistry) => Promise<void>): Promise<void> => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-ingest-'))
+  const store = new WorkspaceRegistry(dir)
   try {
-    const store = new WorkspaceRegistry(dir)
     await fn(store)
-    store.close()
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    store.close()
+    // Windows holds the sqlite files until the handle is released; retries absorb the release lag.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 }
 
@@ -32,7 +38,7 @@ const now = (): string => '2026-07-07T15:00:00Z'
 test('file ingest: form-feed pages become page-anchored chunks; pin marked ingested', async () => {
   await withStore(async (store) => {
     const fetchers = { file: createFileFetcher({ readFile: async () => 'page one text\fpage two text' }) }
-    const result = await ingestPin(pin({ id: 'pin-file', kind: 'file', uri: 'file:///doc.txt' }), { store, fetchers, now })
+    const result = await ingestPin(pin({ id: 'pin-file', kind: 'file', uri: fileUri('doc.txt') }), { store, fetchers, now })
     assert.equal(result.ingest.status, 'ingested')
     assert.equal(result.ingest.pages, 2)
     assert.equal(result.ingest.chunks, 2)
@@ -93,7 +99,7 @@ test('re-ingest is idempotent: chunks are replaced, not duplicated', async () =>
   await withStore(async (store) => {
     let body = 'v1 page a\fv1 page b\fv1 page c'
     const fetchers = { file: createFileFetcher({ readFile: async () => body }) }
-    const p = pin({ id: 'pin-re', kind: 'file', uri: 'file:///doc.txt' })
+    const p = pin({ id: 'pin-re', kind: 'file', uri: fileUri('doc.txt') })
     const first = await ingestPin(p, { store, fetchers, now })
     assert.equal(first.ingest.chunks, 3)
 

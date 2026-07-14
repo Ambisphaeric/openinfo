@@ -52,6 +52,13 @@ const tmp = mkdtempSync(join(tmpdir(), 'oi-local-'))
 const fakeBin = join(tmp, 'fake-server')
 writeFileSync(fakeBin, FAKE_SOURCE)
 chmodSync(fakeBin, 0o755)
+// The fake is spawned as `node <fakeBin> …` (findBinary → process.execPath): Windows cannot exec a shebang
+// script directly, and routing through node keeps the real spawn/ready/kill machinery exercised on every OS.
+// The PATH-discovery test needs a genuinely discoverable executable, which off Windows is the chmod+x script
+// itself but on Windows must carry a PATHEXT extension (.cmd) — a bare shebang file is not discoverable there.
+const isWindows = process.platform === 'win32'
+const discoverBin = isWindows ? join(tmp, 'fake-server.cmd') : fakeBin
+if (isWindows) writeFileSync(discoverBin, '@echo off\r\n')
 const modelFile = join(tmp, 'model.gguf')
 writeFileSync(modelFile, 'GGUF-fake-bytes')
 
@@ -59,7 +66,7 @@ const fakeSpec: RuntimeSpec = {
   runtime: 'llama.cpp',
   binaryNames: ['fake-server'],
   installHint: 'install the fake',
-  args: (model, port) => ['--host', '127.0.0.1', '--port', String(port), '-m', model],
+  args: (model, port) => [fakeBin, '--host', '127.0.0.1', '--port', String(port), '-m', model],
   healthPath: '/health',
   chat: true,
 }
@@ -71,9 +78,9 @@ const ep = (over: Partial<LocalEndpoint> = {}): LocalEndpoint => ({
 const managerWith = (over: Partial<ConstructorParameters<typeof LocalRuntimeManager>[0]> = {}) =>
   new LocalRuntimeManager({
     modelPath: () => modelFile,
-    findBinary: () => fakeBin,
+    findBinary: () => process.execPath,
     specs: { 'llama.cpp': fakeSpec },
-    readyTimeoutMs: 5_000,
+    readyTimeoutMs: 20_000,
     ...over,
   })
 
@@ -81,7 +88,7 @@ test('findRuntimeBinary: found on PATH, missing when absent', () => {
   const prevPath = process.env['PATH']
   process.env['PATH'] = tmp
   try {
-    assert.equal(findRuntimeBinary(fakeSpec), fakeBin)
+    assert.equal(findRuntimeBinary(fakeSpec), discoverBin)
     assert.equal(findRuntimeBinary({ ...fakeSpec, binaryNames: ['definitely-not-a-real-binary-xyz'] }), undefined)
   } finally {
     process.env['PATH'] = prevPath

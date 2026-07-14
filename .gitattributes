@@ -1,0 +1,22 @@
+# Normalize line endings across platforms. openinfo is authored on macOS/Linux
+# (LF), and several generated-artifact guards compare files byte-for-byte (e.g.
+# the shared/contracts schema-drift test regenerates schemas/*.json and diffs
+# them against the committed copies). On Windows with core.autocrlf=true a
+# checkout would rewrite those committed files to CRLF, so the LF the generator
+# emits no longer matches and the guard fails spuriously. Forcing LF on checkout
+# keeps every text file identical on every OS.
+* text=auto eol=lf
+
+# Binary types git must never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.icns binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary

@@ -85,7 +85,8 @@ test('a HELD egress hop records a GuardHold audit record and produces NO distill
     assert.deepEqual(holds[0]!.verdict.spans, [{ kind: 'card-number', start: 0, length: 16 }])
     assert.equal(published.length, 1, 'the hold was published (surfaced)')
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    store.close()
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 
@@ -110,7 +111,8 @@ test('a REDACTED verdict rides onto the distillate provenance (audit trail)', as
     // The stored distillate carries it too (the ledger reads this).
     assert.equal(store.listDistillates('default')[0]!.provenance.guard?.outcome, 'redacted')
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    store.close()
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
 
@@ -127,6 +129,7 @@ test('guard OFF (guardEnabled false) skips the guard entirely — pre-#63 behavi
     assert.equal(produced.length, 1)
     assert.equal(sawGuardOpt, false, 'no guard option is threaded when the flag is off')
   } finally {
-    await rm(dir, { recursive: true, force: true })
+    store.close()
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
