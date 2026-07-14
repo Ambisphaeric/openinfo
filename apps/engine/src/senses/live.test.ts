@@ -530,3 +530,101 @@ test('same-frame outcome upgrades keep evidence atomic and a prior failure never
   assert.equal(nextQueue?.disposition, 'queued')
   assert.equal(nextQueue?.health, 'unknown', 'failed processing is not evidence that the next frame processor is healthy')
 })
+
+test('#192 gate overlay: an off lane reads blocked with its true reason, and reopening restores exact prior truth', () => {
+  const time = clock()
+  const tracker = new SenseLaneTracker({ now: time.now })
+  tracker.startSession(session())
+  tracker.recordCapture(capture())
+  tracker.recordTranscript(transcript())
+  const before = tracker.snapshotSet('w1')
+  assert.deepEqual([before.lanes[0].disposition, before.lanes[0].health, before.lanes[0].reason], ['processed', 'healthy', 'processed'])
+
+  time.tick()
+  const blocked = tracker.applyGates({ mic: 'disabled', screen: 'configuration-blocked' })
+  assert.deepEqual(blocked.map((lane) => [lane.source, lane.disposition, lane.health, lane.reason]), [
+    // Only health/reason are masked: the mic keeps its processed disposition and evidence, truthfully.
+    ['mic', 'processed', 'blocked', 'disabled'],
+    ['screen', 'waiting', 'blocked', 'configuration-blocked'],
+  ])
+  assert.deepEqual(blocked[0]!.latestProcessing, before.lanes[0].latestProcessing, 'gating never touches processing evidence')
+  // The ungated neighbour is byte-identical: blocking one lane cannot relabel another.
+  assert.deepEqual(tracker.snapshotSet('w1').lanes[1], before.lanes[1])
+
+  // Idempotent: republishing the same verdict emits nothing.
+  assert.deepEqual(tracker.applyGates({ mic: 'disabled', screen: 'configuration-blocked' }), [])
+
+  // Events landing WHILE gated stay gated in the projection but keep the underlying truth advancing.
+  time.tick()
+  const gatedCapture = tracker.recordCapture(capture({ id: 'mic-2', sequence: 2, capturedAt: '2026-07-13T10:00:04.000Z' }))
+  assert.deepEqual([gatedCapture?.disposition, gatedCapture?.health, gatedCapture?.reason], ['queued', 'blocked', 'disabled'])
+
+  // Reopening the gates restores the exact underlying truth without restart — no state was clobbered.
+  time.tick()
+  const restored = tracker.applyGates({})
+  assert.deepEqual(restored.map((lane) => [lane.source, lane.disposition, lane.health, lane.reason]), [
+    ['mic', 'queued', 'healthy', 'awaiting-processing'],
+    ['screen', 'waiting', 'unknown', 'awaiting-capture'],
+  ])
+  assert.deepEqual(tracker.snapshotSet('w1').lanes[1], before.lanes[1], 'the ungated lane never emitted or changed')
+})
+
+test('#192 gate overlay scope: cold workspaces and ended sessions are never gate-relabeled, and junk reasons fail closed', () => {
+  const time = clock()
+  const tracker = new SenseLaneTracker({ now: time.now })
+  assert.deepEqual(tracker.applyGates({ mic: 'disabled' }), [], 'no active session ⇒ nothing to emit')
+  assert.ok(tracker.snapshotSet('w1').lanes.every((lane) => lane.reason === 'no-session'), 'a cold lane keeps its no-session truth')
+
+  tracker.startSession(session())
+  const started = tracker.snapshotSet('w1')
+  assert.deepEqual([started.lanes[0].health, started.lanes[0].reason], ['blocked', 'disabled'], 'a session opening under a closed gate is blocked from its first row')
+
+  time.tick()
+  tracker.endSession({ ...session(), endedAt: '2026-07-13T10:01:00.000Z' })
+  const ended = tracker.snapshotSet('w1', 's1')
+  assert.ok(ended.lanes.every((lane) => lane.disposition === 'stopped' && lane.health === 'unknown' && lane.reason === 'session-ended'),
+    'an ended session reads session-ended, never a gate overlay')
+
+  // A widened caller cannot smuggle a new public reason through the overlay: junk reads as clear.
+  tracker.startSession(session('s2', 'w1', '2026-07-13T10:02:00.000Z'))
+  tracker.applyGates({ mic: 'permission-denied', screen: 'exploded' } as unknown as Parameters<typeof tracker.applyGates>[0])
+  assert.ok(tracker.snapshotSet('w1').lanes.every((lane) => lane.health !== 'blocked'), 'only the two closed gate reasons are legal')
+})
+
+test('#192 permission-denied observation: a refused screen run reads blocked with the true reason, not idle', () => {
+  const time = clock()
+  const tracker = new SenseLaneTracker({ now: time.now })
+  tracker.startSession(session())
+  const before = tracker.snapshotSet('w1')
+
+  const denied = tracker.recordScreenCaptureObservation({
+    workspaceId: 'w1', sessionId: 's1', outcome: 'permission-denied',
+    observationId: 'attempt-denied', occurredAt: '2026-07-13T10:00:01.000Z',
+  })
+  assert.equal(denied?.source, 'screen')
+  assert.deepEqual([denied?.disposition, denied?.health, denied?.reason], ['failed', 'blocked', 'permission-denied'])
+  if (denied?.source === 'screen') {
+    assert.deepEqual(denied.latestObservation, {
+      id: 'attempt-denied', occurredAt: '2026-07-13T10:00:01.000Z', outcome: 'permission-denied',
+    })
+  }
+  // A denial relabels nothing else: the audio lanes are byte-identical.
+  assert.deepEqual(tracker.snapshotSet('w1').lanes[0], before.lanes[0])
+  assert.deepEqual(tracker.snapshotSet('w1').lanes[1], before.lanes[1])
+
+  // A replayed attempt id is consumed exactly once.
+  assert.equal(tracker.recordScreenCaptureObservation({
+    workspaceId: 'w1', sessionId: 's1', outcome: 'permission-denied',
+    observationId: 'attempt-denied', occurredAt: '2026-07-13T10:00:09.000Z',
+  }), undefined)
+
+  // Permission granted again: the next accepted physical capture restores queued truth and drops the
+  // stale denial provenance — recovery needs no restart and no special verb.
+  time.tick()
+  const recovered = tracker.recordCapture(capture({
+    id: 'screen-recovered', source: 'screen', sequence: 1,
+    capturedAt: '2026-07-13T10:00:02.000Z', contentType: 'image/jpeg',
+  }))
+  assert.deepEqual([recovered?.disposition, recovered?.health, recovered?.reason], ['queued', 'unknown', 'awaiting-processing'])
+  if (recovered?.source === 'screen') assert.equal(recovered.latestObservation, undefined)
+})

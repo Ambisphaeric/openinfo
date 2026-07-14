@@ -136,6 +136,35 @@ test('the glance copy never exposes correlation ids, captured content, endpoints
   assert.doesNotMatch(html, /[–—]/)
 })
 
+test('a blocked lane names its true blocker in human words, never the closed code or a flag key (#192)', () => {
+  const disabled: SenseLaneSnapshot = { ...lane('mic', 'waiting'), health: 'blocked', reason: 'disabled' }
+  const disabledHtml = render([disabled])
+  assert.match(disabledHtml, /Microphone · Waiting · Blocked/)
+  assert.match(disabledHtml, /Turned off in Settings/)
+
+  const denied: SenseLaneSnapshot = {
+    ...lane('screen', 'failed'),
+    health: 'blocked',
+    reason: 'permission-denied',
+    latestObservation: { id: 'observation-secret-3', occurredAt: '2026-07-13T14:47:00Z', outcome: 'permission-denied' },
+  }
+  const deniedHtml = render([denied])
+  assert.match(deniedHtml, /Screen · Failed · Blocked/)
+  assert.match(deniedHtml, /isn’t allowed yet — grant access in System Settings/)
+  assert.match(deniedHtml, /Capture refused 2:47p/)
+  assert.doesNotMatch(deniedHtml, /observation-secret-3/)
+
+  const configured: SenseLaneSnapshot = { ...lane('system-audio', 'waiting'), health: 'blocked', reason: 'configuration-blocked' }
+  assert.match(render([configured]), /No model is set up for this yet/)
+
+  // The closed reason codes and internal flag vocabulary never reach the DOM (hud-voice §2).
+  for (const html of [disabledHtml, deniedHtml, render([configured])]) {
+    for (const machine of ['permission-denied', 'configuration-blocked', 'screen\\.ocr', 'distill\\.']) {
+      assert.doesNotMatch(html, new RegExp(machine))
+    }
+  }
+})
+
 test('invented disposition or health values in initial hydration degrade safely instead of crashing', () => {
   for (const invalid of [
     { ...lane('mic', 'waiting'), disposition: 'invented-disposition' },

@@ -30,7 +30,7 @@ import { CaptureController, type CaptureState } from '../capture/capture-control
 import { CAPTURE_CHANNELS, type CaptureSourceKind, type CaptureStatus, type RawSegment } from '../capture/protocol.js'
 import { startScreenCadence, type ScreenCadenceHandle } from '../capture/screen-source.js'
 import { FrameDeltaGate, DELTA_PROBE_WIDTH } from '../capture/frame-delta.js'
-import { runScreenCaptureAttempt } from '../capture/screen-observation.js'
+import { runScreenCaptureAttempt, screenPermissionDeniedObservation } from '../capture/screen-observation.js'
 import { CaptureConsent } from './capture-consent.js'
 import { CaptureDispatcher, type DispatchChannel } from './capture-dispatcher.js'
 import { createClientLog, type ClientLog } from './client-log.js'
@@ -1033,6 +1033,14 @@ const setupCapture = (): void => {
     onStateChange: (state) => {
       clientLog(`[shell] screen capture state → ${state}`)
       refreshTray()
+    },
+    // #192: a run the OS refused files one metadata-only permission-denied observation for its exact
+    // session, so the engine's screen lane reads blocked with the true reason instead of idly waiting.
+    // Best-effort like every observation report: a dropped send is logged, never spooled, never blocking.
+    onDenied: (context) => {
+      void link.observeScreen(screenPermissionDeniedObservation(context)).catch((error: unknown) => {
+        clientLog(`[shell] screen permission-denied report dropped: ${String(error)}`)
+      })
     },
     log: clientLog,
   })

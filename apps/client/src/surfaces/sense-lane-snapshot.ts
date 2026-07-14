@@ -68,7 +68,7 @@ const processing = (value: unknown): SenseLaneProcessing | undefined => {
 const observation = (value: unknown): ScreenLaneObservation | undefined => {
   if (!isRow(value) || !hasExactKeys(value, ['id', 'occurredAt', 'outcome'])) return undefined
   if (!isNonEmptyString(value['id']) || !isIsoTime(value['occurredAt'])) return undefined
-  if (!member(['delta-skipped', 'grab-failed'] as const, value['outcome'])) return undefined
+  if (!member(['delta-skipped', 'grab-failed', 'permission-denied'] as const, value['outcome'])) return undefined
   return { id: value['id'], occurredAt: value['occurredAt'], outcome: value['outcome'] }
 }
 

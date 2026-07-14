@@ -36,6 +36,17 @@ const HEALTH_MARK: Record<SenseLaneHealth, { glyph: string; tone: string }> = {
   failed: { glyph: '●', tone: 'c' },
 }
 
+/**
+ * The TRUE reason a blocked lane is blocked, in human words (#192, hud-voice): the engine only ever emits
+ * these three closed codes with health `blocked`, each stating what is actually wrong and the one place to
+ * fix it — never a flag key, slot name, or error string.
+ */
+const BLOCKED_REASON_LABEL: Partial<Record<SenseLaneSnapshot['reason'], string>> = {
+  disabled: 'Turned off in Settings — nothing captured here is processed until it is back on',
+  'permission-denied': 'This capture isn’t allowed yet — grant access in System Settings',
+  'configuration-blocked': 'No model is set up for this yet — connect one in Settings',
+}
+
 const lagLabel = (lagMs: number): string => {
   if (lagMs < 1_000) return `${lagMs} ms`
   const seconds = lagMs / 1_000
@@ -50,6 +61,9 @@ const timePhrase = (prefix: string, iso: string): string => {
 
 const detailLine = (lane: SenseLaneSnapshot): string => {
   const details: string[] = []
+  // A blocked lane leads with its true blocker (§3 honest states) — capture/processing evidence follows.
+  const blockedReason = lane.health === 'blocked' ? BLOCKED_REASON_LABEL[lane.reason] : undefined
+  if (blockedReason !== undefined) details.push(blockedReason)
   if (lane.latestCapture) details.push(timePhrase('Last captured', lane.latestCapture.capturedAt))
   if (lane.latestProcessing) {
     const outcome = lane.latestProcessing.outcome === 'processed'
@@ -62,7 +76,9 @@ const detailLine = (lane: SenseLaneSnapshot): string => {
   if (lane.source === 'screen' && lane.latestObservation) {
     const outcome = lane.latestObservation.outcome === 'delta-skipped'
       ? 'No screen change observed'
-      : 'Screen capture failed'
+      : lane.latestObservation.outcome === 'permission-denied'
+        ? 'Capture refused'
+        : 'Screen capture failed'
     details.push(timePhrase(outcome, lane.latestObservation.occurredAt))
   }
   return details.length > 0 ? details.join(' · ') : 'No capture yet'
