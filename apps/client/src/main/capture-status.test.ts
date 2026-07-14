@@ -1,10 +1,38 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { captureStatuses, type CaptureStatusInput, type Sense, type SenseStatus } from './capture-status.js'
+import { captureStatuses, EngineSenseGateCache, invalidatesEngineSenseGates, type CaptureStatusInput, type Sense, type SenseStatus } from './capture-status.js'
 
 const base: CaptureStatusInput = { platform: 'darwin', sysAudio: 'unknown', screenEnabled: false }
 const run = (over: Partial<CaptureStatusInput> = {}): SenseStatus[] => captureStatuses({ ...base, ...over })
 const bySense = (statuses: SenseStatus[], sense: Sense): SenseStatus => statuses.find((s) => s.sense === sense)!
+
+test('the tray invalidates cached sense gates for flag, fabric, and active-workflow edits only', () => {
+  for (const event of ['flag.changed', 'fabric.changed', 'workflow.updated']) {
+    assert.equal(invalidatesEngineSenseGates(event), true, event)
+  }
+  for (const event of ['surface.updated', 'queue.updated', 'sense.lane.updated']) {
+    assert.equal(invalidatesEngineSenseGates(event), false, event)
+  }
+})
+
+test('sense-gate refresh clears stale truth and only the latest request may repopulate it', () => {
+  const cache = new EngineSenseGateCache()
+  const first = cache.begin()
+  assert.equal(cache.succeed(first, [{ sense: 'screen', blocking: { id: 'old', label: 'old gate' } }]), true)
+  assert.equal(cache.current()?.[0]?.blocking?.id, 'old')
+
+  const slow = cache.begin()
+  assert.equal(cache.current(), undefined, 'an invalidation removes stale engine truth immediately')
+  const latest = cache.begin()
+  assert.equal(cache.succeed(slow, [{ sense: 'screen', blocking: { id: 'stale', label: 'stale gate' } }]), false)
+  assert.equal(cache.current(), undefined)
+  assert.equal(cache.succeed(latest, [{ sense: 'screen', blocking: { id: 'current', label: 'current gate' } }]), true)
+  assert.equal(cache.current()?.[0]?.blocking?.id, 'current')
+
+  const failed = cache.begin()
+  assert.equal(cache.fail(failed), true)
+  assert.equal(cache.current(), undefined, 'a failed refetch cannot retain a now-invalid verdict')
+})
 
 test('the readout always covers the three senses in display order', () => {
   assert.deepEqual(

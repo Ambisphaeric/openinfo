@@ -1,6 +1,6 @@
 {
   "$id": "EgressReach",
-  "description": "layer 1: an endpoint is local (loopback/LAN/spawned) or egress (hosted/cloud) by its nature",
+  "description": "layer 1 compatibility bucket: local-network (device loopback/managed or private LAN) vs hosted/public egress; use EgressDecision.destination for physical boundary truth",
   "anyOf": [
     {
       "const": "local",

@@ -67,7 +67,8 @@ test('buildLedger: passes are newest-first', () => {
 test('renderLedger: empty state is an honest card, never blank', () => {
   const html = renderLedger(withLedger([]))
   assert.match(html, /No passes recorded yet/)
-  assert.match(html, /nothing can leave/i) // the honest egress disclosure (#64) still shows in the footer
+  assert.match(html, /raw frames default to device-local/i)
+  assert.match(html, /no hosted\/public endpoint/i)
 })
 
 test('renderLedger: a measured pass renders endpoint, tokens, and NO est marker', () => {
@@ -86,12 +87,37 @@ test('renderLedger: an estimated pass is MARKED est (a measurement is never impe
   assert.match(html, /some estimated/)
 })
 
-test('renderLedger: a local pass shows "— no guard" (no egress ⇒ no filter) and the local egress default', () => {
+test('renderLedger: legacy local provenance does not fabricate device-local scope', () => {
   const passes = buildLedger([distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z' })], [])
   const html = renderLedger(withLedger(passes))
   assert.match(html, /no guard/i)
-  assert.match(html, /class="ldg-local"[^>]*>local</)
+  assert.match(html, /class="ldg-local"[^>]*>local <span class="ldg-model">· scope not recorded/)
   assert.match(html, /guard column \(#63\)/)
+})
+
+test('renderLedger: coarse local egress provenance keeps destination scope unknown', () => {
+  const passes = buildLedger(
+    [
+      distillate({
+        id: 'coarse-local',
+        createdAt: '2026-07-10T10:00:00Z',
+        provenance: {
+          slot: 'llm',
+          endpoint: 'older-local-endpoint',
+          egress: {
+            reach: 'local',
+            allowed: false,
+            decidedBy: 'content-class',
+            reason: 'network-local destination scope was not recorded',
+          },
+        },
+      }),
+    ],
+    [],
+  )
+  const html = renderLedger(withLedger(passes))
+  assert.match(html, /local <span class="ldg-model">· scope not recorded/)
+  assert.doesNotMatch(html, /<td><span class="ldg-local"[^>]*>device-local/)
 })
 
 test('renderLedger: a redacted guard verdict lights up the guard column (span count, never the raw value)', () => {
@@ -144,11 +170,11 @@ test('buildLedger: carries the recorded egress decision onto the hop', () => {
 
 test('renderLedger: a stayed-local-by-policy hop shows the deciding layer', () => {
   const passes = buildLedger(
-    [distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z', provenance: { slot: 'llm', endpoint: 'llm.fast', egress: { reach: 'local', allowed: false, decidedBy: 'content-class', reason: 'stayed local: screen-derived content never leaves the machine' } } })],
+    [distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z', provenance: { slot: 'llm', endpoint: 'llm.fast', egress: { reach: 'local', allowed: false, decidedBy: 'content-class', reason: 'stayed on this device: hosted/public denied', destination: 'device-local' } } })],
     [],
   )
   const html = renderLedger(withLedger(passes))
-  assert.match(html, /local <span class="ldg-model">· content-class/)
+  assert.match(html, /device-local <span class="ldg-model">· content-class/)
 })
 
 test('renderLedger: a hop that actually egressed is flagged distinctly and counted in the summary', () => {
@@ -157,6 +183,67 @@ test('renderLedger: a hop that actually egressed is flagged distinctly and count
     [],
   )
   const html = renderLedger(withLedger(passes))
-  assert.match(html, /class="ldg-egress"[^>]*>egress</)
-  assert.match(html, /<span class="n">1<\/span> egress hop</)
+  assert.match(html, /class="ldg-egress"[^>]*>hosted\/public</)
+  assert.match(html, /<span class="n">1<\/span> device-boundary hop</)
+})
+
+test('renderLedger: device-local, explicitly trusted LAN, and hosted/public are visibly distinct', () => {
+  const passes = buildLedger(
+    [
+      distillate({
+        id: 'device',
+        createdAt: '2026-07-10T10:00:00Z',
+        provenance: {
+          slot: 'llm',
+          endpoint: 'managed',
+          egress: {
+            reach: 'local',
+            allowed: false,
+            decidedBy: 'content-class',
+            reason: 'stayed on this device',
+            destination: 'device-local',
+          },
+        },
+      }),
+    ],
+    [
+      ocr({
+        id: 'lan',
+        createdAt: '2026-07-10T10:01:00Z',
+        provenance: {
+          slot: 'ocr',
+          endpoint: 'trusted-vision-box',
+          egress: {
+            reach: 'local',
+            allowed: false,
+            decidedBy: 'content-class',
+            reason: 'raw screen bytes crossed the device boundary to an explicitly trusted LAN destination',
+            destination: 'lan-local',
+            rawFrameTrust: 'explicit',
+          },
+        },
+      }),
+      ocr({
+        id: 'hosted',
+        createdAt: '2026-07-10T10:02:00Z',
+        provenance: {
+          slot: 'vlm',
+          endpoint: 'hosted-service',
+          egress: {
+            reach: 'egress',
+            allowed: true,
+            decidedBy: 'default',
+            reason: 'content left the machine for a hosted/public destination',
+            destination: 'hosted-public',
+          },
+        },
+      }),
+    ],
+  )
+  const html = renderLedger(withLedger(passes))
+  assert.match(html, />device-local <span class="ldg-model">· content-class/)
+  assert.match(html, /class="ldg-lan"[^>]*>trusted LAN <span class="ldg-model">· explicit raw-frame trust/)
+  assert.match(html, /class="ldg-egress"[^>]*>hosted\/public</)
+  assert.match(html, /<span class="n">2<\/span> device-boundary hops/)
+  assert.doesNotMatch(html, /<span class="n">0<\/span> device-boundary hops/)
 })

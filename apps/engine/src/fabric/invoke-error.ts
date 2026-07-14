@@ -26,6 +26,8 @@ export interface InvokeCtx {
   /** the endpoint's name (fabric-order identity), safe to surface */
   endpoint: string
   url: string
+  /** Raw-screen calls keep the URL internally for diagnostics, but must never copy it into a surfaced hint. */
+  redactUrlInHint?: boolean
   model?: string
   /** the endpoint's auth.keyRef, if any — the REFERENCE, never the resolved value */
   keyRef?: string
@@ -48,9 +50,10 @@ const MAX_SERVER_MESSAGE = 500
 
 /** The default troubleshoot line for a class, given the endpoint context. Overridable per-failure. */
 const hintFor = (cls: InvokeErrorClass, ctx: InvokeCtx): string => {
+  const location = ctx.redactUrlInHint ? `endpoint "${ctx.endpoint}"` : ctx.url
   switch (cls) {
     case 'unreachable':
-      return `is the server running? check the URL ${ctx.url}`
+      return `is the server running? check ${location} in Settings → Endpoints`
     case 'timeout':
       return 'no response in time — the model may still be loading; pick a smaller/loaded model in Settings → Endpoints'
     case 'auth':
@@ -58,7 +61,7 @@ const hintFor = (cls: InvokeErrorClass, ctx: InvokeCtx): string => {
         ? `check key "${ctx.keyRef}" in Settings → Keys`
         : 'authorization required — add a key in Settings → Keys and reference it via keyRef'
     case 'model-load':
-      return `model ${ctx.model !== undefined ? `"${ctx.model}" ` : ''}failed to load on ${ctx.url} — pick a smaller/loaded model in Settings → Endpoints`
+      return `model ${ctx.model !== undefined ? `"${ctx.model}" ` : ''}failed to load on ${location} — pick a smaller/loaded model in Settings → Endpoints`
     case 'bad-response':
       return 'the server responded in an unexpected way — check the URL points at an OpenAI-compatible server'
     case 'reasoning-exhausted':

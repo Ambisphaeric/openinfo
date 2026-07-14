@@ -292,7 +292,10 @@ The engine's internal bus retains the full `CaptureChunk` for local processors. 
 `capture.received` WS payload is a metadata-only `CaptureReceipt`—no raw `data`, preview, derived text, or
 hash crosses the socket. That API boundary is separate from model-fabric egress: OCR/VLM raw frames remain
 loopback-only unless a specific private-LAN HTTP endpoint explicitly sets `trustRawFrames: true`; the opt-in
-never permits a public destination and never grants access to engine routes.
+never permits a public destination and never grants access to engine routes. Persisted OCR/VLM provenance
+keeps the compatibility `reach:"local"` bucket but also stamps `destination:"device-local"` or
+`destination:"lan-local"`; a trusted-LAN call additionally stamps `rawFrameTrust:"explicit"`, so the audit
+ledger counts that call as a device-boundary hop without retaining the endpoint URL, frame, or credential.
 
 ## Packages
 

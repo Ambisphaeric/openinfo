@@ -18,3 +18,8 @@
   privacy-safe fail-closed recording; and replaces model/network boundaries during replay. The committed
   synthetic fixture drives the real screen processor twice to prove byte-identical, idempotent downstream
   records. See `fixtures/README.md`; run `pnpm --filter @openinfo/fixtures test`.
+- `vision-live/` — owner-run #175 real-frame OCR/VLM validator. It captures only its generated PII-free
+  full-screen card, runs the legacy OCR and workflow VLM owners against an explicitly trusted LAN endpoint,
+  exercises a concurrent Gemma-12B-class workload, and writes a private payload-free latency/queue/memory
+  report without changing the owner's live engine data. It asserts persisted `lan-local` + explicit-trust
+  provenance and rejects URLs/credentials in that provenance. See `vision-live/README.md`; run `pnpm vision:live`.

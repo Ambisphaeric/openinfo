@@ -7,6 +7,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "workflow:dry-run": "node tools/workflow-governance/dry-run.mjs",
+    "vision:live": "pnpm -r build && pnpm --filter @openinfo/client test:e2e:vision-live",
     "contracts:gen": "pnpm --filter @openinfo/contracts gen",
     "version:bump": "node tools/bump-version.mjs",
     "version:check": "node tools/check-version-parity.mjs"

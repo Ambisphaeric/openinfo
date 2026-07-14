@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { OcrResult, ScreenStatus } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { isFlagEnabled } from '../flags/read.js'
+import { screenRecognitionEnabledForStore } from './ownership.js'
 import { getScreenProcessor } from './registry.js'
 
 /**
@@ -18,7 +18,7 @@ export interface ScreenRouterContext {
  * flag-gated, per CONTRIBUTING rule 3 — the DATA is gated upstream by screen.ocr at recognition time):
  *   - GET /screen/results?workspace=&session= — the persisted OcrResults (raw recognized text + region
  *     blocks), the screen-understanding analogue of a distillate read.
- *   - GET /screen/status — the processor's health: the screen.ocr flag state, the processed/blank/
+ *   - GET /screen/status — the processor's health: current legacy/workflow owner state, processed/blank/
  *     skipped/failed counters, and the classified last-failures ring (the honest "why nothing was read").
  * Any other /screen path is a 404 with the same JSON shape http.ts uses.
  */
@@ -45,11 +45,11 @@ function readResults(store: WorkspaceRegistry, url: URL): OcrResult[] {
   return sessionId ? store.listOcrResults(workspaceId, sessionId) : store.listOcrResults(workspaceId)
 }
 
-/** The processor's live status, or an honest zeroed status (with the real flag state) when unwired. */
+/** The processor's live status, or an honest zeroed status (with the real current-owner state) when unwired. */
 function readStatus(store: WorkspaceRegistry): ScreenStatus {
   const processor = getScreenProcessor(store)
   if (processor) return processor.status()
-  return { enabled: isFlagEnabled(store, 'screen.ocr'), processed: 0, blank: 0, skipped: 0, failed: 0, lastFailures: [] }
+  return { enabled: screenRecognitionEnabledForStore(store), processed: 0, blank: 0, skipped: 0, failed: 0, lastFailures: [] }
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

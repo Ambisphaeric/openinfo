@@ -445,7 +445,7 @@ test('seam → ledger: the produced egress + guard provenance and the held hop r
     assert.equal(held.length, 1)
 
     const html = renderLedger({ ledger: passes, guardHolds: held } as unknown as SetupData)
-    assert.match(html, /ldg-egress[^>]*>egress</, 'the egress column shows the content actually left')
+    assert.match(html, /ldg-egress[^>]*>hosted\/public</, 'the destination column shows the content reached hosted/public')
     assert.match(html, /ldg-guard-clean[^>]*>clean</, 'the guard column shows the recorded clean verdict')
     assert.match(html, /ldg-guard-held">held/, 'the held block surfaces the suspended hop')
     assert.match(html, /data-guard-action="release"/, 'the held hop carries a release affordance')

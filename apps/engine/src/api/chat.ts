@@ -199,6 +199,6 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
 
   const reply: ChatReply = { answer: result.text, citations: assembled.citations, budget }
   if (result.endpoint !== undefined) reply.endpoint = result.endpoint
-  reply.egress = result.egress ?? egressDecision('local', consent)
+  reply.egress = result.egress ?? egressDecision('local', consent, { destination: 'device-local' })
   return reply
 }

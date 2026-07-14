@@ -8,7 +8,7 @@ export { DiscoveryDocuments } from './discovery-documents.js'
 export { seededProbeList, seededCapabilityMap } from './discovery-defaults.js'
 export { discoverFabric, classifyModel, synthesizeSuggestion, listLoadedModels, loadedModelSuggestion, type DiscoverOptions } from './discover.js'
 export { scanHosts, hostTargets, type ScanOptions } from './scan.js'
-export { classifyEndpoint, classifyHost, resolveEgress, egressDecision, type EgressConsent, type EgressContext } from './egress.js'
+export { classifyDestination, classifyEndpoint, classifyHost, resolveEgress, egressDecision, type EgressConsent, type EgressContext } from './egress.js'
 export {
   applyRedaction,
   redactMessages,

@@ -1,4 +1,4 @@
-import type { ContentClass, EgressDecision, EgressLayer, EgressReach, Endpoint } from '@openinfo/contracts'
+import type { ContentClass, EgressDecision, EgressDestination, EgressLayer, EgressReach, Endpoint } from '@openinfo/contracts'
 
 /**
  * Layered egress-consent policy (#64) — the pure, testable core. "Egress" is one question: may this
@@ -49,6 +49,16 @@ export const isLoopbackEndpoint = (endpoint: Endpoint): boolean => {
   if (host === 'localhost' || host.endsWith('.localhost') || host === '::1') return true
   const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
   return v4 !== null && Number(v4[1]) === 127
+}
+
+/**
+ * The audit-grade physical destination for an endpoint. This refines the compatibility `EgressReach`
+ * bucket: both loopback and a private-LAN host are reach `local`, but only the former stays on-device.
+ * Pure and metadata-only — the returned enum never contains a URL, hostname, credential, or payload.
+ */
+export const classifyDestination = (endpoint: Endpoint): EgressDestination => {
+  if (isLoopbackEndpoint(endpoint)) return 'device-local'
+  return classifyEndpoint(endpoint) === 'local' ? 'lan-local' : 'hosted-public'
 }
 
 /**
@@ -110,7 +120,7 @@ export interface EgressConsent {
 /**
  * The four content-side signals resolution reads (layer 1, the endpoint, is enforced separately). Every
  * field is optional and derived from what the pipeline already knows — no new upstream tagging:
- *  - `contentClass` (layer 4): the datum's origin; `screen` denies, others do not.
+ *  - `contentClass` (layer 4): the datum's origin; `screen` denies hosted/public egress, others do not.
  *  - `promptNeverEgress` (layer 2): the prompt document's `neverEgress` flag.
  *  - `modeDenies` (layer 3): the active mode's `egress.deny`.
  *  - `workspaceDenies` (layer 3): the workspace's `egress.deny`.
@@ -132,7 +142,7 @@ export interface EgressContext {
  */
 export const resolveEgress = (ctx: EgressContext): EgressConsent => {
   if (ctx.contentClass === 'screen') {
-    return { allowed: false, decidedBy: 'content-class', reason: 'raw screen content is restricted to this machine' }
+    return { allowed: false, decidedBy: 'content-class', reason: 'raw screen content may not reach hosted/public destinations' }
   }
   if (ctx.promptNeverEgress === true) {
     return { allowed: false, decidedBy: 'prompt', reason: 'this prompt is declared never-egress' }
@@ -147,19 +157,48 @@ export const resolveEgress = (ctx: EgressContext): EgressConsent => {
 }
 
 /**
- * Fuse a consent verdict with the reach of the endpoint that ANSWERED into the record-stamped decision.
- * A record with `reach:'egress'` can only exist when consent allowed it (a denied-egress endpoint is
- * filtered before it runs), so this preserves the honest invariant. When the content STAYED local because
- * egress was denied, the local reach is paired with the denying layer so the ledger can say exactly why.
+ * Extra destination detail carried out of the invoke gate. `rawFrameTrust` is deliberately a literal,
+ * not a host/url: it records only that the endpoint document's explicit LAN raw-frame opt-in was used.
  */
-export const egressDecision = (reach: EgressReach, consent: EgressConsent): EgressDecision => ({
-  reach,
-  allowed: consent.allowed,
-  decidedBy: consent.decidedBy,
-  reason:
-    reach === 'egress'
-      ? `content left the machine (${consent.reason})`
-      : consent.allowed
-        ? consent.reason
-        : `stayed local: ${consent.reason}`,
-})
+export interface EgressDestinationDetail {
+  destination: EgressDestination
+  rawFrameTrust?: 'explicit'
+}
+
+/**
+ * Fuse consent with the endpoint that ANSWERED into record provenance. The optional third argument is
+ * additive for callers/tests predating #196; when absent it can only recover the old coarse distinction.
+ * Production invoke gates always supply it, so every newly completed hop distinguishes device-local,
+ * LAN-local, and hosted/public. A successful trusted-LAN raw-frame call says plainly that bytes crossed
+ * the device boundary while hosted/public egress remained denied.
+ */
+export const egressDecision = (
+  reach: EgressReach,
+  consent: EgressConsent,
+  detail?: EgressDestinationDetail,
+): EgressDecision => {
+  // `reach:'local'` covers both loopback and private LAN. Without gate detail, recording device-local
+  // would fabricate an audit fact; only hosted/public can be recovered from the old coarse reach alone.
+  const destination = detail?.destination ?? (reach === 'egress' ? 'hosted-public' : undefined)
+  const rawFrameTrust = detail?.rawFrameTrust
+  const reason =
+    destination === undefined
+      ? `network-local destination scope was not recorded (${consent.reason})`
+      : destination === 'hosted-public'
+      ? `content left the machine for a hosted/public destination (${consent.reason})`
+      : destination === 'lan-local'
+        ? rawFrameTrust === 'explicit'
+          ? `raw screen bytes crossed the device boundary to an explicitly trusted LAN destination; hosted/public egress remained denied (${consent.reason})`
+          : `content crossed the device boundary to a LAN-local destination (${consent.reason})`
+        : consent.allowed
+          ? `content stayed on this device (${consent.reason})`
+          : `stayed on this device: ${consent.reason}`
+  return {
+    reach,
+    allowed: consent.allowed,
+    decidedBy: consent.decidedBy,
+    reason,
+    ...(destination !== undefined ? { destination } : {}),
+    ...(rawFrameTrust !== undefined ? { rawFrameTrust } : {}),
+  }
+}

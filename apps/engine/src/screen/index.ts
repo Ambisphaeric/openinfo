@@ -5,10 +5,17 @@ import { isFlagEnabled } from '../flags/read.js'
 import type { SenseLaneTracker } from '../senses/index.js'
 import { ScreenOcrProcessor, type ScreenOcrInvoke } from './processor.js'
 import { registerScreenProcessor } from './registry.js'
+import { screenRecognitionEnabledForStore, screenRecognitionOwner } from './ownership.js'
 
 export { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenVlmInvoke, type ScreenOcrProcessorDeps } from './processor.js'
 export { handleScreen, type ScreenRouterContext } from './router.js'
 export { getScreenProcessor, registerScreenProcessor } from './registry.js'
+export {
+  latchScreenRecognitionOwner,
+  screenRecognitionOwner,
+  workflowOwnsScreenChunk,
+  type ScreenRecognitionOwner,
+} from './ownership.js'
 
 /** The engine surface wireScreenOcr needs — EngineApp is structurally compatible ({ bus, store, … }). */
 export interface ScreenWiringApp {
@@ -43,7 +50,7 @@ export const wireScreenOcr = (app: ScreenWiringApp, options: ScreenWiringOptions
   const processor = new ScreenOcrProcessor({
     store: app.store,
     fabric,
-    isEnabled: () => isFlagEnabled(app.store, 'screen.ocr'),
+    isEnabled: () => screenRecognitionEnabledForStore(app.store),
     resolveKey: (ref) => secrets.resolve(ref),
     publishDistillate: (distillate) => app.bus.publish('distillate.updated', distillate),
     publishOcr: (result) => app.bus.publish('ocr.completed', result),
@@ -62,7 +69,11 @@ export const wireScreenOcr = (app: ScreenWiringApp, options: ScreenWiringOptions
     // it (the legacy path, gated on screen.ocr inside process()). Read per-frame so the flag is
     // hot-flippable — flipping workflow.enabled hands screen understanding between the two paths with no
     // restart, exactly as it does for distill/act in api/http.ts.
-    if (isFlagEnabled(app.store, 'workflow.enabled')) return
+    const owner = screenRecognitionOwner(chunk)
+    if (owner === 'workflow-drain') return
+    // Rows created before the durable owner latch shipped have no marker; retain their historical live-flag
+    // behavior. Newly ingested rows always carry a marker, so a later flag flip cannot steal this frame.
+    if (owner === undefined && isFlagEnabled(app.store, 'workflow.enabled')) return
     void processor.process(chunk)
   })
   return processor

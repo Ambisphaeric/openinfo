@@ -7,4 +7,4 @@ export { renderSurfaceEditorPage, defaultBlockFor, blockTypeNames, blockRowHtml,
 export { renderSettingsPage, type SettingsData } from './settings/shell.js'
 export { SECTIONS, sectionById, defaultSectionId, GROUP_ORDER, type SettingsSection } from './settings/registry.js'
 export { buildLedger, type LedgerPass, type LedgerHop } from './settings/sections/ledger.js'
-export { evaluateSenseGates, type CaptureSense, type SenseGate, type SenseGateChain, type SenseGateInput } from './settings/sense-gates.js'
+export { evaluateSenseGates, requiredScreenSenseSlots, type CaptureSense, type ScreenSenseSlot, type SenseGate, type SenseGateChain, type SenseGateInput } from './settings/sense-gates.js'

@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Fabric, VlmInvokeParams } from '@openinfo/contracts'
 import { defaultFabric } from './document.js'
+import { resolveEgress } from './egress.js'
 import { invokeVlm } from './invoke.js'
 import { AggregateInvokeError } from './invoke-error.js'
 
@@ -34,7 +35,7 @@ const startFakeVlm = async (reply: string, status = 200): Promise<FakeVlm> => {
   return { server, url: `http://127.0.0.1:${address.port}`, bodies }
 }
 
-const stop = (s: FakeVlm): Promise<void> => new Promise((resolve) => s.server.close(() => resolve()))
+const stop = (s: { server: Server }): Promise<void> => new Promise((resolve) => s.server.close(() => resolve()))
 
 // A 1x1 PNG's bytes stand in for a frame; the fake server never decodes it.
 const params: VlmInvokeParams = {
@@ -84,6 +85,50 @@ test('invokeVlm returns empty prose for a blank frame (not an error)', async () 
   }
 })
 
+test('invokeVlm never retains a non-OK response body that echoes the submitted raw frame', async () => {
+  const rawFrameSentinel = Buffer.from('RAW_FRAME_ECHO_SENTINEL_VLM_175').toString('base64')
+  let receivedBody = ''
+  const echo = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      receivedBody = Buffer.concat(chunks).toString('utf8')
+      res.writeHead(422, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: `server echoed request: ${receivedBody}` }))
+    })
+  })
+  await new Promise<void>((resolve) => echo.listen(0, resolve))
+  const address = echo.address()
+  assert.ok(address && typeof address === 'object')
+  const url = `http://127.0.0.1:${address.port}`
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        vlm: [{ kind: 'http', name: 'echoing-vlm', url, api: 'openai-compat', model: 'qwen2.5-vl-7b' }],
+      },
+    }
+    await assert.rejects(
+      () => invokeVlm(fabric, { ...params, image: rawFrameSentinel }),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.slot, 'vlm')
+        assert.equal(error.failures[0]?.class, 'bad-response')
+        assert.equal(error.failures[0]?.endpoint, 'echoing-vlm')
+        assert.equal(error.failures[0]?.model, 'qwen2.5-vl-7b')
+        assert.equal(error.failures[0]?.serverMessage, 'HTTP 422')
+        assert.match(error.failures[0]?.hint ?? '', /server responded in an unexpected way/)
+        assert.equal(error.message.includes(rawFrameSentinel), false, 'aggregate message must not copy frame bytes')
+        assert.equal(JSON.stringify(error.failures).includes(rawFrameSentinel), false, 'classified failures must not copy frame bytes')
+        return true
+      },
+    )
+    assert.equal(receivedBody.includes(rawFrameSentinel), true, 'fake endpoint really received and echoed the sentinel')
+  } finally {
+    await stop({ server: echo })
+  }
+})
+
 test('invokeVlm falls through to the next endpoint when the first is unreachable', async () => {
   const good = await startFakeVlm('second answered')
   try {
@@ -101,6 +146,42 @@ test('invokeVlm falls through to the next endpoint when the first is unreachable
     assert.equal(result.endpoint, 'live')
   } finally {
     await stop(good)
+  }
+})
+
+test('invokeVlm refuses a 308 redirect before forwarding raw frame bytes', async () => {
+  const sink = await startFakeVlm('redirected VLM answer')
+  const redirect = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(308, { location: `${sink.url}${req.url ?? '/v1/chat/completions'}` })
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => redirect.listen(0, resolve))
+  const address = redirect.address()
+  assert.ok(address && typeof address === 'object')
+  const redirectingUrl = `http://127.0.0.1:${address.port}`
+  const rawFrameSentinel = Buffer.from('VLM_FRAME_MUST_NOT_REACH_REDIRECT_SINK').toString('base64')
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        vlm: [{ kind: 'http', name: 'redirecting-vlm', url: redirectingUrl, api: 'openai-compat' }],
+      },
+    }
+    await assert.rejects(
+      () => invokeVlm(fabric, { ...params, image: rawFrameSentinel }),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.failures[0]?.class, 'bad-response')
+        return true
+      },
+    )
+    assert.equal(sink.bodies.length, 0, 'redirect target must never receive raw frame bytes')
+  } finally {
+    await new Promise<void>((resolve) => redirect.close(() => resolve()))
+    await stop(sink)
   }
 })
 
@@ -125,9 +206,11 @@ test('invokeVlm sends raw frames only to loopback, skipping private-LAN and publ
         ],
       },
     }
-    const result = await invokeVlm(fabric, params)
+    const result = await invokeVlm(fabric, params, { egress: resolveEgress({ contentClass: 'screen' }) })
     assert.equal(result.endpoint, 'loopback-vlm')
     assert.equal(result.text, 'described locally')
+    assert.equal(result.egress?.destination, 'device-local')
+    assert.equal(result.egress?.rawFrameTrust, undefined)
     assert.deepEqual(attempted, [`${local.url}/v1/chat/completions`])
   } finally {
     globalThis.fetch = originalFetch
@@ -155,9 +238,26 @@ test('invokeVlm sends raw frames to a LAN endpoint the user explicitly flagged t
         vlm: [{ kind: 'http', name: 'trusted-lan-vlm', url: documentedUrl, api: 'openai-compat', trustRawFrames: true }],
       },
     }
-    const result = await invokeVlm(fabric, params)
+    const result = await invokeVlm(fabric, params, { egress: resolveEgress({ contentClass: 'screen' }) })
     assert.equal(result.endpoint, 'trusted-lan-vlm')
     assert.equal(result.text, 'described on the trusted box')
+    assert.deepEqual(
+      {
+        reach: result.egress?.reach,
+        destination: result.egress?.destination,
+        rawFrameTrust: result.egress?.rawFrameTrust,
+        allowed: result.egress?.allowed,
+        decidedBy: result.egress?.decidedBy,
+      },
+      {
+        reach: 'local',
+        destination: 'lan-local',
+        rawFrameTrust: 'explicit',
+        allowed: false,
+        decidedBy: 'content-class',
+      },
+    )
+    assert.match(result.egress?.reason ?? '', /crossed the device boundary to an explicitly trusted LAN destination/)
     assert.deepEqual(attempted, [`${documentedUrl}/v1/chat/completions`])
   } finally {
     globalThis.fetch = originalFetch
@@ -165,7 +265,7 @@ test('invokeVlm sends raw frames to a LAN endpoint the user explicitly flagged t
   }
 })
 
-test('invokeVlm skips an untrusted LAN endpoint and a flagged PUBLIC endpoint before fetch, naming the real reasons', async () => {
+test('invokeVlm refuses untrusted LAN, public, malformed, and wildcard destinations before fetch', async () => {
   const originalFetch = globalThis.fetch
   const attempted: string[] = []
   globalThis.fetch = async (input) => {
@@ -180,6 +280,8 @@ test('invokeVlm skips an untrusted LAN endpoint and a flagged PUBLIC endpoint be
         vlm: [
           { kind: 'http', name: 'lan-vlm', url: 'http://10.0.0.20:8000', api: 'openai-compat' }, // no flag
           { kind: 'http', name: 'public-vlm', url: 'https://vlm.example.test', api: 'openai-compat', trustRawFrames: true }, // flag cannot cross the LAN cap
+          { kind: 'http', name: 'malformed-vlm', url: 'not a url', api: 'openai-compat', trustRawFrames: true },
+          { kind: 'http', name: 'wildcard-vlm', url: 'http://[::]:8000', api: 'openai-compat', trustRawFrames: true },
         ],
       },
     }
@@ -187,14 +289,16 @@ test('invokeVlm skips an untrusted LAN endpoint and a flagged PUBLIC endpoint be
       () => invokeVlm(fabric, params),
       (error: unknown) => {
         assert.ok(error instanceof AggregateInvokeError)
-        assert.equal(error.failures.length, 2)
+        assert.equal(error.failures.length, 4)
         assert.ok(error.failures.every((f) => f.class === 'egress-denied'))
         assert.match(error.message, /lan-vlm: raw screen frames are loopback-only — set trustRawFrames on this endpoint to allow it/)
         assert.match(error.message, /public-vlm: raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames/)
+        assert.match(error.message, /malformed-vlm: raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames/)
+        assert.match(error.message, /wildcard-vlm: raw screen frames require a real local-network host — a wildcard bind address is not a destination/)
         return true
       },
     )
-    assert.deepEqual(attempted, []) // both skips happened BEFORE any fetch
+    assert.deepEqual(attempted, [])
   } finally {
     globalThis.fetch = originalFetch
   }

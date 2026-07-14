@@ -26,6 +26,7 @@ import {
 } from '../fabric/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { NEUTRAL_DIALS } from '../voice/index.js'
+import { workflowOwnsScreenChunk } from './ownership.js'
 
 /** The invoke shape the processor drives — injectable so a test can stand in a fake OCR without a server. */
 export type ScreenOcrInvoke = (params: OcrInvokeParams, opts: ScreenInvokeOptions) => Promise<ScreenTextResult>
@@ -44,7 +45,7 @@ const DEFAULT_SCREEN_VLM_PROMPT =
 export interface ScreenOcrProcessorDeps {
   store: WorkspaceRegistry
   fabric: FabricDocuments
-  /** whether the `screen.ocr` flag is on — read PER FRAME (like the drain's distill flags) so flipping it needs no restart. */
+  /** whether the current legacy/workflow screen owner is enabled — read fresh so flag/workflow edits need no restart. */
   isEnabled: () => boolean
   /** resolve an endpoint's auth.keyRef to its secret value at invoke time (bearer injection); optional. */
   resolveKey?: SecretResolver
@@ -74,9 +75,9 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 
 /**
  * Screen-derived content is content-class `screen` — layer 4 of the egress-consent policy (#64), which
- * NEVER egresses. Resolved ONCE (it is a constant for this pipeline): egress-capable endpoints are filtered
- * out of every screen invoke, so recognized screen text can only ever be produced locally. The decision is
- * stamped on both records so the ledger shows the screen pass stayed local BY POLICY, not by accident.
+ * denies HOSTED/PUBLIC egress. Resolved ONCE (it is a constant for this pipeline): public endpoints are
+ * filtered out of every screen invoke; a frame can be processed on-device or by an explicitly trusted
+ * private-LAN endpoint. #196 stamps that distinction identically on both persisted records.
  */
 const SCREEN_EGRESS: EgressConsent = resolveEgress({ contentClass: 'screen' })
 
@@ -115,6 +116,8 @@ export class ScreenOcrProcessor {
   private readonly ringSize: number
 
   private readonly counts = { processed: 0, blank: 0, skipped: 0, failed: 0 }
+  /** Source chunks whose complete pair was also published successfully during this processor lifetime. */
+  private readonly completedSourceChunks = new Set<string>()
   private readonly failures: QueueFailure[] = []
 
   constructor(deps: ScreenOcrProcessorDeps) {
@@ -159,7 +162,7 @@ export class ScreenOcrProcessor {
     }
   }
 
-  /** The processor's health for GET /screen/status (a fresh copy of the ring — callers cannot mutate it). */
+  /** The processor's health for GET /screen/status (including the current owner; callers cannot mutate the ring). */
   status(): ScreenStatus {
     return {
       enabled: this.isEnabled(),
@@ -175,7 +178,7 @@ export class ScreenOcrProcessor {
     return {
       ...(this.resolveKey ? { resolveKey: this.resolveKey } : {}),
       ...(this.runtimeManager ? { runtimeManager: this.runtimeManager } : {}),
-      egress: SCREEN_EGRESS, // #64: screen content never egresses — filters egress endpoints, stamps the decision
+      egress: SCREEN_EGRESS, // #64/#196: deny hosted/public; stamp device-local vs explicitly trusted LAN
     }
   }
 
@@ -198,12 +201,30 @@ export class ScreenOcrProcessor {
     const promptParam = step.params?.['prompt']
     const prompt = typeof promptParam === 'string' && promptParam.trim() !== '' ? promptParam : DEFAULT_SCREEN_VLM_PROMPT
     for (const chunk of chunks) {
-      if (chunk.source !== 'screen') continue
+      // The owner is stamped before durable queue append. A later workflow.enabled flip therefore cannot
+      // make the drain steal a legacy-owned frame; pre-latch queue rows remain workflow-compatible.
+      if (!workflowOwnsScreenChunk(chunk)) continue
       if (!chunk.contentType.startsWith('image/')) {
         this.counts.skipped++
         continue
       }
       try {
+        // A queue retries its whole per-session file. Earlier frames in a partially successful batch already
+        // own a complete record pair and must not be invoked or persisted a second time on that retry.
+        if (this.hasPersistedPair(chunk)) {
+          if (this.completedSourceChunks.has(chunk.id)) {
+            this.log(`screen frame ${chunk.id} already has its OcrResult + mirror; workflow retry skipped`)
+            continue
+          }
+          // A previous attempt may have committed both rows and then failed while publishing the mirror.
+          // Re-publish the canonical ids without invoking again so a durable queue retry closes that observer
+          // boundary as well as the storage boundary. Mark/count only after both publications succeed.
+          await this.publishPersistedPair(chunk)
+          this.completedSourceChunks.add(chunk.id)
+          this.counts.processed++
+          this.log(`screen frame ${chunk.id} already persisted; canonical pair re-published on workflow retry`)
+          continue
+        }
         const result = await this.invokeSlot(slot, chunk, prompt) // throws PROPAGATE → the drain re-queues
         if (result.text.trim() === '') {
           this.counts.blank++
@@ -211,9 +232,12 @@ export class ScreenOcrProcessor {
           this.log(`screen frame ${chunk.id} recognized as blank (no text) [${slot}]`)
           continue
         }
-        await this.persist(chunk, result)
-        this.counts.processed++
-        this.log(`screen frame ${chunk.id} → ${slot} (${result.text.length} chars) via ${result.endpoint} on the drain`)
+        const persisted = await this.persist(chunk, result)
+        if (persisted) {
+          this.completedSourceChunks.add(chunk.id)
+          this.counts.processed++
+          this.log(`screen frame ${chunk.id} → ${slot} (${result.text.length} chars) via ${result.endpoint} on the drain`)
+        }
       } catch (error) {
         // This is real workflow work: record the safe terminal metadata, then preserve the queue's exact
         // original rejection so retry/classification semantics remain unchanged. Reporter errors are
@@ -256,9 +280,12 @@ export class ScreenOcrProcessor {
       return
     }
 
-    await this.persist(chunk, result)
-    this.counts.processed++
-    this.log(`screen frame ${chunk.id} → ocr (${result.text.length} chars) via ${result.endpoint} [${result.slot}]`)
+    const persisted = await this.persist(chunk, result)
+    if (persisted && !this.completedSourceChunks.has(chunk.id)) {
+      this.completedSourceChunks.add(chunk.id)
+      this.counts.processed++
+      this.log(`screen frame ${chunk.id} → ocr (${result.text.length} chars) via ${result.endpoint} [${result.slot}]`)
+    }
   }
 
   /**
@@ -292,52 +319,116 @@ export class ScreenOcrProcessor {
    * windowStart == windowEnd == the frame's capturedAt; no voice/register pass runs over recognized text
    * (transcription, not rewriting), so the honest voice vector is global scope + neutral dials.
    */
-  private async persist(chunk: CaptureChunk, result: ScreenTextResult): Promise<void> {
-    const createdAt = this.now().toISOString()
-    const provenance = {
+  private persistedPair(chunk: CaptureChunk): {
+    ocr: OcrResult | undefined
+    distillate: Distillate | undefined
+  } {
+    // First content for a workspace reaches this check before saveOcrResult's normal ensure-workspace path.
+    // An unknown workspace therefore means "no prior pair", not a processor failure.
+    if (!this.store.all().some((workspace) => workspace.id === chunk.workspaceId)) {
+      return { ocr: undefined, distillate: undefined }
+    }
+    const ownsChunk = (sourceChunks: readonly string[]): boolean =>
+      sourceChunks.length === 1 && sourceChunks[0] === chunk.id
+    return {
+      ocr: this.store.listOcrResults(chunk.workspaceId, chunk.sessionId).find((row) => ownsChunk(row.sourceChunks)),
+      distillate: this.store.listDistillates(chunk.workspaceId, chunk.sessionId).find((row) =>
+        ownsChunk(row.sourceChunks) && (row.provenance.slot === 'ocr' || row.provenance.slot === 'vlm')),
+    }
+  }
+
+  private hasPersistedPair(chunk: CaptureChunk): boolean {
+    const pair = this.persistedPair(chunk)
+    return pair.ocr !== undefined && pair.distillate !== undefined
+  }
+
+  /** Publish a complete canonical pair already committed for this source chunk. */
+  private async publishPersistedPair(chunk: CaptureChunk): Promise<void> {
+    const pair = this.persistedPair(chunk)
+    if (pair.ocr === undefined || pair.distillate === undefined) return
+    await this.publishOcr?.(pair.ocr)
+    await this.publishDistillate?.(pair.distillate)
+  }
+
+  /**
+   * Persist at most one OcrResult and one mirror for a source chunk. A direct legacy replay republishes the
+   * canonical pair (preserving the existing event/idempotent-projection behavior) without inserting another
+   * row; workflow retries skip complete pairs before invoke. An incomplete pair is repaired using its
+   * already-persisted record as canonical text/provenance/timing, so recovery cannot fork what the frame said.
+   */
+  private async persist(chunk: CaptureChunk, result: ScreenTextResult): Promise<boolean> {
+    const existing = this.persistedPair(chunk)
+    if (existing.ocr !== undefined && existing.distillate !== undefined) {
+      await this.publishPersistedPair(chunk)
+      return true
+    }
+
+    const resultProvenance = {
       slot: result.slot,
       endpoint: result.endpoint,
       ...(result.model !== undefined ? { model: result.model } : {}),
       // #65: carry the invoke's token accounting (estimated for a screen invoke — see invoke.ts) onto both
       // the OcrResult and the mirror Distillate so the audit ledger renders this screen pass's consumption.
       ...(result.usage !== undefined ? { usage: result.usage } : {}),
-      // #64: carry the egress decision (always reach:'local'/decidedBy:'content-class' for screen) onto both
-      // records so the ledger shows this screen pass stayed local by policy.
+      // #64/#196: carry the exact same destination/egress decision onto both records so the ledger can
+      // distinguish on-device recognition from an explicitly trusted LAN raw-frame hop.
       ...(result.egress !== undefined ? { egress: result.egress } : {}),
     }
-    const ocr: OcrResult = {
+    const mirrorProvenance = existing.distillate?.provenance
+    const canonicalMirrorProvenance: OcrResult['provenance'] | undefined = mirrorProvenance === undefined
+      ? undefined
+      : {
+          slot: mirrorProvenance.slot === 'vlm' ? 'vlm' : 'ocr',
+          endpoint: mirrorProvenance.endpoint,
+          ...(mirrorProvenance.model !== undefined ? { model: mirrorProvenance.model } : {}),
+          ...(mirrorProvenance.usage !== undefined ? { usage: mirrorProvenance.usage } : {}),
+          ...(mirrorProvenance.egress !== undefined ? { egress: mirrorProvenance.egress } : {}),
+        }
+    const createdAt = existing.ocr?.createdAt ?? existing.distillate?.createdAt ?? this.now().toISOString()
+    const capturedAt = existing.ocr?.capturedAt ?? existing.distillate?.windowStart ?? chunk.capturedAt
+    const provenance: OcrResult['provenance'] = existing.ocr?.provenance ?? canonicalMirrorProvenance ?? resultProvenance
+    const text = existing.ocr?.text ?? existing.distillate?.text ?? result.text
+    // A mirror does not retain region geometry. When it is the canonical surviving half, do not attach
+    // blocks from a later retry whose text/model may differ from the committed recognition.
+    const blocks = existing.distillate === undefined ? result.blocks : undefined
+
+    const ocr: OcrResult = existing.ocr ?? {
       id: this.newId(),
       sessionId: chunk.sessionId,
       workspaceId: chunk.workspaceId,
       sourceChunks: [chunk.id],
-      text: result.text,
-      ...(result.blocks !== undefined ? { blocks: result.blocks } : {}),
+      text,
+      ...(blocks !== undefined ? { blocks } : {}),
       provenance,
       schemaVersion: OCR_RESULT_SCHEMA_VERSION,
       createdAt,
       // #102 keep-time: carry the frame's TRUE capture instant onto the record itself, not just the mirror
       // Distillate's windowStart/End — so a direct OcrResult consumer can never present delayed OCR as
       // real-time. A single frame is captured at one instant, so this is exactly the Distillate window.
-      capturedAt: chunk.capturedAt,
+      capturedAt,
     }
-    this.store.saveOcrResult(ocr)
-    await this.publishOcr?.(ocr)
+    const distillate: Distillate = existing.distillate ?? {
+        id: this.newId(),
+        sessionId: chunk.sessionId,
+        workspaceId: chunk.workspaceId,
+        windowStart: capturedAt,
+        windowEnd: capturedAt,
+        sourceChunks: [chunk.id],
+        text: text.trim(),
+        voice: { scope: 'global', dials: NEUTRAL_DIALS },
+        provenance,
+        schemaVersion: DISTILLATE_SCHEMA_VERSION,
+        createdAt,
+    }
 
-    const distillate: Distillate = {
-      id: this.newId(),
-      sessionId: chunk.sessionId,
-      workspaceId: chunk.workspaceId,
-      windowStart: chunk.capturedAt,
-      windowEnd: chunk.capturedAt,
-      sourceChunks: [chunk.id],
-      text: result.text.trim(),
-      voice: { scope: 'global', dials: NEUTRAL_DIALS },
-      provenance,
-      schemaVersion: DISTILLATE_SCHEMA_VERSION,
-      createdAt,
-    }
-    this.store.saveDistillate(distillate)
+    // Commit the complete pair synchronously before either observer can yield. A duplicate delivery can
+    // now see either no pair or the whole canonical pair, never an OCR-only publication window.
+    if (existing.ocr === undefined) this.store.saveOcrResult(ocr)
+    if (existing.distillate === undefined) this.store.saveDistillate(distillate)
+    // Re-publish both halves while repairing/replaying: the prior attempt may have failed at either event.
+    await this.publishOcr?.(ocr)
     await this.publishDistillate?.(distillate)
+    return true
   }
 
   /** Record a classified invoke failure in the bounded ring (newest last). A non-invoke error is logged, not faked into a class. */

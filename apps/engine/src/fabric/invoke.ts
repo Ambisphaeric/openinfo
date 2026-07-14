@@ -1,8 +1,8 @@
-import type { EgressDecision, EgressReach, Endpoint, Fabric, GuardVerdict, InvokeUsage, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
+import type { EgressDecision, EgressDestination, EgressReach, Endpoint, Fabric, GuardVerdict, InvokeUsage, OcrInvokeParams, VlmInvokeParams } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
 import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
-import { classifyEndpoint, egressDecision, mayReceiveRawFrames, type EgressConsent } from './egress.js'
+import { classifyDestination, classifyEndpoint, egressDecision, mayReceiveRawFrames, type EgressConsent } from './egress.js'
 import { runEgressGuard, type GuardOptions } from './guard.js'
 import {
   AggregateInvokeError,
@@ -43,9 +43,10 @@ const resolveLocal = async (
 }
 
 /** The endpoint identity a failure is classified against — name/url/model/keyRef, never a secret value. */
-const ctxOf = (endpoint: HttpEndpoint): InvokeCtx => ({
+const ctxOf = (endpoint: HttpEndpoint, redactUrlInHint = false): InvokeCtx => ({
   endpoint: endpoint.name,
   url: endpoint.url,
+  ...(redactUrlInHint ? { redactUrlInHint: true } : {}),
   ...(endpoint.model !== undefined && endpoint.model !== '' ? { model: endpoint.model } : {}),
   ...(endpoint.auth?.keyRef !== undefined ? { keyRef: endpoint.auth.keyRef } : {}),
 })
@@ -59,12 +60,21 @@ const ctxForGate = (endpoint: Endpoint): InvokeCtx =>
       ? { endpoint: endpoint.name, url: `cloud:${endpoint.provider}`, ...(endpoint.model !== undefined && endpoint.model !== '' ? { model: endpoint.model } : {}) }
       : { endpoint: endpoint.name, url: `local:${endpoint.runtime}` }
 
-type EgressGate = { allow: true; reach: EgressReach } | { allow: false }
+type EgressGate =
+  | {
+      allow: true
+      reach: EgressReach
+      destination: EgressDestination
+      /** Present only when this raw-frame gate used an HTTP endpoint's explicit private-LAN opt-in. */
+      rawFrameTrust?: 'explicit'
+    }
+  | { allow: false }
 
 /**
  * The egress ENFORCEMENT + guard (#63) decision point, run for each candidate endpoint BEFORE any bytes
  * leave (#64). Combines layer 1 (the endpoint's reach) with the resolved content-side consent:
- *  - a `local` endpoint is ALWAYS allowed — nothing leaves the machine;
+ *  - a network-`local` endpoint is allowed by general consent; destination provenance separately says
+ *    whether it stayed on-device or crossed to the private LAN;
  *  - an `egress` endpoint is allowed ONLY when consent permits egress; otherwise it is SKIPPED here and a
  *    classified `egress-denied` failure is recorded, so the invoke falls through to a local endpoint (or,
  *    if none remains, degrades with a visible reason — never a silent skip).
@@ -82,6 +92,7 @@ const egressGate = (
   restriction: 'network-local' | 'loopback-only' = 'network-local',
 ): EgressGate => {
   const reach = classifyEndpoint(endpoint)
+  const destination = classifyDestination(endpoint)
   // Raw screen bytes are stricter than the general egress model: private-LAN endpoints count as
   // `local` for ordinary content, but OCR/VLM frames may reach only an engine-managed runtime, an
   // explicit loopback URL, or an http endpoint the USER explicitly flagged `trustRawFrames` — and that
@@ -103,7 +114,19 @@ const egressGate = (
     lines.push(`${endpoint.name}: ${reason}`)
     return { allow: false }
   }
-  if (reach === 'local' || consent === undefined || consent.allowed) return { allow: true, reach }
+  if (reach === 'local' || consent === undefined || consent.allowed) {
+    const trustedLanRawFrame =
+      restriction === 'loopback-only' &&
+      destination === 'lan-local' &&
+      endpoint.kind === 'http' &&
+      endpoint.trustRawFrames === true
+    return {
+      allow: true,
+      reach,
+      destination,
+      ...(trustedLanRawFrame ? { rawFrameTrust: 'explicit' as const } : {}),
+    }
+  }
   const err = new InvokeError('egress-denied', ctxForGate(endpoint), {
     hint: `${consent.reason} — egress-capable endpoint "${endpoint.name}" was skipped (${consent.decidedBy})`,
   })
@@ -339,6 +362,9 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
     if (responseFormat !== undefined) body['response_format'] = responseFormat
     response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/chat/completions`, {
       method: 'POST',
+      // The destination gate/provenance applies to the configured URL only. Never let a local endpoint
+      // redirect user content across the device boundary; a redirect fails and the invoke falls through.
+      redirect: 'manual',
       headers: { 'content-type': 'application/json', ...auth },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -449,7 +475,7 @@ export const invokeLlm = async (
       const { text, usage } = await callHttp(http, outbound, callOpts)
       const result: LlmResult = { text, endpoint: endpoint.name, slot: 'llm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
-      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress, gate)
       if (guardVerdict !== undefined) result.guard = guardVerdict
       return result
     } catch (error) {
@@ -534,6 +560,7 @@ const postTranscription = async (
     form.set('file', new Blob([bytes], { type: audio.contentType }), audioFilename(audio.contentType))
     response = await fetch(`${url.replace(/\/$/, '')}${adapter.request.path}`, {
       method: 'POST',
+      redirect: 'manual',
       headers: extra.auth ?? {},
       body: form,
       signal: controller.signal,
@@ -604,7 +631,7 @@ export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOption
       }
       const result: SttResult = { ...transcript, endpoint: endpoint.name, slot: 'stt' }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
-      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress, gate)
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
@@ -646,8 +673,9 @@ export interface ScreenTextResult {
    * estimate (only the text prompt is) — the estimated flag makes that honest; a paddle-serving OCR
    * reports no usage, so its counts are a chars/4 estimate over the recognized text. */
   usage?: InvokeUsage
-  /** the resolved egress decision this invoke ran under (#64) — present only when consent was supplied.
-   * Screen content is content-class `screen`, so consent always denies egress and this is reach:'local'. */
+  /** the resolved egress decision this invoke ran under (#64/#196) — present only when consent was
+   * supplied. Screen content denies hosted/public egress; destination distinguishes a device-local call
+   * from an explicitly trusted LAN raw-frame call. */
   egress?: EgressDecision
 }
 
@@ -658,12 +686,24 @@ export interface ScreenInvokeOptions {
   resolveKey?: SecretResolver
   /** manages `local` endpoints' spawned runtimes (tier zero); absent ⇒ local endpoints are skipped. */
   runtimeManager?: LocalRuntimeManager
-  /** resolved content-side egress consent (#64) — see InvokeOptions.egress. Screen content denies egress. */
+  /** resolved content-side egress consent (#64) — screen content denies hosted/public egress. */
   egress?: EgressConsent
 }
 
 /** A base64 image + its mime as an OpenAI-compat `image_url` data URI (`data:<mime>;base64,<bytes>`). */
 const imageDataUri = (image: string, contentType: string): string => `data:${contentType};base64,${image}`
+
+/**
+ * Classify a non-OK response to a request that carried a raw screen frame WITHOUT reading its body.
+ * Some OCR/VLM servers echo the submitted request in an error response; retaining that body would copy
+ * the frame's base64 into InvokeError.serverMessage, the aggregate throw, queue/status state, and logs.
+ * HTTP status still gives the existing truthful class, while ctx preserves endpoint/model/keyRef + hint.
+ */
+const throwRawFrameHttpResponse = async (response: Response, ctx: InvokeCtx): Promise<never> => {
+  const status = response.status
+  await response.body?.cancel().catch(() => undefined)
+  throw classifyHttpResponse(status, '', ctx)
+}
 
 /**
  * Call one http vlm endpoint speaking OpenAI-compatible VISION chat: a single user message whose `content`
@@ -673,7 +713,9 @@ const imageDataUri = (image: string, contentType: string): string => `data:${con
  * is a `bad-response`. Throws a classified InvokeError on transport/protocol failure so the caller falls through.
  */
 const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts: ScreenInvokeOptions): Promise<{ text: string; usage: InvokeUsage }> => {
-  const ctx = ctxOf(endpoint)
+  // A configured LAN address is operational data, not screen-result provenance. Keep it available to
+  // the internal diagnostic probe while ensuring surfaced failures name only the safe endpoint label.
+  const ctx = ctxOf(endpoint, true)
   const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 60_000)
@@ -695,6 +737,7 @@ const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts
     if (endpoint.model !== undefined) body['model'] = endpoint.model
     response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/chat/completions`, {
       method: 'POST',
+      redirect: 'manual',
       headers: { 'content-type': 'application/json', ...auth },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -704,7 +747,7 @@ const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts
   } finally {
     clearTimeout(timeout)
   }
-  if (!response.ok) throw classifyHttpResponse(response.status, await response.text().catch(() => ''), ctx)
+  if (!response.ok) await throwRawFrameHttpResponse(response, ctx)
   let json: ChatCompletion
   try {
     json = (await response.json()) as ChatCompletion
@@ -750,7 +793,7 @@ export const invokeVlm = async (
       const { text, usage } = await callVlmHttp(http, params, opts)
       const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'vlm', usage }
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
-      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress, gate)
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
@@ -829,7 +872,8 @@ const callPaddleOcr = async (
   params: OcrInvokeParams,
   opts: ScreenInvokeOptions,
 ): Promise<{ text: string; blocks: ScreenBlock[]; usage: InvokeUsage }> => {
-  const ctx = ctxOf(endpoint)
+  // See callVlmHttp: raw-frame failure hints/logs must never disclose the configured endpoint URL.
+  const ctx = ctxOf(endpoint, true)
   const auth = authHeaders(endpoint, opts.resolveKey) // may throw (unresolvable keyRef) → fall through
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), params.timeoutMs ?? 30_000)
@@ -838,6 +882,7 @@ const callPaddleOcr = async (
   try {
     response = await fetch(`${endpoint.url.replace(/\/$/, '')}${PADDLE_OCR_PATH}`, {
       method: 'POST',
+      redirect: 'manual',
       headers: { 'content-type': 'application/json', ...auth },
       body: JSON.stringify({ images: [params.image] }),
       signal: controller.signal,
@@ -847,7 +892,7 @@ const callPaddleOcr = async (
   } finally {
     clearTimeout(timeout)
   }
-  if (!response.ok) throw classifyHttpResponse(response.status, await response.text().catch(() => ''), ctx)
+  if (!response.ok) await throwRawFrameHttpResponse(response, ctx)
   let json: PaddleResponse
   try {
     json = (await response.json()) as PaddleResponse
@@ -918,7 +963,7 @@ export const invokeOcr = async (
       const result: ScreenTextResult = { text, endpoint: endpoint.name, slot: 'ocr', usage }
       if (blocks !== undefined) result.blocks = blocks
       if (endpoint.model !== undefined && endpoint.model !== '') result.model = endpoint.model
-      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress)
+      if (opts.egress !== undefined) result.egress = egressDecision(gate.reach, opts.egress, gate)
       return result
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())

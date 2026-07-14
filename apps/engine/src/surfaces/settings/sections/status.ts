@@ -74,7 +74,12 @@ const captureChainCard = (data: SetupData): string =>
   card(
     'Capture pipeline',
     '<div class="stat-note">Each sense in order — the first closed gate is what blocks it (a session and OS permission come first, on the client).</div>' +
-      evaluateSenseGates({ flags: data.flags ?? [], fabric: data.liveFabric, ...(data.queue?.lastFailure ? { lastFailure: data.queue.lastFailure } : {}) })
+      evaluateSenseGates({
+        flags: data.flags ?? [],
+        fabric: data.liveFabric,
+        ...(data.activeWorkflow ? { activeWorkflow: data.activeWorkflow } : {}),
+        ...(data.queue?.lastFailure ? { lastFailure: data.queue.lastFailure } : {}),
+      })
         .map(senseChainHtml)
         .join(''),
   )

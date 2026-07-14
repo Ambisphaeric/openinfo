@@ -391,7 +391,8 @@ export type QueueStatus = Static<typeof QueueStatus>
 
 /**
  * The screen-OCR processor's status (GET /screen/status; P4B), shared by legacy capture-ingest and
- * workflow-drain recognition. `enabled` echoes the `screen.ocr` flag (read per-frame). The counters are
+ * workflow-drain recognition. `enabled` reflects the current owner: legacy ingest reads `screen.ocr`;
+ * workflow ownership is enabled when its active document has an enabled drain OCR/VLM step. The counters are
  * the frames the processor has seen since the engine started: `processed` produced an OcrResult + a
  * distillate; `blank` were recognized as empty (persisted as neither, see PHASE4-NOTES); `skipped` were
  * companion ScreenFrameMeta chunks (utf8/json), never client-side delta skips; `failed` hit recognition
@@ -402,7 +403,7 @@ export type QueueStatus = Static<typeof QueueStatus>
  */
 export const ScreenStatus = Type.Object(
   {
-    enabled: Type.Boolean({ description: 'the screen.ocr flag state (read per-frame)' }),
+    enabled: Type.Boolean({ description: 'whether the current legacy/workflow screen-recognition owner is enabled' }),
     processed: Type.Integer({ minimum: 0, description: 'frames that produced an OcrResult + distillate' }),
     blank: Type.Integer({ minimum: 0, description: 'frames recognized as empty (a blank frame; no record persisted)' }),
     skipped: Type.Integer({ minimum: 0, description: 'companion ScreenFrameMeta (utf8/json) chunks correctly ignored' }),

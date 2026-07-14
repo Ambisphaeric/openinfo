@@ -55,7 +55,7 @@ import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './co
 import { Surface, Block, BlockQuery, Action, BlockTypeName, AttachedPanel } from './config/surface.js'
 import { Mode } from './config/mode.js'
 import { PromptTemplate, FastFieldBinding } from './config/promptTemplate.js'
-import { EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision } from './config/egress.js'
+import { EgressReach, EgressDestination, EgressLayer, ContentClass, EgressPolicy, EgressDecision } from './config/egress.js'
 import { GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold } from './config/guard.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
 import { CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult } from './config/discovery.js'
@@ -75,7 +75,7 @@ export const AllSchemas = {
   Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, EntityCorrectionSignal, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview, SessionAnnotation, OrientationProvenance,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName, AttachedPanel,
-  Mode, PromptTemplate, FastFieldBinding, EgressReach, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
+  Mode, PromptTemplate, FastFieldBinding, EgressReach, EgressDestination, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind,

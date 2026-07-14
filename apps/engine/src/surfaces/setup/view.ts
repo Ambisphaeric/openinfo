@@ -1,4 +1,4 @@
-import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelStatus, Moment, QueueStatus, ScanResult, Session, Surface } from '@openinfo/contracts'
+import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelStatus, Moment, QueueStatus, ScanResult, Session, Surface, WorkflowSpec } from '@openinfo/contracts'
 
 /**
  * The setup views — forms over the profile + secret documents (ARCHITECTURE §8), served by the engine
@@ -21,8 +21,8 @@ import type { DiscoverResult, Endpoint, Fabric, FabricProfile, Flag, LocalModelS
  * endpoints in all six slots (the user's own rig configures tts/vlm/ocr), so the page does not gate
  * DOCUMENT editing on whether the engine invokes a slot yet. v0 shipped llm+stt editable with
  * tts/vlm/ocr/embed present-but-inert; that scope line outgrew its use (see PHASE2-NOTES). Each slot
- * now carries an honest, INFORMATIONAL usage note — never a gate: llm/stt say what they power today;
- * the rest say the endpoint is stored and wired in a later phase, configure it freely now.
+ * now carries an honest, INFORMATIONAL usage note — never a gate — naming what is wired today and what
+ * remains stored for a later phase.
  */
 /** The six capability slots shown in the occupancy/health/editor surfaces. Excludes the optional `guard`
  * slot (#63) — an egress content filter, not a capability endpoint the onboarding lists occupy — and
@@ -34,8 +34,8 @@ const SLOT_NOTE: Record<string, string> = {
   llm: 'powers distill, drafts, and the core pass today.',
   stt: 'powers call transcription today.',
   tts: 'stored — speech (reading results aloud) is wired in a later phase (P5). Configure it freely now.',
-  vlm: 'stored — vision is wired in a later phase. Configure it freely now.',
-  ocr: 'stored — screen reading is wired in a later phase (P3). Configure it freely now.',
+  vlm: 'powers prompted screen understanding from an enabled workflow VLM step today.',
+  ocr: 'powers screen reading today, through legacy ingest or an enabled workflow OCR step.',
   embed: 'stored — recall / vector search is wired in a later phase (P3). Configure it freely now.',
 }
 
@@ -70,6 +70,8 @@ export interface SetupData {
    * section and the sidebar's features-on dot. Absent ⇒ Features renders an honest "no flags" note.
    */
   flags?: Flag[]
+  /** The executor's active workflow, used by Status to derive the screen slot(s) it actually runs. */
+  activeWorkflow?: WorkflowSpec
   /** Engine uptime in ms (from GET /health) — the Status section's version/uptime line. */
   uptimeMs?: number
   /** The live (unended) session for the default workspace, if any — the Status section's live line. */
