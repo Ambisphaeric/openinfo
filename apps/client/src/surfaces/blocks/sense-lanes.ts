@@ -1,4 +1,4 @@
-import type { PhysicalSenseSource, SenseLaneHealth, SenseLaneSnapshot } from '@openinfo/contracts'
+import type { Block, PhysicalSenseSource, SenseLaneHealth, SenseLaneSnapshot } from '@openinfo/contracts'
 import { clockLabel } from '../block-renderer/format.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
 import { h, type VNode } from '../block-renderer/vnode.js'
@@ -98,6 +98,19 @@ const laneRow = (source: PhysicalSenseSource, lane: SenseLaneSnapshot | undefine
 }
 
 /**
+ * The lanes this block DOCUMENT asked for (#193). The engine caps `live-senses` rows in canonical
+ * mic → system-audio → screen order, so a `top` below the full trio (on the query or as the client-side
+ * block cap) selects a canonical prefix. Only those lanes paint: a lane the document configured out can
+ * never hydrate, and rendering it as an ever-waiting "Status unavailable" row would be a permanent
+ * placeholder for data that is not coming. Absent `top` ⇒ the full trio.
+ */
+const requestedSources = (block: Block): readonly PhysicalSenseSource[] => SENSE_LANE_SOURCES.slice(0, Math.min(
+  SENSE_LANE_SOURCES.length,
+  block.top ?? SENSE_LANE_SOURCES.length,
+  block.query?.top ?? SENSE_LANE_SOURCES.length,
+))
+
+/**
  * Compact, human-facing live-sense telemetry. It reads only the closed snapshot fields needed for the
  * glance and deliberately never renders correlation ids, captured content, endpoint/model data, or
  * arbitrary failure text. Source means the physical lane, never an inferred speaker identity.
@@ -111,6 +124,6 @@ export const renderSenseLanes: BlockRenderer = ({ block, result }) => {
     'div',
     { class: 'hgroup sense-lanes' },
     h('div', { class: 'glbl' }, LABEL),
-    ...SENSE_LANE_SOURCES.map((source) => laneRow(source, items.find((item) => item.source === source))),
+    ...requestedSources(block).map((source) => laneRow(source, items.find((item) => item.source === source))),
   )
 }
