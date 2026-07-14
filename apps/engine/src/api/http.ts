@@ -1150,7 +1150,9 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
     data.guardHolds = ctx.guardHolds.list('default')
     data.ledger = buildLedger(ctx.store.listDistillates('default'), ctx.store.listOcrResults('default'), {
       moments: ctx.store.listMoments('default'),
-      fieldValues: ctx.fieldValues.list('default'),
+      // Audit reads every causal field pass. Same-pass provisional→judge document revisions collapse,
+      // while later fast passes that reused the deterministic id remain separate.
+      fieldValues: ctx.fieldValues.passes('default'),
       guardHolds: data.guardHolds,
     })
   }
@@ -1163,7 +1165,9 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
         sttSegments: ctx.store.listSttSegments('default'),
         distillates: ctx.store.listDistillates('default'),
         moments: ctx.store.listMoments('default'),
-        fieldValues: ctx.fieldValues.list('default'),
+        // A deterministic FieldValue id is reused by later fast passes. Preserve every causal pass so
+        // selecting an older input does not lose its field/judge lineage.
+        fieldValues: ctx.fieldValues.passes('default'),
         guardHolds: ctx.guardHolds.list('default'),
         ocrResults: ctx.store.listOcrResults('default'),
       }

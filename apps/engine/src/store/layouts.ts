@@ -55,6 +55,29 @@ export class LayoutStore {
   }
 
   /**
+   * Every persisted version under a kind, oldest to newest within each document key. Unlike
+   * `latestOfKind`, this is an audit/history read: callers can reconstruct an earlier causal pass even
+   * after the same document key has been updated by a later pass. The version metadata stays attached so
+   * a caller that needs to collapse revisions from one pass can do so without guessing from timestamps.
+   */
+  versionsOfKind<T>(kind: string): VersionedDocument<T>[] {
+    const rows = this.db
+      .prepare(
+        `select kind, key, version, body, created_at from documents
+         where kind = ?
+         order by key, version`,
+      )
+      .all(kind) as DocumentRow[]
+    return rows.map((row) => ({
+      kind: row.kind,
+      key: row.key,
+      version: row.version,
+      body: JSON.parse(row.body) as T,
+      createdAt: row.created_at,
+    }))
+  }
+
+  /**
    * Hard-delete every version of a (kind, key) — the one place the append-only version history is
    * discarded, used when a user removes a config document they own (e.g. a fabric profile). Returns
    * whether any row existed. Not used for records; documents only.

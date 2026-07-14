@@ -3,6 +3,7 @@ import type { CaptureSource, Dials, Moment, PromptTemplate } from '@openinfo/con
 import { Moment as MomentSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { compileVoiceVars, interpolateTemplate } from '../voice/index.js'
+import type { LlmResult } from '../fabric/index.js'
 import { parseJsonCandidates } from './parse.js'
 import type { LlmInvoke } from './distiller.js'
 
@@ -25,9 +26,6 @@ export interface ExtractInput {
   distillateId: string
   /** #116: the window pass's correlation id, shared with the distillate — stamped on every moment. */
   spanId?: string
-  endpoint: string
-  model?: string
-  slot: 'llm'
 }
 
 export interface ExtractDeps {
@@ -60,7 +58,7 @@ export const parseMomentCandidates = (raw: string): { candidates: unknown[]; par
   parseJsonCandidates(raw, 'moments')
 
 /** Build a full Moment from a raw candidate + server-stamped fields, then validate. */
-const toMoment = (candidate: unknown, input: ExtractInput, newId: () => string, at: string): Moment | undefined => {
+const toMoment = (candidate: unknown, input: ExtractInput, result: LlmResult, newId: () => string, at: string): Moment | undefined => {
   if (candidate === null || typeof candidate !== 'object') return undefined
   const c = candidate as Record<string, unknown>
   const kind = c['kind']
@@ -83,9 +81,14 @@ const toMoment = (candidate: unknown, input: ExtractInput, newId: () => string, 
       distillateId: input.distillateId,
       windowStart: input.windowStart,
       windowEnd: input.windowEnd,
-      slot: input.slot,
-      endpoint: input.endpoint,
-      ...(input.model !== undefined ? { model: input.model } : {}),
+      // This is a separate invoke from summary generation. Stamp the endpoint that ACTUALLY answered
+      // this extraction attempt (including fallback), plus that invoke's own policy/accounting truth.
+      slot: result.slot,
+      endpoint: result.endpoint,
+      ...(result.model !== undefined ? { model: result.model } : {}),
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      ...(result.egress !== undefined ? { egress: result.egress } : {}),
+      ...(result.guard !== undefined ? { guard: result.guard } : {}),
     },
   }
   if (typeof c['speaker'] === 'string' && c['speaker'].trim().length > 0) moment.speaker = c['speaker'].trim()
@@ -134,7 +137,7 @@ export const extractMoments = async (input: ExtractInput, deps: ExtractDeps): Pr
     const moments: Moment[] = []
     let dropped = 0
     for (const candidate of candidates) {
-      const moment = toMoment(candidate, input, newId, at)
+      const moment = toMoment(candidate, input, result, newId, at)
       if (moment) moments.push(moment)
       else dropped += 1
     }

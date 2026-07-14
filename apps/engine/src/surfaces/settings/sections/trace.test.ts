@@ -21,7 +21,13 @@ const segment = (over: Partial<SttSegment> = {}): SttSegment => ({
   capturedAt: '2026-07-12T12:00:00.000Z',
   processedAt: '2026-07-12T12:00:01.000Z',
   textChars: 118,
-  provenance: { slot: 'stt', endpoint: 'whisper-box', model: 'whisper-large-v3', durationMs: 940 },
+  provenance: {
+    slot: 'stt',
+    endpoint: 'whisper-box',
+    model: 'whisper-large-v3',
+    durationMs: 940,
+    egress: { reach: 'local', allowed: true, decidedBy: 'content-class', reason: 'audio stayed on device', destination: 'device-local' },
+  },
   schemaVersion: 1,
   createdAt: '2026-07-12T12:00:01.000Z',
   ...over,
@@ -54,14 +60,23 @@ const moment = (over: Partial<Moment> = {}): Moment => ({
   id: 'm-1',
   sessionId: 'ses-1',
   workspaceId: 'default',
-  at: '2026-07-12T12:00:17.000Z',
+  // A Moment.at is the event/material time (windowEnd), so it truthfully predates summary.createdAt.
+  at: '2026-07-12T12:00:15.000Z',
   kind: 'commitment',
   text: 'ship Thursday',
   refs: [],
   source: 'mic',
   confidence: 0.85,
   spanId: 'span-window',
-  provenance: { distillateId: 'd-1', slot: 'llm', endpoint: 'llm.fast', model: 'qwen3-8b' },
+  provenance: {
+    distillateId: 'd-1',
+    slot: 'llm',
+    endpoint: 'moment.local',
+    model: 'extract-3b',
+    usage: { estimated: false, promptTokens: 120, completionTokens: 18, totalTokens: 138, durationMs: 410 },
+    egress: { reach: 'local', allowed: true, decidedBy: 'content-class', reason: 'moment extraction stayed on device', destination: 'device-local' },
+    guard: { behavior: 'redact-and-continue', outcome: 'clean', guarded: true, maskedSpanCount: 0, guardEndpoint: 'guard-local', reason: 'moment extraction was clean' },
+  },
   ...over,
 })
 
@@ -103,7 +118,11 @@ const capture = (over: Partial<OcrResult> = {}): OcrResult => ({
   sourceChunks: ['frame-1'],
   spanId: 'span-screen',
   text: 'Q3 Launch Plan — Board Review.pdf',
-  provenance: { slot: 'ocr', endpoint: 'ocr.paddle' },
+  provenance: {
+    slot: 'ocr',
+    endpoint: 'ocr.paddle',
+    egress: { reach: 'local', allowed: true, decidedBy: 'content-class', reason: 'raw frame stayed on device', destination: 'device-local' },
+  },
   schemaVersion: 1,
   createdAt: '2026-07-12T12:02:00.000Z',
   capturedAt: '2026-07-12T12:01:58.000Z',
@@ -128,6 +147,7 @@ test('buildTraceInputs: utterances and captures, newest first, with human labels
   assert.equal(inputs[1]!.kind, 'utterance')
   assert.equal(inputs[1]!.label, 'Microphone · 118 characters heard')
   assert.match(inputs[1]!.meta, /whisper-box · whisper-large-v3 · 940ms/)
+  assert.equal(inputs[1]!.egress?.destination, 'device-local', 'the STT root retains its own destination truth')
   assert.equal(inputs[0]!.kind, 'capture')
   assert.match(inputs[0]!.label, /Screen · 33 characters recognized/)
 })
@@ -136,12 +156,20 @@ test('buildTrace: an utterance walks heard → summary → moment → field → 
   const trail = buildTrace('seg-1', records())!
   assert.ok(trail !== undefined)
   assert.equal(trail.input.kind, 'utterance')
-  assert.deepEqual(trail.hops.map((h) => h.stage), ['summary', 'moment', 'field', 'judge'], 'the walk, oldest first')
+  assert.deepEqual(
+    trail.hops.map((h) => h.stage),
+    ['summary', 'moment', 'field', 'judge'],
+    'causal links win over incomparable times: summary.createdAt follows moment.at, but the parent renders first',
+  )
   const [summary, m, field, judge] = trail.hops
   assert.equal(summary!.body, 'They agreed to ship Thursday.')
   assert.equal(summary!.guard?.outcome, 'clean')
   assert.equal(summary!.egress?.destination, 'device-local')
   assert.equal(m!.title, 'Noted a commitment')
+  assert.match(m!.meta!, /moment\.local · extract-3b · 410ms/)
+  assert.equal(m!.usage?.totalTokens, 138)
+  assert.equal(m!.guard?.outcome, 'clean')
+  assert.equal(m!.egress?.destination, 'device-local')
   assert.equal(field!.title, 'Field “Topic” updated · corrected')
   assert.equal(judge!.title, 'Judge corrected it')
   assert.match(judge!.body!, /was “planning”/, 'what changed is inspectable')
@@ -171,7 +199,7 @@ test('buildTrace: a held window reaches the guard verdict through the hold’s o
   }
   const trail = buildTrace('seg-1', records({ distillates: [], moments: [], fieldValues: [], guardHolds: [hold] }))!
   assert.deepEqual(trail.hops.map((h) => h.stage), ['held'])
-  assert.match(trail.hops[0]!.title, /nothing left this Mac/i)
+  assert.match(trail.hops[0]!.title, /target model was not called/i)
   assert.equal(trail.hops[0]!.guard?.outcome, 'held')
 })
 
@@ -182,6 +210,93 @@ test('buildTrace: a capture input walks to its recognized text; an unknown id re
   assert.equal(trail.hops[0]!.body, 'Q3 Launch Plan — Board Review.pdf')
 
   assert.equal(buildTrace('nope', records()), undefined)
+})
+
+test('buildTrace: a screen input follows its shared-span mirror through summary, moment, field, judge, and hold', () => {
+  const mirror = distillate({
+    id: 'd-screen',
+    sourceChunks: ['frame-1'],
+    spanId: 'span-screen',
+    text: 'Q3 Launch Plan — Board Review.pdf',
+    windowStart: '2026-07-12T12:01:58.000Z',
+    windowEnd: '2026-07-12T12:01:58.000Z',
+    createdAt: '2026-07-12T12:02:00.000Z',
+    provenance: capture().provenance,
+  })
+  const screenMoment = moment({
+    id: 'm-screen',
+    source: 'screen',
+    spanId: 'span-screen',
+    at: '2026-07-12T12:01:58.000Z',
+    text: 'board review deck shown',
+    provenance: { distillateId: 'd-screen', slot: 'llm', endpoint: 'moment.local', model: 'extract-3b' },
+  })
+  const screenField = fieldValue({
+    spanId: 'span-screen-field',
+    provenance: { ...fieldValue().provenance, sourceChunks: ['frame-1'] },
+  })
+  const hold: GuardHold = {
+    id: 'hold-screen',
+    workspaceId: 'default',
+    sessionId: 'ses-1',
+    stage: 'distill',
+    spanId: 'span-screen-hold',
+    sourceChunks: ['frame-1'],
+    verdict: {
+      behavior: 'hold-and-surface',
+      outcome: 'held',
+      guarded: true,
+      maskedSpanCount: 1,
+      spans: [{ kind: 'card-number', start: 0, length: 16 }],
+      guardEndpoint: 'guard-local',
+      reason: 'screen-derived hop held before send',
+    },
+    status: 'held',
+    createdAt: '2026-07-12T12:02:10.000Z',
+  }
+  const trail = buildTrace(
+    'ocr-1',
+    records({ ocrResults: [capture()], distillates: [mirror], moments: [screenMoment], fieldValues: [screenField], guardHolds: [hold] }),
+  )!
+
+  assert.deepEqual(trail.hops.map((hop) => hop.stage), ['seen', 'summary', 'moment', 'field', 'judge', 'held'])
+  assert.equal(trail.hops[1]!.body, mirror.text, 'the exact standard-surface mirror is followed')
+  assert.equal(trail.hops[1]!.title, 'Published to the summary stream')
+  assert.match(trail.hops[1]!.meta!, /no second model call/, 'the mirror is not misreported as another invoke')
+  assert.equal(trail.hops[2]!.meta, 'moment.local · extract-3b')
+  assert.equal(trail.hops[5]!.guard?.outcome, 'held')
+
+  const wrongSpan = distillate({ ...mirror, id: 'd-wrong', spanId: 'other-screen-pass', text: 'must not join' })
+  const exactOnly = buildTrace('ocr-1', records({ ocrResults: [capture()], distillates: [wrongSpan], moments: [], fieldValues: [], guardHolds: [] }))!
+  assert.deepEqual(exactOnly.hops.map((hop) => hop.stage), ['seen'], 'when both spans exist, matching source time/chunk cannot override a span mismatch')
+})
+
+test('buildTrace: later field passes do not erase an older input, and judge revisions do not duplicate its field hop', () => {
+  const original = fieldValue()
+  const producer = { ...original.provenance }
+  delete producer.judge
+  const provisional = fieldValue({
+    state: 'provisional',
+    spanId: 'field-pass-old',
+    provenance: producer,
+    updatedAt: '2026-07-12T12:00:30.000Z',
+  })
+  const reviewed = fieldValue({ ...original, spanId: 'field-pass-old' })
+  const later = fieldValue({
+    state: 'provisional',
+    value: 'A later unrelated update',
+    spanId: 'field-pass-new',
+    provenance: { ...producer, sourceChunks: ['cap-2'] },
+    updatedAt: '2026-07-12T12:10:00.000Z',
+  })
+
+  const trail = buildTrace(
+    'seg-1',
+    records({ distillates: [], moments: [], fieldValues: [provisional, reviewed, later], guardHolds: [] }),
+  )!
+  assert.deepEqual(trail.hops.map((hop) => hop.stage), ['field', 'judge'])
+  assert.equal(trail.hops[0]!.title, 'Field “Topic” updated · corrected', 'same-pass provisional/judge versions collapse to the reviewed record')
+  assert.equal(trail.hops[0]!.body, 'Q3 launch sequencing', 'the later cap-2 projection did not erase cap-1 history')
 })
 
 test('renderTrace: every state is TEXT — empty, unknown selection, no steps yet, failed assembly, no data', () => {

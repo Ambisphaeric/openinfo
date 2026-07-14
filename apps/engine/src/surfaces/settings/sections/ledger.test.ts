@@ -274,7 +274,15 @@ test('#116 buildLedger: moments join their window pass as ONE aggregated hop (sp
     source: 'mic',
     confidence: 0.8,
     ...(spanId !== undefined ? { spanId } : {}),
-    provenance: { ...(distillateId !== undefined ? { distillateId } : {}), slot: 'llm', endpoint: 'llm.fast', model: 'tiny-1b' },
+    provenance: {
+      ...(distillateId !== undefined ? { distillateId } : {}),
+      slot: 'llm',
+      endpoint: 'moment.fallback',
+      model: 'extract-3b',
+      usage: { estimated: false, promptTokens: 30, completionTokens: 6, totalTokens: 36 },
+      egress: { reach: 'local', allowed: true, decidedBy: 'content-class', reason: 'moment extraction stayed on device', destination: 'device-local' },
+      guard: { behavior: 'redact-and-continue', outcome: 'clean', guarded: true, maskedSpanCount: 0, guardEndpoint: 'guard-local', reason: 'moment extraction was clean' },
+    },
   })
   const passes = buildLedger(
     [distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z', spanId: 'span-a' })],
@@ -287,7 +295,11 @@ test('#116 buildLedger: moments join their window pass as ONE aggregated hop (sp
   const momentsHop = passes[0]!.hops[1]!
   assert.equal(momentsHop.stage, 'moments')
   assert.equal(momentsHop.detail, '2 moments')
-  assert.equal(momentsHop.endpoint, 'llm.fast')
+  assert.equal(momentsHop.endpoint, 'moment.fallback')
+  assert.equal(momentsHop.model, 'extract-3b')
+  assert.equal(momentsHop.usage?.totalTokens, 36)
+  assert.equal(momentsHop.egress?.destination, 'device-local')
+  assert.equal(momentsHop.guard?.outcome, 'clean')
 
   // Pre-#116 records (no spanId anywhere) still join via the distillateId parent link.
   const legacy = buildLedger(
@@ -335,6 +347,26 @@ test('#116 buildLedger: a field value is a pass whose trail gains a judge hop on
   // Unreviewed ⇒ a single field hop, no fabricated judge hop.
   const unreviewed = buildLedger([], [], { fieldValues: [fieldValue({ id: 'fv-2', updatedAt: '2026-07-10T10:02:00Z' })] })
   assert.deepEqual(unreviewed[0]!.hops.map((h) => h.stage), ['field'])
+
+  // Full version history: provisional + reviewed are ONE causal pass, while a later span reusing the
+  // deterministic field id remains a distinct audit pass.
+  const first = fieldValue({
+    id: 'fv-history', updatedAt: '2026-07-10T10:00:30Z', spanId: 'span-old',
+    provenance: { templateId: 'tpl-topic', slot: 'llm', endpoint: 'llm.fast', sourceChunks: ['cap-old'] },
+  })
+  const firstReviewed = fieldValue({
+    ...reviewed,
+    id: 'fv-history', updatedAt: '2026-07-10T10:01:00Z', spanId: 'span-old',
+    provenance: { ...reviewed.provenance, sourceChunks: ['cap-old'] },
+  })
+  const later = fieldValue({
+    id: 'fv-history', updatedAt: '2026-07-10T10:05:00Z', spanId: 'span-new', value: 'pricing',
+    provenance: { templateId: 'tpl-topic', slot: 'llm', endpoint: 'llm.fast', sourceChunks: ['cap-new'] },
+  })
+  const history = buildLedger([], [], { fieldValues: [first, firstReviewed, later] })
+  assert.equal(history.length, 2)
+  assert.deepEqual(history.map((pass) => pass.spanId), ['span-new', 'span-old'], 'newest-first audit retains both causal passes')
+  assert.deepEqual(history[1]!.hops.map((hop) => hop.stage), ['field', 'judge'], 'same-pass revisions collapse to the judged record')
 })
 
 test('#116 buildLedger: a guard hold is a held pass naming the guard endpoint and NO model endpoint', () => {

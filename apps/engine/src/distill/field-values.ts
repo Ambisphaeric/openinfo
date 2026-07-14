@@ -5,6 +5,42 @@ import type { WorkspaceRegistry } from '../store/index.js'
 
 const FIELD_VALUE_KIND = 'field-value'
 
+/** Stable causal identity of one field within one fast fan-out pass. */
+const passKey = (value: FieldValue): string => {
+  if (value.spanId !== undefined) return `span\u0000${value.spanId}\u0000${value.id}`
+  return [
+    'legacy',
+    value.id,
+    ...(value.provenance.sourceChunks ?? []).slice().sort(),
+    value.provenance.windowStart ?? '',
+    value.provenance.windowEnd ?? '',
+  ].join('\u0000')
+}
+
+/**
+ * Collapse document revisions from the same causal field pass (provisional → judged) into its most
+ * advanced record, while preserving later fast passes that reused the deterministic FieldValue id. Input
+ * from `history()` is oldest→newest; the judge-presence tie-break also makes pure callers robust to equal
+ * timestamps. A fan-out span covers multiple fields, hence `passKey` includes the field document id.
+ */
+export const collapseFieldValuePasses = (versions: readonly FieldValue[]): FieldValue[] => {
+  const byPass = new Map<string, FieldValue>()
+  for (const value of versions) {
+    const key = passKey(value)
+    const current = byPass.get(key)
+    const currentReviewed = current?.provenance.judge !== undefined
+    const candidateReviewed = value.provenance.judge !== undefined
+    if (
+      current === undefined ||
+      (candidateReviewed && !currentReviewed) ||
+      (candidateReviewed === currentReviewed && current.updatedAt <= value.updatedAt)
+    ) {
+      byPass.set(key, value)
+    }
+  }
+  return [...byPass.values()]
+}
+
 /**
  * The DURABLE half of the fast-field substrate (#61): the latest value of each fast field, persisted as
  * a small config-shaped DOCUMENT in _meta.db via LayoutStore — the cheapest honest store shape for "the
@@ -58,5 +94,24 @@ export class FieldValueStore {
       .latestOfKind<FieldValue>(FIELD_VALUE_KIND)
       .map((doc) => doc.body)
       .filter((v) => v.workspaceId === workspaceId && (sessionId === undefined || v.sessionId === sessionId || v.sessionId === undefined))
+  }
+
+  /**
+   * Every durable version for a workspace, oldest to newest within each field document. This is the
+   * audit/trace read, not the product projection: a later fast pass reuses the deterministic FieldValue
+   * id, so reading only `list()` would erase the earlier input's field + judge lineage. Consumers should
+   * collapse versions that share one causal field pass (`spanId`, with a legacy source-window fallback)
+   * while retaining later passes with a new span/source window.
+   */
+  history(workspaceId: string, sessionId?: string): FieldValue[] {
+    return this.store.layouts
+      .versionsOfKind<FieldValue>(FIELD_VALUE_KIND)
+      .map((doc) => doc.body)
+      .filter((v) => v.workspaceId === workspaceId && (sessionId === undefined || v.sessionId === sessionId || v.sessionId === undefined))
+  }
+
+  /** Audit-ready causal passes: full history, with only same-pass provisional/judge revisions collapsed. */
+  passes(workspaceId: string, sessionId?: string): FieldValue[] {
+    return collapseFieldValuePasses(this.history(workspaceId, sessionId))
   }
 }

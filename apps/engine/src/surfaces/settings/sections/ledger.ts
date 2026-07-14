@@ -1,4 +1,5 @@
 import type { Distillate, EgressDecision, FieldValue, GuardHold, GuardVerdict, InvokeUsage, Moment, OcrResult } from '@openinfo/contracts'
+import { collapseFieldValuePasses } from '../../../distill/field-values.js'
 import { escapeHtml, type SetupData } from '../../setup/view.js'
 
 /**
@@ -112,6 +113,9 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
         slot: p?.slot ?? 'llm',
         ...(p !== undefined ? { endpoint: p.endpoint } : {}),
         ...(p?.model !== undefined ? { model: p.model } : {}),
+        ...(p?.usage !== undefined ? { usage: p.usage } : {}),
+        ...(p?.egress !== undefined ? { egress: p.egress } : {}),
+        ...(p?.guard !== undefined ? { guard: p.guard } : {}),
         detail: `${windowMoments.length} moment${windowMoments.length === 1 ? '' : 's'}`,
       })
     }
@@ -142,7 +146,8 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
     })
   }
   // #116: each fast-field value is its own pass; a judge review (#62) is a second hop on the SAME trail.
-  for (const v of extras.fieldValues ?? []) {
+  for (const v of collapseFieldValuePasses(extras.fieldValues ?? [])) {
+    const fieldPolicy = v.provenance as typeof v.provenance & { egress?: EgressDecision; guard?: GuardVerdict }
     const hops: LedgerHop[] = [
       {
         stage: 'field',
@@ -150,17 +155,22 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
         endpoint: v.provenance.endpoint,
         ...(v.provenance.model !== undefined ? { model: v.provenance.model } : {}),
         ...(v.provenance.usage !== undefined ? { usage: v.provenance.usage } : {}),
+        ...(fieldPolicy.egress !== undefined ? { egress: fieldPolicy.egress } : {}),
+        ...(fieldPolicy.guard !== undefined ? { guard: fieldPolicy.guard } : {}),
         detail: `${v.label} · ${v.state}`,
       },
     ]
     const judge = v.provenance.judge
     if (judge !== undefined) {
+      const judgePolicy = judge as typeof judge & { egress?: EgressDecision; guard?: GuardVerdict }
       hops.push({
         stage: 'judge',
         slot: 'llm',
         endpoint: judge.endpoint,
         ...(judge.model !== undefined ? { model: judge.model } : {}),
         ...(judge.usage !== undefined ? { usage: judge.usage } : {}),
+        ...(judgePolicy.egress !== undefined ? { egress: judgePolicy.egress } : {}),
+        ...(judgePolicy.guard !== undefined ? { guard: judgePolicy.guard } : {}),
         detail: judge.verdict,
       })
     }

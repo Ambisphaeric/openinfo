@@ -338,9 +338,6 @@ export class Distiller {
             dials: resolved.dials,
             distillateId: distillate.id,
             spanId,
-            endpoint: result.endpoint,
-            slot: 'llm',
-            ...(result.model !== undefined ? { model: result.model } : {}),
           }
           const extraction = await extractMoments(input, {
             invoke: egressInvoke,

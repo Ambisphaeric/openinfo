@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Database from 'better-sqlite3'
 import type { CaptureChunk, Fabric, Session } from '@openinfo/contracts'
+import { FieldValueStore } from '../distill/field-values.js'
 import { createSecureTestEngineApp as createEngineApp, secureTestFetch as fetch } from './test-control-plane.js'
 
 /**
@@ -155,6 +156,27 @@ test('e2e (#116 trace view, served): an utterance walks heard → summary → mo
       assert.match(html, /device-local/, 'the egress consent decision renders on the hop (#64)')
       assert.match(html, /— no guard/, 'no fabricated guard verdict for a local hop — the honest absence (#63)')
     }, 15_000)
+
+    // A later fast pass reuses the deterministic field document id. Advance that projection with unrelated
+    // material, then walk the OLD input again: the route must read causal history, collapse its provisional
+    // + judge versions once, and retain the old field/judge chain.
+    const values = new FieldValueStore(app.store)
+    const current = values.list('default', started.id).find((value) => value.fieldId === 'field-topic')
+    assert.ok(current?.provenance.judge, 'the driven pass produced a judged field before history advances')
+    const laterProvenance = { ...current.provenance, sourceChunks: ['later-unrelated-chunk'] }
+    delete laterProvenance.judge
+    values.put({
+      ...current,
+      value: 'later unrelated projection',
+      state: 'provisional',
+      spanId: 'later-field-pass',
+      provenance: laterProvenance,
+      updatedAt: '2026-07-13T15:00:00.000Z',
+    })
+    const oldInputHtml = await (await fetch(`${base}/settings/trace?input=${inputIds[inputIds.length - 1]}`)).text()
+    assert.match(oldInputHtml, /Field “topic” updated · confirmed/, 'older input keeps the reviewed causal field pass')
+    assert.match(oldInputHtml, /Judge confirmed it/, 'same-pass provisional + judge revisions collapse without losing the judge')
+    assert.doesNotMatch(oldInputHtml, /later unrelated projection/, 'a newer pass with another source chunk does not leak into this trail')
 
     // ---- 3) the Audit ledger keeps the flat "all passes" view AND now carries the multi-hop rows ----
     const ledger = await (await fetch(`${base}/settings/ledger`)).text()
