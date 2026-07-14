@@ -1165,9 +1165,9 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
         sttSegments: ctx.store.listSttSegments('default'),
         distillates: ctx.store.listDistillates('default'),
         moments: ctx.store.listMoments('default'),
-        // A deterministic FieldValue id is reused by later fast passes. Preserve every causal pass so
-        // selecting an older input does not lose its field/judge lineage.
-        fieldValues: ctx.fieldValues.passes('default'),
+        // Trace reads bounded raw document history: it can show the original fast producer value/time and
+        // each persisted judge revision without letting a later projection erase an older input's lineage.
+        fieldValues: ctx.fieldValues.history('default'),
         guardHolds: ctx.guardHolds.list('default'),
         ocrResults: ctx.store.listOcrResults('default'),
       }

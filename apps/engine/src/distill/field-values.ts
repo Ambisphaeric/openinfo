@@ -5,6 +5,13 @@ import type { WorkspaceRegistry } from '../store/index.js'
 
 const FIELD_VALUE_KIND = 'field-value'
 
+/**
+ * Audit/Trace surfaces show at most 100 passes / 30 roots. Ten persisted revisions for every potentially
+ * visible field pass leaves ample room for producer + judge history without making Settings scan an
+ * unbounded lifetime of field updates synchronously.
+ */
+export const FIELD_VALUE_HISTORY_VERSION_LIMIT = 1_000
+
 /** Stable causal identity of one field within one fast fan-out pass. */
 const passKey = (value: FieldValue): string => {
   if (value.spanId !== undefined) return `span\u0000${value.spanId}\u0000${value.id}`
@@ -17,29 +24,66 @@ const passKey = (value: FieldValue): string => {
   ].join('\u0000')
 }
 
+/** One causal fast-field pass reconstructed from its append-only document revisions. */
+export interface FieldValuePassHistory {
+  /** The first persisted producer row — its value, time, endpoint and usage are never overwritten by review. */
+  producer: FieldValue
+  /** The most recently appended row, independent of wall-clock movement. */
+  latest: FieldValue
+  /** Every judge-stamped revision in persisted append order; no retry identity exists to deduplicate them. */
+  reviews: FieldValue[]
+}
+
+/**
+ * Reconstruct causal passes from persisted oldest-to-newest rows. This intentionally trusts append order,
+ * not `updatedAt`: a system-clock correction cannot make an older document version replace a later one.
+ * A span is authoritative for modern records. For legacy rows, every newly appended non-judge producer
+ * starts a generation and following judge rows attach to that generation; this preserves two historical
+ * producer→judge passes even when their deterministic id/source/window tuple is identical.
+ */
+export const groupFieldValuePasses = (versions: readonly FieldValue[]): FieldValuePassHistory[] => {
+  const byPass = new Map<string, FieldValuePassHistory>()
+  const ordered: FieldValuePassHistory[] = []
+  const legacyGeneration = new Map<string, number>()
+  for (const value of versions) {
+    const baseKey = passKey(value)
+    let key = baseKey
+    if (value.spanId === undefined) {
+      const generation = legacyGeneration.get(baseKey) ?? 0
+      if (value.provenance.judge === undefined) {
+        key = `${baseKey}\u0000generation\u0000${generation + 1}`
+        legacyGeneration.set(baseKey, generation + 1)
+      } else {
+        const currentGeneration = Math.max(1, generation)
+        key = `${baseKey}\u0000generation\u0000${currentGeneration}`
+        // A bounded history can begin at a judge row. Record that inferred generation so the next producer
+        // starts a new one instead of being folded backward into the truncated review-only pass.
+        legacyGeneration.set(baseKey, currentGeneration)
+      }
+    }
+    let pass = byPass.get(key)
+    if (pass === undefined) {
+      pass = { producer: value, latest: value, reviews: [] }
+      byPass.set(key, pass)
+      ordered.push(pass)
+    } else {
+      pass.latest = value
+    }
+    // Every judge-stamped document version is evidence of a persisted review revision. There is no
+    // retry-id proving two identical-looking rows are duplicates, so append order must retain them both.
+    if (value.provenance.judge !== undefined) pass.reviews.push(value)
+  }
+  return ordered
+}
+
 /**
  * Collapse document revisions from the same causal field pass (provisional → judged) into its most
- * advanced record, while preserving later fast passes that reused the deterministic FieldValue id. Input
- * from `history()` is oldest→newest; the judge-presence tie-break also makes pure callers robust to equal
- * timestamps. A fan-out span covers multiple fields, hence `passKey` includes the field document id.
+ * recently appended record, while preserving later fast passes that reused the deterministic FieldValue
+ * id. Input from `history()` is oldest→newest; document order is authoritative even when the system clock
+ * moves backward. A fan-out span covers multiple fields, hence `passKey` includes the field document id.
  */
-export const collapseFieldValuePasses = (versions: readonly FieldValue[]): FieldValue[] => {
-  const byPass = new Map<string, FieldValue>()
-  for (const value of versions) {
-    const key = passKey(value)
-    const current = byPass.get(key)
-    const currentReviewed = current?.provenance.judge !== undefined
-    const candidateReviewed = value.provenance.judge !== undefined
-    if (
-      current === undefined ||
-      (candidateReviewed && !currentReviewed) ||
-      (candidateReviewed === currentReviewed && current.updatedAt <= value.updatedAt)
-    ) {
-      byPass.set(key, value)
-    }
-  }
-  return [...byPass.values()]
-}
+export const collapseFieldValuePasses = (versions: readonly FieldValue[]): FieldValue[] =>
+  groupFieldValuePasses(versions).map((pass) => pass.latest)
 
 /**
  * The DURABLE half of the fast-field substrate (#61): the latest value of each fast field, persisted as
@@ -97,20 +141,20 @@ export class FieldValueStore {
   }
 
   /**
-   * Every durable version for a workspace, oldest to newest within each field document. This is the
-   * audit/trace read, not the product projection: a later fast pass reuses the deterministic FieldValue
+   * The most recent bounded durable versions for a workspace, in global persisted append order. This is
+   * the audit/trace read, not the product projection: a later fast pass reuses the deterministic FieldValue
    * id, so reading only `list()` would erase the earlier input's field + judge lineage. Consumers should
    * collapse versions that share one causal field pass (`spanId`, with a legacy source-window fallback)
    * while retaining later passes with a new span/source window.
    */
-  history(workspaceId: string, sessionId?: string): FieldValue[] {
+  history(workspaceId: string, sessionId?: string, maxVersions = FIELD_VALUE_HISTORY_VERSION_LIMIT): FieldValue[] {
     return this.store.layouts
-      .versionsOfKind<FieldValue>(FIELD_VALUE_KIND)
+      .recentVersionsOfKindByScope<FieldValue>(FIELD_VALUE_KIND, workspaceId, sessionId, maxVersions)
       .map((doc) => doc.body)
       .filter((v) => v.workspaceId === workspaceId && (sessionId === undefined || v.sessionId === sessionId || v.sessionId === undefined))
   }
 
-  /** Audit-ready causal passes: full history, with only same-pass provisional/judge revisions collapsed. */
+  /** Audit-ready causal passes from bounded recent history, with same-pass document revisions collapsed. */
   passes(workspaceId: string, sessionId?: string): FieldValue[] {
     return collapseFieldValuePasses(this.history(workspaceId, sessionId))
   }

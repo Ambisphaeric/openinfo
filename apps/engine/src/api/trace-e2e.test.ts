@@ -150,7 +150,7 @@ test('e2e (#116 trace view, served): an utterance walks heard → summary → mo
       assert.match(html, /they agreed to ship Thursday\./, 'the summary the fake model produced')
       assert.match(html, /Noted a commitment/, 'the moment hop')
       assert.match(html, /ship Thursday/, 'the moment text')
-      assert.match(html, /Field “topic” updated · confirmed/, 'the field hop, judged state visible')
+      assert.match(html, /Field “topic” updated · provisional/, 'the original fast-field producer row remains visible')
       assert.match(html, /Judge confirmed it/, 'the judge hop on the same trail')
       assert.match(html, /big-32b/, 'the judge lane is named')
       assert.match(html, /device-local/, 'the egress consent decision renders on the hop (#64)')
@@ -158,8 +158,8 @@ test('e2e (#116 trace view, served): an utterance walks heard → summary → mo
     }, 15_000)
 
     // A later fast pass reuses the deterministic field document id. Advance that projection with unrelated
-    // material, then walk the OLD input again: the route must read causal history, collapse its provisional
-    // + judge versions once, and retain the old field/judge chain.
+    // material, then walk the OLD input again: the route must read causal history, retain the original
+    // producer plus its judge revision, and keep that old field/judge chain.
     const values = new FieldValueStore(app.store)
     const current = values.list('default', started.id).find((value) => value.fieldId === 'field-topic')
     assert.ok(current?.provenance.judge, 'the driven pass produced a judged field before history advances')
@@ -174,8 +174,8 @@ test('e2e (#116 trace view, served): an utterance walks heard → summary → mo
       updatedAt: '2026-07-13T15:00:00.000Z',
     })
     const oldInputHtml = await (await fetch(`${base}/settings/trace?input=${inputIds[inputIds.length - 1]}`)).text()
-    assert.match(oldInputHtml, /Field “topic” updated · confirmed/, 'older input keeps the reviewed causal field pass')
-    assert.match(oldInputHtml, /Judge confirmed it/, 'same-pass provisional + judge revisions collapse without losing the judge')
+    assert.match(oldInputHtml, /Field “topic” updated · provisional/, 'older input keeps its original fast-field producer row')
+    assert.match(oldInputHtml, /Judge confirmed it/, 'the same-pass judge revision remains ordered after its producer')
     assert.doesNotMatch(oldInputHtml, /later unrelated projection/, 'a newer pass with another source chunk does not leak into this trail')
 
     // ---- 3) the Audit ledger keeps the flat "all passes" view AND now carries the multi-hop rows ----

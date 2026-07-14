@@ -1,5 +1,5 @@
 import type { Distillate, EgressDecision, FieldValue, GuardHold, GuardVerdict, InvokeUsage, Moment, OcrResult, SttSegment } from '@openinfo/contracts'
-import { collapseFieldValuePasses } from '../../../distill/field-values.js'
+import { groupFieldValuePasses, type FieldValuePassHistory } from '../../../distill/field-values.js'
 import { escapeHtml, type SetupData } from '../../setup/view.js'
 import { egressCell, guardCell } from './ledger.js'
 
@@ -57,6 +57,8 @@ export interface TraceHop {
   usage?: InvokeUsage
   guard?: GuardVerdict
   egress?: EgressDecision
+  /** An actual invoke needs an explicit policy row; a blocked hop names that no target was reached. */
+  policy?: 'invoke' | 'blocked' | 'delivery-failure'
 }
 
 /** The full walk for one selected input. `hops` excludes the root (rendered from the input itself). */
@@ -110,9 +112,24 @@ export const buildTraceInputs = (records: TraceRecords): TraceInput[] => {
   return inputs.slice(0, MAX_INPUTS)
 }
 
-/** The moments joined to a distillate — spanId when both sides carry it, else the distillateId parent. */
-const momentsOf = (d: Distillate, moments: readonly Moment[]): Moment[] =>
-  moments.filter((m) => (m.spanId !== undefined && d.spanId !== undefined ? m.spanId === d.spanId : m.provenance?.distillateId === d.id))
+interface TraceScope {
+  workspaceId: string
+  sessionId: string
+}
+
+const inSession = (scope: TraceScope, record: { workspaceId: string; sessionId: string }): boolean =>
+  record.workspaceId === scope.workspaceId && record.sessionId === scope.sessionId
+
+const inOptionalSession = (scope: TraceScope, record: { workspaceId: string; sessionId?: string }): boolean =>
+  record.workspaceId === scope.workspaceId && (record.sessionId === undefined || record.sessionId === scope.sessionId)
+
+/** The moments joined to a distillate — same session, then spanId or the legacy distillateId parent. */
+const momentsOf = (scope: TraceScope, d: Distillate, moments: readonly Moment[]): Moment[] =>
+  moments.filter(
+    (m) =>
+      inSession(scope, m) &&
+      (m.spanId !== undefined && d.spanId !== undefined ? m.spanId === d.spanId : m.provenance?.distillateId === d.id),
+  )
 
 const momentHop = (m: Moment): TraceHop => ({
   stage: 'moment',
@@ -123,6 +140,7 @@ const momentHop = (m: Moment): TraceHop => ({
   ...(m.provenance?.usage !== undefined ? { usage: m.provenance.usage } : {}),
   ...(m.provenance?.guard !== undefined ? { guard: m.provenance.guard } : {}),
   ...(m.provenance?.egress !== undefined ? { egress: m.provenance.egress } : {}),
+  policy: 'invoke',
 })
 
 const summaryHop = (d: Distillate): TraceHop => ({
@@ -134,6 +152,7 @@ const summaryHop = (d: Distillate): TraceHop => ({
   ...(d.provenance.usage !== undefined ? { usage: d.provenance.usage } : {}),
   ...(d.provenance.guard !== undefined ? { guard: d.provenance.guard } : {}),
   ...(d.provenance.egress !== undefined ? { egress: d.provenance.egress } : {}),
+  policy: 'invoke',
 })
 
 /** A screen mirror is a second durable record from the SAME recognition pass, not another model call. */
@@ -145,53 +164,97 @@ const screenMirrorHop = (d: Distillate): TraceHop => ({
   meta: 'mirror of the screen pass · no second model call',
 })
 
-const fieldHops = (v: FieldValue): TraceHop[] => {
+const fieldHop = (v: FieldValue): TraceHop => {
   // Field/Judge policy provenance is additive. This structural view keeps the Trace repair independently
   // cherry-pickable from the privacy repair while rendering those persisted fields as soon as they exist.
   const fieldPolicy = v.provenance as typeof v.provenance & { egress?: EgressDecision; guard?: GuardVerdict }
-  const hops: TraceHop[] = [
-    {
-      stage: 'field',
-      at: v.updatedAt,
-      title: `Field “${v.label}” updated · ${v.state}`,
-      body: excerpt(v.value),
-      meta: metaLine(v.provenance.endpoint, v.provenance.model, v.provenance.usage?.durationMs),
-      ...(v.provenance.usage !== undefined ? { usage: v.provenance.usage } : {}),
-      ...(fieldPolicy.guard !== undefined ? { guard: fieldPolicy.guard } : {}),
-      ...(fieldPolicy.egress !== undefined ? { egress: fieldPolicy.egress } : {}),
-    },
-  ]
-  const judge = v.provenance.judge
-  if (judge !== undefined) {
+  return {
+    stage: 'field',
+    at: v.updatedAt,
+    title: `Field “${v.label}” updated · ${v.state}`,
+    body: excerpt(v.value),
+    meta: metaLine(v.provenance.endpoint, v.provenance.model, v.provenance.usage?.durationMs),
+    ...(v.provenance.usage !== undefined ? { usage: v.provenance.usage } : {}),
+    ...(fieldPolicy.guard !== undefined ? { guard: fieldPolicy.guard } : {}),
+    ...(fieldPolicy.egress !== undefined ? { egress: fieldPolicy.egress } : {}),
+    policy: 'invoke',
+  }
+}
+
+const judgeHops = (pass: FieldValuePassHistory): TraceHop[] => {
+  const hops: TraceHop[] = []
+  for (const reviewed of pass.reviews) {
+    const judge = reviewed.provenance.judge!
     const judgePolicy = judge as typeof judge & { egress?: EgressDecision; guard?: GuardVerdict }
-    const changed = judge.verdict === 'correct' && judge.priorValue !== undefined ? ` — was “${excerpt(judge.priorValue, 80)}”` : ''
+    const changed =
+      judge.verdict === 'correct'
+        ? `Changed to “${excerpt(reviewed.value, 80)}”${judge.priorValue !== undefined ? ` — was “${excerpt(judge.priorValue, 80)}”` : ''}`
+        : ''
     hops.push({
       stage: 'judge',
       at: judge.judgedAt,
       title: `Judge ${judge.verdict === 'confirm' ? 'confirmed it' : judge.verdict === 'correct' ? 'corrected it' : 'flagged it'}`,
-      ...(judge.note !== undefined || changed !== '' ? { body: excerpt(`${judge.note ?? ''}${changed}`.trim()) } : {}),
+      ...(judge.note !== undefined || changed !== '' ? { body: excerpt([judge.note, changed].filter((part): part is string => part !== undefined && part !== '').join(' — ')) } : {}),
       meta: metaLine(judge.endpoint, judge.model, judge.usage?.durationMs),
       ...(judge.usage !== undefined ? { usage: judge.usage } : {}),
       ...(judgePolicy.guard !== undefined ? { guard: judgePolicy.guard } : {}),
       ...(judgePolicy.egress !== undefined ? { egress: judgePolicy.egress } : {}),
+      policy: 'invoke',
     })
   }
   return hops
 }
 
-const heldHop = (h: GuardHold): TraceHop => ({
-  stage: 'held',
-  at: h.createdAt,
-  title:
-    h.status === 'held'
-      ? 'Held by the guard — the target model was not called, awaiting release or deny'
-      : h.status === 'released'
-        ? 'Held by the guard, then released'
-        : 'Held by the guard, then denied',
-  body: h.verdict.reason,
-  ...(h.verdict.guardEndpoint !== undefined ? { meta: metaLine(h.verdict.guardEndpoint, undefined) } : {}),
-  guard: h.verdict,
-})
+type DeliveryAwareHold = GuardHold & {
+  target?: {
+    endpoint: string
+    model?: string
+    destination?: string
+    delivery?: 'possible' | 'confirmed'
+    failureClass?: string
+  }
+}
+
+const heldHop = (h: GuardHold): TraceHop => {
+  // The privacy repair adds target-delivery truth. Keep this structural so the commits remain independently
+  // cherry-pickable, while rendering it immediately once that additive contract lands.
+  const target = (h as DeliveryAwareHold).target
+  const delivery = target?.delivery
+  const deliveryPrefix =
+    delivery === 'confirmed'
+      ? 'Target received the request but failed'
+      : delivery === 'possible'
+        ? 'Target may have received the request before failing'
+        : undefined
+  const title =
+    deliveryPrefix !== undefined
+      ? h.status === 'held'
+        ? `${deliveryPrefix} — fallback held by the guard at ${h.stage}`
+        : h.status === 'released'
+          ? `${deliveryPrefix}; release approval recorded — the original fallback was not rerun`
+          : `${deliveryPrefix}; fallback denied`
+      : h.status === 'held'
+        ? `Held by the guard at ${h.stage} — the target model was not called, awaiting release or deny`
+        : h.status === 'released'
+          ? 'Release approval recorded — the original held pass was not rerun'
+          : 'Held by the guard, then denied'
+  const targetMeta = target !== undefined
+    ? [metaLine(target.endpoint, target.model), target.destination, target.failureClass].filter((part): part is string => part !== undefined && part !== '').join(' · ')
+    : undefined
+  return {
+    stage: 'held',
+    at: h.createdAt,
+    title,
+    body: h.verdict.reason,
+    ...(targetMeta !== undefined && targetMeta !== ''
+      ? { meta: targetMeta }
+      : h.verdict.guardEndpoint !== undefined
+        ? { meta: metaLine(h.verdict.guardEndpoint, undefined) }
+        : {}),
+    guard: h.verdict,
+    policy: delivery === undefined ? 'blocked' : 'delivery-failure',
+  }
+}
 
 const olderFirst = <T>(at: (value: T) => string, id: (value: T) => string) => (a: T, b: T): number => {
   const aa = at(a)
@@ -199,40 +262,92 @@ const olderFirst = <T>(at: (value: T) => string, id: (value: T) => string) => (a
   return aa < ba ? -1 : aa > ba ? 1 : id(a).localeCompare(id(b))
 }
 
-const causalFieldValues = (sourceChunks: ReadonlySet<string>, versions: readonly FieldValue[]): FieldValue[] => {
-  return collapseFieldValuePasses(
-    versions.filter((value) => value.provenance.sourceChunks?.some((chunkId) => sourceChunks.has(chunkId)) ?? false),
-  ).sort(olderFirst((value) => value.updatedAt, (value) => `${value.id}\u0000${value.spanId ?? ''}`))
+const causalFieldValues = (scope: TraceScope, sourceChunks: ReadonlySet<string>, versions: readonly FieldValue[]): FieldValuePassHistory[] => {
+  return groupFieldValuePasses(
+    versions.filter(
+      (value) =>
+        inOptionalSession(scope, value) &&
+        (value.provenance.sourceChunks?.some((chunkId) => sourceChunks.has(chunkId)) ?? false),
+    ),
+  )
+}
+
+type HoldBand = 'before-fields' | 'field' | 'review' | 'later'
+
+const holdBand = (hold: GuardHold): HoldBand => {
+  const stage = hold.stage.toLowerCase()
+  if (stage.includes('field')) return 'field'
+  if (stage.includes('judge') || stage.includes('orientation')) return 'review'
+  if (
+    stage.includes('distill') ||
+    stage.includes('summary') ||
+    stage.includes('moment') ||
+    stage.includes('entit') ||
+    stage.includes('screen') ||
+    stage.includes('ocr') ||
+    stage.includes('vlm')
+  ) return 'before-fields'
+  return 'later'
 }
 
 /** Build downstream hops in causal link order, never by comparing timestamps from different clocks. */
-const downstreamHops = (sourceChunkIds: readonly string[], windows: readonly Distillate[], records: TraceRecords): TraceHop[] => {
+const downstreamHops = (scope: TraceScope, sourceChunkIds: readonly string[], windows: readonly Distillate[], records: TraceRecords): TraceHop[] => {
   const hops: TraceHop[] = []
   const sortedWindows = [...windows].sort(olderFirst((d) => d.createdAt, (d) => d.id))
   for (const distillate of sortedWindows) {
     // `Moment.at` is the material/event instant (normally windowEnd), while Distillate.createdAt is the
     // processing instant. The parent summary MUST therefore be appended before its child moments.
     hops.push(distillate.provenance.slot === 'ocr' || distillate.provenance.slot === 'vlm' ? screenMirrorHop(distillate) : summaryHop(distillate))
-    const moments = momentsOf(distillate, records.moments).sort(olderFirst((moment) => moment.at, (moment) => moment.id))
+    const moments = momentsOf(scope, distillate, records.moments).sort(olderFirst((moment) => moment.at, (moment) => moment.id))
     hops.push(...moments.map(momentHop))
   }
   const sourceChunks = new Set(sourceChunkIds)
-  for (const value of causalFieldValues(sourceChunks, records.fieldValues)) hops.push(...fieldHops(value))
   const holds = records.guardHolds
-    .filter((hold) => hold.sourceChunks?.some((chunkId) => sourceChunks.has(chunkId)) ?? false)
+    .filter(
+      (hold) =>
+        inOptionalSession(scope, hold) &&
+        (hold.sourceChunks?.some((chunkId) => sourceChunks.has(chunkId)) ?? false),
+    )
     .sort(olderFirst((hold) => hold.createdAt, (hold) => hold.id))
-  hops.push(...holds.map(heldHop))
+  const appendHolds = (band: HoldBand): void => {
+    hops.push(...holds.filter((hold) => holdBand(hold) === band).map(heldHop))
+  }
+  // These are sibling branches linked to the same material, not a cross-clock timestamp chain. Preserve
+  // pipeline stage order: summary/extraction outcomes, distill holds, fields/field holds, reviews, then late
+  // task/draft/unknown stages. Within one band, GuardHold.createdAt is a comparable record clock.
+  appendHolds('before-fields')
+  const fieldPasses = causalFieldValues(scope, sourceChunks, records.fieldValues)
+  for (const pass of fieldPasses) hops.push(fieldHop(pass.producer))
+  appendHolds('field')
+  for (const pass of fieldPasses) hops.push(...judgeHops(pass))
+  appendHolds('review')
+  appendHolds('later')
   return hops
 }
 
 /** The OcrResult's standard-surface mirror: shared span is authoritative; sourceChunks is legacy fallback. */
 const screenMirrors = (capture: OcrResult, distillates: readonly Distillate[]): Distillate[] => {
   const chunks = new Set(capture.sourceChunks)
-  return distillates.filter((distillate) => {
-    if (distillate.provenance.slot !== 'ocr' && distillate.provenance.slot !== 'vlm') return false
-    if (capture.spanId !== undefined && distillate.spanId !== undefined) return capture.spanId === distillate.spanId
-    return distillate.sourceChunks.some((chunkId) => chunks.has(chunkId))
-  })
+  const scope: TraceScope = capture
+  const candidates = distillates.filter(
+    (distillate) =>
+      inSession(scope, distillate) &&
+      (distillate.provenance.slot === 'ocr' || distillate.provenance.slot === 'vlm'),
+  )
+  const dedupe = (values: readonly Distillate[]): Distillate[] => [...new Map(values.map((value) => [value.id, value])).values()]
+  if (capture.spanId !== undefined) {
+    const exact = dedupe(candidates.filter((distillate) => distillate.spanId === capture.spanId))
+    if (exact.length > 0) return exact
+  }
+  // A spanless surviving half is possible when the screen processor repairs a pre-#116 incomplete pair.
+  // Never let a known mismatching span override correlation merely because its source chunk overlaps.
+  return dedupe(
+    candidates.filter(
+      (distillate) =>
+        (capture.spanId === undefined || distillate.spanId === undefined) &&
+        distillate.sourceChunks.some((chunkId) => chunks.has(chunkId)),
+    ),
+  )
 }
 
 /**
@@ -242,13 +357,17 @@ const screenMirrors = (capture: OcrResult, distillates: readonly Distillate[]): 
 export const buildTrace = (inputId: string, records: TraceRecords): TraceTrail | undefined => {
   const segment = records.sttSegments.find((s) => s.id === inputId)
   if (segment !== undefined) {
+    const scope: TraceScope = segment
     // Windows this chunk fed: the persisted sourceChunks parent link (never fuzzy time-matching).
-    const windows = records.distillates.filter((d) => d.provenance.slot === 'llm' && d.sourceChunks.includes(segment.chunkId))
-    return { input: utteranceInput(segment), hops: downstreamHops([segment.chunkId], windows, records) }
+    const windows = records.distillates.filter(
+      (d) => inSession(scope, d) && d.provenance.slot === 'llm' && d.sourceChunks.includes(segment.chunkId),
+    )
+    return { input: utteranceInput(segment), hops: downstreamHops(scope, [segment.chunkId], windows, records) }
   }
 
   const capture = records.ocrResults.find((o) => o.id === inputId)
   if (capture !== undefined) {
+    const scope: TraceScope = capture
     const seen: TraceHop =
       {
         stage: 'seen',
@@ -258,12 +377,13 @@ export const buildTrace = (inputId: string, records: TraceRecords): TraceTrail |
         meta: metaLine(capture.provenance.endpoint, capture.provenance.model, capture.provenance.usage?.durationMs),
         ...(capture.provenance.usage !== undefined ? { usage: capture.provenance.usage } : {}),
         ...(capture.provenance.egress !== undefined ? { egress: capture.provenance.egress } : {}),
+        policy: 'invoke',
       }
     // Screen recognition persists an OcrResult plus a standard-surface mirror Distillate with the same
     // span. Follow that exact pair into every child record just like an utterance window.
     const mirrors = screenMirrors(capture, records.distillates)
     const sourceChunks = [...new Set([...capture.sourceChunks, ...mirrors.flatMap((mirror) => mirror.sourceChunks)])]
-    return { input: captureInput(capture), hops: [seen, ...downstreamHops(sourceChunks, mirrors, records)] }
+    return { input: captureInput(capture), hops: [seen, ...downstreamHops(scope, sourceChunks, mirrors, records)] }
   }
   return undefined
 }
@@ -271,11 +391,29 @@ export const buildTrace = (inputId: string, records: TraceRecords): TraceTrail |
 // ---------------------------------------------------------------------------------------------- render
 
 /** The root hop of an utterance/capture — rendered from the input itself (STT provenance, #116). */
+const unknownPolicyCell = (what: string): string =>
+  `<span class="ldg-absent" title="${escapeHtml(what)} provenance was not recorded for this legacy invoke">${escapeHtml(what)} not recorded</span>`
+
+const policyHtml = (guard: GuardVerdict | undefined, egress: EgressDecision | undefined, mode: 'invoke' | 'blocked' | 'delivery-failure'): string => {
+  const guardMarkup = guard !== undefined ? guardCell(guard) : egress !== undefined ? guardCell(undefined) : unknownPolicyCell('guard')
+  const egressMarkup =
+    egress !== undefined
+      ? egressCell(egress)
+      : mode === 'blocked'
+        ? '<span class="ldg-guard-held" title="the guard suspended this hop before its target was called">blocked before target</span>'
+        : mode === 'delivery-failure'
+          ? '<span class="ldg-guard-held" title="the target was attempted; its failure suspended fallback routing">target attempted · fallback blocked</span>'
+          : unknownPolicyCell('destination')
+  return `<div class="trc-verdicts">${guardMarkup} ${egressMarkup}</div>`
+}
+
 const rootHtml = (trail: TraceTrail): string => {
   const input = trail.input
   const title = input.kind === 'utterance' ? `Heard · ${escapeHtml(input.label)}` : escapeHtml(input.label)
   const segment = input.kind === 'utterance' ? ' — transcribed by ' + escapeHtml(input.meta || 'an unrecorded endpoint') : input.meta ? ` — recognized by ${escapeHtml(input.meta)}` : ''
-  const verdicts = input.egress !== undefined ? `<div class="trc-verdicts">${guardCell(undefined)} ${egressCell(input.egress)}</div>` : ''
+  // An utterance root IS the STT invoke. A capture's OCR invoke is the explicit `seen` hop below, so the
+  // picker/root label must not duplicate its policy row.
+  const verdicts = input.kind === 'utterance' ? policyHtml(undefined, input.egress, 'invoke') : ''
   return (
     '<div class="trc-hop trc-root">' +
     `<div class="trc-title">${title}<span class="ldg-model">${segment}</span></div>` +
@@ -286,13 +424,13 @@ const rootHtml = (trail: TraceTrail): string => {
 }
 
 const hopHtml = (hop: TraceHop): string => {
-  const guard = hop.guard !== undefined || hop.egress !== undefined ? `<div class="trc-verdicts">${guardCell(hop.guard)} ${egressCell(hop.egress)}</div>` : ''
+  const policy = hop.policy !== undefined ? policyHtml(hop.guard, hop.egress, hop.policy) : ''
   return (
     `<div class="trc-hop trc-${escapeHtml(hop.stage)}">` +
     `<div class="trc-title">${escapeHtml(hop.title)}</div>` +
     (hop.body !== undefined && hop.body !== '' ? `<div class="trc-body">${escapeHtml(hop.body)}</div>` : '') +
     `<div class="trc-meta">${hop.at !== undefined ? `<span class="ldg-when">${escapeHtml(hop.at)}</span>` : ''}${hop.meta ? ` <span class="ldg-model">${escapeHtml(hop.meta)}</span>` : ''}</div>` +
-    guard +
+    policy +
     '</div>'
   )
 }
@@ -323,7 +461,7 @@ export const renderTrace = (data: SetupData): string => {
   const intro =
     '<div class="sub">Follow one input through the engine: pick something that was heard or seen, and this ' +
     'shows every step it took — summary, moments, fields, the judge’s review — with each step’s guard ' +
-    'verdict and where the content was allowed to go.</div>'
+    'verdict and destination when recorded, and an explicit “not recorded” when legacy provenance is absent.</div>'
 
   if (trace === undefined || trace.problem !== undefined) {
     const reason = trace?.problem ?? 'the route did not assemble trace data for this page'
