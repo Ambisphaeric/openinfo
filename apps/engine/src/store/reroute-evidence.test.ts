@@ -338,3 +338,50 @@ test('moveSession layout copy is idempotent across an interrupted reroute and co
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('moveSession recovery preserves a hold resolved in the source after the interrupted copy', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-reroute-hold-source-resolution-'))
+  const reg = new WorkspaceRegistry(dir)
+  try {
+    seed(reg)
+    reg.moveSession(SESSION_ID, FROM, TO, { stopAfterCopy: true })
+
+    const resolvedAt = '2026-07-14T12:06:00.000Z'
+    new GuardHoldStore(reg).resolve(FROM, 'hold-moved', 'released', resolvedAt)
+    reg.moveSession(SESSION_ID, FROM, TO)
+
+    const moved = new GuardHoldStore(reg).list(TO).find((item) => item.id === 'hold-moved')!
+    assert.equal(moved.status, 'released', 'a resolved lifecycle outranks the stale destination hold')
+    assert.equal(moved.resolvedAt, resolvedAt, 'recovery preserves the actual user-decision timestamp')
+    assert.equal(new GuardHoldStore(reg).list(FROM).some((item) => item.id === 'hold-moved'), false)
+  } finally {
+    reg.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('moveSession recovery resolves contradictory duplicate hold decisions fail-closed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-reroute-hold-conflict-'))
+  const reg = new WorkspaceRegistry(dir)
+  try {
+    seed(reg)
+    reg.moveSession(SESSION_ID, FROM, TO, { stopAfterCopy: true })
+
+    const releasedAt = '2026-07-14T12:05:00.000Z'
+    const deniedAt = '2026-07-14T12:06:00.000Z'
+    new GuardHoldStore(reg).resolve(TO, 'hold-moved', 'released', releasedAt)
+    new GuardHoldStore(reg).resolve(FROM, 'hold-moved', 'denied', deniedAt)
+    reg.moveSession(SESSION_ID, FROM, TO)
+
+    const moved = new GuardHoldStore(reg).list(TO).find((item) => item.id === 'hold-moved')!
+    assert.equal(moved.status, 'denied', 'denial deterministically wins a contradictory duplicate decision')
+    assert.equal(moved.resolvedAt, deniedAt, 'the winning denial keeps its original decision timestamp')
+
+    const snapshot = destinationLayoutSnapshot(reg)
+    reg.moveSession(SESSION_ID, FROM, TO)
+    assert.deepEqual(destinationLayoutSnapshot(reg), snapshot, 'completed recovery remains stable')
+  } finally {
+    reg.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

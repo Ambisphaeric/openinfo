@@ -53,6 +53,20 @@ interface HistoricalDocumentRow {
 const normalizeEntityName = (name: string): string => name.trim().toLowerCase().replace(/\s+/g, ' ')
 
 /**
+ * Reconcile the two lifecycle copies an interrupted cross-workspace move can temporarily expose.
+ * A completed decision always outranks `held`. If the duplicated copies were resolved in opposite
+ * ways, deny wins: the conflict is exceptional, and the only deterministic fail-closed outcome is to
+ * avoid turning an explicit denial into permission. Returning the winning record also preserves its
+ * exact `resolvedAt` rather than manufacturing a new resolution time during recovery.
+ */
+const reconcileMovedGuardHold = (destination: GuardHold, source: GuardHold): GuardHold => {
+  if (destination.status === source.status) return destination
+  if (destination.status === 'held') return source
+  if (source.status === 'held') return destination
+  return destination.status === 'denied' ? destination : source
+}
+
+/**
  * The fields the distiller hands store to merge into a canonical entity record. Ids, timestamps,
  * mention counts and the provenance trail are store-owned; the model never controls them.
  */
@@ -688,7 +702,8 @@ export class WorkspaceRegistry {
    * (Phase 3, the correction loop the router's mistakes require; IMPLEMENTATION §3 risk register).
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
    *
-   * WHAT MOVES: the session record, its distillates, moments, drafts, OcrResults, and SttSegments, plus
+   * WHAT MOVES: the session record (with the authoritative manual correction appended atomically), its
+   * distillates, moments, drafts, OcrResults, and SttSegments, plus
    * the session-scoped document state in _meta.db: complete FieldValue and SessionAnnotation histories,
    * GuardHolds, and the current TodoList. ENTITIES are workspace-level aggregates, not session-keyed,
    * so they are re-aggregated (see below), never blindly copied.
@@ -758,7 +773,22 @@ export class WorkspaceRegistry {
       })
     }
 
-    const movedSession: Session = { ...session, workspaceId: toWorkspaceId, reroutedFrom: fromWorkspaceId }
+    // Attribution is part of the destination record written in phase 1, not a route-layer follow-up.
+    // Therefore a crash after this move returns cannot leave a rerouted session without the user's
+    // authoritative correction. A retry while the source copy still exists derives the same destination
+    // body from the unchanged source, so it replaces rather than duplicates this evidence entry.
+    const movedSession: Session = {
+      ...session,
+      workspaceId: toWorkspaceId,
+      reroutedFrom: fromWorkspaceId,
+      attribution: {
+        evidence: [
+          ...session.attribution.evidence,
+          { kind: 'manual', detail: `rerouted from workspace ${fromWorkspaceId} by user`, weight: 1 },
+        ],
+        confidence: 1,
+      },
+    }
 
     // PHASE 1 — destination writes, idempotent, one atomic per-file transaction.
     const toDb = this.openWorkspace(toWorkspaceId)
@@ -850,10 +880,18 @@ export class WorkspaceRegistry {
         .map((hold): GuardHold => ({ ...hold, workspaceId: toWorkspaceId }))
       if (movedHolds.length > 0) {
         const current = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, toWorkspaceId)?.body.holds ?? []
+        const movedById = new Map(movedHolds.map((hold) => [hold.id, hold]))
         const currentIds = new Set(current.map((hold) => hold.id))
-        // An existing id is a prior successful copy (hold ids are globally unique). Keep that current
-        // destination lifecycle state rather than regressing a released/denied hold on a crash retry.
-        const holds = [...current, ...movedHolds.filter((hold) => !currentIds.has(hold.id))]
+        // A user can resolve either visible copy between an interrupted phase 1 and recovery. Reconcile
+        // rather than keeping the destination wholesale: resolved beats held, and a contradictory pair
+        // resolves fail-closed to denied (see reconcileMovedGuardHold).
+        const holds = [
+          ...current.map((hold) => {
+            const source = movedById.get(hold.id)
+            return source === undefined ? hold : reconcileMovedGuardHold(hold, source)
+          }),
+          ...movedHolds.filter((hold) => !currentIds.has(hold.id)),
+        ]
         const next: GuardHoldsDocument = { workspaceId: toWorkspaceId, holds }
         const currentDoc = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, toWorkspaceId)?.body
         if (JSON.stringify(currentDoc) !== JSON.stringify(next)) this.layouts.put(GUARD_HOLDS_KIND, toWorkspaceId, next)
