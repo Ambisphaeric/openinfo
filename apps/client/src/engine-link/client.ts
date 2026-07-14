@@ -198,7 +198,6 @@ export class EngineLink {
     const controller = new AbortController()
     this.screenObservationAbort = controller
     const timeout = setTimeout(() => controller.abort(), this.screenObservationTimeoutMs)
-    timeout.unref()
     try {
       return await this.request('POST', '/screen/observations', observation, controller.signal)
     } catch {
