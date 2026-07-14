@@ -406,6 +406,57 @@ test('live-sense events reject cold, cross-scope, malformed, and widened payload
   coldHud.stop()
 })
 
+test('a sense-lanes block with top below 3 stays live per hydrated source and never grows an unhydrated one (#193)', async () => {
+  const transport = new FakeTransport()
+  transport.surfaceDoc = {
+    ...senseSurface,
+    stack: [
+      { block: 'now' },
+      { block: 'sense-lanes', show: 'always', top: 2, query: { source: 'live-senses', params: { session: 'current' }, top: 2 } },
+    ],
+  }
+  transport.live = [session()]
+  // The engine caps live-senses in canonical order, so top:2 hydrates mic + system-audio only.
+  transport.liveSenses = [senseLane('mic'), senseLane('system-audio')]
+  let panel: VElement | undefined
+  let renders = 0
+  const hud = new Hud({
+    transport,
+    onRender: (p) => { panel = p; renders += 1 },
+    workspace: 'acme',
+    now: () => new Date('2026-07-07T14:47:00Z'),
+  })
+  await hud.start()
+  assert.equal(transport.queryCalls, 1)
+  const initialRenders = renders
+
+  // A payload for a HYDRATED source keeps the live fast path: repaint, zero re-query.
+  transport.fire('sense.lane.updated', senseLane('system-audio', {
+    disposition: 'processed',
+    reason: 'processed',
+    updatedAt: '2026-07-07T14:47:01Z',
+  }))
+  assert.equal(transport.queryCalls, 1, 'a sub-trio block must not degrade to coarse re-query updates')
+  assert.equal(renders, initialRenders + 1, 'the accepted payload repaints synchronously')
+  let html = renderToHtml(panel!)
+  assert.match(html, /System audio · Processed · Healthy/)
+  assert.doesNotMatch(html, /data-sense-source="screen"/, 'the configured-out lane paints no placeholder row')
+  assert.doesNotMatch(html, /Status unavailable/)
+
+  // A payload for the UNHYDRATED source is ignored: no repaint, no refetch, no invented row.
+  transport.fire('sense.lane.updated', senseLane('screen', {
+    disposition: 'delta-skipped',
+    reason: 'delta-skipped',
+    updatedAt: '2026-07-07T14:47:02Z',
+    latestObservation: { id: 'obs-private', occurredAt: '2026-07-07T14:47:02Z', outcome: 'delta-skipped' },
+  }))
+  assert.equal(transport.queryCalls, 1)
+  assert.equal(renders, initialRenders + 1)
+  html = renderToHtml(panel!)
+  assert.doesNotMatch(html, /data-sense-source="screen"|No screen change|obs-private/)
+  hud.stop()
+})
+
 // --- #58: the event-fed live-transcript feed ---------------------------------------------------
 const iso = (ms: number): string => new Date(ms).toISOString()
 

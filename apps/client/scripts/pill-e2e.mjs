@@ -24,32 +24,36 @@
  * so they stayed green while the ⌘\/tray anchor still opened the OLD hud and the pill was undiscoverable
  * (the owner's 0.0.14 live-QA gap). Scene 0 closes that hole: it resolves the shell config the way boot
  * does (resolveShellConfig with an empty env → DEFAULTS) and builds the anchor window from cfg.surfaceId
- * exactly as createHudWindow does, then proves (a) the anchor default IS the pill (not the old hud), (b)
- * `.pill-app` actually FILLS the window width at the bar/listen/ask states — DOM rect ≥ window width minus
- * the stage padding, so the shrink-wrapped microsquare class can never come back green, and (c) the anchor
- * show/hide path (hide()/showInactive(), the ⌘\ toggle) just shows/hides the window without disturbing the
- * pill's height (the PillController extents are not fought).
+ * through the SAME production constructor createHudWindow calls, then proves (a) the anchor default IS the
+ * pill (not the old hud), (b) `.pill-app` actually FILLS the window width at the bar/listen/ask states —
+ * DOM rect ≥ window width minus the stage padding, so the shrink-wrapped microsquare class can never come
+ * back green, and (c) the anchor show/hide path (hide()/showInactive(), the ⌘\ toggle) just shows/hides the
+ * window without disturbing the pill's height (the PillController extents are not fought).
  *
- * Probe main (the ask-face / panel-bounds precedent): recreates the window with the shell's exact
- * webPreferences + preload and mirrors shell.ts's hud:panel-size / hud:capture-frame / hud:open-settings
- * handlers verbatim. TCC cannot be granted to a throwaway harness, so the frame source is injected at the
- * IPC seam (as ask-face-e2e does); the renderer path is the REAL shipped code.
+ * THE PRODUCTION WINDOW PATH (#194): every window this harness drives is built by `constructSurfaceWindow`
+ * — the EXACT function the shell's `createSurfaceWindow` factory runs (extracted to dist/main/
+ * surface-window.js so it is invocable without booting shell.ts, whose import would resolve the real
+ * config, spawn engines, and register the tray). The contract assertion, spec resolution, title stamp,
+ * preload, hardening, observability, and hud.html load are therefore the production body, not a mirror —
+ * a regression inside the constructor now fails this proof. What REMAINS mirrored (each with its reason):
+ *   - `SurfaceWindowEnv` hooks are left absent: engine auth is injected at the defaultSession webRequest
+ *     seam below (production pins per-webContents via RendererEngineAuth, which needs the shell's
+ *     configured credential source — the fake engine uses a fixed bearer), and the meta/position-store
+ *     hooks are per-user shell state a throwaway harness must not read or write.
+ *   - Probe main (the ask-face / panel-bounds precedent): shell.ts's hud:panel-size / hud:capture-frame /
+ *     hud:open-settings IPC handlers are mirrored verbatim — they live in shell.ts's whenReady wiring, and
+ *     TCC cannot be granted to a throwaway harness, so the frame source is injected at the IPC seam (as
+ *     ask-face-e2e does); the renderer path is the REAL shipped code.
  *
  * Run: pnpm --filter @openinfo/client test:e2e:pill  (builds first). Needs a GUI (darwin) — not in `test`.
  */
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { app, BrowserWindow, ipcMain, screen, session as electronSession } from 'electron'
-import { surfaceWindowSpec, windowTitleFor } from '../dist/main/window-options.js'
+import { configForSurface } from '../dist/main/window-options.js'
+import { constructSurfaceWindow } from '../dist/main/surface-window.js'
 import { resolveShellConfig } from '../dist/main/config.js'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const CLIENT_DIR = path.join(__dirname, '..')
-const HUD_HTML = path.join(CLIENT_DIR, 'hud.html')
-const PRELOAD_JS = path.join(CLIENT_DIR, 'dist', 'main', 'preload.cjs')
 
 const FAKE_FRAME_B64 = Buffer.from('one synthetic pill ask frame').toString('base64')
 const ASK_DEFAULT_BODY = 'Explain what is on my screen right now, briefly and in plain terms.'
@@ -309,17 +313,16 @@ const typeText = async (text) => {
   }
 }
 
+// Scenes 1-6 build the pill the way the shell's Apps folder does: the PRODUCTION constructor with the
+// registry's exact shape (declared chrome, not the default HUD, startVisible + showInactive — see
+// appRegistry.create in shell.ts). Only the fake-engine URL is bound; the shell-state hooks stay absent
+// (see the header). Renderer error observability now comes from the production constructor itself.
 const makeWindow = (engineUrl) => {
-  const spec = surfaceWindowSpec(PILL_SURFACE_ID, { startVisible: true })
-  const w = new BrowserWindow({
-    ...spec.browserWindow,
-    title: windowTitleFor(PILL_SURFACE_ID),
-    webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
-  })
-  w.webContents.on('console-message', (d) => {
-    if (d.level === 'error') console.error(`[hud] ${d.message}`)
-  })
-  w.loadFile(HUD_HTML, { search: new URLSearchParams({ engine: engineUrl, surface: PILL_SURFACE_ID }).toString() })
+  const w = constructSurfaceWindow(
+    PILL_SURFACE_ID,
+    { chrome: configForSurface(PILL_SURFACE_ID).chrome, isDefaultHud: false, startVisible: true },
+    { engineUrl },
+  )
   w.showInactive()
   return w
 }
@@ -336,18 +339,11 @@ const runAnchorScene = async (engineUrl) => {
   }
   console.log(`[e2e:anchor] resolveShellConfig → anchor surface ${cfg.surfaceId} (the pill)`)
 
-  // Build the anchor exactly as createHudWindow does: the config-resolved surface, startVisible:false, then
-  // revealed with showInactive() (the same glance-reveal showHud uses for the ⌘\ / tray Show command).
-  const spec = surfaceWindowSpec(cfg.surfaceId, { startVisible: false })
-  const aw = new BrowserWindow({
-    ...spec.browserWindow,
-    title: windowTitleFor(cfg.surfaceId),
-    webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
-  })
-  aw.webContents.on('console-message', (d) => {
-    if (d.level === 'error') console.error(`[hud:anchor] ${d.message}`)
-  })
-  aw.loadFile(HUD_HTML, { search: new URLSearchParams({ engine: engineUrl, surface: cfg.surfaceId }).toString() })
+  // Build the anchor THROUGH the production constructor with createHudWindow's exact arguments — the
+  // config-resolved surface, hud chrome, the singular default HUD, startVisible:false — then reveal it with
+  // showInactive() (the same glance-reveal showHud uses for the ⌘\ / tray Show command). This is no longer
+  // a mirror: constructSurfaceWindow IS the body the shell's factory runs (#194).
+  const aw = constructSurfaceWindow(cfg.surfaceId, { chrome: 'hud', isDefaultHud: true, startVisible: false }, { engineUrl })
   aw.showInactive()
 
   const driveA = (expr) => aw.webContents.executeJavaScript(expr)

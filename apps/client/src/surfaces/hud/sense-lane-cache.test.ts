@@ -101,8 +101,71 @@ test('cache patching rejects workspace/session mismatch, wrong result source, wr
     surface: { ...surface, stack: [{ block: 'sense-gates', query: { source: 'senses', params: {} } }] },
   }), undefined)
   assert.equal(attempt({ results: [result([lane('screen'), lane('system-audio'), lane('mic')])] }), undefined)
-  assert.equal(attempt({ results: [result([lane('mic'), lane('system-audio')])] }), undefined)
+  assert.equal(attempt({ results: [result([lane('system-audio'), lane('mic')])] }), undefined, 'a sub-trio out of canonical order is not a hydration')
+  assert.equal(attempt({ results: [result([lane('mic'), lane('mic')])] }), undefined, 'a duplicated source is not a hydration')
+  assert.equal(attempt({ results: [result([])] }), undefined, 'an empty result carries no scope to authenticate against')
   assert.equal(attempt({ results: [result([lane('mic'), lane('system-audio', { workspaceId: 'other' }), lane('screen')])] }), undefined)
+})
+
+test('a sub-trio hydration keeps its live fast path for every hydrated source (#193)', () => {
+  const subTrioSurface: Surface = {
+    ...surface,
+    stack: [{ block: 'sense-lanes', query: { source: 'live-senses', params: { session: 'current' }, top: 2 } }],
+  }
+  const hydrated = [lane('mic'), lane('system-audio')]
+  const patched = patchLiveSenseResults({
+    surface: subTrioSurface,
+    results: [result(hydrated)],
+    lane: lane('system-audio', { disposition: 'processed', reason: 'processed', updatedAt: '2026-07-13T14:47:01Z' }),
+  })
+  assert.ok(patched, 'a hydrated source in a sub-trio block accepts the payload patch')
+  assert.deepEqual(patched[0]?.items.map((item) => (item as SenseLaneSnapshot).source), ['mic', 'system-audio'])
+  assert.equal((patched[0]?.items[1] as SenseLaneSnapshot).disposition, 'processed')
+  assert.equal(hydrated[1]?.disposition, 'waiting', 'the hydrated cache is copied, not mutated')
+
+  // The same guards still hold inside the sub-trio scope: stale updates and foreign scopes are dropped.
+  assert.equal(patchLiveSenseResults({
+    surface: subTrioSurface,
+    results: [result([lane('mic'), lane('system-audio', { updatedAt: '2026-07-13T14:47:02Z' })])],
+    lane: lane('system-audio', { disposition: 'processed', reason: 'processed', updatedAt: '2026-07-13T14:47:01Z' }),
+  }), undefined)
+  assert.equal(patchLiveSenseResults({
+    surface: subTrioSurface,
+    results: [result(hydrated)],
+    lane: lane('system-audio', { workspaceId: 'other', updatedAt: '2026-07-13T14:47:01Z' }),
+  }), undefined)
+})
+
+test('a source the query never hydrated is never patched in (#193)', () => {
+  const subTrioSurface: Surface = {
+    ...surface,
+    stack: [{ block: 'sense-lanes', query: { source: 'live-senses', params: { session: 'current' }, top: 2 } }],
+  }
+  const ignored = patchLiveSenseResults({
+    surface: subTrioSurface,
+    results: [result([lane('mic'), lane('system-audio')])],
+    lane: lane('screen', {
+      disposition: 'delta-skipped',
+      reason: 'delta-skipped',
+      updatedAt: '2026-07-13T14:47:01Z',
+      latestObservation: { id: 'obs', occurredAt: '2026-07-13T14:47:01Z', outcome: 'delta-skipped' },
+    }),
+  })
+  assert.equal(ignored, undefined, 'hydration alone decides which sources exist; an event cannot add one')
+  // Single-lane hydration: only that exact source is patchable.
+  const micOnly = [lane('mic')]
+  assert.equal(patchLiveSenseResults({
+    surface: subTrioSurface,
+    results: [result(micOnly)],
+    lane: lane('system-audio', { disposition: 'processed', reason: 'processed', updatedAt: '2026-07-13T14:47:01Z' }),
+  }), undefined)
+  const micPatched = patchLiveSenseResults({
+    surface: subTrioSurface,
+    results: [result(micOnly)],
+    lane: lane('mic', { disposition: 'processed', reason: 'processed', updatedAt: '2026-07-13T14:47:01Z' }),
+  })
+  assert.equal((micPatched?.[0]?.items[0] as SenseLaneSnapshot).disposition, 'processed')
+  assert.equal(micPatched?.[0]?.items.length, 1)
 })
 
 test('cache patching rejects an older source update but permits an equal-timestamp replacement', () => {
@@ -152,4 +215,24 @@ test('refresh reconciliation keeps newer event truth per source but lets a diffe
   const replaced = reconcileLiveSenseHydration(surface, [result(current)], [result(nextScope)])
   assert.equal((replaced[0]?.items[0] as SenseLaneSnapshot).sessionId, 'ses-next')
   assert.equal((replaced[0]?.items[0] as SenseLaneSnapshot).disposition, 'waiting')
+})
+
+test('refresh reconciliation matches sub-trio rows by physical source, and the fresh query owns the shape (#193)', () => {
+  const subTrioSurface: Surface = {
+    ...surface,
+    stack: [{ block: 'sense-lanes', query: { source: 'live-senses', params: { session: 'current' }, top: 2 } }],
+  }
+  // A newer patched row survives an older re-query snapshot inside a two-lane hydration.
+  const current = [lane('mic'), lane('system-audio', { disposition: 'processed', reason: 'processed', updatedAt: '2026-07-13T14:47:02Z' })]
+  const older = [lane('mic'), lane('system-audio', { disposition: 'queued', reason: 'awaiting-processing', updatedAt: '2026-07-13T14:47:01Z' })]
+  const reconciled = reconcileLiveSenseHydration(subTrioSurface, [result(current)], [result(older)])
+  assert.deepEqual(reconciled[0]?.items.map((item) => (item as SenseLaneSnapshot).source), ['mic', 'system-audio'])
+  assert.equal((reconciled[0]?.items[1] as SenseLaneSnapshot).disposition, 'processed')
+
+  // A layout edit shrinking the trio between hydrations: per-source truth is kept, but WHICH sources
+  // exist follows the fresh query — the dropped lane is not resurrected from the old full-trio cache.
+  const fullCurrent = canonical()
+  fullCurrent[2] = lane('screen', { disposition: 'processed', reason: 'processed', updatedAt: '2026-07-13T14:47:02Z' })
+  const shrunk = reconcileLiveSenseHydration(subTrioSurface, [result(fullCurrent)], [result([lane('mic'), lane('system-audio')])])
+  assert.deepEqual(shrunk[0]?.items.map((item) => (item as SenseLaneSnapshot).source), ['mic', 'system-audio'])
 })

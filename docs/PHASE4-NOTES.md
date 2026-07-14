@@ -5550,3 +5550,68 @@ Acceptance criteria → evidence, all deterministic and committed:
   drift beyond the widened outcome literals.
 
 Recursive build green; contracts 100/100, fixtures 15/15, client 562/562, engine 899/899.
+## Slice: pill e2e constructs its windows through the production path  *(#194, 2026-07-14)*
+
+The driven pill e2e's windows were hand-rebuilt from the same specs production uses
+(`resolveShellConfig` + `surfaceWindowSpec` + `new BrowserWindow`), so a regression inside the
+production constructor's body could not fail the proof — the #174 close-out finding. The primary
+scope (refactor-for-invocability) landed: the factory body moved verbatim from `shell.ts` into the
+new `apps/client/src/main/surface-window.ts` as `constructSurfaceWindow(surfaceId, opts, env)`, and
+`createSurfaceWindow` in the shell became a thin wrapper that binds the shell-state seams
+(`SurfaceWindowEnv`: engine URL + outline, engine-credential pinning, window meta, the position
+stores). The module is main-process-only — the one other electron importer beside `shell.ts` — and
+is invocable without booting the shell (whose import would resolve real config and spawn engines).
+
+The e2e now builds BOTH of its windows through that production function: Scene 0's anchor with
+`createHudWindow`'s exact arguments, and the scenes-1-6 pill with the Apps-registry shape. The two
+remaining probe-main mirrors are named in the harness header with their reasons: the env hooks stay
+absent (auth rides the defaultSession webRequest seam because production's `RendererEngineAuth`
+needs the shell's configured credential source, and meta/position stores are per-user state), and
+the `hud:panel-size`/`hud:capture-frame`/`hud:open-settings` IPC handlers remain mirrored verbatim
+(they live in the shell's whenReady wiring; TCC cannot be granted to a throwaway harness — the
+fake-engine/synthetic-frame posture is unchanged and no capture permission was added).
+
+Evidence: `test:e2e:pill` PASS twice consecutively, with the production constructor's own log lines
+(`HUD window created — chrome hud, content-protection: ON` for the anchor; `app surf-openinfo-pill
+window created` for the driven pill) now appearing in the harness output. Production behavior
+unchanged: recursive build green; contracts 100/100, fixtures 15/15, client 558/558, engine 888/888.
+## Slice: the sub-trio sense-lanes live fast path  *(#193, 2026-07-14)*
+
+The #174 close-out review surfaced a client-side defect: the live-sense cache accepted `sense.lane.updated`
+payload patches only when a hydrated `live-senses` result contained the exact canonical three-lane trio. A
+user-customized `sense-lanes` block with `top` below 3 hydrates fewer rows (the engine caps in canonical
+mic → system-audio → screen order), so it never matched, silently degraded to coarse re-query updates, and
+painted the configured-out lane as a permanently "Status unavailable" row. The shipped default (`top: 3`)
+was unaffected.
+
+Chosen scope: patch per-source rows independently of full-trio hydration (the issue's first option). The
+closed-contract boundary stays simplest this way — every row still crosses the strict
+`sanitizeSenseLaneSnapshot` boundary and the uniform workspace/session scope check; the only relaxation is
+shape (exact trio → non-empty canonical-order subset, no duplicates, no reordering), and the surface needed
+no new disclosure state whose honesty would have to be maintained across refreshes. In
+`apps/client/src/surfaces/hud/sense-lane-cache.ts`, `patchLiveSenseResults` now finds the payload's
+physical source among the HYDRATED rows: present ⇒ the same per-source newer-wins replacement as before;
+absent ⇒ ignored, so an event can refresh a row but never invent one, and hydration alone decides which
+sources exist. `reconcileLiveSenseHydration` matches rows by physical source instead of array position, and
+the fresh query stays authoritative for which sources exist (a lane it no longer returns is dropped, never
+resurrected from the old cache). Empty results still carry no scope authority, so a cold block still
+accepts nothing.
+
+The renderer half fixes the dishonest placeholder: `apps/client/src/surfaces/blocks/sense-lanes.ts` paints
+only the lanes the block document asked for — the canonical prefix selected by the smaller of the client
+block cap and `query.top` (absent ⇒ the full trio). A lane the document configured out can never hydrate,
+so an ever-waiting "Status unavailable" row for it was a permanent placeholder for data that is not coming;
+lanes the block does request keep the honest waiting row until they hydrate. No default surface changed:
+the shipped pill keeps `top: 3` on both the block and its query.
+
+Proof: `hud/sense-lane-cache.test.ts` covers sub-trio hydration in both directions (a hydrated source
+accepts a patch with order preserved and no third row appearing; an unhydrated source is never patched in,
+including the single-lane case) plus the retained rejections (stale, cross-workspace/session, out-of-order
+sub-trio, duplicated source, empty hydration) and per-source sub-trio reconciliation with the
+shape-follows-the-fresh-query rule. `blocks/sense-lanes.test.ts` pins that `top: 2` paints exactly two
+lanes with no screen placeholder, `block.top: 1` caps client-side, and empty sub-trio hydration shows
+exactly two waiting rows. `hud.test.ts` drives the controller end to end: a `top: 2` surface repaints
+synchronously on a hydrated-source payload with zero re-queries, and an unhydrated-source payload causes no
+repaint, no refetch, and no invented row. No cross-source or cross-scope acceptance was added — the
+existing scope/order/widening rejection tests all still pass unchanged except the one assertion that
+previously pinned the defect itself (a two-lane hydration rejecting its own hydrated source).

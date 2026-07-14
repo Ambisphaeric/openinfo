@@ -175,6 +175,36 @@ test('invented disposition or health values in initial hydration degrade safely 
   }
 })
 
+test('a block whose top asks for fewer lanes paints exactly those lanes, never a permanent placeholder (#193)', () => {
+  // The engine caps live-senses in canonical mic → system-audio → screen order, so top:2 hydrates the
+  // first two lanes. The configured-out screen lane must not paint as an ever-waiting unavailable row.
+  const renderWith = (stackBlock: Surface['stack'][0], items: SenseLaneSnapshot[]): string => renderToHtml(
+    renderSurface({ surface: { ...surface, stack: [stackBlock] }, now, results: [result(items)] }, defaultBlockRegistry),
+  )
+  const queryTopTwo: Surface['stack'][0] = {
+    block: 'sense-lanes',
+    show: 'always',
+    query: { source: 'live-senses', params: { session: 'current' }, top: 2 },
+  }
+  const html = renderWith(queryTopTwo, [lane('mic', 'waiting'), lane('system-audio', 'queued')])
+  assert.match(html, /data-sense-source="mic"/)
+  assert.match(html, /data-sense-source="system-audio"/)
+  assert.doesNotMatch(html, /data-sense-source="screen"/)
+  assert.doesNotMatch(html, /Status unavailable/)
+
+  // The client-side block cap shrinks the painted set the same way.
+  const blockTopOne: Surface['stack'][0] = { ...queryTopTwo, top: 1, query: { ...queryTopTwo.query!, top: 3 } }
+  const oneLane = renderWith(blockTopOne, [lane('mic', 'waiting'), lane('system-audio', 'queued'), lane('screen', 'waiting')])
+  assert.match(oneLane, /data-sense-source="mic"/)
+  assert.doesNotMatch(oneLane, /data-sense-source="system-audio"|data-sense-source="screen"/)
+
+  // Lanes the block DOES ask for keep the honest waiting placeholder until they hydrate.
+  const empty = renderWith(queryTopTwo, [])
+  assert.equal((empty.match(/Status unavailable/g) ?? []).length, 2)
+  assert.equal((empty.match(/Waiting for a live snapshot/g) ?? []).length, 2)
+  assert.doesNotMatch(empty, /data-sense-source="screen"/)
+})
+
 test('missing hydration stays explainable and collapsed mode stays compact', () => {
   const html = render([])
   assert.equal((html.match(/Status unavailable/g) ?? []).length, 3)
