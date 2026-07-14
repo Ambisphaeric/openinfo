@@ -17,7 +17,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   ocrInvokeParams: 'OcrInvokeParams', vlmInvokeParams: 'VlmInvokeParams',
   captureChunk: 'CaptureChunk', captureReceipt: 'CaptureReceipt', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', transcriptUpdate: 'TranscriptUpdate', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', ocrResult: 'OcrResult', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity', fieldValue: 'FieldValue',
-  sessionAnnotation: 'SessionAnnotation',
+  sessionAnnotation: 'SessionAnnotation', sttSegment: 'SttSegment',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', queryResult: 'QueryResult',
   pin: 'Pin', pinChunk: 'PinChunk', teachSignal: 'TeachSignal', entityCorrection: 'EntityCorrection',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',

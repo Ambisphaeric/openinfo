@@ -115,6 +115,11 @@ export const GuardHold = Type.Object(
     workspaceId: Id,
     sessionId: Type.Optional(Id),
     stage: Type.String({ minLength: 1, description: "the pipeline stage that was held (e.g. 'distill')" }),
+    // #116: the correlation id of the pipeline pass that was suspended — a held window produced no
+    // distillate, so this (plus sourceChunks below) is how the audit trail reaches the hold from its
+    // input. Append-only/optional: holds predating #116 omit both.
+    spanId: Type.Optional(Id),
+    sourceChunks: Type.Optional(Type.Array(Id, { description: 'capture chunk ids of the held window — the parent link a trace walks; ids only, never content' })),
     verdict: GuardVerdict,
     status: GuardHoldStatus,
     createdAt: IsoTime,

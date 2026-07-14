@@ -126,6 +126,9 @@ export const EntityProvenance = Type.Object(
     slot: SlotName,
     endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this mention' }),
     model: Type.Optional(Type.String()),
+    // #116: the correlation id of the pipeline pass this mention was extracted in — shared with the
+    // window's distillate and moments. Append-only/optional: entries predating #116 omit it.
+    spanId: Type.Optional(Id),
   },
   { additionalProperties: false },
 )

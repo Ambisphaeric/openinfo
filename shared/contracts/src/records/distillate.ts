@@ -20,6 +20,10 @@ export const Distillate = Type.Object(
     windowStart: IsoTime,
     windowEnd: IsoTime,
     sourceChunks: Type.Array(Id, { description: 'capture chunk ids merged into this window' }),
+    // #116: the correlation id of the pipeline pass that produced this record — every record of the same
+    // window pass (distillate + its moments + entity mentions + a guard hold) shares it, so an audit trail
+    // joins them without fuzzy time-linkage. Append-only/optional: records predating #116 omit it.
+    spanId: Type.Optional(Id),
     text: Type.String({ description: 'the distilled summary text' }),
     voice: Type.Object(
       {

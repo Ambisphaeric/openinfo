@@ -1,13 +1,16 @@
 {
-  "$id": "OcrResult",
+  "$id": "SttSegment",
   "additionalProperties": false,
   "type": "object",
   "required": [
     "id",
-    "sessionId",
     "workspaceId",
-    "sourceChunks",
-    "text",
+    "sessionId",
+    "chunkId",
+    "source",
+    "capturedAt",
+    "processedAt",
+    "textChars",
     "provenance",
     "schemaVersion",
     "createdAt"
@@ -18,84 +21,69 @@
       "description": "opaque identifier",
       "type": "string"
     },
-    "sessionId": {
-      "minLength": 1,
-      "description": "opaque identifier",
-      "type": "string"
-    },
     "workspaceId": {
       "minLength": 1,
       "description": "opaque identifier",
       "type": "string"
     },
-    "sourceChunks": {
-      "description": "screen CaptureChunk ids understood in this pass",
-      "type": "array",
-      "items": {
-        "minLength": 1,
-        "description": "opaque identifier",
-        "type": "string"
-      }
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "chunkId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
     },
     "spanId": {
       "minLength": 1,
       "description": "opaque identifier",
       "type": "string"
     },
-    "text": {
-      "description": "the recognized text — flattened join of blocks (ocr) or the VLM prose",
+    "source": {
+      "description": "the physical capture lane of the source chunk — a stream, never a speaker identity",
+      "anyOf": [
+        {
+          "const": "mic",
+          "type": "string"
+        },
+        {
+          "const": "screen",
+          "type": "string"
+        },
+        {
+          "const": "calendar",
+          "type": "string"
+        },
+        {
+          "const": "repo",
+          "type": "string"
+        },
+        {
+          "const": "camera",
+          "type": "string"
+        },
+        {
+          "const": "system-audio",
+          "type": "string"
+        }
+      ]
+    },
+    "capturedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
       "type": "string"
     },
-    "blocks": {
-      "description": "per-region boxes+confidence; present for a region-aware (ocr) runtime, absent for a vlm",
-      "type": "array",
-      "items": {
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "text"
-        ],
-        "properties": {
-          "text": {
-            "description": "the recognized text of this region",
-            "type": "string"
-          },
-          "confidence": {
-            "minimum": 0,
-            "maximum": 1,
-            "type": "number"
-          },
-          "region": {
-            "additionalProperties": false,
-            "description": "bounding box in the frame pixel coordinate space",
-            "type": "object",
-            "required": [
-              "x",
-              "y",
-              "width",
-              "height"
-            ],
-            "properties": {
-              "x": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "y": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "width": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "height": {
-                "minimum": 1,
-                "type": "integer"
-              }
-            }
-          }
-        }
-      }
+    "processedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "textChars": {
+      "minimum": 0,
+      "description": "transcript length in characters — a size for auditing, never the content",
+      "type": "integer"
     },
     "provenance": {
       "additionalProperties": false,
@@ -106,59 +94,22 @@
       ],
       "properties": {
         "slot": {
-          "description": "which capability slot produced this — a subset of SlotName",
-          "anyOf": [
-            {
-              "const": "ocr",
-              "type": "string"
-            },
-            {
-              "const": "vlm",
-              "type": "string"
-            }
-          ]
+          "const": "stt",
+          "type": "string"
         },
         "endpoint": {
           "minLength": 1,
-          "description": "fabric endpoint name that produced this",
+          "description": "fabric endpoint name that transcribed this segment — never a url/secret",
           "type": "string"
         },
         "model": {
+          "description": "the stt model that answered, when the endpoint names one",
           "type": "string"
         },
-        "usage": {
-          "$id": "InvokeUsage",
-          "additionalProperties": false,
-          "type": "object",
-          "required": [
-            "estimated"
-          ],
-          "properties": {
-            "promptTokens": {
-              "minimum": 0,
-              "description": "input tokens (prompt), when known",
-              "type": "integer"
-            },
-            "completionTokens": {
-              "minimum": 0,
-              "description": "output tokens (generated), when known",
-              "type": "integer"
-            },
-            "totalTokens": {
-              "minimum": 0,
-              "description": "prompt + completion, when the server reports it or both halves are known",
-              "type": "integer"
-            },
-            "estimated": {
-              "description": "true ⇒ counts are chars/4 estimates (the server reported no usage); false ⇒ measured from the API",
-              "type": "boolean"
-            },
-            "durationMs": {
-              "minimum": 0,
-              "description": "wall-clock duration of the invoke in ms",
-              "type": "integer"
-            }
-          }
+        "durationMs": {
+          "minimum": 0,
+          "description": "wall-clock duration of the transcription invoke in ms",
+          "type": "integer"
         },
         "egress": {
           "$id": "EgressDecision",
@@ -256,11 +207,6 @@
       "type": "integer"
     },
     "createdAt": {
-      "format": "date-time",
-      "description": "ISO-8601 timestamp",
-      "type": "string"
-    },
-    "capturedAt": {
       "format": "date-time",
       "description": "ISO-8601 timestamp",
       "type": "string"

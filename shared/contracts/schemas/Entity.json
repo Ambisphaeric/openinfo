@@ -148,6 +148,11 @@
           },
           "model": {
             "type": "string"
+          },
+          "spanId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
           }
         }
       }

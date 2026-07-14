@@ -31,6 +31,20 @@
       "description": "the pipeline stage that was held (e.g. 'distill')",
       "type": "string"
     },
+    "spanId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sourceChunks": {
+      "description": "capture chunk ids of the held window — the parent link a trace walks; ids only, never content",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "description": "opaque identifier",
+        "type": "string"
+      }
+    },
     "verdict": {
       "$id": "GuardVerdict",
       "additionalProperties": false,

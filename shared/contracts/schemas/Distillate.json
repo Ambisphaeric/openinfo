@@ -50,6 +50,11 @@
         "type": "string"
       }
     },
+    "spanId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
     "text": {
       "description": "the distilled summary text",
       "type": "string"

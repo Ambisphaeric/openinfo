@@ -39,6 +39,9 @@ export const Moment = Type.Object(
     confidence: Confidence,
     answered: Type.Optional(Type.Boolean({ description: 'questions only: heard an answer yet?' })),
     provenance: Type.Optional(MomentProvenance),
+    // #116: the correlation id of the pipeline pass that extracted this moment — shared with the window's
+    // distillate (whose id `provenance.distillateId` already names as the parent link). Append-only/optional.
+    spanId: Type.Optional(Id),
   },
   { $id: 'Moment', additionalProperties: false },
 )
