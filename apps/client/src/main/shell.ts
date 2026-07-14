@@ -8,7 +8,8 @@ import type { Fabric, Flag } from '@openinfo/contracts'
 import { resolveShellConfig, loadClientConfigFile, type ShellConfig } from './config.js'
 import { decideEngineDisposition, checkEngineReachable, waitForEngine, bundledEngineEntry, portFromEngineUrl, fetchEngineHealth, engineStatusLine, assessEngineSkew, parseAllowSkew, readBuildStamp, type EngineDisposition, type EngineHealth } from './engine-supervisor.js'
 import { systemFaceDataUrl, type SystemFaceModel } from './system-face.js'
-import { surfaceWindowSpec, configForSurface, windowTitleFor, assertWindowContract, HUD_MIN_HEIGHT, type HudWindowSpec, type WindowChrome } from './window-options.js'
+import { configForSurface, HUD_MIN_HEIGHT } from './window-options.js'
+import { constructSurfaceWindow, HUD_HTML, type SurfaceWindowMeta, type SurfaceWindowOpts } from './surface-window.js'
 import { resolveHudHeight } from './hud-height.js'
 import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
@@ -49,17 +50,18 @@ import {
 } from './renderer-engine-auth.js'
 
 /**
- * The Electron shell — the ONLY file that imports electron, and the one tests never import (all the
- * logic it wires lives in the pure sibling modules, asserted headless). It hosts the existing
+ * The Electron shell — the entry that imports electron, and the one tests never import (all the
+ * logic it wires lives in the pure sibling modules, asserted headless; the one other electron-importing
+ * module is surface-window.ts, the extracted window constructor the driven pill e2e also invokes, #194).
+ * It hosts the existing
  * document-driven HUD in a frameless, always-on-top, content-protected window (the inherited Glass
  * signature), a menu-bar tray whose Start/End Session toggles the engine and reflects live state,
  * and the ⌘\ global shortcut that hides/shows the window like Glass.
  */
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const HUD_HTML = path.join(__dirname, '..', '..', 'hud.html')
+// HUD_HTML + the surface preload live in surface-window.ts (the extracted window constructor, #194).
 const CAPTURE_HTML = path.join(__dirname, '..', '..', 'capture.html')
-const PRELOAD_JS = path.join(__dirname, 'preload.cjs') // .cts source → CommonJS preload (see preload.cts)
 const CAPTURE_PRELOAD_JS = path.join(__dirname, '..', 'capture', 'capture-preload.cjs') // .cts → CommonJS (see capture-preload.cts)
 
 // env > ~/.openinfo/client.json > defaults — the file lets a double-clicked packaged .app point at an
@@ -98,7 +100,7 @@ let tray: Tray | undefined
 // Per-window binding + chrome (#19/#20). The drag/resize IPC is routed by `event.sender` to the window
 // that sent it; this map tells the shell that window's surface id, whether it is a content-sized,
 // drag-follow HUD-style window or a normal framed app window, and whether it is the singular default HUD.
-const windowMeta = new WeakMap<BrowserWindow, { surfaceId: string; chrome: WindowChrome; isDefaultHud: boolean }>()
+const windowMeta = new WeakMap<BrowserWindow, SurfaceWindowMeta>()
 // The app surfaces the engine serves (GET /layouts/surfaces) — feeds the tray Apps folder. Empty until fetched.
 let appSurfaces: AppSurface[] = []
 // The app bundles the engine serves (GET /bundles) — each renders as ONE app in the Apps folder whose faces
@@ -393,66 +395,21 @@ const dispatch = (command: ShellCommand): void => {
  * beside the HUD). The window meta lets the drag/resize IPC (routed by `event.sender`) find this window
  * and know how to treat it. The default HUD keeps its EXACT prior behavior (its own position store, its
  * show/hide, its content-sizing) — see the isDefaultHud branches.
+ *
+ * The constructor BODY lives in surface-window.ts (#194) so the driven pill e2e invokes the SAME function;
+ * this wrapper binds the shell-state seams: engine auth pinning, the per-window meta, the position stores.
  */
-const createSurfaceWindow = (
-  surfaceId: string,
-  opts: { chrome: WindowChrome; isDefaultHud: boolean; startVisible: boolean },
-): BrowserWindow => {
-  // The window CONTRACT (policy item 3), enforced HERE in the one factory: every surface window either
-  // resizes or provably fits its content (S5), AND self-identifies with a non-empty title (S4). A surface
-  // added with a clipping fixed width or no identity fails LOUDLY at create, never shipping a broken window.
-  assertWindowContract(surfaceId)
-  // The full window spec is resolved from the surface's declared config in ONE place (chrome, width, AND the
-  // per-surface focusability override, S1) so the shell and the driven e2e build the identical window.
-  const spec: HudWindowSpec = surfaceWindowSpec(surfaceId, { startVisible: opts.startVisible })
-  const window = new BrowserWindow({
-    ...spec.browserWindow,
-    // Self-identify (S4): stamp the per-surface title so a booting window is never mislabeled "HUD" (every
-    // window loads the SAME hud.html, so its shared <title> alone titled them all "HUD"); the renderer then
-    // refines it to the loaded surface's live `name` (page-title-updated flows through by default).
-    title: windowTitleFor(surfaceId),
-    // The one bridge the renderer needs: the drag channel (preload.cts). Nothing node-bound crosses.
-    webPreferences: { ...spec.browserWindow.webPreferences, preload: PRELOAD_JS },
+const createSurfaceWindow = (surfaceId: string, opts: SurfaceWindowOpts): BrowserWindow =>
+  constructSurfaceWindow(surfaceId, opts, {
+    engineUrl: cfg.engineUrl,
+    hudOutline: cfg.hudOutline,
+    // Deny-by-default engine credentials: only built-in HUD/app renderers are allowlisted, and headers are
+    // injected after they leave renderer JS. pinTrustedSurface revokes the id on destruction/navigation.
+    pinAuth: (window) => pinTrustedSurface(rendererEngineAuth, window.webContents, pathToFileURL(HUD_HTML).toString()),
+    registerMeta: (window, meta) => windowMeta.set(window, meta),
+    restorePosition: restoreWindowPosition,
+    onMoved: scheduleSaveWindowPosition,
   })
-  // The shared defaultSession auth listener is deny-by-default: only these built-in HUD/app renderers
-  // receive engine credentials, and only after headers leave renderer JS. Revoke the id on destruction.
-  pinTrustedSurface(rendererEngineAuth, window.webContents, pathToFileURL(HUD_HTML).toString())
-  windowMeta.set(window, { surfaceId, chrome: opts.chrome, isDefaultHud: opts.isDefaultHud })
-
-  // Method-only hardening (no constructor-option equivalent). Benign for app chrome (all false/off), so
-  // content-protection + all-workspaces apply unconditionally; always-on-top only when the spec asks for it.
-  window.setContentProtection(spec.hardening.contentProtection)
-  if (spec.browserWindow.alwaysOnTop) window.setAlwaysOnTop(true, spec.hardening.alwaysOnTopLevel)
-  window.setVisibleOnAllWorkspaces(spec.hardening.visibleOnAllWorkspaces, {
-    visibleOnFullScreen: spec.hardening.visibleOnFullScreen,
-  })
-  const tag = opts.isDefaultHud ? 'HUD' : `app ${surfaceId}`
-  console.log(`[shell] ${tag} window created — chrome ${opts.chrome}, content-protection: ${spec.hardening.contentProtection ? 'ON' : 'off'}`)
-
-  // Renderer observability: a HUD-style window is TRANSPARENT, so a dead/blank renderer is otherwise
-  // indistinguishable from "hidden". Surface load failures, renderer death, and error-level console lines
-  // go to the main-process stdout (visible when the .app is launched from a terminal).
-  window.webContents.on('did-fail-load', (_event, code, description) =>
-    console.error(`[shell] ${tag} page failed to load: ${code} ${description}`))
-  window.webContents.on('render-process-gone', (_event, details) =>
-    console.error(`[shell] ${tag} renderer gone: ${details.reason} (exitCode ${details.exitCode})`))
-  window.webContents.on('console-message', (details) => {
-    if (details.level === 'error') console.error(`[${tag}] ${details.message} (${details.sourceId}:${details.lineNumber})`)
-  })
-
-  restoreWindowPosition(window)
-  // Pass the engine URL + the surface id so the renderer fetches + renders THIS surface's layout (the same
-  // per-window binding the single HUD always had). `outline=1` (ShellConfig.hudOutline) draws debug bounds.
-  void window.loadFile(HUD_HTML, {
-    search: new URLSearchParams({
-      engine: cfg.engineUrl,
-      surface: surfaceId,
-      ...(cfg.hudOutline ? { outline: '1' } : {}),
-    }).toString(),
-  })
-  window.on('moved', () => scheduleSaveWindowPosition(window)) // OS-level moves; the custom drag also persists on drag-end
-  return window
-}
 
 /** Create the singular default HUD window (boot behavior unchanged: one HUD, ShellConfig.surfaceId). */
 const createHudWindow = (): void => {

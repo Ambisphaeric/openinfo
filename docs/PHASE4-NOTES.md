@@ -5483,6 +5483,31 @@ LAN call; the same tests prove untrusted LAN, public, malformed, and wildcard ta
 fetch. The #175 live recipe now requires a real LAN vision endpoint and asserts persisted trusted-LAN
 provenance plus the absence of frame markers, URLs, and credentials from both records and its private report.
 
+## Slice: pill e2e constructs its windows through the production path  *(#194, 2026-07-14)*
+
+The driven pill e2e's windows were hand-rebuilt from the same specs production uses
+(`resolveShellConfig` + `surfaceWindowSpec` + `new BrowserWindow`), so a regression inside the
+production constructor's body could not fail the proof — the #174 close-out finding. The primary
+scope (refactor-for-invocability) landed: the factory body moved verbatim from `shell.ts` into the
+new `apps/client/src/main/surface-window.ts` as `constructSurfaceWindow(surfaceId, opts, env)`, and
+`createSurfaceWindow` in the shell became a thin wrapper that binds the shell-state seams
+(`SurfaceWindowEnv`: engine URL + outline, engine-credential pinning, window meta, the position
+stores). The module is main-process-only — the one other electron importer beside `shell.ts` — and
+is invocable without booting the shell (whose import would resolve real config and spawn engines).
+
+The e2e now builds BOTH of its windows through that production function: Scene 0's anchor with
+`createHudWindow`'s exact arguments, and the scenes-1-6 pill with the Apps-registry shape. The two
+remaining probe-main mirrors are named in the harness header with their reasons: the env hooks stay
+absent (auth rides the defaultSession webRequest seam because production's `RendererEngineAuth`
+needs the shell's configured credential source, and meta/position stores are per-user state), and
+the `hud:panel-size`/`hud:capture-frame`/`hud:open-settings` IPC handlers remain mirrored verbatim
+(they live in the shell's whenReady wiring; TCC cannot be granted to a throwaway harness — the
+fake-engine/synthetic-frame posture is unchanged and no capture permission was added).
+
+Evidence: `test:e2e:pill` PASS twice consecutively, with the production constructor's own log lines
+(`HUD window created — chrome hud, content-protection: ON` for the anchor; `app surf-openinfo-pill
+window created` for the driven pill) now appearing in the harness output. Production behavior
+unchanged: recursive build green; contracts 100/100, fixtures 15/15, client 558/558, engine 888/888.
 ## Slice: the sub-trio sense-lanes live fast path  *(#193, 2026-07-14)*
 
 The #174 close-out review surfaced a client-side defect: the live-sense cache accepted `sense.lane.updated`
