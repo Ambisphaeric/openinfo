@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
@@ -17,7 +17,7 @@ import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
 import { BundleDocuments, DEFAULT_BUNDLE_ID } from '../bundles/index.js'
 import { PresetDocuments } from '../presets/index.js'
-import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, requiredScreenSenseSlots, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, requiredScreenSenseSlots, buildLedger, buildTrace, buildTraceInputs, type TraceData, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor, latchScreenRecognitionOwner, screenRecognitionOwner } from '../screen/index.js'
 import { SenseLaneTracker } from '../senses/index.js'
@@ -106,6 +106,8 @@ interface HandlerContext {
   senseLanes: SenseLaneTracker
   /** In-memory ring of recent ephemeral transcript updates (#101) — the diagnostics inspector's honest v0 source. */
   transcripts: TranscriptRing
+  /** The durable per-field latest values (#61) — read by the Audit ledger + Trace sections (#116). */
+  fieldValues: FieldValueStore
   store: WorkspaceRegistry
   runtime: LocalRuntimeManager
   models: LocalModelStore
@@ -321,18 +323,51 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     // dropped across the drain, so filtered content is VISIBLE in a log line rather than silently vanished.
     let skippedWindows = 0
     let droppedSegments = 0
+    // #116: one correlation id per transcribe pass — every segment this drain transcribes shares it.
+    const transcribeSpanId = randomUUID()
     const ready = await transcribeChunks(chunks, {
       invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }),
-      onTranscribed: (chunk, text, processedAt) => segments.push({
-        id: chunk.id,
-        sourceChunkId: chunk.id,
-        sessionId: chunk.sessionId,
-        source: chunk.source,
-        sequence: chunk.sequence,
-        text,
-        capturedAt: chunk.capturedAt,
-        processedAt,
-      }),
+      onTranscribed: (chunk, text, processedAt, stt) => {
+        segments.push({
+          id: chunk.id,
+          sourceChunkId: chunk.id,
+          sessionId: chunk.sessionId,
+          source: chunk.source,
+          sequence: chunk.sequence,
+          text,
+          capturedAt: chunk.capturedAt,
+          processedAt,
+        })
+        // #116: persist per-segment STT provenance — the ROOT a pipeline trace walks from (closes the
+        // disclosed #65 gap). Recorded for EVERY successful transcription invoke, including chunks the
+        // echo-dedupe below later drops (the invoke happened; the audit never loses it). Carries the chunk
+        // id / endpoint / measured timing — never the transcript text (raw transcript stays ephemeral).
+        // Best-effort: a persistence failure must not sink the drain (chunks stay durable in the spool).
+        try {
+          store.saveSttSegment({
+            id: randomUUID(),
+            workspaceId: chunk.workspaceId,
+            sessionId: chunk.sessionId,
+            chunkId: chunk.id,
+            spanId: transcribeSpanId,
+            source: chunk.source,
+            capturedAt: chunk.capturedAt,
+            processedAt,
+            textChars: text.length,
+            provenance: {
+              slot: 'stt',
+              endpoint: stt.endpoint,
+              durationMs: stt.durationMs,
+              ...(stt.model !== undefined ? { model: stt.model } : {}),
+              ...(stt.egress !== undefined ? { egress: stt.egress } : {}),
+            },
+            schemaVersion: STT_SEGMENT_SCHEMA_VERSION,
+            createdAt: processedAt,
+          })
+        } catch (error) {
+          log(`stt segment for chunk ${chunk.id} not recorded: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      },
       onSilenceSkipped: (_chunk, info) => {
         droppedSegments += info.dropped
         if (info.windowSkipped) skippedWindows += 1
@@ -692,7 +727,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   })
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, fieldValues, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handleControlRequest(req, res, ctx).catch((error: unknown) => {
       if (res.headersSent) return void res.destroy(error instanceof Error ? error : undefined)
@@ -717,6 +752,10 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       ws.close()
       runtime.shutdown() // kill any spawned local runtimes (tier zero)
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
+      // Stop BOTH drain tracks before the store closes: a drain scheduled via setImmediate could otherwise
+      // fire against a closed DB handle (the teardown race). Pending spool files stay durable on disk.
+      await queue.stop()
+      await textQueue.stop()
       store.close()
     },
   }
@@ -1087,14 +1126,42 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
     })
   }
 
-  // The Audit ledger (#65) is assembled ONLY when its section is active — two cheap in-process reads of the
-  // default workspace's recorded passes (distillates + ocr results), turned into hop trails. Every other
-  // section stays free of the read, mirroring the discovery-only-when-relevant discipline above.
+  // The Audit ledger (#65) is assembled ONLY when its section is active — cheap in-process reads of the
+  // default workspace's recorded passes, turned into hop trails. Every other section stays free of the
+  // read, mirroring the discovery-only-when-relevant discipline above. #116 folds the moment / field /
+  // judge / guard-hold records onto their trails (multi-hop), keeping the flat "all passes" table working.
   if (active.id === 'ledger') {
-    data.ledger = buildLedger(ctx.store.listDistillates('default'), ctx.store.listOcrResults('default'))
-    // #63: held egress hops (a durable audit of every guard block) surface as their own held rows with a
-    // release/deny affordance — kept separate from the completed-pass trail (they produced no distillate).
     data.guardHolds = ctx.guardHolds.list('default')
+    data.ledger = buildLedger(ctx.store.listDistillates('default'), ctx.store.listOcrResults('default'), {
+      moments: ctx.store.listMoments('default'),
+      fieldValues: ctx.fieldValues.list('default'),
+      guardHolds: data.guardHolds,
+    })
+  }
+
+  // The Trace section (#116) — same read discipline. Assembly failures land as `problem` so the page
+  // renders the TRUE reason as visible text; a broken read must never blank a diagnostics surface.
+  if (active.id === 'trace') {
+    try {
+      const records = {
+        sttSegments: ctx.store.listSttSegments('default'),
+        distillates: ctx.store.listDistillates('default'),
+        moments: ctx.store.listMoments('default'),
+        fieldValues: ctx.fieldValues.list('default'),
+        guardHolds: ctx.guardHolds.list('default'),
+        ocrResults: ctx.store.listOcrResults('default'),
+      }
+      const selected = url.searchParams.get('input')
+      const trace: TraceData = { inputs: buildTraceInputs(records) }
+      if (selected !== null && selected !== '') {
+        trace.selectedId = selected
+        const trail = buildTrace(selected, records)
+        if (trail !== undefined) trace.trail = trail
+      }
+      data.trace = trace
+    } catch (error) {
+      data.trace = { inputs: [], problem: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })

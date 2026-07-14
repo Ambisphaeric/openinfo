@@ -396,3 +396,31 @@ test('#131 gate-ready seam: gate disposition annotates-and-logs (hold not yet en
     await cleanup(store, dir)
   }
 })
+
+test('#116: a review carries the judge pass spanId and the invoke usage', async () => {
+  const invoke = async (): Promise<LlmResult> => ({
+    text: JSON.stringify([
+      { fieldId: 'field-topic', verdict: 'confirm' },
+      { fieldId: 'field-entities', verdict: 'flag', note: 'thin evidence' },
+    ]),
+    endpoint: 'llm.judge',
+    model: 'big-32b',
+    slot: 'llm',
+    usage: { estimated: false, promptTokens: 300, completionTokens: 40, totalTokens: 340 },
+  })
+  const { store, scheduler, values, dir } = await harness(invoke)
+  try {
+    seedValue(values, 'field-topic', 'topic', 'Q3 GTM launch sequencing')
+    seedValue(values, 'field-entities', 'entities', 'Dana, Priya')
+    const produced = await scheduler.runJudge([sourceChunk()])
+    assert.equal(produced.length, 2)
+    const topic = values.latest(WS, 'field-topic', SESS)!
+    const entities = values.latest(WS, 'field-entities', SESS)!
+    const spanId = topic.provenance.judge!.spanId
+    assert.ok(spanId !== undefined && spanId.length > 0, 'the judge pass correlation id is stamped')
+    assert.equal(entities.provenance.judge!.spanId, spanId, 'both verdicts of the same pass share the spanId')
+    assert.equal(topic.provenance.judge!.usage?.promptTokens, 300, 'the judge invoke usage rides onto the review')
+  } finally {
+    await cleanup(store, dir)
+  }
+})

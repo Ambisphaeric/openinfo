@@ -320,3 +320,81 @@ test('drain → distill → moments → entities → store → bus with a fake l
     await new Promise<void>((resolve) => llm.server.close(() => resolve()))
   }
 })
+
+test('#116: one window pass shares ONE spanId across the distillate, its moments, and its entity mentions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-distill-span-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const voice = new VoiceDocuments(store)
+    voice.ensureDefaults()
+    const docs = new DistillDocuments(store)
+    docs.ensureDefaults()
+    const fabric = new FabricDocuments(store)
+
+    // A direct fake invoke (no HTTP): the three jobs told apart by their template bodies.
+    const distiller = new Distiller({
+      store,
+      voice,
+      fabric,
+      docs,
+      invoke: (messages) => {
+        const prompt = messages[0]!.content
+        const content = prompt.includes('JSON array of entities')
+          ? '[{"kind": "person", "name": "Dana"}]'
+          : prompt.includes('Return ONLY a JSON array')
+            ? '[{"kind": "commitment", "text": "ship Thursday", "confidence": 0.85}]'
+            : 'they agreed to ship Thursday.'
+        return Promise.resolve({ text: content, endpoint: 'llm.fast', slot: 'llm', model: 'llama-3.2-3b' })
+      },
+    })
+    await distiller.distillChunks([chunk(1, 0, 'we should ship Thursday, Dana')], { extractMoments: true, extractEntities: true })
+
+    const distillates = store.listDistillates('ws-e2e', 'ses-e2e')
+    assert.equal(distillates.length, 1)
+    const spanId = distillates[0]!.spanId
+    assert.ok(spanId !== undefined && spanId.length > 0, 'the distillate carries the pass correlation id')
+
+    const moments = store.listMoments('ws-e2e', 'ses-e2e')
+    assert.equal(moments.length, 1)
+    assert.equal(moments[0]!.spanId, spanId, 'the extracted moment shares the window pass spanId')
+
+    const entities = store.listEntities('ws-e2e')
+    assert.equal(entities.length, 1)
+    assert.equal(entities[0]!.provenance?.[0]?.spanId, spanId, 'the entity mention entry shares the window pass spanId')
+
+    // The parent links still hold alongside the correlation id (never destroyed).
+    assert.deepEqual(distillates[0]!.sourceChunks, ['chunk-1'])
+    assert.equal(moments[0]!.provenance?.distillateId, distillates[0]!.id)
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#116: two windows in one drain get DIFFERENT spanIds (one correlation id per window pass)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-distill-span2-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const voice = new VoiceDocuments(store)
+    voice.ensureDefaults()
+    const docs = new DistillDocuments(store)
+    docs.ensureDefaults()
+    const fabric = new FabricDocuments(store)
+    const distiller = new Distiller({
+      store,
+      voice,
+      fabric,
+      docs,
+      invoke: () => Promise.resolve({ text: 'summary', endpoint: 'llm.fast', slot: 'llm' }),
+    })
+    // 40s apart ⇒ two merge windows in one pass (the meeting mode's default merge window is smaller).
+    await distiller.distillChunks([chunk(1, 0, 'first window words'), chunk(2, 40, 'second window words')])
+    const spans = store.listDistillates('ws-e2e', 'ses-e2e').map((d) => d.spanId)
+    assert.equal(spans.length, 2)
+    assert.ok(spans[0] !== undefined && spans[1] !== undefined)
+    assert.notEqual(spans[0], spans[1], 'each window pass mints its own correlation id')
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

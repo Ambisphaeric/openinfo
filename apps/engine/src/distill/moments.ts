@@ -23,6 +23,8 @@ export interface ExtractInput {
   dials: Dials
   /** provenance carried onto every extracted moment */
   distillateId: string
+  /** #116: the window pass's correlation id, shared with the distillate — stamped on every moment. */
+  spanId?: string
   endpoint: string
   model?: string
   slot: 'llm'
@@ -76,6 +78,7 @@ const toMoment = (candidate: unknown, input: ExtractInput, newId: () => string, 
     refs: [],
     source: input.source,
     confidence: typeof c['confidence'] === 'number' ? Math.max(0, Math.min(1, c['confidence'])) : 0.5,
+    ...(input.spanId !== undefined ? { spanId: input.spanId } : {}),
     provenance: {
       distillateId: input.distillateId,
       windowStart: input.windowStart,

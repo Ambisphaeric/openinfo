@@ -30,6 +30,7 @@ export {
   captureLaneLabel,
   speakerLabel,
   type SttInvoke,
+  type SttInvokeMeta,
   type TranscribeDeps,
   type TranscribedSegment,
 } from './transcribe.js'

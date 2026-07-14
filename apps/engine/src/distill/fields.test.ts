@@ -195,3 +195,35 @@ test('the fields query source hydrates the current field values with provenance,
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('#116: a fan-out pass stamps ONE shared spanId + the material chunk ids + usage on every value', async () => {
+  const invoke = async (): Promise<LlmResult> => ({
+    text: 'answer',
+    endpoint: 'fake-fast',
+    model: 'tiny-1b',
+    slot: 'llm',
+    usage: { estimated: false, promptTokens: 42, completionTokens: 7, totalTokens: 49 },
+  })
+  const { store, scheduler, dir } = await harness(invoke)
+  try {
+    const produced = await scheduler.runFields([richChunk()])
+    assert.equal(produced.length, 3)
+    const spanId = produced[0]!.spanId
+    assert.ok(spanId !== undefined && spanId.length > 0, 'the pass correlation id is stamped')
+    for (const value of produced) {
+      assert.equal(value.spanId, spanId, 'every value of the same fan-out pass shares the spanId')
+      assert.deepEqual(value.provenance.sourceChunks, ['c-0'], 'the material chunk ids are the parent link')
+      assert.equal(value.provenance.usage?.promptTokens, 42, 'the invoke usage rides onto provenance')
+    }
+    // The persisted latest value carries all of it too (the ledger/trace read this).
+    const stored = new FieldValueStore(store).list(WS, SESS)
+    assert.equal(stored.length, 3)
+    for (const value of stored) {
+      assert.equal(value.spanId, spanId)
+      assert.deepEqual(value.provenance.sourceChunks, ['c-0'])
+    }
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

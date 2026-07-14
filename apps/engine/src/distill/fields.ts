@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { CaptureChunk, FieldValue, Mode, PromptTemplate, VoiceBinding } from '@openinfo/contracts'
 import { FIELD_VALUE_SCHEMA_VERSION } from '@openinfo/contracts'
 import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
@@ -52,6 +53,8 @@ export interface FastFieldSchedulerDeps {
   /** manages `local` endpoints' spawned runtimes (tier zero); optional. */
   runtimeManager?: LocalRuntimeManager
   now?: () => Date
+  /** id minter for the per-pass correlation id (#116); injected only for deterministic tests. */
+  newId?: () => string
   log?: (message: string) => void
 }
 
@@ -79,6 +82,7 @@ export class FastFieldScheduler {
   private readonly publish: ((v: FieldValue) => void | Promise<void>) | undefined
   private readonly invoke: LlmInvoke
   private readonly now: () => Date
+  private readonly newId: () => string
   private readonly log: (message: string) => void
 
   constructor(deps: FastFieldSchedulerDeps) {
@@ -89,6 +93,7 @@ export class FastFieldScheduler {
     this.values = deps.values
     this.publish = deps.publish
     this.now = deps.now ?? (() => new Date())
+    this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
     const resolveKey = deps.resolveKey
     const runtimeManager = deps.runtimeManager
@@ -161,9 +166,14 @@ export class FastFieldScheduler {
       // Fan out CONCURRENTLY — N triggered prompts → N concurrent llm invokes. A per-field failure is
       // caught below so it never rejects the whole batch (Promise.all short-circuits on reject; each
       // runOne resolves to a FieldValue or undefined instead of throwing).
+      // #116: ONE correlation id per (session, batch) fan-out pass, shared by every value it produces, and
+      // the batch's chunk ids as the deterministic parent link (the same ids sit in Distillate.sourceChunks
+      // and SttSegment.chunkId) — so a field value is traceable to its material, not just fuzzily by time.
+      const spanId = this.newId()
+      const sourceChunks = sessionChunks.map((chunk) => chunk.id)
       const vars = { ...compileVoiceVars(resolved.dials), transcript: recent, windowStart, windowEnd }
       const results = await Promise.all(
-        triggered.map((tpl) => this.runOne(tpl, { workspaceId, sessionId, vars, windowStart, windowEnd })),
+        triggered.map((tpl) => this.runOne(tpl, { workspaceId, sessionId, vars, windowStart, windowEnd, spanId, sourceChunks })),
       )
       for (const value of results) if (value !== undefined) produced.push(value)
       this.log(`fast-fields: ${produced.length} field(s) updated for session ${sessionId} (${triggered.length} triggered)`)
@@ -174,7 +184,7 @@ export class FastFieldScheduler {
   /** Run one fast-field prompt: interpolate → invoke → persist latest + publish. Undefined on invoke failure. */
   private async runOne(
     template: PromptTemplate,
-    ctx: { workspaceId: string; sessionId: string; vars: Record<string, string>; windowStart: string; windowEnd: string },
+    ctx: { workspaceId: string; sessionId: string; vars: Record<string, string>; windowStart: string; windowEnd: string; spanId: string; sourceChunks: string[] },
   ): Promise<FieldValue | undefined> {
     const binding = template.field!
     const prompt = interpolateTemplate(template.body, ctx.vars)
@@ -195,6 +205,7 @@ export class FastFieldScheduler {
       label: template.name,
       value: result.text.trim(),
       state: 'provisional',
+      spanId: ctx.spanId,
       provenance: {
         templateId: template.id,
         slot: result.slot,
@@ -202,6 +213,10 @@ export class FastFieldScheduler {
         ...(result.model !== undefined ? { model: result.model } : {}),
         windowStart: ctx.windowStart,
         windowEnd: ctx.windowEnd,
+        // #116: the material window's chunk ids — the deterministic parent link a trace walks.
+        sourceChunks: ctx.sourceChunks,
+        // #65/#116: the invoke's token accounting, when recorded — the field hop's consumption.
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
       },
       updatedAt: this.now().toISOString(),
       schemaVersion: FIELD_VALUE_SCHEMA_VERSION,

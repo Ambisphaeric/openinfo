@@ -186,6 +186,24 @@ body.settings{padding:0;background:
   background:var(--surface-2,transparent);color:var(--ink-2);cursor:pointer}
 .ldg-held-act:hover{border-color:var(--ink-2);color:var(--ink)}
 .ldg-held-act.deny:hover{border-color:var(--warn);color:var(--warn)}
+/* ---------- Trace (#116) ---------- */
+.trc-input{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;padding:8px 10px;margin:0 -10px;
+  border-radius:8px;text-decoration:none;color:inherit;border-top:1px solid var(--line-soft);font-size:13px}
+.trc-input:first-of-type{border-top:0}
+.trc-input:hover{background:color-mix(in srgb,var(--accent) 6%,transparent)}
+.trc-input.sel{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.trc-input-label{color:var(--ink);flex:1 1 220px;min-width:180px}
+.trc-trail{margin-top:14px}
+.trc-hop{position:relative;padding:10px 0 12px 22px;border-left:2px solid var(--line-soft);margin-left:6px}
+.trc-hop::before{content:'';position:absolute;left:-6px;top:16px;width:10px;height:10px;border-radius:50%;
+  background:var(--surface,#fff);border:2px solid var(--accent)}
+.trc-hop.trc-held::before{border-color:var(--warn)}
+.trc-hop:last-child{border-left-color:transparent}
+.trc-root{padding-top:2px}
+.trc-title{font-size:13.5px;color:var(--ink);font-weight:600}
+.trc-body{margin-top:4px;font-size:13px;color:var(--ink-2);line-height:1.5;max-width:72ch}
+.trc-meta{margin-top:4px}
+.trc-verdicts{margin-top:5px;display:flex;gap:14px;align-items:baseline}
 @media (max-width:720px){
   .app{grid-template-columns:1fr}
   .sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line-soft)}

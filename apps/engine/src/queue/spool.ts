@@ -101,6 +101,8 @@ export class CaptureQueue {
   // justification as drainedFiles/lastFailure. Surfaced on QueueStatus.shedFiles once > 0.
   private shedFiles = 0
   private draining = false
+  /** true once stop() was called — the queue is shutting down; drains no-op and exit early. */
+  private stopped = false
   // Operational status, NOT a document (justification, per the slice brief): the last drain failure and
   // last drain success are ephemeral runtime facts about THIS engine process — they carry no user intent,
   // are recomputed every run, and have no version history worth keeping. So they live in memory on the
@@ -186,13 +188,25 @@ export class CaptureQueue {
   }
 
   scheduleDrain(logger: (line: string) => void = console.log): void {
-    if (this.draining) return
+    if (this.stopped || this.draining) return
     this.draining = true
     setImmediate(() => {
       void this.drain(logger).finally(() => {
         this.draining = false
       })
     })
+  }
+
+  /**
+   * Stop this queue for shutdown: no new drain can start, and any in-flight drain is awaited (it exits at
+   * its next file boundary). The engine's close() calls this BEFORE closing the store — a drain scheduled
+   * via setImmediate could otherwise fire after the DB handle is gone and die on "connection is not open"
+   * (the teardown race behind the known mid-sequence test flake). Spooled files are untouched: whatever is
+   * still pending stays durable on disk for the next launch.
+   */
+  async stop(): Promise<void> {
+    this.stopped = true
+    while (this.draining) await new Promise((resolve) => setTimeout(resolve, 5))
   }
 
   /**
@@ -227,6 +241,7 @@ export class CaptureQueue {
       // stops the loop: the failed file is re-queued for retry-at-idle, so re-looping would spin on a
       // persistent failure (the original single-pass semantics, preserved for the failing case).
       for (;;) {
+        if (this.stopped) return // shutting down — exit at a pass boundary; pending files stay durable
         // Freshness-first ordering (#70): order pending files by last-activity time, not by sessionId. A
         // LIVE session drains newest-first (render the present; the stale past backfills at idle or sheds);
         // idle drains oldest-first (FIFO the backlog while nothing new arrives). Recomputed each pass so a
@@ -238,6 +253,7 @@ export class CaptureQueue {
         const now = Date.now()
         let sawFailure = false
         for (const { file, mtimeMs } of passFiles) {
+          if (this.stopped) return // shutting down — the un-drained remainder stays spooled for next launch
           const pending = join(this.queueDir, file)
           // Age-shed BEFORE processing: a file older than the freshness horizon is DROPPED, never processed
           // and never re-queued (that is the whole point — a live session must not wait behind it). Claim it

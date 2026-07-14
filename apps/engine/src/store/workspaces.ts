@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
+import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
 import { ChatTurn as ChatTurnSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
@@ -224,6 +224,33 @@ export class WorkspaceRegistry {
       JSON.stringify(result),
     )
     return result
+  }
+
+  /**
+   * Persist one transcribed segment's STT provenance (#116) to its workspace's OWN sqlite file. Mirrors
+   * saveDistillate exactly — session-scoped, workspace created on demand, idempotent per id. The record
+   * carries chunk id / endpoint / timing, never the transcript text (raw transcript stays ephemeral; the
+   * durable text stream is the Distillate). Only this path writes SttSegments (DB-handle hard rule).
+   */
+  saveSttSegment(segment: SttSegment): SttSegment {
+    this.ensureWorkspace({ id: segment.workspaceId, name: segment.workspaceId })
+    const db = this.openWorkspace(segment.workspaceId)
+    db.prepare('insert or replace into stt_segments (id, session_id, created_at, body) values (?, ?, ?, ?)').run(
+      segment.id,
+      segment.sessionId,
+      segment.createdAt,
+      JSON.stringify(segment),
+    )
+    return segment
+  }
+
+  /** List a workspace's STT segments (default all), oldest first; `sessionId` narrows to one session. */
+  listSttSegments(workspaceId: string, sessionId?: string): SttSegment[] {
+    const db = this.openWorkspace(workspaceId)
+    const rows = sessionId
+      ? (db.prepare('select body from stt_segments where session_id = ? order by created_at').all(sessionId) as { body: string }[])
+      : (db.prepare('select body from stt_segments order by created_at').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as SttSegment)
   }
 
   /** List a workspace's OcrResults (default all), oldest first; `sessionId` narrows to one session. */
@@ -677,6 +704,7 @@ export class WorkspaceRegistry {
     const moments = this.listMoments(fromWorkspaceId, sessionId)
     const drafts = this.listDrafts(fromWorkspaceId, sessionId)
     const ocrResults = this.listOcrResults(fromWorkspaceId, sessionId)
+    const sttSegments = this.listSttSegments(fromWorkspaceId, sessionId)
     const movedDistillateIds = new Set(distillates.map((d) => d.id))
     const movedMomentIds = new Set(moments.map((m) => m.id))
 
@@ -723,6 +751,10 @@ export class WorkspaceRegistry {
         const moved: OcrResult = { ...result, workspaceId: toWorkspaceId }
         toDb.prepare('insert or replace into ocr_results (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
       }
+      for (const segment of sttSegments) {
+        const moved: SttSegment = { ...segment, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into stt_segments (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
+      }
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
@@ -736,6 +768,7 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from distillates where session_id = ?').run(sessionId)
       fromDb.prepare('delete from drafts where session_id = ?').run(sessionId)
       fromDb.prepare('delete from ocr_results where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from stt_segments where session_id = ?').run(sessionId)
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
@@ -1097,6 +1130,12 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists pins (id text primary key, kind text not null, created_at text not null, body text not null)',
+    ).run()
+    // #116: per-transcribed-segment STT provenance — the root a pipeline trace walks from (closes the
+    // disclosed #65 gap: STT invokes persisted no provenance row). Additive `create table if not exists`
+    // in the per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
+    db.prepare(
+      'create table if not exists stt_segments (id text primary key, session_id text not null, created_at text not null, body text not null)',
     ).run()
     db.prepare(
       'create table if not exists pin_chunks (id text primary key, pin_id text not null, ordinal integer not null, page integer, body text not null)',

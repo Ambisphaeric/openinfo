@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { CaptureChunk, Endpoint, Fabric, FieldValue, JudgeReview, PromptTemplate, SessionAnnotation } from '@openinfo/contracts'
 import { SESSION_ANNOTATION_SCHEMA_VERSION } from '@openinfo/contracts'
 import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
@@ -96,6 +97,8 @@ export interface JudgeSchedulerDeps {
   /** the judge endpoint name; defaults to OPENINFO_JUDGE_ENDPOINT or JUDGE_ENDPOINT_NAME. */
   endpointName?: string
   now?: () => Date
+  /** id minter for the per-pass correlation id (#116); injected only for deterministic tests. */
+  newId?: () => string
   log?: (message: string) => void
 }
 
@@ -129,6 +132,7 @@ export class JudgeScheduler {
   private readonly invoke: LlmInvoke
   private readonly endpointName: string
   private readonly now: () => Date
+  private readonly newId: () => string
   private readonly log: (message: string) => void
 
   constructor(deps: JudgeSchedulerDeps) {
@@ -141,6 +145,7 @@ export class JudgeScheduler {
     this.orientationDisposition = deps.orientationDisposition ?? 'annotate'
     this.endpointName = deps.endpointName ?? process.env['OPENINFO_JUDGE_ENDPOINT'] ?? JUDGE_ENDPOINT_NAME
     this.now = deps.now ?? (() => new Date())
+    this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
     const resolveKey = deps.resolveKey
     const runtimeManager = deps.runtimeManager
@@ -200,6 +205,8 @@ export class JudgeScheduler {
     const produced: FieldValue[] = []
     for (const [sessionId, sessionChunks] of groupBySession(text)) {
       const workspaceId = sessionChunks[0]!.workspaceId
+      // #116: ONE correlation id per (session, batch) judge pass — every review it stamps shares it.
+      const spanId = this.newId()
       // The SAME source shape the fast tier saw: physical-lane-labeled recent transcript window, tail-capped.
       const full = sessionChunks
         .map((chunk) => {
@@ -226,6 +233,7 @@ export class JudgeScheduler {
           windowEnd,
           sessionValues,
           fastFieldIds,
+          spanId,
         })
         produced.push(...overruled)
       }
@@ -245,6 +253,7 @@ export class JudgeScheduler {
       windowEnd: string
       sessionValues: FieldValue[]
       fastFieldIds: string[]
+      spanId: string
     },
   ): Promise<FieldValue[]> {
     const binding = template.field!
@@ -283,6 +292,9 @@ export class JudgeScheduler {
         verdict: verdict.verdict,
         priorState: current.state,
         judgedAt,
+        // #116: the judge pass's correlation id; #65: the judge invoke's token accounting when recorded.
+        spanId: ctx.spanId,
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
       }
       let value = current.value
       if (verdict.verdict === 'correct') {

@@ -1,8 +1,21 @@
-import type { CaptureChunk, CaptureSource, TranscriptUpdate } from '@openinfo/contracts'
+import type { CaptureChunk, CaptureSource, EgressDecision, TranscriptUpdate } from '@openinfo/contracts'
 import { dropSilentSegments, DEFAULT_NO_SPEECH_THRESHOLD, type SttAudio, type SttOptions, type SttResult } from '../fabric/index.js'
 
 /** Injected stt invoker (defaults to the fabric stt slot in the wiring; tests pass a fake). */
 export type SttInvoke = (audio: SttAudio, opts?: SttOptions) => Promise<SttResult>
+
+/**
+ * The provenance of ONE transcription invoke (#116), handed to `onTranscribed` alongside the text so the
+ * wiring can persist a per-segment SttSegment record — which endpoint answered, the model when the
+ * endpoint names one, the measured wall-clock duration, and the egress decision when consent rode the
+ * invoke. Endpoint NAMES only, never a url/secret.
+ */
+export interface SttInvokeMeta {
+  endpoint: string
+  model?: string
+  durationMs: number
+  egress?: EgressDecision
+}
 
 export interface TranscribeDeps {
   invoke: SttInvoke
@@ -14,9 +27,10 @@ export interface TranscribeDeps {
    * Fired per successfully-transcribed AUDIO chunk (silence and non-audio passthrough never fire). The
    * ORIGINAL chunk (its sessionId/source/capturedAt) plus the transcript text — the transcript fast-path
    * hook (#58). transcribeChunks stays pure of the bus; the wiring aggregates these into TranscriptUpdate
-   * events. Never throws into the transcribe loop (the wiring keeps it side-effect-only).
+   * events. Never throws into the transcribe loop (the wiring keeps it side-effect-only). `stt` (#116)
+   * carries the invoke's provenance so the wiring can persist the per-segment STT record.
    */
-  onTranscribed?: (chunk: CaptureChunk, text: string, processedAt: string) => void
+  onTranscribed?: (chunk: CaptureChunk, text: string, processedAt: string, stt: SttInvokeMeta) => void
   /**
    * No-speech probability (0..1) at/above which a whisper-class segment is dropped as silence before it
    * can enter the distill accumulator (#69). Defaults to DEFAULT_NO_SPEECH_THRESHOLD (0.8). Configurable
@@ -73,10 +87,19 @@ export const transcribeChunks = async (chunks: readonly CaptureChunk[], deps: Tr
       out.push(chunk)
       continue
     }
+    const invokeStarted = Date.now()
     const result = await deps.invoke(
       { base64: chunk.data, contentType: chunk.contentType },
       deps.language !== undefined ? { language: deps.language } : {},
     )
+    // #116: the measured wall-clock invoke duration + the answering endpoint, carried to onTranscribed so
+    // the wiring can persist per-segment STT provenance (a measurement, never a guess from capturedAt).
+    const sttMeta: SttInvokeMeta = {
+      endpoint: result.endpoint,
+      durationMs: Date.now() - invokeStarted,
+      ...(result.model !== undefined ? { model: result.model } : {}),
+      ...(result.egress !== undefined ? { egress: result.egress } : {}),
+    }
     // Silence filter (#69): drop no-speech/hallucinated segments BEFORE the text enters the accumulator.
     // For whisper-class flavors this reads each segment's no_speech_prob; for flavors with no such signal
     // it only drops empty/whitespace segments (and plain {text} responses pass through). `text` is the
@@ -107,7 +130,7 @@ export const transcribeChunks = async (chunks: readonly CaptureChunk[], deps: Tr
     // before the transcript outcome leaves this stage. The caller threads this value into the public
     // TranscriptUpdate; it must never guess a processing time from capturedAt.
     const processedAt = (deps.now ?? (() => new Date().toISOString()))()
-    deps.onTranscribed?.(chunk, text, processedAt)
+    deps.onTranscribed?.(chunk, text, processedAt, sttMeta)
     log(`transcribe: ${chunk.source} chunk ${chunk.id} → ${text.length} chars via ${result.endpoint}`)
   }
   return out

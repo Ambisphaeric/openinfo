@@ -156,12 +156,19 @@ export class Distiller {
    * closed — nothing leaked). The subsequent moment/entity calls in the same window inherit this verdict
    * (same transcript + policy), so a strict hold on the summary suspends the whole window before them.
    */
-  private async recordHold(err: GuardHeldError, ctx: { sessionId: string; workspaceId: string; stage: string; windowStart: string; windowEnd: string }): Promise<void> {
+  private async recordHold(
+    err: GuardHeldError,
+    ctx: { sessionId: string; workspaceId: string; stage: string; windowStart: string; windowEnd: string; spanId: string; sourceChunks: string[] },
+  ): Promise<void> {
     const hold: GuardHold = {
       id: this.newId(),
       workspaceId: ctx.workspaceId,
       sessionId: ctx.sessionId,
       stage: ctx.stage,
+      // #116: a held window produced no distillate, so the hold itself carries the pass's correlation id
+      // and the window's chunk ids — the trail from an input still reaches the verdict (ids, never content).
+      spanId: ctx.spanId,
+      sourceChunks: ctx.sourceChunks,
       verdict: err.verdict,
       status: 'held',
       createdAt: this.now().toISOString(),
@@ -202,6 +209,9 @@ export class Distiller {
       const windows = bucketIntoWindows(sessionChunks, mode.distill.mergeWindow)
       for (const window of windows) {
         const workspaceId = window.chunks[0]!.workspaceId
+        // #116: ONE correlation id per window pass — the distillate, its moments, its entity mentions, and
+        // a guard hold (if the window is suspended) all share it, so the audit trail joins them exactly.
+        const spanId = this.newId()
         const resolved = resolveVoice(registers, bindings, { sessionId, workspaceId, modeId: mode.id })
         // Resolve layered egress consent (#64) for THIS window's transcript content. A distill window is
         // transcript-class content (mic/system audio), which MAY egress — unless the prompt is declared
@@ -254,7 +264,15 @@ export class Distiller {
           result = await egressInvoke(messages, { maxTokens: mode.distill.tokenBudget })
         } catch (err) {
           if (err instanceof GuardHeldError) {
-            await this.recordHold(err, { sessionId, workspaceId, stage: 'distill', windowStart: window.start, windowEnd: window.end })
+            await this.recordHold(err, {
+              sessionId,
+              workspaceId,
+              stage: 'distill',
+              windowStart: window.start,
+              windowEnd: window.end,
+              spanId,
+              sourceChunks: window.chunks.map((chunk) => chunk.id),
+            })
             continue
           }
           throw err
@@ -267,6 +285,7 @@ export class Distiller {
           windowStart: window.start,
           windowEnd: window.end,
           sourceChunks: window.chunks.map((chunk) => chunk.id),
+          spanId,
           text: result.text.trim(),
           voice: {
             scope: resolved.scope,
@@ -318,6 +337,7 @@ export class Distiller {
             source: window.chunks[0]!.source,
             dials: resolved.dials,
             distillateId: distillate.id,
+            spanId,
             endpoint: result.endpoint,
             slot: 'llm',
             ...(result.model !== undefined ? { model: result.model } : {}),
@@ -348,6 +368,7 @@ export class Distiller {
             distillateId: distillate.id,
             windowStart: window.start,
             windowEnd: window.end,
+            spanId,
             slot: 'llm',
             endpoint: result.endpoint,
             ...(result.model !== undefined ? { model: result.model } : {}),

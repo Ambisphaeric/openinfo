@@ -392,11 +392,15 @@ export class ScreenOcrProcessor {
     // blocks from a later retry whose text/model may differ from the committed recognition.
     const blocks = existing.distillate === undefined ? result.blocks : undefined
 
+    // #116: ONE correlation id per screen pass, shared by the OcrResult and its mirror Distillate so the
+    // pair reads as one pass. On a repair/replay the surviving half's spanId wins (never re-minted apart).
+    const spanId = existing.ocr?.spanId ?? existing.distillate?.spanId ?? this.newId()
     const ocr: OcrResult = existing.ocr ?? {
       id: this.newId(),
       sessionId: chunk.sessionId,
       workspaceId: chunk.workspaceId,
       sourceChunks: [chunk.id],
+      spanId,
       text,
       ...(blocks !== undefined ? { blocks } : {}),
       provenance,
@@ -414,6 +418,7 @@ export class ScreenOcrProcessor {
         windowStart: capturedAt,
         windowEnd: capturedAt,
         sourceChunks: [chunk.id],
+        spanId,
         text: text.trim(),
         voice: { scope: 'global', dials: NEUTRAL_DIALS },
         provenance,

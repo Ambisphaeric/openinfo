@@ -247,3 +247,131 @@ test('renderLedger: device-local, explicitly trusted LAN, and hosted/public are 
   assert.match(html, /<span class="n">2<\/span> device-boundary hops/)
   assert.doesNotMatch(html, /<span class="n">0<\/span> device-boundary hops/)
 })
+
+// ---------------------------------------------------------------- #116 multi-hop trails
+
+const fieldValue = (over: Partial<import('@openinfo/contracts').FieldValue> & { id: string; updatedAt: string }): import('@openinfo/contracts').FieldValue => ({
+  fieldId: 'field-topic',
+  workspaceId: 'default',
+  sessionId: 'ses-1',
+  label: 'Topic',
+  value: 'Q3 launch',
+  state: 'provisional',
+  provenance: { templateId: 'tpl-topic', slot: 'llm', endpoint: 'llm.fast', model: 'tiny-1b' },
+  schemaVersion: 1,
+  ...over,
+})
+
+test('#116 buildLedger: moments join their window pass as ONE aggregated hop (spanId, else distillateId)', () => {
+  const moment = (id: string, spanId?: string, distillateId?: string): import('@openinfo/contracts').Moment => ({
+    id,
+    sessionId: 'ses-1',
+    workspaceId: 'default',
+    at: '2026-07-10T10:00:01Z',
+    kind: 'commitment',
+    text: 'ship Thursday',
+    refs: [],
+    source: 'mic',
+    confidence: 0.8,
+    ...(spanId !== undefined ? { spanId } : {}),
+    provenance: { ...(distillateId !== undefined ? { distillateId } : {}), slot: 'llm', endpoint: 'llm.fast', model: 'tiny-1b' },
+  })
+  const passes = buildLedger(
+    [distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z', spanId: 'span-a' })],
+    [],
+    { moments: [moment('m1', 'span-a'), moment('m2', 'span-a'), moment('m-other', 'span-z')] },
+  )
+  assert.equal(passes.length, 1)
+  assert.equal(passes[0]!.spanId, 'span-a')
+  assert.equal(passes[0]!.hops.length, 2, 'distill hop + one aggregated moments hop')
+  const momentsHop = passes[0]!.hops[1]!
+  assert.equal(momentsHop.stage, 'moments')
+  assert.equal(momentsHop.detail, '2 moments')
+  assert.equal(momentsHop.endpoint, 'llm.fast')
+
+  // Pre-#116 records (no spanId anywhere) still join via the distillateId parent link.
+  const legacy = buildLedger(
+    [distillate({ id: 'd2', createdAt: '2026-07-10T10:05:00Z' })],
+    [],
+    { moments: [moment('m3', undefined, 'd2')] },
+  )
+  assert.equal(legacy[0]!.hops.length, 2)
+  assert.equal(legacy[0]!.hops[1]!.detail, '1 moment')
+})
+
+test('#116 buildLedger: a field value is a pass whose trail gains a judge hop once reviewed', () => {
+  const reviewed = fieldValue({
+    id: 'fv-1',
+    updatedAt: '2026-07-10T10:01:00Z',
+    spanId: 'span-f',
+    state: 'corrected',
+    provenance: {
+      templateId: 'tpl-topic',
+      slot: 'llm',
+      endpoint: 'llm.fast',
+      model: 'tiny-1b',
+      usage: { estimated: false, promptTokens: 42, completionTokens: 7 },
+      judge: {
+        templateId: 'tpl-judge-default',
+        endpoint: 'llm.judge',
+        model: 'big-32b',
+        verdict: 'correct',
+        priorValue: 'planning',
+        judgedAt: '2026-07-10T10:01:00Z',
+        usage: { estimated: false, promptTokens: 300, completionTokens: 40 },
+      },
+    },
+  })
+  const passes = buildLedger([], [], { fieldValues: [reviewed] })
+  assert.equal(passes.length, 1)
+  assert.equal(passes[0]!.spanId, 'span-f')
+  assert.deepEqual(passes[0]!.hops.map((h) => h.stage), ['field', 'judge'], 'the dual-input chain is ONE trail')
+  assert.equal(passes[0]!.hops[0]!.detail, 'Topic · corrected')
+  assert.equal(passes[0]!.hops[0]!.usage?.promptTokens, 42)
+  assert.equal(passes[0]!.hops[1]!.endpoint, 'llm.judge')
+  assert.equal(passes[0]!.hops[1]!.detail, 'correct')
+  assert.equal(passes[0]!.hops[1]!.usage?.promptTokens, 300)
+
+  // Unreviewed ⇒ a single field hop, no fabricated judge hop.
+  const unreviewed = buildLedger([], [], { fieldValues: [fieldValue({ id: 'fv-2', updatedAt: '2026-07-10T10:02:00Z' })] })
+  assert.deepEqual(unreviewed[0]!.hops.map((h) => h.stage), ['field'])
+})
+
+test('#116 buildLedger: a guard hold is a held pass naming the guard endpoint and NO model endpoint', () => {
+  const hold: import('@openinfo/contracts').GuardHold = {
+    id: 'hold-1',
+    workspaceId: 'default',
+    sessionId: 'ses-1',
+    stage: 'distill',
+    spanId: 'span-h',
+    sourceChunks: ['c9'],
+    verdict: { behavior: 'hold-and-surface', outcome: 'held', guarded: true, maskedSpanCount: 1, spans: [{ kind: 'card-number', start: 0, length: 16 }], guardEndpoint: 'guard-local', reason: 'the egress guard flagged 1 span(s); strict mode suspended the hop for review' },
+    status: 'held',
+    createdAt: '2026-07-10T10:03:00Z',
+  }
+  const passes = buildLedger([], [], { guardHolds: [hold] })
+  assert.equal(passes.length, 1)
+  const hop = passes[0]!.hops[0]!
+  assert.equal(hop.stage, 'held')
+  assert.equal(hop.slot, 'guard')
+  assert.equal(hop.endpoint, 'guard-local', 'the guard endpoint that classified is named')
+  assert.equal(hop.guard?.outcome, 'held')
+
+  const html = renderLedger(withLedger(passes))
+  assert.match(html, />held</, 'the guard column renders the held outcome')
+
+  // A fail-closed EMPTY-slot hold reached no endpoint at all — the cell says so instead of blanking.
+  const noGuard: import('@openinfo/contracts').GuardHold = {
+    ...hold,
+    id: 'hold-2',
+    verdict: { behavior: 'redact-and-continue', outcome: 'held', guarded: false, maskedSpanCount: 0, reason: 'no guard endpoint is configured and unguarded egress is not acknowledged — the hop holds' },
+  }
+  const html2 = renderLedger(withLedger(buildLedger([], [], { guardHolds: [noGuard] })))
+  assert.match(html2, /held before send/, 'no fabricated endpoint for a hop that never reached one')
+})
+
+test('#116 buildLedger: without extras the flat behavior is unchanged (the "all passes" view keeps working)', () => {
+  const passes = buildLedger([distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z' })], [ocr({ id: 'o1', createdAt: '2026-07-10T11:00:00Z' })])
+  assert.deepEqual(passes.map((p) => p.id), ['o1', 'd1'])
+  assert.deepEqual(passes.flatMap((p) => p.hops.map((h) => h.stage)), ['screen', 'distill'])
+})

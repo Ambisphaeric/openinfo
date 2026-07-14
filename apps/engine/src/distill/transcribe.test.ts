@@ -302,3 +302,16 @@ test('e2e: flag off (no transcribe stage) = current behavior — audio dropped b
     await stopServer(llm.server)
   }
 })
+
+test('#116: onTranscribed carries the invoke provenance (endpoint/model + a measured duration)', async () => {
+  const seen: { id: string; endpoint: string; model?: string; durationMs: number }[] = []
+  await transcribeChunks([audioChunk('prov-1', 'mic', 0)], {
+    invoke: async () => ({ text: 'ship Thursday', endpoint: 'whisper-box', model: 'whisper-large-v3', slot: 'stt' }),
+    onTranscribed: (chunk, _text, _at, stt) => seen.push({ id: chunk.id, endpoint: stt.endpoint, ...(stt.model !== undefined ? { model: stt.model } : {}), durationMs: stt.durationMs }),
+  })
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0]!.id, 'prov-1')
+  assert.equal(seen[0]!.endpoint, 'whisper-box')
+  assert.equal(seen[0]!.model, 'whisper-large-v3')
+  assert.ok(Number.isInteger(seen[0]!.durationMs) && seen[0]!.durationMs >= 0, 'a real measured duration, never a guess')
+})
