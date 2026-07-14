@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CaptureChunk, ScreenCaptureObservation, SenseLaneSnapshot, Session } from '@openinfo/contracts'
+import type { CaptureChunk, Flag, ScreenCaptureObservation, SenseLaneSnapshot, Session } from '@openinfo/contracts'
+import { FabricDocuments } from '../fabric/index.js'
 import {
   createSecureTestEngineApp,
   secureTestFetch as fetch,
@@ -29,6 +30,18 @@ const eventually = async (assertion: () => void, timeoutMs = 2_000): Promise<voi
 test('screen observation POST is authenticated, closed, idempotent, and emits only safe live-lane metadata', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-screen-observations-'))
   const app = createSecureTestEngineApp({ dataRoot: dir, log: () => undefined })
+  // #192: lane health reflects the REAL screen gate chain, so this fixture opens it honestly (flag on +
+  // an occupied ocr slot, refreshed through the same flag.changed seam a Settings edit publishes) — the
+  // assertions below are about observation truth, not gate truth.
+  const screenFlag: Flag = { key: 'screen.ocr', default: true, scope: 'engine', description: 'observation test gate' }
+  app.store.layouts.put('flag', screenFlag.key, screenFlag)
+  new FabricDocuments(app.store).save({
+    slots: {
+      stt: [], tts: [], llm: [], vlm: [], embed: [],
+      ocr: [{ kind: 'http', name: 'test-ocr', url: 'http://127.0.0.1:1', api: 'paddle-serving' }],
+    },
+  })
+  await app.bus.publish('flag.changed', screenFlag)
   await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve))
   const address = app.server.address()
   assert.ok(address && typeof address === 'object')

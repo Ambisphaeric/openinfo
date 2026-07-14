@@ -15,6 +15,17 @@ import type {
 /** Canonical HUD order. This is deliberately narrower than CaptureSource. */
 export const PHYSICAL_SENSE_SOURCES = ['mic', 'system-audio', 'screen'] as const satisfies readonly PhysicalSenseSource[]
 
+/**
+ * The two gate-derived blockers a lane can carry (#192). `disabled` = a feature toggle the user can flip
+ * back on; `configuration-blocked` = required configuration is missing (an empty slot, a missing workflow
+ * screen step/document). Deliberately a closed subset of SenseLaneReason: `permission-denied` is NOT a
+ * gate overlay — it arrives as client-observed capture truth through recordScreenCaptureObservation.
+ */
+export type SenseLaneGateReason = 'disabled' | 'configuration-blocked'
+
+/** Engine-global gate verdict per physical lane: absent = that lane's engine-side gates are all open. */
+export type SenseLaneGateState = Partial<Record<PhysicalSenseSource, SenseLaneGateReason>>
+
 export interface SenseLaneTrackerOptions {
   now?: () => Date
 }
@@ -96,7 +107,9 @@ const makeLane = (
 /**
  * Process-local, metadata-only live read model for the three physical senses. It retains capture ids,
  * source timestamps, completion timestamps, and fixed-basis lag only. Captured bytes/text, OCR output,
- * endpoint provenance, and arbitrary errors never enter this object.
+ * endpoint provenance, and arbitrary errors never enter this object. #192: real gate verdicts overlay the
+ * projection per source (applyGates), so an off lane names its true blocker — disabled or
+ * configuration-blocked — instead of reading idle, and reopening the gate restores truth without restart.
  */
 export class SenseLaneTracker {
   private readonly now: () => Date
@@ -105,6 +118,13 @@ export class SenseLaneTracker {
   /** Retained after end so a delayed older session.started can never reactivate stale capture. */
   private readonly startWatermarkByWorkspace = new Map<string, number>()
   private readonly coldByWorkspace = new Map<string, Record<PhysicalSenseSource, SenseLaneSnapshot>>()
+  /**
+   * The engine-global gate overlay (#192): flags/fabric/workflow gates are engine-wide, so one verdict per
+   * physical source. It is applied at PROJECTION time over an untouched underlying reducer state, so
+   * reopening a gate restores the lane's exact prior truth without restart, and gate churn can never
+   * corrupt capture/processing evidence or ordering.
+   */
+  private gates: SenseLaneGateState = {}
 
   constructor(options: SenseLaneTrackerOptions = {}) {
     this.now = options.now ?? (() => new Date())
@@ -132,13 +152,14 @@ export class SenseLaneTracker {
         screenObservationIds: new Set<string>(),
       }]),
     ) as Record<PhysicalSenseSource, LaneState>
-    this.sessions.set(key, { workspaceId: session.workspaceId, sessionId: session.id, startedAtMs, ended: false, lanes })
+    const state: SessionState = { workspaceId: session.workspaceId, sessionId: session.id, startedAtMs, ended: false, lanes }
+    this.sessions.set(key, state)
     this.currentByWorkspace.set(session.workspaceId, key)
     this.startWatermarkByWorkspace.set(
       session.workspaceId,
       Math.max(startedAtMs, this.startWatermarkByWorkspace.get(session.workspaceId) ?? -Infinity),
     )
-    return PHYSICAL_SENSE_SOURCES.map((source) => cloneLane(lanes[source].snapshot))
+    return PHYSICAL_SENSE_SOURCES.map((source) => this.projectLane(state, source))
   }
 
   /** End exactly the named session. Late capture/processing work is ignored and cannot reopen it. */
@@ -161,7 +182,8 @@ export class SenseLaneTracker {
         updatedAt,
       } as SenseLaneSnapshot
     }
-    return PHYSICAL_SENSE_SOURCES.map((source) => cloneLane(state.lanes[source].snapshot))
+    // Ended lanes are never gate-overlaid: with no live run the truthful blocker is the ended session.
+    return PHYSICAL_SENSE_SOURCES.map((source) => this.projectLane(state, source))
   }
 
   /** Record only physical media: audio/* for mic/system-audio and image/* for screen. */
@@ -202,7 +224,7 @@ export class SenseLaneTracker {
       } : {}),
       updatedAt: this.now().toISOString(),
     } as SenseLaneSnapshot
-    return cloneLane(lane.snapshot)
+    return this.projectLane(state, chunk.source as PhysicalSenseSource)
   }
 
   /**
@@ -232,7 +254,7 @@ export class SenseLaneTracker {
         reason: 'awaiting-processing',
         updatedAt: this.now().toISOString(),
       } as SenseLaneSnapshot
-      return cloneLane(lane.snapshot)
+      return this.projectLane(state, 'screen')
     }
 
     const occurredAtMs = timeMs(observation.occurredAt)
@@ -247,9 +269,14 @@ export class SenseLaneTracker {
     }
     lane.snapshot = {
       ...lane.snapshot,
+      // permission-denied is a structural blocker, not a transient capture fault: the OS refused this
+      // run's screen capture. It reads blocked with its true reason; the next accepted physical capture
+      // (permission granted again) restores queued truth through the ordinary advance rules.
       ...(observation.outcome === 'delta-skipped'
         ? { disposition: 'delta-skipped', health: 'healthy', reason: 'delta-skipped' }
-        : { disposition: 'failed', health: 'failed', reason: 'capture-failed' }),
+        : observation.outcome === 'permission-denied'
+          ? { disposition: 'failed', health: 'blocked', reason: 'permission-denied' }
+          : { disposition: 'failed', health: 'failed', reason: 'capture-failed' }),
       latestObservation: {
         id: observation.observationId,
         occurredAt: observation.occurredAt,
@@ -257,7 +284,7 @@ export class SenseLaneTracker {
       },
       updatedAt: this.now().toISOString(),
     } as SenseLaneSnapshot
-    return cloneLane(lane.snapshot)
+    return this.projectLane(state, 'screen')
   }
 
   /** Apply one exact, metadata-only screen processor result with retry-safe terminal ordering. */
@@ -313,6 +340,36 @@ export class SenseLaneTracker {
     return this.recordProcessing(state, lane, exact, capture, result.createdAt, 'processed')
   }
 
+  /**
+   * Update the engine-global gate overlay from real gate evaluation (#192). Returns the projected rows of
+   * every affected lane in currently-active sessions — exactly the rows a caller must publish. Idempotent:
+   * an unchanged verdict returns []. Only the two gate reasons are legal; anything else fails closed to
+   * "no gate block" so a widened caller can never invent a new public reason through this seam.
+   */
+  applyGates(next: SenseLaneGateState): SenseLaneSnapshot[] {
+    const sanitized: SenseLaneGateState = {}
+    for (const source of PHYSICAL_SENSE_SOURCES) {
+      const reason = next[source]
+      if (reason === 'disabled' || reason === 'configuration-blocked') sanitized[source] = reason
+    }
+    const changed = PHYSICAL_SENSE_SOURCES.filter((source) => this.gates[source] !== sanitized[source])
+    this.gates = sanitized
+    if (changed.length === 0) return []
+    const updatedAt = this.now().toISOString()
+    const rows: SenseLaneSnapshot[] = []
+    for (const key of this.currentByWorkspace.values()) {
+      const state = this.sessions.get(key)
+      if (!state || state.ended) continue
+      for (const source of changed) {
+        // The visible row genuinely changed, so its updatedAt advances; capture/processing evidence and
+        // the underlying disposition/health/reason truth are deliberately untouched.
+        state.lanes[source].snapshot = { ...state.lanes[source].snapshot, updatedAt } as SenseLaneSnapshot
+        rows.push(this.projectLane(state, source))
+      }
+    }
+    return rows
+  }
+
   /** Hydration snapshot: exactly mic, system-audio, screen, in that order. */
   snapshotSet(workspaceId: string, sessionId?: string): SenseLaneSnapshotSet {
     const key = sessionId ? keyFor(workspaceId, sessionId) : this.currentByWorkspace.get(workspaceId)
@@ -321,7 +378,7 @@ export class SenseLaneTracker {
       return {
         workspaceId,
         sessionId: state.sessionId,
-        lanes: PHYSICAL_SENSE_SOURCES.map((source) => cloneLane(state.lanes[source].snapshot)) as SenseLaneSnapshotSet['lanes'],
+        lanes: PHYSICAL_SENSE_SOURCES.map((source) => this.projectLane(state, source)) as SenseLaneSnapshotSet['lanes'],
       }
     }
     let cold = this.coldByWorkspace.get(workspaceId)
@@ -422,7 +479,18 @@ export class SenseLaneTracker {
       } : {}),
       updatedAt: this.now().toISOString(),
     } as SenseLaneSnapshot
-    return cloneLane(lane.snapshot)
+    return this.projectLane(state, lane.snapshot.source)
+  }
+
+  /**
+   * The one public projection: clone the lane, then overlay the engine-global gate verdict when the lane
+   * belongs to a live session. Only health/reason are masked — disposition, capture, and processing
+   * evidence stay the reducer's truth, so clearing the gate restores the exact underlying state.
+   */
+  private projectLane(state: SessionState, source: PhysicalSenseSource): SenseLaneSnapshot {
+    const clone = cloneLane(state.lanes[source].snapshot)
+    const gate = state.ended ? undefined : this.gates[source]
+    return gate === undefined ? clone : { ...clone, health: 'blocked', reason: gate } as SenseLaneSnapshot
   }
 
   private screenObservationAdvances(lane: LaneState, occurredAtMs: number): boolean {

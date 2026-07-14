@@ -5482,3 +5482,71 @@ honestly private-LAN endpoint document to loopback test servers, proving trusted
 LAN call; the same tests prove untrusted LAN, public, malformed, and wildcard targets are refused before
 fetch. The #175 live recipe now requires a real LAN vision endpoint and asserts persisted trusted-LAN
 provenance plus the absence of frame markers, URLs, and credentials from both records and its private report.
+
+## Slice: blocked and disabled lane health from real gate state  *(#192, 2026-07-14)*
+
+The sense-lane read model reserved health `blocked` and reasons `disabled`/`permission-denied`/
+`configuration-blocked`, but no producer emitted them: a lane that was actually off — feature toggle off,
+required configuration missing, OS capture permission refused — read as idle (`waiting`/`unknown`).
+Surfaced by the #174 close-out review.
+
+Real gate state now drives lane health through two producers, both inside the closed metadata contract:
+
+- **The gate overlay.** `senses/gates.ts` (`senseLaneGateState`) bridges the EXISTING per-sense gate chain
+  (`surfaces/settings/sense-gates.ts` `evaluateSenseGates` — the one evaluation of flags, live fabric
+  slots, and active-workflow screen ownership) into a closed per-source verdict: a blocking flag gate
+  reads `disabled`, a missing slot or workflow screen step/document reads `configuration-blocked`, and
+  `*-health` gates deliberately never overlay — the overlay stays a deterministic function of
+  configuration (no probe), while transient endpoint failures keep surfacing as the lane's own
+  failed/processing-failed truth and the queue's classified failure. `SenseLaneTracker.applyGates` holds
+  the engine-global overlay and applies it at PROJECTION time over an untouched underlying reducer: only
+  health/reason are masked, disposition and capture/processing evidence stay truth, so reopening a gate
+  restores the exact prior state without restart. Cold (no-session) and ended lanes are never
+  gate-relabeled, junk reasons fail closed to "clear", and the verdict is idempotent — only genuinely
+  changed lanes emit. The engine re-evaluates on `flag.changed`/`fabric.changed`/`workflow.updated` (the
+  hot-flip seams those documents already publish) and seeds the overlay at boot, so a session opening
+  under a closed gate is blocked from its first row.
+- **The permission report.** The client observation union's failed-attempt variant widens to
+  `grab-failed`/`permission-denied` (a closed literal with attempt correlation only — the refusing API and
+  error text stay in the client log). `CaptureController` gains an `onDenied` seam fired with the refused
+  run's exact session context (refused/thrown permission request, or a renderer mid-run denial; no run ⇒
+  no report), and the shell wires the screen controller to file one
+  `screenPermissionDeniedObservation` through the existing authenticated, never-spooled observation
+  transport. The tracker projects it as `failed`/`blocked`/`permission-denied` with exact attempt
+  provenance; the next accepted physical capture (permission granted again) restores queued truth through
+  the ordinary advance rules — recovery needs no restart and no special verb.
+
+Public lane rows remain metadata-only: no new field, no endpoint/content/error-string — the widened
+observation outcome is the only contract change, and the engine's WS egress revalidation plus the client's
+`sanitizeSenseLaneSnapshot` boundary both accept exactly the closed shape. Display copy follows hud-voice:
+a blocked lane's why-line leads with the true blocker in human words ("Turned off in Settings…", "This
+capture isn't allowed yet — grant access in System Settings", "No model is set up for this yet…"), never a
+flag key or closed code.
+
+Fixture honesty: two screen-pipeline regressions that simulate a working OCR path with injected invokers
+now open the real gates first (flag on + occupied ocr slot through the same `flag.changed` seam a Settings
+edit publishes), because their lanes previously read healthy only by accident of the gates not being
+consulted.
+
+Acceptance criteria → evidence, all deterministic and committed:
+
+- *Permission-denied renders blocked with the true reason, not idle* — engine `senses/live.test.ts`
+  (projection + replay-safe attempt consumption + recovery), `senses/live-replay.test.ts` (real tri-lane
+  replay: denial blocks only the screen lane, audio lanes byte-identical), `api/sense-lanes.test.ts`
+  (authenticated route → row + WS), client `capture/capture-controller.test.ts` +
+  `capture/screen-observation.test.ts` (the real producer seam and the closed report shape).
+- *A deliberately disabled lane renders as disabled; re-enabling restores truth without restart* —
+  `api/sense-lanes.test.ts` (fresh-install defaults ⇒ blocked/disabled from the first row; flag/fabric
+  edits walk disabled → configuration-blocked → restored waiting rows over live routes, and a re-enable
+  restores a masked permission-denied truth rather than a clean slate), `senses/live.test.ts` (exact
+  underlying-state restoration, evidence untouched).
+- *Disabling/blocking one lane cannot relabel another* — `senses/live-replay.test.ts` extends the #174
+  no-relabel replay through the REAL `evaluateSenseGates` chain (screen.ocr off blocks exactly one lane;
+  neighbours byte-identical), `senses/gates.test.ts` pins the per-lane classification, and the route test
+  compares whole neighbour rows across every transition. A future per-lane disable verb must add its own
+  relabel-safety case here.
+- *Rows stay metadata-only* — the route test asserts no content/endpoint/error/fix/hint field on any
+  published row and no settings copy or endpoint name in the event stream; schema regeneration has no
+  drift beyond the widened outcome literals.
+
+Recursive build green; contracts 100/100, fixtures 15/15, client 562/562, engine 899/899.

@@ -87,7 +87,9 @@ export const ScreenCaptureObservation = Type.Union(
       {
         workspaceId: Id,
         sessionId: Id,
-        outcome: Type.Literal('grab-failed'),
+        // permission-denied is the client's honest "the OS refused screen capture for this run" report —
+        // still a closed code with attempt correlation only; the refusing API/error text never rides it.
+        outcome: Type.Union([Type.Literal('grab-failed'), Type.Literal('permission-denied')]),
         observationId: Id,
         occurredAt: IsoTime,
       },
@@ -103,12 +105,16 @@ export const ScreenLaneObservation = Type.Object(
   {
     id: Id,
     occurredAt: IsoTime,
-    outcome: Type.Union([Type.Literal('delta-skipped'), Type.Literal('grab-failed')]),
+    outcome: Type.Union([
+      Type.Literal('delta-skipped'),
+      Type.Literal('grab-failed'),
+      Type.Literal('permission-denied'),
+    ]),
   },
   {
     $id: 'ScreenLaneObservation',
     additionalProperties: false,
-    description: 'metadata-only derivation evidence for a visible screen delta-skip or failed grab',
+    description: 'metadata-only derivation evidence for a visible screen delta-skip, failed grab, or refused capture permission',
   },
 )
 export type ScreenLaneObservation = Static<typeof ScreenLaneObservation>
@@ -170,7 +176,7 @@ const SystemAudioSenseLaneSnapshot = Type.Object(laneSnapshotProperties('system-
 const ScreenSenseLaneSnapshot = Type.Object(
   {
     ...laneSnapshotProperties('screen'),
-    /** Present only while the visible value was derived from delta-skipped/grab-failed attempt metadata. */
+    /** Present only while the visible value was derived from delta-skipped/grab-failed/permission-denied attempt metadata. */
     latestObservation: Type.Optional(ScreenLaneObservation),
   },
   { additionalProperties: false },

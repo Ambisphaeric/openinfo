@@ -55,6 +55,13 @@ export interface CaptureControllerDeps {
    * most once per direction per run, so the shell can log/tooltip once without spamming.
    */
   onSilence?: (silent: boolean) => void
+  /**
+   * #192: notified with the refused run's exact session context whenever permission denial stops this
+   * source — the OS/user refusing the pre-start request, or the renderer reporting a mid-run denial. The
+   * shell uses it to file the metadata-only permission-denied observation so the lane reads blocked with
+   * its true reason instead of idle. Fires only when a session context exists (no session ⇒ no lane).
+   */
+  onDenied?: (context: CaptureContext) => void
   log?: (message: string) => void
   /**
    * Un-wedge guard (issue #41): how long to wait for the renderer's `stopped` ack after a stop before
@@ -247,10 +254,12 @@ export class CaptureController {
       this.clearStopTimer()
     }
     if (status.state === 'permission-denied') {
+      const denied = this.context
       this.context = undefined
       this.stopping = false
       this.setState('denied')
       this.deps.log?.(`[${this.deps.source}] renderer reported permission denied — capture disabled (session unaffected)`)
+      if (denied) this.deps.onDenied?.({ ...denied })
     } else if (status.state === 'no-device') {
       // Benign absence, NOT an error: the machine has no capturable input for this source (system-audio
       // with no BlackHole-like device). Capture just doesn't happen; the session/text path is untouched.
@@ -285,7 +294,8 @@ export class CaptureController {
     }
     if (!granted) {
       this.setState('denied')
-      this.deps.log?.(`[${this.deps.source}] audio access denied — capture disabled, session continues (text path unaffected)`)
+      this.deps.log?.(`[${this.deps.source}] capture access denied — capture disabled, session continues (text path unaffected)`)
+      this.deps.onDenied?.({ ...context })
       return
     }
     this.context = context

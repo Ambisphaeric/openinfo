@@ -32,6 +32,23 @@ export interface ScreenCaptureAttemptDeps {
  * report `grab-failed`; a delta rejection reports `delta-skipped`. Observation transport is deliberately
  * best-effort and detached: a slow/hung reporting request cannot break or pause the physical cadence.
  */
+/**
+ * #192: the closed, metadata-only report for a screen run the OS refused to let start. Built from the
+ * refused run's exact session context (CaptureController.onDenied), it carries only attempt correlation —
+ * the TCC status/API detail stays in the client log. The engine's lane read model turns it into
+ * blocked/permission-denied, so a denied screen lane never reads as idly waiting.
+ */
+export const screenPermissionDeniedObservation = (
+  context: CaptureContext,
+  options: Pick<ScreenCaptureAttemptDeps, 'now' | 'newId'> = {},
+): ScreenCaptureObservation => ({
+  workspaceId: context.workspaceId,
+  sessionId: context.sessionId,
+  outcome: 'permission-denied',
+  observationId: (options.newId ?? (() => `screen-observation-${randomUUID()}`))(),
+  occurredAt: (options.now ?? (() => new Date().toISOString()))(),
+})
+
 export const runScreenCaptureAttempt = async (deps: ScreenCaptureAttemptDeps): Promise<ScreenCaptureObservation> => {
   const occurredAt = (deps.now ?? (() => new Date().toISOString()))()
   const observationId = (deps.newId ?? (() => `screen-observation-${randomUUID()}`))()

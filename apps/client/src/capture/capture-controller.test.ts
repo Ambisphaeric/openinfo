@@ -140,6 +140,32 @@ test('renderer-reported permission-denied flips to denied even if the OS pre-che
   assert.equal(h.captured.length, 0) // context cleared by the denial
 })
 
+test('a refused permission surfaces the denied run’s exact session context through onDenied (#192)', async () => {
+  const denied: Array<{ sessionId: string; workspaceId: string }> = []
+  const h = harness({ requestPermission: async () => false, onDenied: (context) => void denied.push(context) })
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  assert.equal(h.controller.currentState, 'denied')
+  assert.deepEqual(denied, [{ sessionId: 'A', workspaceId: 'ws' }])
+
+  // A thrown permission request is the same honest denial.
+  const thrown = harness({ requestPermission: async () => { throw new Error('tcc unavailable') }, onDenied: (context) => void denied.push(context) })
+  await thrown.controller.onSessionStarted({ sessionId: 'B', workspaceId: 'ws' })
+  assert.deepEqual(denied.at(-1), { sessionId: 'B', workspaceId: 'ws' })
+})
+
+test('a renderer mid-run permission-denied surfaces the running context through onDenied; no run ⇒ no report (#192)', async () => {
+  const denied: Array<{ sessionId: string; workspaceId: string }> = []
+  const h = harness({ onDenied: (context) => void denied.push(context) })
+  // No session context yet: a stray denial status names no run, so nothing can be reported for a lane.
+  h.controller.onStatus({ source: 'mic', state: 'permission-denied' })
+  assert.deepEqual(denied, [])
+
+  await h.controller.onSessionStarted({ sessionId: 'A', workspaceId: 'ws' })
+  h.controller.onStatus({ source: 'mic', state: 'permission-denied' })
+  assert.equal(h.controller.currentState, 'denied')
+  assert.deepEqual(denied, [{ sessionId: 'A', workspaceId: 'ws' }])
+})
+
 test('config disabled: onSessionStarted is a no-op (nothing requested, nothing started)', async () => {
   let asked = false
   const h = harness({ enabled: false, requestPermission: async () => ((asked = true), true) })

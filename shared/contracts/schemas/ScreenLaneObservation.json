@@ -1,7 +1,7 @@
 {
   "$id": "ScreenLaneObservation",
   "additionalProperties": false,
-  "description": "metadata-only derivation evidence for a visible screen delta-skip or failed grab",
+  "description": "metadata-only derivation evidence for a visible screen delta-skip, failed grab, or refused capture permission",
   "type": "object",
   "required": [
     "id",
@@ -27,6 +27,10 @@
         },
         {
           "const": "grab-failed",
+          "type": "string"
+        },
+        {
+          "const": "permission-denied",
           "type": "string"
         }
       ]

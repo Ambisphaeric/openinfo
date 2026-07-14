@@ -20,7 +20,7 @@ import { PresetDocuments } from '../presets/index.js'
 import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, requiredScreenSenseSlots, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor, latchScreenRecognitionOwner, screenRecognitionOwner } from '../screen/index.js'
-import { SenseLaneTracker } from '../senses/index.js'
+import { SenseLaneTracker, senseLaneGateState } from '../senses/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
@@ -690,6 +690,22 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     }
     ws.broadcast('sense.lane.updated', snapshot)
   })
+  // #192: REAL gate state drives lane health. The SAME per-sense gate chain the diagnostics already
+  // evaluate (flags, live fabric slots, active-workflow screen ownership — deterministic configuration
+  // only, no probe) becomes the tracker's closed per-source overlay, so an off lane reads blocked with its
+  // true reason (disabled / configuration-blocked) instead of idle. Re-evaluated on every flag/fabric/
+  // workflow edit — the exact hot-flip seams those documents already publish — so re-enabling restores
+  // truthful state without restart; applyGates is idempotent and emits only genuinely changed lanes.
+  const refreshSenseLaneGates = async (): Promise<void> => {
+    const chains = evaluateSenseGates({ flags: readFlags(store), fabric: fabric.load(), activeWorkflow: workflow.active() })
+    await publishSenseLaneUpdates(bus, senseLanes.applyGates(senseLaneGateState(chains)))
+  }
+  bus.subscribe('flag.changed', () => refreshSenseLaneGates())
+  bus.subscribe('fabric.changed', () => refreshSenseLaneGates())
+  bus.subscribe('workflow.updated', () => refreshSenseLaneGates())
+  // Seed the overlay from the flags/fabric/workflow documents as they stand at boot: applyGates runs
+  // synchronously inside this call, so the verdict is in place before any session can open a lane.
+  void refreshSenseLaneGates()
 
   const server = createServer((req, res) => {
     const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
