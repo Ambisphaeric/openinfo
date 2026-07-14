@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
+import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
 import { ChatTurn as ChatTurnSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
@@ -19,6 +19,30 @@ import { resolveDataDir } from './paths.js'
  * existing Latin entity, rival ≈0) stay silent.
  */
 const CREATE_PROVISIONAL_MARGIN = 0.1
+
+const FIELD_VALUE_KIND = 'field-value'
+const GUARD_HOLDS_KIND = 'guard-holds'
+const SESSION_ANNOTATION_KIND = 'session-annotation'
+const TODO_LIST_KIND = 'todo-list'
+
+interface GuardHoldsDocument {
+  workspaceId: string
+  holds: GuardHold[]
+}
+
+interface HistoricalDocument<T> {
+  key: string
+  version: number
+  body: T
+  createdAt: string
+}
+
+interface HistoricalDocumentRow {
+  key: string
+  version: number
+  body: string
+  created_at: string
+}
 
 /**
  * Normalize an entity name for the v0 resolution match key: trim, lowercase, collapse internal
@@ -664,11 +688,12 @@ export class WorkspaceRegistry {
    * (Phase 3, the correction loop the router's mistakes require; IMPLEMENTATION §3 risk register).
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
    *
-   * WHAT MOVES: the session record, its distillates, moments, drafts, and OcrResults (everything keyed
-   * by sessionId). ENTITIES are workspace-level aggregates, not session-keyed, so they are re-aggregated
-   * (see below), never blindly copied.
+   * WHAT MOVES: the session record, its distillates, moments, drafts, OcrResults, and SttSegments, plus
+   * the session-scoped document state in _meta.db: complete FieldValue and SessionAnnotation histories,
+   * GuardHolds, and the current TodoList. ENTITIES are workspace-level aggregates, not session-keyed,
+   * so they are re-aggregated (see below), never blindly copied.
    *
-   * CRASH-SAFETY (v0, honest): sqlite transactions are per-file, so a move across two files cannot be
+   * CRASH-SAFETY (v0, honest): sqlite transactions are per-file, so a move across three files cannot be
    * one ACID transaction. The guarantee instead: (1) each per-file mutation is atomic (better-sqlite3
    * `.transaction`); (2) order is destination-writes FIRST, then source-deletes; (3) every step is
    * IDEMPOTENT — entity contributions union/subtract by distillate id (a set), record copies are
@@ -695,7 +720,13 @@ export class WorkspaceRegistry {
     const session = this.getSession(fromWorkspaceId, sessionId)
     if (!session) {
       const dest = this.getSession(toWorkspaceId, sessionId)
-      if (dest && dest.reroutedFrom === fromWorkspaceId) return dest // already moved — idempotent no-op
+      if (dest && dest.reroutedFrom === fromWorkspaceId) {
+        // A crash can land after the source workspace DB was deleted but before the global document
+        // cleanup committed. Re-running the move must therefore converge that final _meta.db phase too.
+        this.copySessionLayoutState(sessionId, fromWorkspaceId, toWorkspaceId)
+        this.removeSessionLayoutSourceState(sessionId, fromWorkspaceId)
+        return dest
+      }
       throw new Error(`moveSession: no session ${sessionId} in workspace ${fromWorkspaceId}`)
     }
     this.ensureWorkspace({ id: toWorkspaceId, name: toWorkspaceId })
@@ -758,7 +789,13 @@ export class WorkspaceRegistry {
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
-    if (opts.stopAfterCopy) return movedSession // test seam: leave the source intact to stage a mid-move crash
+    // _meta.db is a third sqlite file in the move. Copy destination layout state before touching the
+    // source, in one transaction, and preserve the exact audit versions/timestamps of record histories.
+    this.copySessionLayoutState(sessionId, fromWorkspaceId, toWorkspaceId)
+
+    // Test seam: the source workspace DB and source-keyed histories stay intact. The globally keyed todo
+    // has only one current owner, so its copy revision already points at the destination.
+    if (opts.stopAfterCopy) return movedSession
 
     // PHASE 2 — source subtraction + deletes, idempotent, one atomic per-file transaction.
     const fromDb = this.openWorkspace(fromWorkspaceId)
@@ -772,7 +809,140 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
+    // Delete only source-owned session state. The TodoList is one globally-keyed document, so its latest
+    // version already names the destination; its earlier source versions remain as editable history.
+    this.removeSessionLayoutSourceState(sessionId, fromWorkspaceId)
+
     return movedSession
+  }
+
+  /**
+   * Copy the session-scoped records that live in the global documents store. Field/annotation rows are
+   * audit histories, so they retain their source version numbers and created_at values under remapped
+   * deterministic keys. Holds and todos are current-state documents and append only when state changes.
+   */
+  private copySessionLayoutState(sessionId: string, fromWorkspaceId: string, toWorkspaceId: string): void {
+    this.metaDb.transaction(() => {
+      const fieldVersions = this.documentHistory<FieldValue>(
+        FIELD_VALUE_KIND,
+        `fv:${fromWorkspaceId}:${sessionId}:`,
+        true,
+      ).filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+      for (const doc of fieldVersions) {
+        const key = `fv:${toWorkspaceId}:${sessionId}:${doc.body.fieldId}`
+        const moved: FieldValue = { ...doc.body, id: key, workspaceId: toWorkspaceId }
+        this.insertHistoricalDocument(FIELD_VALUE_KIND, key, doc.version, moved, doc.createdAt)
+      }
+
+      const annotationVersions = this.documentHistory<SessionAnnotation>(
+        SESSION_ANNOTATION_KIND,
+        `oa:${fromWorkspaceId}:${sessionId}`,
+      ).filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+      for (const doc of annotationVersions) {
+        const key = `oa:${toWorkspaceId}:${sessionId}`
+        const moved: SessionAnnotation = { ...doc.body, id: key, workspaceId: toWorkspaceId }
+        this.insertHistoricalDocument(SESSION_ANNOTATION_KIND, key, doc.version, moved, doc.createdAt)
+      }
+
+      const sourceHolds = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, fromWorkspaceId)?.body.holds ?? []
+      const movedHolds = sourceHolds
+        .filter((hold) => hold.sessionId === sessionId)
+        .map((hold): GuardHold => ({ ...hold, workspaceId: toWorkspaceId }))
+      if (movedHolds.length > 0) {
+        const current = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, toWorkspaceId)?.body.holds ?? []
+        const currentIds = new Set(current.map((hold) => hold.id))
+        // An existing id is a prior successful copy (hold ids are globally unique). Keep that current
+        // destination lifecycle state rather than regressing a released/denied hold on a crash retry.
+        const holds = [...current, ...movedHolds.filter((hold) => !currentIds.has(hold.id))]
+        const next: GuardHoldsDocument = { workspaceId: toWorkspaceId, holds }
+        const currentDoc = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, toWorkspaceId)?.body
+        if (JSON.stringify(currentDoc) !== JSON.stringify(next)) this.layouts.put(GUARD_HOLDS_KIND, toWorkspaceId, next)
+      }
+
+      const todo = this.layouts.getLatest<TodoList>(TODO_LIST_KIND, sessionId)?.body
+      if (todo !== undefined && todo.sessionId === sessionId) {
+        if (todo.workspaceId === fromWorkspaceId) {
+          const moved: TodoList = { ...todo, workspaceId: toWorkspaceId, version: todo.version + 1 }
+          this.layouts.put(TODO_LIST_KIND, sessionId, moved)
+        } else if (todo.workspaceId !== toWorkspaceId) {
+          throw new Error(
+            `moveSession: to-do ${sessionId} belongs to workspace ${todo.workspaceId}, not ${fromWorkspaceId} or ${toWorkspaceId}`,
+          )
+        }
+      }
+    })()
+  }
+
+  /** Remove source-visible layout state only after both destination copies have committed. */
+  private removeSessionLayoutSourceState(sessionId: string, fromWorkspaceId: string): void {
+    this.metaDb.transaction(() => {
+      const fieldKeys = new Set(
+        this.documentHistory<FieldValue>(FIELD_VALUE_KIND, `fv:${fromWorkspaceId}:${sessionId}:`, true)
+          .filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+          .map((doc) => doc.key),
+      )
+      for (const key of fieldKeys) this.layouts.delete(FIELD_VALUE_KIND, key)
+
+      const annotationKeys = new Set(
+        this.documentHistory<SessionAnnotation>(SESSION_ANNOTATION_KIND, `oa:${fromWorkspaceId}:${sessionId}`)
+          .filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+          .map((doc) => doc.key),
+      )
+      for (const key of annotationKeys) this.layouts.delete(SESSION_ANNOTATION_KIND, key)
+
+      const sourceDoc = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, fromWorkspaceId)?.body
+      if (sourceDoc !== undefined) {
+        const holds = sourceDoc.holds.filter((hold) => hold.sessionId !== sessionId)
+        if (holds.length !== sourceDoc.holds.length) {
+          this.layouts.put(GUARD_HOLDS_KIND, fromWorkspaceId, { workspaceId: fromWorkspaceId, holds })
+        }
+      }
+    })()
+  }
+
+  /**
+   * Read one exact document history (or one deterministic key prefix) without parsing every document of
+   * that kind. A malformed unrelated field/annotation document must not make a healthy session immovable.
+   */
+  private documentHistory<T>(kind: string, key: string, prefix = false): HistoricalDocument<T>[] {
+    const rows = prefix
+      ? (this.metaDb
+          .prepare(
+            `select key, version, body, created_at from documents
+             where kind = ? and substr(key, 1, ?) = ?
+             order by key, version`,
+          )
+          .all(kind, key.length, key) as HistoricalDocumentRow[])
+      : (this.metaDb
+          .prepare(
+            `select key, version, body, created_at from documents
+             where kind = ? and key = ?
+             order by version`,
+          )
+          .all(kind, key) as HistoricalDocumentRow[])
+    return rows.map((row) => ({
+      key: row.key,
+      version: row.version,
+      body: JSON.parse(row.body) as T,
+      createdAt: row.created_at,
+    }))
+  }
+
+  /** Insert one immutable history row exactly once; a same-version mismatch is an integrity failure. */
+  private insertHistoricalDocument<T>(kind: string, key: string, version: number, body: T, createdAt: string): void {
+    const encoded = JSON.stringify(body)
+    const existing = this.metaDb
+      .prepare('select body, created_at from documents where kind = ? and key = ? and version = ?')
+      .get(kind, key, version) as { body: string; created_at: string } | undefined
+    if (existing !== undefined) {
+      if (existing.body !== encoded || existing.created_at !== createdAt) {
+        throw new Error(`moveSession: conflicting ${kind} history at ${key} version ${version}`)
+      }
+      return
+    }
+    this.metaDb
+      .prepare('insert into documents (kind, key, version, body, created_at) values (?, ?, ?, ?, ?)')
+      .run(kind, key, version, encoded, createdAt)
   }
 
   /**
