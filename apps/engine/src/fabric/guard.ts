@@ -246,6 +246,9 @@ const classifyOne = async (endpoint: Extract<Endpoint, { kind: 'http' }>, text: 
     if (endpoint.model !== undefined) body['model'] = endpoint.model
     response = await fetch(`${endpoint.url.replace(/\/$/, '')}/v1/chat/completions`, {
       method: 'POST',
+      // The guard sees unredacted outbound text. A local guard cannot redirect that body to an
+      // unclassified destination; treat a redirect as a fail-closed non-OK response.
+      redirect: 'manual',
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,

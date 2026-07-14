@@ -133,6 +133,36 @@ test('fail closed: a configured guard that ERRORS holds the hop (never lets cont
   }
 })
 
+test('fail closed: the guard refuses a 307 redirect before forwarding unredacted content', async () => {
+  const sink = await startFakeGuard([])
+  const redirect = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(307, { location: `${sink.url}${req.url ?? '/v1/chat/completions'}` })
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => redirect.listen(0, resolve))
+  const address = redirect.address()
+  assert.ok(address && typeof address === 'object')
+  const redirectingUrl = `http://127.0.0.1:${address.port}`
+  try {
+    await assert.rejects(
+      () => runEgressGuard(messages, { endpoint: 'hosted', url: 'https://api.example.com' }, opts([guardEndpoint(redirectingUrl)], 'redact-and-continue')),
+      (error: unknown) => {
+        assert.ok(error instanceof GuardHeldError)
+        assert.equal(error.verdict.outcome, 'held')
+        assert.equal(error.verdict.guarded, false)
+        return true
+      },
+    )
+    assert.equal(sink.requests.length, 0, 'redirect target must never receive unredacted guard input')
+  } finally {
+    await new Promise<void>((resolve) => redirect.close(() => resolve()))
+    await stop(sink)
+  }
+})
+
 /** ---------- invokeLlm wiring: the guard runs ONLY on egress hops, and a hold is a hard stop ---------- */
 
 const egressFabric = (guard: Endpoint[]): Fabric => ({

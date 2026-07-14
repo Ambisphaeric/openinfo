@@ -1,5 +1,11 @@
-import type { Endpoint, Fabric, Flag, QueueFailure } from '@openinfo/contracts'
+import type { Endpoint, Fabric, Flag, QueueFailure, WorkflowSpec, WorkflowStep } from '@openinfo/contracts'
 import type { EndpointHealth } from '../../fabric/health.js'
+import {
+  screenSlotForStep,
+  workflowScreenPlan,
+  type ScreenRecognitionSlot,
+  type WorkflowScreenPlan,
+} from '../../screen/ownership.js'
 
 /**
  * The per-sense GATE CHAIN (issue #7) — a pure, ordered evaluation of the engine-side gates each sense
@@ -56,6 +62,13 @@ export interface SenseGateInput {
   /** the live fabric (GET /fabric) — slot occupancy gates read its stt/ocr slots */
   fabric: Fabric
   /**
+   * The workflow executor's ACTIVE document. Required for a truthful screen chain while
+   * `workflow.enabled` is on: enabled drain `ocr`/`vlm` steps, including an explicit slot override,
+   * own screen recognition in that mode. Optional so legacy/unit callers remain source-compatible;
+   * an enabled workflow with no supplied document is reported as unavailable rather than guessed.
+   */
+  activeWorkflow?: WorkflowSpec
+  /**
    * The queue's last classified drain failure (GET /queue lastFailure) — the honest "the endpoint is
    * failing" signal, reused rather than re-probed. A failure whose endpoint name matches a slot's
    * endpoint closes that slot's health gate, carrying the failure's own hint.
@@ -72,6 +85,28 @@ export interface SenseGateInput {
 /** Is a flag on in the GET /flags list? Unknown/absent reads OFF (matches isFlagEnabled). */
 const flagOn = (flags: Flag[], key: string): boolean => flags.some((f) => f.key === key && f.default === true)
 
+/** Public diagnostic name for the two capabilities the screen processor can invoke. */
+export type ScreenSenseSlot = ScreenRecognitionSlot
+
+/**
+ * Resolve the active workflow's screen work once, using the same trigger/kind/slot/flag decisions as the
+ * executor and screen processor. Slot order follows the document and duplicates are collapsed because a
+ * health probe is per capability endpoint, not per step.
+ */
+const resolveWorkflowScreenPlan = (
+  input: Pick<SenseGateInput, 'flags' | 'activeWorkflow'>,
+): WorkflowScreenPlan => workflowScreenPlan(input.activeWorkflow, (key) => flagOn(input.flags, key))
+
+/**
+ * The screen slots GET /senses must probe. Legacy ownership always uses OCR. Workflow ownership probes
+ * only the enabled drain screen steps in the active document — an off VLM step is not a required model,
+ * while enabled OCR + VLM steps require both.
+ */
+export const requiredScreenSenseSlots = (
+  input: Pick<SenseGateInput, 'flags' | 'activeWorkflow'>,
+): ScreenSenseSlot[] =>
+  flagOn(input.flags, 'workflow.enabled') ? resolveWorkflowScreenPlan(input).slots : ['ocr']
+
 /** Human sense names, in the client's display order. */
 const SENSE_LABEL: Record<CaptureSense, string> = { mic: 'Microphone', 'sys-audio': 'System audio', screen: 'Screen' }
 
@@ -85,12 +120,22 @@ const slotHealthFailure = (
   input: SenseGateInput,
 ): { fix: string; detail: string } | undefined => {
   const names = new Set(endpoints.map((e) => e.name))
-  // A live probe result (checkEndpoint) takes precedence — it is the freshest signal.
-  for (const name of names) {
-    const h = input.health?.[name]
-    if (h && !h.ok) return { fix: `Check the endpoint in Settings → Endpoints — ${h.error ?? 'it is not answering'}`, detail: h.error ?? 'endpoint unhealthy' }
+  // Invocation slots are ordered fallback chains: one explicitly healthy endpoint means the capability
+  // can answer even when an earlier endpoint is down. Only call the live chain unhealthy when EVERY named
+  // endpoint has an explicit failed probe; a partial probe set is not enough to invent a blocker.
+  const probed = [...names].flatMap((name) => {
+    const result = input.health?.[name]
+    return result === undefined ? [] : [result]
+  })
+  if (probed.some((result) => result.ok)) return undefined
+  if (probed.length > 0 && probed.length === names.size) {
+    const failed = probed[0]!
+    return {
+      fix: `Check the endpoint in Settings → Endpoints — ${failed.error ?? 'it is not answering'}`,
+      detail: failed.error ?? 'endpoint unhealthy',
+    }
   }
-  // Else the drain's last classified failure, if it landed on one of this slot's endpoints.
+  // With no decisive healthy/all-failed live verdict, retain the drain's classified failure semantics.
   const f = input.lastFailure
   if (f && names.has(f.endpoint)) return { fix: f.hint, detail: `${f.class} on ${f.endpoint}` }
   return undefined
@@ -136,36 +181,113 @@ const audioGates = (sense: CaptureSense, input: SenseGateInput): SenseGate[] => 
 }
 
 /**
- * The screen-OCR chain (screen): a captured frame is understood by OCR — INDEPENDENTLY of distill (a
- * frame is read by the ocr slot, not the transcript distiller) — only if screen.ocr is on, an ocr
- * endpoint is configured, and it is healthy.
+ * One required screen capability's occupancy + health gates. OCR is the legacy reader; VLM is the richer
+ * prompted screen-understanding slot a workflow step can select. The ids remain slot-shaped so existing
+ * clients need no route-contract change.
  */
-const screenGates = (input: SenseGateInput): SenseGate[] => {
-  const ocr = input.fabric.slots.ocr
-  const health = ocr.length > 0 ? slotHealthFailure(ocr, input) : undefined
+const screenSlotGates = (slot: ScreenSenseSlot, input: SenseGateInput): SenseGate[] => {
+  const endpoints = input.fabric.slots[slot]
+  const health = endpoints.length > 0 ? slotHealthFailure(endpoints, input) : undefined
+  const noun = slot === 'ocr' ? 'Reading' : 'Vision'
   return [
     {
-      id: 'screen.ocr',
-      label: 'Screen OCR enabled',
-      pass: flagOn(input.flags, 'screen.ocr'),
-      fix: 'Enable screen OCR in Settings → Features (screen.ocr).',
-      detail: 'Without it, captured frames are not read.',
+      id: slot,
+      label: `${noun} (${slot}) endpoint`,
+      pass: endpoints.length > 0,
+      fix: `Add ${slot === 'ocr' ? 'an' : 'a'} ${slot} endpoint in Settings → Endpoints.`,
+      detail: `The ${slot} slot is empty — there is no model to ${slot === 'ocr' ? 'read' : 'understand'} frames with.`,
     },
     {
-      id: 'ocr',
-      label: 'Reading (ocr) endpoint',
-      pass: ocr.length > 0,
-      fix: 'Add an ocr endpoint in Settings → Endpoints.',
-      detail: 'The ocr slot is empty — there is no model to read frames with.',
-    },
-    {
-      id: 'ocr-health',
-      label: 'ocr endpoint healthy',
+      id: `${slot}-health`,
+      label: `${slot} endpoint healthy`,
       pass: health === undefined,
       ...(health ? { fix: health.fix, detail: health.detail } : {}),
     },
   ]
 }
+
+/** The legacy ingest owner: screen.ocr → OCR occupancy → OCR health, unchanged while workflow is off. */
+const legacyScreenGates = (input: SenseGateInput): SenseGate[] => [
+  {
+    id: 'screen.ocr',
+    label: 'Screen OCR enabled',
+    pass: flagOn(input.flags, 'screen.ocr'),
+    fix: 'Enable screen OCR in Settings → Features (screen.ocr).',
+    detail: 'Without it, captured frames are not read.',
+  },
+  ...screenSlotGates('ocr', input),
+]
+
+/** A workflow step's passing feature gate, named from the actual document rather than assuming screen.ocr. */
+const workflowStepFlagGate = (step: WorkflowStep): SenseGate | undefined => {
+  const key = step.when?.flag
+  if (key === undefined) return undefined
+  const slot = screenSlotForStep(step)
+  return {
+    id: key,
+    label: slot === 'ocr' ? 'Workflow OCR step enabled' : 'Workflow vision step enabled',
+    pass: true,
+    fix: `Enable ${key} in Settings → Features.`,
+    detail: `The active workflow gates step “${step.id}” on ${key}.`,
+  }
+}
+
+/**
+ * Workflow ownership: only enabled drain `ocr`/`vlm` steps run. With none enabled, name either the
+ * concrete first step flag the user can flip or the missing workflow step/document; never fall back to
+ * OCR and falsely call a VLM-only workflow healthy.
+ */
+const workflowScreenGates = (input: SenseGateInput): SenseGate[] => {
+  if (input.activeWorkflow === undefined) {
+    return [{
+      id: 'workflow.active',
+      label: 'Active workflow available',
+      pass: false,
+      fix: 'Reload the active workflow before diagnosing screen capture.',
+      detail: 'workflow.enabled is on, but no active workflow document was supplied to this readout.',
+    }]
+  }
+
+  const plan = resolveWorkflowScreenPlan(input)
+  if (plan.candidates.length === 0) {
+    return [{
+      id: 'workflow.screen',
+      label: 'Workflow screen step',
+      pass: false,
+      fix: 'Add an ocr or vlm drain step to the active workflow.',
+      detail: `The active workflow “${input.activeWorkflow.id}” has no screen-recognition drain step.`,
+    }]
+  }
+  if (plan.enabled.length === 0) {
+    const first = plan.candidates[0]!
+    const key = first.when!.flag
+    const slot = screenSlotForStep(first)
+    return [{
+      id: key,
+      label: slot === 'ocr' ? 'Workflow OCR step enabled' : 'Workflow vision step enabled',
+      pass: false,
+      fix: `Enable ${key} in Settings → Features.`,
+      detail: `Every screen-recognition step in “${input.activeWorkflow.id}” is disabled; step “${first.id}” is gated by ${key}.`,
+    }]
+  }
+
+  const seenFlags = new Set<string>()
+  const flagGates: SenseGate[] = []
+  for (const step of plan.enabled) {
+    const gate = workflowStepFlagGate(step)
+    if (gate === undefined || seenFlags.has(gate.id)) continue
+    seenFlags.add(gate.id)
+    flagGates.push(gate)
+  }
+  return [...flagGates, ...plan.slots.flatMap((slot) => screenSlotGates(slot, input))]
+}
+
+/**
+ * Screen is independent of distill. Legacy ownership is the original OCR chain; workflow ownership is
+ * derived from the active document and can require OCR, VLM, or both.
+ */
+const screenGates = (input: SenseGateInput): SenseGate[] =>
+  flagOn(input.flags, 'workflow.enabled') ? workflowScreenGates(input) : legacyScreenGates(input)
 
 /** Assemble one sense's chain: its ordered gates + the first closed one as the named blocker. */
 const chainFor = (sense: CaptureSense, gates: SenseGate[]): SenseGateChain => {

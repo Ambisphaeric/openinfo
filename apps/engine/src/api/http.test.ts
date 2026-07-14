@@ -3075,6 +3075,8 @@ test('scan → select → save round-trip: a scanned model id lands intact in th
 test('/workflows routes: list has the seeded default, GET 404 unknown, PUT invalid 400, PUT valid bumps version', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  const updates: WorkflowSpec[] = []
+  app.bus.subscribe('workflow.updated', (workflow) => void updates.push(workflow))
   await new Promise<void>((resolve) => app.server.listen(0, resolve))
   try {
     const address = app.server.address()
@@ -3097,10 +3099,21 @@ test('/workflows routes: list has the seeded default, GET 404 unknown, PUT inval
     assert.equal((await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...current, id: 'other' }) })).status, 400)
     // a valid, matching edit persists (version stamped off the store) and reads back
     const edited = { ...current, steps: current.steps.filter((s) => s.kind !== 'moments') }
-    const putRes = await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(edited) })
-    assert.equal(putRes.status, 200)
-    const saved = (await putRes.json()) as WorkflowSpec
-    assert.equal(saved.version, 2, 'the store stamped the next version')
+    const sub = await openEvents(base)
+    try {
+      const putRes = await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(edited) })
+      assert.equal(putRes.status, 200)
+      const saved = (await putRes.json()) as WorkflowSpec
+      assert.equal(saved.version, 2, 'the store stamped the next version')
+      assert.deepEqual(updates, [saved], 'the API publishes the saved active-workflow document for cache invalidation')
+      await eventuallyHttp(async () => {
+        const event = sub.events.find((candidate) => candidate.name === 'workflow.updated')
+        assert.ok(event, 'workflow.updated reaches authenticated WS clients')
+        assert.deepEqual(event.payload as unknown as WorkflowSpec, saved)
+      })
+    } finally {
+      sub.close()
+    }
     const after = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
     assert.equal(after.version, 2)
     assert.ok(!after.steps.some((s) => s.kind === 'moments'), 'GET reflects the edit')
@@ -3117,6 +3130,69 @@ test('/workflows routes: list has the seeded default, GET 404 unknown, PUT inval
 
 const putJson = (base: string, path: string, body: unknown): Promise<Response> =>
   fetch(`${base}${path}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+
+test('GET /senses probes the active workflow VLM slot and reports its health instead of assuming OCR', async () => {
+  let probeHits = 0
+  const vision = createServer((_req, res) => {
+    probeHits++
+    res.writeHead(503, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: 'vision model unavailable' }))
+  })
+  await new Promise<void>((resolve) => vision.listen(0, resolve))
+  const visionAddress = vision.address()
+  assert.ok(visionAddress && typeof visionAddress === 'object')
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-senses-vlm-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    const savedFabric = await putJson(base, '/fabric', {
+      slots: {
+        ...fabric.slots,
+        vlm: [{
+          kind: 'http',
+          name: 'vision-down',
+          url: `http://127.0.0.1:${visionAddress.port}`,
+          api: 'openai-compat',
+          model: 'gemma-3-12b',
+        }],
+      },
+    })
+    assert.equal(savedFabric.status, 200)
+
+    const current = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
+    const vlmOnly = {
+      ...current,
+      steps: current.steps.map((step) => step.kind === 'ocr'
+        ? { ...step, id: 'screen-vlm', kind: 'vlm' as const, slot: 'vlm' as const }
+        : step),
+    }
+    assert.equal((await putJson(base, '/workflows/workflow-default', vlmOnly)).status, 200)
+    for (const key of ['workflow.enabled', 'screen.ocr']) {
+      assert.equal((await putJson(base, `/flags/${key}`, { key, default: true, scope: 'engine', description: key })).status, 200)
+    }
+
+    const chains = (await (await fetch(`${base}/senses`)).json()) as {
+      sense: string
+      gates: { id: string }[]
+      blocking?: { id: string; fix?: string }
+    }[]
+    const screen = chains.find((chain) => chain.sense === 'screen')
+    assert.ok(screen)
+    assert.deepEqual(screen.gates.map((gate) => gate.id), ['screen.ocr', 'vlm', 'vlm-health'])
+    assert.equal(screen.blocking?.id, 'vlm-health')
+    assert.match(screen.blocking?.fix ?? '', /503/)
+    assert.ok(probeHits > 0, 'the workflow-required VLM endpoint received the live health probe')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => vision.close(() => resolve()))
+  }
+})
 
 test('/templates routes: list has the seeded defaults, GET default → PUT → GET returns the edit, invalid 400, unknown-id creates', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))

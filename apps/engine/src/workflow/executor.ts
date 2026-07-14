@@ -1,4 +1,4 @@
-import type { CaptureChunk, Session, StepGate, WorkflowStep } from '@openinfo/contracts'
+import type { CaptureChunk, Session, StepGate, WorkflowSpec, WorkflowStep } from '@openinfo/contracts'
 import type { DistillOptions } from '../distill/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import type { WorkspaceRegistry } from '../store/index.js'
@@ -77,6 +77,28 @@ export class WorkflowExecutor {
     return gate ? isFlagEnabled(this.deps.store, gate.flag) : true
   }
 
+  /** Run only the workflow's screen-recognition stage against one fixed document snapshot. */
+  private async runScreenSteps(chunks: readonly CaptureChunk[], doc: WorkflowSpec): Promise<void> {
+    const drainSteps = doc.steps.filter((s) => seamOf(s) === 'drain')
+    for (const step of drainSteps) {
+      if (step.kind !== 'ocr' && step.kind !== 'vlm') continue
+      if (!this.flagOn(step.when)) continue
+      if (!this.deps.recognizeScreen) {
+        this.log(`workflow ${doc.id}: step '${step.id}' (${step.kind}) skipped — no screen-recognition seam registered`)
+        continue
+      }
+      await this.deps.recognizeScreen(chunks, step)
+    }
+  }
+
+  /**
+   * Run only screen work. The queue uses this when a durable workflow-owned frame outlives a later
+   * workflow.enabled flip; other workflow stages continue to obey the current master switch.
+   */
+  async runScreen(chunks: readonly CaptureChunk[]): Promise<void> {
+    await this.runScreenSteps(chunks, this.deps.docs.active())
+  }
+
   /**
    * The DRAIN seam. Coalesces the distill-family steps into ONE distill call (the slice-1 seam note):
    * the `distill` step's when-flag gates the WHOLE call; `transcribe` is its pre-stage; `moments`/`index`
@@ -94,15 +116,7 @@ export class WorkflowExecutor {
     // A throw PROPAGATES (re-queue at idle) — NOT the best-effort drainActs pattern. Running BEFORE the
     // distill gate means an OCR failure re-queues before distill persists anything (clean retry for the
     // screen-only batches that are the flagship case). A gated-ON step with no seam skips-with-log.
-    for (const step of drainSteps) {
-      if (step.kind !== 'ocr' && step.kind !== 'vlm') continue
-      if (!this.flagOn(step.when)) continue
-      if (!this.deps.recognizeScreen) {
-        this.log(`workflow ${doc.id}: step '${step.id}' (${step.kind}) skipped — no screen-recognition seam registered`)
-        continue
-      }
-      await this.deps.recognizeScreen(chunks, step)
-    }
+    await this.runScreenSteps(chunks, doc)
 
     const distillStep = drainSteps.find((s) => s.kind === 'distill')
     // Whole distill-family gate: no distill step, or its flag off → nothing distills, and `transcribe`

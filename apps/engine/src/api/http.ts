@@ -17,9 +17,9 @@ import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
 import { BundleDocuments, DEFAULT_BUNDLE_ID } from '../bundles/index.js'
 import { PresetDocuments } from '../presets/index.js'
-import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, requiredScreenSenseSlots, buildLedger, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
-import { handleScreen, getScreenProcessor } from '../screen/index.js'
+import { handleScreen, getScreenProcessor, latchScreenRecognitionOwner, screenRecognitionOwner } from '../screen/index.js'
 import { SenseLaneTracker } from '../senses/index.js'
 import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
@@ -486,6 +486,12 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     // read their flags per-drain so they stay hot-flippable. This queue is LLM-only: transcription already
     // ran on the STT track, so a due distill window can never block parakeet (the #115 root cause).
     if (isFlagEnabled(store, 'workflow.enabled')) return executor.runDrain(chunks)
+    // A screen frame captured while workflow ownership was selected keeps that owner even if the master
+    // flag flips before this durable row drains. Run only its screen stage; every other workflow stage
+    // continues to obey the current (now-off) master switch.
+    if (chunks.some((chunk) => screenRecognitionOwner(chunk) === 'workflow-drain')) {
+      await executor.runScreen(chunks)
+    }
     if (!isFlagEnabled(store, 'distill.enabled')) return
     // Throttled: accumulate across drains, distill only when the span crosses the cadence threshold (or on
     // session-end flush). A distill/moments/judge invoke throw PROPAGATES → this queue re-queues the text
@@ -508,7 +514,9 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     // the legacy early return (distill off ⇒ the drain was a no-op GC), so an idle default engine is
     // unchanged. When neither is on the text queue is never fed and never drains.
     const distillOn = isFlagEnabled(store, 'distill.enabled')
-    if (!distillOn && !isFlagEnabled(store, 'workflow.enabled')) return
+    const workflowOn = isFlagEnabled(store, 'workflow.enabled')
+    const hasLatchedWorkflowScreen = chunks.some((chunk) => screenRecognitionOwner(chunk) === 'workflow-drain')
+    if (!distillOn && !workflowOn && !hasLatchedWorkflowScreen) return
     // Transcription (distill.transcribe) is the STT stage: audio → utf8 text, emitting the live
     // transcript.updated fast-path. Gated exactly as the legacy path was — INSIDE distill.enabled, because
     // there is no persistence for transcribed-but-undistilled text (PHASE2-NOTES). With it off, raw chunks
@@ -657,6 +665,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   bus.subscribe('session.rerouted', (session) => ws.broadcast('session.rerouted', session))
   bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
+  bus.subscribe('workflow.updated', (workflowSpec) => ws.broadcast('workflow.updated', workflowSpec))
   bus.subscribe('surface.updated', (surface) => ws.broadcast('surface.updated', surface))
   // Egress guard (#63): rebroadcast a suspended/resolved hop so a subscribed surface refreshes its held
   // indicator + release/deny affordance. Payload carries span descriptors, never the raw value.
@@ -1053,6 +1062,7 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
     surfaces: ctx.surfaces.list(),
     defaultSurfaceId: defaultHudSurface.id,
     flags: readFlags(ctx.store),
+    activeWorkflow: ctx.workflow.active(),
     uptimeMs: process.uptime() * 1000,
     queue: await surfacedQueueStatus(ctx),
     localModels: ctx.models.statuses(),
@@ -1095,17 +1105,21 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
  * GET /senses (issue #7) — the per-sense gate-chain verdict as JSON, for a support flow AND the client
  * tray's blocking-gate line. Composes the EXISTING signals into one named "what is blocking this sense"
  * answer: the live flags, the live fabric's slots, the queue's last classified drain failure, and a LIVE
- * checkEndpoint probe of the configured stt/ocr endpoints (the route can afford the probe the pure
- * Status render cannot). Append-only, read-only; reuses checkEndpoint/EndpointHealth rather than
+ * checkEndpoint probe of the configured stt endpoints plus the screen slots the active owner actually
+ * requires (legacy OCR, or enabled workflow OCR/VLM steps). The route can afford the probe the pure
+ * Status render cannot. Append-only, read-only; reuses checkEndpoint/EndpointHealth rather than
  * re-implementing any health logic. The CLIENT-side gates (sense off, OS permission, engine reachable)
  * chain in FRONT of this on the tray — the engine cannot see those.
  */
 async function getSenses(res: ServerResponse, ctx: HandlerContext): Promise<void> {
   const fabric = ctx.fabric.load()
+  const flags = readFlags(ctx.store)
+  const activeWorkflow = ctx.workflow.active()
   const queue = await surfacedQueueStatus(ctx)
-  // Probe the stt + ocr endpoints so the health gate reflects a live check (deduped by name). Best-effort:
-  // a probe that throws is caught inside checkEndpoint and returns ok:false with its error.
-  const probeSlots = [...fabric.slots.stt, ...fabric.slots.ocr]
+  // Probe STT plus exactly the screen slots the active owner can invoke (deduped by endpoint name).
+  // Best-effort: a probe that throws is caught inside checkEndpoint and returns ok:false with its error.
+  const screenSlots = requiredScreenSenseSlots({ flags, activeWorkflow })
+  const probeSlots = [...fabric.slots.stt, ...screenSlots.flatMap((slot) => fabric.slots[slot])]
   const seen = new Set<string>()
   const health: Record<string, EndpointHealth> = {}
   for (const endpoint of probeSlots) {
@@ -1114,8 +1128,9 @@ async function getSenses(res: ServerResponse, ctx: HandlerContext): Promise<void
     health[endpoint.name] = await checkEndpoint(endpoint, 2_000, (ref) => ctx.secrets.resolve(ref), ctx.runtime)
   }
   const chains = evaluateSenseGates({
-    flags: readFlags(ctx.store),
+    flags,
     fabric,
+    activeWorkflow,
     ...(queue.lastFailure ? { lastFailure: queue.lastFailure } : {}),
     health,
   })
@@ -1445,13 +1460,17 @@ async function captureChunk(req: IncomingMessage, res: ServerResponse, ctx: Hand
   if (errors.length > 0) return send(res, 400, { error: 'invalid CaptureChunk', details: errors })
   const chunk = body as CaptureChunk
   if (chunk.source !== source) return send(res, 400, { error: 'capture source does not match route' })
-  await ctx.queue.append(chunk)
+  // The client cannot choose this field: the closed CaptureChunk contract was validated above. Stamp the
+  // current screen owner only now, then persist and publish the same engine-owned row so ingest and drain
+  // cannot make independent decisions if workflow.enabled changes while the frame is in flight.
+  const queuedChunk = latchScreenRecognitionOwner(chunk, isFlagEnabled(ctx.store, 'workflow.enabled'))
+  await ctx.queue.append(queuedChunk)
   // Append succeeded: only now may the live read model claim the physical capture was queued. Publish the
   // safe metadata row before capture.received wakes the fire-and-forget screen processor, so a very fast
   // OCR completion can never overtake and then be visually regressed by a stale queued event.
-  await publishSenseLaneUpdates(ctx.bus, ctx.senseLanes.recordCapture(chunk))
-  ctx.onCapture?.(chunk)
-  await ctx.bus.publish('capture.received', chunk)
+  await publishSenseLaneUpdates(ctx.bus, ctx.senseLanes.recordCapture(queuedChunk))
+  ctx.onCapture?.(queuedChunk)
+  await ctx.bus.publish('capture.received', queuedChunk)
   ctx.queue.scheduleDrain(ctx.log)
   await ctx.bus.publish('queue.updated', await surfacedQueueStatus(ctx))
   const ack: Ack = { ok: true, chunkId: chunk.id, sequence: chunk.sequence, receivedAt: new Date().toISOString() }
@@ -1641,7 +1660,9 @@ function getWorkflow(res: ServerResponse, ctx: HandlerContext, id: string): void
  * CLOSED `kind` union rejects an unrunnable step kind AT WRITE TIME, so a wrong document never reaches
  * the executor as a silent no-op) and its id must match the route; the store stamps the next version
  * and keeps history. The executor reads `active()` fresh per drain / session-end, so a stored edit
- * takes effect with NO restart and NO executor change (the whole point of the read-fresh seam).
+ * takes effect with NO restart and NO executor change (the whole point of the read-fresh seam). The saved
+ * document is published as workflow.updated so clients invalidate derived `/senses` diagnostics even when
+ * workflow.enabled was already on and no flag/fabric event accompanies the edit.
  *
  * PUT-unknown-id policy: an unknown id CREATES a new workflow (version 1), it does NOT 404 — mirroring
  * PUT /todos (which creates a session's list on first write) and PUT /layouts/surfaces/:id. Only
@@ -1657,7 +1678,9 @@ async function putWorkflow(req: IncomingMessage, res: ServerResponse, ctx: Handl
   if (errors.length > 0) return send(res, 400, { error: 'invalid WorkflowSpec', details: errors })
   const incoming = body as WorkflowSpec
   if (incoming.id !== id) return send(res, 400, { error: 'workflow id does not match route' })
-  send(res, 200, ctx.workflow.save(incoming))
+  const saved = ctx.workflow.save(incoming)
+  await ctx.bus.publish('workflow.updated', saved)
+  send(res, 200, saved)
 }
 
 /**
@@ -2105,7 +2128,8 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     // path the P4B processor uses (invokeOcr: paddle-serving blocks, or an openai-compat VLM in the ocr
     // slot). Consent is content-class `screen` — resolveEgress DENIES egress for screen content outright
     // (egress.ts, most-specific-denial-wins), and invokeOcr further restricts raw frame bytes to an
-    // engine-managed runtime or explicit loopback URL — private-LAN endpoints are skipped before fetch.
+    // engine-managed runtime, loopback URL, or an explicitly `trustRawFrames`-flagged LAN-local endpoint;
+    // untrusted LAN, wildcard, and public destinations are skipped before fetch.
     // Only the DERIVED TEXT then rides the chat hop, which runs the normal typed-content gate + #63 guard.
     screenText: async (workspaceId: string, screenshot: ChatScreenshot) => {
       const consent = resolveEgress({ contentClass: 'screen', workspaceDenies: ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true })
@@ -2191,6 +2215,7 @@ async function buildQuerySources(query: BlockQuery, ctx: HandlerContext, default
       senseGates: evaluateSenseGates({
         flags: readFlags(ctx.store),
         fabric: ctx.fabric.load(),
+        activeWorkflow: ctx.workflow.active(),
         ...(status.lastFailure ? { lastFailure: status.lastFailure } : {}),
       }),
     }
@@ -2309,7 +2334,11 @@ async function saveGuardPolicy(req: IncomingMessage, res: ServerResponse, ctx: H
 }
 
 function readFlags(store: WorkspaceRegistry): Flag[] {
-  return ensureDefaultFlags(store).map((flag) => store.layouts.getLatest<Flag>('flag', flag.key)?.body ?? flag)
+  // Ensure the shipped controls exist, then enumerate the live documents rather than only the seed list:
+  // workflow steps may legally name a custom/alternate flag, and both the executor and screen-owner
+  // diagnostics must observe that same stored value.
+  ensureDefaultFlags(store)
+  return store.layouts.latestOfKind<Flag>('flag').map((document) => document.body)
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

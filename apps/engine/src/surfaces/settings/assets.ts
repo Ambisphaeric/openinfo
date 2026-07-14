@@ -166,6 +166,7 @@ body.settings{padding:0;background:
 .ldg-est{color:var(--warn);font-size:10.5px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em}
 .ldg-absent{color:var(--faint);font-style:italic}
 .ldg-local{color:var(--muted);font-family:var(--mono);font-size:11px}
+.ldg-lan{color:var(--accent);font-family:var(--mono);font-size:11px;font-weight:600}
 .ldg-egress{color:var(--warn);font-family:var(--mono);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
 .ldg-when{font-family:var(--mono);font-size:11px;color:var(--faint);white-space:nowrap}
 .ldg-note{margin-top:16px;font-size:12px;color:var(--faint);border-top:1px solid var(--line-soft);

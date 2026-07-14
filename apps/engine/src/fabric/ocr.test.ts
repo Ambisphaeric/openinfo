@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Fabric, OcrInvokeParams } from '@openinfo/contracts'
 import { defaultFabric } from './document.js'
+import { resolveEgress } from './egress.js'
 import { invokeOcr } from './invoke.js'
 import { AggregateInvokeError } from './invoke-error.js'
 
@@ -131,6 +132,50 @@ test('invokeOcr classifies a non-paddle 200 shape (no results array) as bad-resp
   }
 })
 
+test('invokeOcr never retains a non-OK response body that echoes the submitted raw frame', async () => {
+  const rawFrameSentinel = Buffer.from('RAW_FRAME_ECHO_SENTINEL_OCR_175').toString('base64')
+  let receivedBody = ''
+  const echo = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      receivedBody = Buffer.concat(chunks).toString('utf8')
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: `server echoed request: ${receivedBody}` }))
+    })
+  })
+  await new Promise<void>((resolve) => echo.listen(0, resolve))
+  const address = echo.address()
+  assert.ok(address && typeof address === 'object')
+  const url = `http://127.0.0.1:${address.port}`
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        ocr: [{ kind: 'http', name: 'echoing-paddle', url, api: 'paddle-serving', model: 'pp-ocrv4' }],
+      },
+    }
+    await assert.rejects(
+      () => invokeOcr(fabric, { ...params, image: rawFrameSentinel }),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.slot, 'ocr')
+        assert.equal(error.failures[0]?.class, 'model-load')
+        assert.equal(error.failures[0]?.endpoint, 'echoing-paddle')
+        assert.equal(error.failures[0]?.model, 'pp-ocrv4')
+        assert.equal(error.failures[0]?.serverMessage, 'HTTP 500')
+        assert.match(error.failures[0]?.hint ?? '', /model "pp-ocrv4" failed to load/)
+        assert.equal(error.message.includes(rawFrameSentinel), false, 'aggregate message must not copy frame bytes')
+        assert.equal(JSON.stringify(error.failures).includes(rawFrameSentinel), false, 'classified failures must not copy frame bytes')
+        return true
+      },
+    )
+    assert.equal(receivedBody.includes(rawFrameSentinel), true, 'fake endpoint really received and echoed the sentinel')
+  } finally {
+    await stop({ server: echo })
+  }
+})
+
 test('invokeOcr falls through an unreachable paddle endpoint to a live one', async () => {
   const good = await startFakePaddle([{ text: 'second answered', confidence: 0.9, text_region: [[0, 0], [1, 0], [1, 1], [0, 1]] }])
   try {
@@ -148,6 +193,44 @@ test('invokeOcr falls through an unreachable paddle endpoint to a live one', asy
     assert.equal(result.endpoint, 'live')
   } finally {
     await stop(good)
+  }
+})
+
+test('invokeOcr refuses a 307 redirect before forwarding raw frame bytes', async () => {
+  const sink = await startFakePaddle([
+    { text: 'redirected OCR', confidence: 0.9, text_region: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+  ])
+  const redirect = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(307, { location: `${sink.url}${req.url ?? '/predict/ocr_system'}` })
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => redirect.listen(0, resolve))
+  const address = redirect.address()
+  assert.ok(address && typeof address === 'object')
+  const redirectingUrl = `http://127.0.0.1:${address.port}`
+  const rawFrameSentinel = Buffer.from('OCR_FRAME_MUST_NOT_REACH_REDIRECT_SINK').toString('base64')
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        ocr: [{ kind: 'http', name: 'redirecting-ocr', url: redirectingUrl, api: 'paddle-serving' }],
+      },
+    }
+    await assert.rejects(
+      () => invokeOcr(fabric, { ...params, image: rawFrameSentinel }),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.failures[0]?.class, 'bad-response')
+        return true
+      },
+    )
+    assert.equal(sink.bodies.length, 0, 'redirect target must never receive raw frame bytes')
+  } finally {
+    await new Promise<void>((resolve) => redirect.close(() => resolve()))
+    await stop(sink)
   }
 })
 
@@ -172,9 +255,11 @@ test('invokeOcr sends raw frames only to loopback, skipping private-LAN and publ
         ],
       },
     }
-    const result = await invokeOcr(fabric, params)
+    const result = await invokeOcr(fabric, params, { egress: resolveEgress({ contentClass: 'screen' }) })
     assert.equal(result.endpoint, 'loopback-ocr')
     assert.equal(result.text, 'read locally')
+    assert.equal(result.egress?.destination, 'device-local')
+    assert.equal(result.egress?.rawFrameTrust, undefined)
     assert.deepEqual(attempted, [`${local.url}/predict/ocr_system`])
   } finally {
     globalThis.fetch = originalFetch
@@ -202,9 +287,26 @@ test('invokeOcr sends raw frames to a LAN endpoint the user explicitly flagged t
         ocr: [{ kind: 'http', name: 'trusted-lan-ocr', url: documentedUrl, api: 'paddle-serving', trustRawFrames: true }],
       },
     }
-    const result = await invokeOcr(fabric, params)
+    const result = await invokeOcr(fabric, params, { egress: resolveEgress({ contentClass: 'screen' }) })
     assert.equal(result.endpoint, 'trusted-lan-ocr')
     assert.equal(result.text, 'read on the trusted box')
+    assert.deepEqual(
+      {
+        reach: result.egress?.reach,
+        destination: result.egress?.destination,
+        rawFrameTrust: result.egress?.rawFrameTrust,
+        allowed: result.egress?.allowed,
+        decidedBy: result.egress?.decidedBy,
+      },
+      {
+        reach: 'local',
+        destination: 'lan-local',
+        rawFrameTrust: 'explicit',
+        allowed: false,
+        decidedBy: 'content-class',
+      },
+    )
+    assert.match(result.egress?.reason ?? '', /crossed the device boundary to an explicitly trusted LAN destination/)
     assert.deepEqual(attempted, [`${documentedUrl}/predict/ocr_system`])
   } finally {
     globalThis.fetch = originalFetch
@@ -212,7 +314,7 @@ test('invokeOcr sends raw frames to a LAN endpoint the user explicitly flagged t
   }
 })
 
-test('invokeOcr skips an untrusted LAN endpoint and a flagged PUBLIC endpoint before fetch, naming the real reasons', async () => {
+test('invokeOcr refuses untrusted LAN, public, malformed, and wildcard destinations before fetch', async () => {
   const originalFetch = globalThis.fetch
   const attempted: string[] = []
   globalThis.fetch = async (input) => {
@@ -227,6 +329,8 @@ test('invokeOcr skips an untrusted LAN endpoint and a flagged PUBLIC endpoint be
         ocr: [
           { kind: 'http', name: 'lan-ocr', url: 'http://192.168.1.50:8000', api: 'paddle-serving' }, // no flag
           { kind: 'http', name: 'public-ocr', url: 'https://ocr.example.test', api: 'paddle-serving', trustRawFrames: true }, // flag cannot cross the LAN cap
+          { kind: 'http', name: 'malformed-ocr', url: 'not a url', api: 'paddle-serving', trustRawFrames: true },
+          { kind: 'http', name: 'wildcard-ocr', url: 'http://0.0.0.0:8000', api: 'paddle-serving', trustRawFrames: true },
         ],
       },
     }
@@ -234,14 +338,16 @@ test('invokeOcr skips an untrusted LAN endpoint and a flagged PUBLIC endpoint be
       () => invokeOcr(fabric, params),
       (error: unknown) => {
         assert.ok(error instanceof AggregateInvokeError)
-        assert.equal(error.failures.length, 2)
+        assert.equal(error.failures.length, 4)
         assert.ok(error.failures.every((f) => f.class === 'egress-denied'))
         assert.match(error.message, /lan-ocr: raw screen frames are loopback-only — set trustRawFrames on this endpoint to allow it/)
         assert.match(error.message, /public-ocr: raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames/)
+        assert.match(error.message, /malformed-ocr: raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames/)
+        assert.match(error.message, /wildcard-ocr: raw screen frames require a real local-network host — a wildcard bind address is not a destination/)
         return true
       },
     )
-    assert.deepEqual(attempted, []) // both skips happened BEFORE any fetch
+    assert.deepEqual(attempted, [])
   } finally {
     globalThis.fetch = originalFetch
   }

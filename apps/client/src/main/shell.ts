@@ -19,7 +19,7 @@ import { settingsUrlFor, isLanEngine } from './permission-help.js'
 import { ContextHealthTracker } from './context-health.js'
 import { shouldOpenSetup, shouldPromptMic } from './first-run.js'
 import { readFirstRunState, markFirstRunShown, markMicPrompted } from './first-run-store.js'
-import { captureStatuses, type MediaAccessStatus, type SysAudioPresence, type EngineSenseVerdict } from './capture-status.js'
+import { captureStatuses, EngineSenseGateCache, invalidatesEngineSenseGates, type MediaAccessStatus, type SysAudioPresence } from './capture-status.js'
 import { EngineSessionClient, SessionLiveState, needsModelSetup } from './engine-session.js'
 import { TRAY_ICON_TEMPLATE_1X, TRAY_ICON_TEMPLATE_2X, trayIconBuffer } from './tray-icon.js'
 import { grabOffset, draggedOrigin, resolveStartupPosition, type ScreenPoint } from './window-position.js'
@@ -152,7 +152,7 @@ let needsSetup: boolean | undefined
 // gates (processing flags, stt/ocr slot, endpoint health) the client cannot see itself. Fed into the
 // capture-status readout so the tray names the FIRST blocking gate across the whole chain. Undefined until
 // fetched (engine unreachable / old engine) — then the tray simply shows the client-side gates it knows.
-let senseGates: EngineSenseVerdict[] | undefined
+const senseGateCache = new EngineSenseGateCache()
 // The mic-capture pipeline is built in whenReady (EngineLink needs app.getPath, the controller needs
 // the capture window). EngineLink is the capture path (POST /capture/mic + the offline spool); the
 // tray keeps its own tiny EngineSessionClient — EngineLink is introduced here only because capture spools.
@@ -212,6 +212,7 @@ const sysAudioPresence = (): SysAudioPresence =>
 const captureStatusInput = () => {
   const mic = mediaStatus('microphone')
   const screenAccess = mediaStatus('screen')
+  const engineGates = senseGateCache.current()
   return {
     platform: process.platform,
     ...(mic !== undefined ? { micAccess: mic } : {}),
@@ -226,7 +227,7 @@ const captureStatusInput = () => {
     systemAudioMethod: cfg.systemAudioMethod, // #142: drives whether the readout names the loopback grant or a virtual device
     engineReachable: connected,
     sessionLive: liveState.live,
-    ...(senseGates !== undefined ? { engineGates: senseGates } : {}),
+    ...(engineGates !== undefined ? { engineGates } : {}),
   }
 }
 
@@ -1243,19 +1244,16 @@ const connectEvents = (): void => {
           if (parsed.name === 'fabric.changed' && parsed.payload) {
             needsSetup = needsModelSetup(parsed.payload as Fabric)
             refreshTray()
-            // The fabric's slots drive the engine-side sense gates (an stt/ocr endpoint added or removed) —
-            // re-evaluate so the capture readout's blocking gate stays accurate (issue #7).
-            void refreshSenses()
           }
           // The route.detect flag was flipped (PUT /flags/route.detect) — start/stop focus watching live,
           // without a refetch (the event carries the Flag; its `default` is the effective value).
           if (parsed.name === 'flag.changed' && parsed.payload) {
             const flag = parsed.payload as Flag
             if (flag.key === ROUTE_DETECT_FLAG) applyDetectFlag(flag.default)
-            // A processing flag flipped (distill.enabled/transcribe, screen.ocr) — the engine-side sense gates
-            // may have opened/closed, so refresh the capture readout (issue #7).
-            void refreshSenses()
           }
+          // Flags, fabric occupancy, and the active workflow document all feed GET /senses. In particular,
+          // workflow.updated covers a hot edit while workflow.enabled stays on (no accompanying flag event).
+          if (invalidatesEngineSenseGates(parsed.name)) void refreshSenses()
         } catch {
           /* ignore malformed frames */
         }
@@ -1392,15 +1390,18 @@ const ensureEngine = async (): Promise<void> => {
 
 /**
  * Refresh the engine-side per-sense gate verdicts (GET /senses, issue #7) and repaint the tray. The
- * verdicts change when a flag flips or the fabric changes (a slot gains/loses an endpoint), so this runs
- * on the WS flag.changed / fabric.changed events as well as at seed. Best-effort — an unreachable or old
- * engine leaves `senseGates` as-is (the tray falls back to the client-side gates it always knows).
+ * verdicts change when a flag flips, the fabric changes, or the active workflow is hot-edited, so this
+ * runs on the corresponding WS invalidations as well as at seed. Best-effort — an unreachable or old
+ * engine leaves the cache empty (the tray falls back to the client-side gates it always knows).
  */
 const refreshSenses = async (): Promise<void> => {
+  const revision = senseGateCache.begin()
+  refreshTray()
   try {
-    senseGates = await session.senses()
-    refreshTray()
+    const gates = await session.senses()
+    if (senseGateCache.succeed(revision, gates)) refreshTray()
   } catch (err) {
+    if (senseGateCache.fail(revision)) refreshTray()
     console.error('[shell] could not read /senses for the capture readout:', err)
   }
 }

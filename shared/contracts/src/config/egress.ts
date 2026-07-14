@@ -7,11 +7,13 @@ import { Type, type Static } from '@sinclair/typebox'
  * primitive the user deliberately ADDS, never a setting to turn off.
  *
  * The four layers, and how each denies:
- *  1. ENDPOINT      — an endpoint is `local` or `egress` BY ITS NATURE (loopback/LAN vs a hosted host);
- *                     this is the layer-1 classification of the DESTINATION, derived purely from the URL.
+ *  1. ENDPOINT      — an endpoint is `local` or `egress` BY ITS NATURE (loopback/LAN vs a hosted host),
+ *                     with the finer destination stamped as device-local / LAN-local / hosted-public;
+ *                     both are derived purely from the endpoint document, never from payload data.
  *  2. PROMPT/FIELD  — a prompt document may declare it never uses egress-capable endpoints (`neverEgress`).
  *  3. MODE/WORKSPACE— a mode or a workspace may deny egress wholesale (`egress.deny`).
- *  4. CONTENT-CLASS — content carries its origin; screen-derived content NEVER egresses, transcripts MAY.
+ *  4. CONTENT-CLASS — content carries its origin; screen-derived content never reaches hosted/public
+ *                     destinations, while an explicitly trusted private-LAN raw-frame hop is separate.
  *
  * Resolution follows the voice-binding precedent (global → mode → workspace → session, with a
  * which-scope-won audit field): MOST-SPECIFIC DENIAL WINS, and every decision records WHICH layer decided.
@@ -25,9 +27,26 @@ import { Type, type Static } from '@sinclair/typebox'
  * (a hosted host, or a cloud provider). Derived purely from the endpoint (kind + URL), never configured. */
 export const EgressReach = Type.Union([Type.Literal('local'), Type.Literal('egress')], {
   $id: 'EgressReach',
-  description: 'layer 1: an endpoint is local (loopback/LAN/spawned) or egress (hosted/cloud) by its nature',
+  description:
+    'layer 1 compatibility bucket: local-network (device loopback/managed or private LAN) vs hosted/public egress; use EgressDecision.destination for physical boundary truth',
 })
 export type EgressReach = Static<typeof EgressReach>
+
+/**
+ * The physical destination class for a completed invoke. `EgressReach` intentionally preserves the
+ * original policy grouping (`local` includes both loopback and the private LAN); this additive detail is
+ * the audit answer to whether bytes stayed on the device, crossed to the LAN, or reached a hosted/public
+ * service. It contains no host, URL, credential, payload, or model output.
+ */
+export const EgressDestination = Type.Union(
+  [Type.Literal('device-local'), Type.Literal('lan-local'), Type.Literal('hosted-public')],
+  {
+    $id: 'EgressDestination',
+    description:
+      'physical destination of a completed invoke: device-local (managed/loopback), lan-local (device boundary crossed within the private network), or hosted-public',
+  },
+)
+export type EgressDestination = Static<typeof EgressDestination>
 
 /**
  * Which layer decided an egress outcome — the which-layer-won provenance (the voice `scope` analogue).
@@ -43,12 +62,13 @@ export type EgressLayer = Static<typeof EgressLayer>
 
 /**
  * Layer 4: the origin class of a piece of content, derived from what the pipeline already knows (no new
- * upstream tagging). `screen` (OCR/VLM-derived) NEVER egresses; `transcript` (mic/system audio) and
- * `typed` MAY; `unknown` is treated as allowed-unless-denied-elsewhere (never a silent deny).
+ * upstream tagging). `screen` (OCR/VLM-derived) NEVER reaches hosted/public destinations; an explicit
+ * trusted-LAN raw-frame opt-in is enforced separately. `transcript` (mic/system audio) and `typed` MAY;
+ * `unknown` is treated as allowed-unless-denied-elsewhere (never a silent deny).
  */
 export const ContentClass = Type.Union(
   ['screen', 'transcript', 'typed', 'unknown'].map((c) => Type.Literal(c)),
-  { $id: 'ContentClass', description: 'layer 4: content origin — screen never egresses; transcript/typed may' },
+  { $id: 'ContentClass', description: 'layer 4: content origin — screen denies hosted/public egress; transcript/typed may allow it' },
 )
 export type ContentClass = Static<typeof ContentClass>
 
@@ -69,16 +89,25 @@ export type EgressPolicy = Static<typeof EgressPolicy>
  * "what data went where and what filtered it." It fuses the layer-1 classification of the endpoint that
  * ANSWERED (`reach`) with the content-side consent verdict (`allowed` + `decidedBy` + `reason`). Because a
  * denied-egress invoke is FILTERED before it runs, a persisted record with `reach:'egress'` always has
- * `allowed:true`; a `reach:'local'` record may carry `allowed:false` (it stayed local BECAUSE egress was
- * denied — `decidedBy` says which layer). Append-only/optional on provenance: records predating #64 omit
- * it and still validate; the ledger renders the honest local default for them.
+ * `allowed:true`; a `reach:'local'` record may carry `allowed:false` because hosted/public egress was
+ * denied even though an explicitly trusted LAN raw-frame hop was allowed. `destination` removes that
+ * deliberate compatibility ambiguity for newly stamped records; `rawFrameTrust:'explicit'` records the
+ * narrow opt-in required for a successful LAN OCR/VLM call. Both fields are additive/optional so existing
+ * persisted records remain valid, while new code always stamps `destination`.
  */
 export const EgressDecision = Type.Object(
   {
     reach: EgressReach,
-    allowed: Type.Boolean({ description: 'did the layered content-side policy permit egress for this content?' }),
+    allowed: Type.Boolean({ description: 'did the layered content-side policy permit hosted/public egress for this content?' }),
     decidedBy: EgressLayer,
     reason: Type.String({ minLength: 1, description: 'one-line, human-readable why — safe to surface (no url/secret)' }),
+    destination: Type.Optional(EgressDestination),
+    rawFrameTrust: Type.Optional(
+      Type.Literal('explicit', {
+        description:
+          'present only when raw screen bytes crossed to a LAN-local HTTP endpoint under that endpoint’s explicit trustRawFrames opt-in',
+      }),
+    ),
   },
   { $id: 'EgressDecision', additionalProperties: false },
 )

@@ -257,6 +257,36 @@ test('OcrResult validates with and without capturedAt (append-only)', () => {
   assert.deepEqual([...Value.Errors(AllSchemas.OcrResult, withCapturedAt)], [], 'record with capturedAt validates')
 })
 
+test('#196 EgressDecision destination detail is additive, closed, and payload-free', () => {
+  const legacy = {
+    reach: 'local',
+    allowed: false,
+    decidedBy: 'content-class',
+    reason: 'legacy local decision',
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.EgressDecision, legacy)], [], 'pre-#196 decision still validates')
+
+  const trustedLan = {
+    ...legacy,
+    reason: 'raw screen bytes crossed the device boundary to an explicitly trusted LAN destination',
+    destination: 'lan-local',
+    rawFrameTrust: 'explicit',
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.EgressDecision, trustedLan)], [], 'additive trusted-LAN detail validates')
+  assert.ok(
+    [...Value.Errors(AllSchemas.EgressDecision, { ...trustedLan, destination: 'private-url' })].length > 0,
+    'destination is a closed safe enum',
+  )
+  assert.ok(
+    [...Value.Errors(AllSchemas.EgressDecision, { ...trustedLan, rawFrameTrust: true })].length > 0,
+    'raw-frame trust is the explicit literal, not a generic boolean',
+  )
+  assert.ok(
+    [...Value.Errors(AllSchemas.EgressDecision, { ...trustedLan, url: 'http://private-host' })].length > 0,
+    'URLs cannot enter provenance',
+  )
+})
+
 // #102 keep-time: QueueStatus.lag is additive/optional; BacklogLag is honest about basis + non-negative.
 test('QueueStatus.lag (BacklogLag) is additive and honest', () => {
   const base = { pendingFiles: 0, pendingBytes: 0, drainedFiles: 0, updatedAt: '2026-07-10T14:00:00Z' }

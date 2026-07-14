@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Endpoint } from '@openinfo/contracts'
-import { classifyEndpoint, classifyHost, egressDecision, isLoopbackEndpoint, mayReceiveRawFrames, resolveEgress } from './egress.js'
+import { classifyDestination, classifyEndpoint, classifyHost, egressDecision, isLoopbackEndpoint, mayReceiveRawFrames, resolveEgress } from './egress.js'
 
 /* ---------- Layer 1: endpoint reach classification (pure, URL-derived) ---------- */
 
@@ -57,6 +57,16 @@ test('isLoopbackEndpoint: distinguishes this machine from private-LAN endpoints'
   assert.equal(isLoopbackEndpoint({ kind: 'cloud', name: 'cloud', provider: 'anthropic', auth: 'keychain' }), false)
 })
 
+test('classifyDestination: distinguishes device-local, LAN-local, and hosted/public without retaining an address', () => {
+  const endpoint = (url: string): Endpoint => ({ kind: 'http', name: 'safe-name', url, api: 'openai-compat' })
+  assert.equal(classifyDestination({ kind: 'local', name: 'managed', runtime: 'mlx', model: 'm' }), 'device-local')
+  assert.equal(classifyDestination(endpoint('http://127.0.0.1:8000')), 'device-local')
+  assert.equal(classifyDestination(endpoint('http://192.168.1.50:8000')), 'lan-local')
+  assert.equal(classifyDestination(endpoint('http://vision-box.local:8000')), 'lan-local')
+  assert.equal(classifyDestination(endpoint('https://vision.example.com')), 'hosted-public')
+  assert.equal(classifyDestination(endpoint('not a url')), 'hosted-public')
+})
+
 test('mayReceiveRawFrames: the full truth table — loopback default, explicit LAN trust, an absolute LAN cap', () => {
   const http = (url: string, trustRawFrames?: boolean): Endpoint => ({
     kind: 'http',
@@ -83,6 +93,7 @@ test('mayReceiveRawFrames: the full truth table — loopback default, explicit L
   // a wildcard bind address is not a destination host — the flag never trusts it
   assert.equal(mayReceiveRawFrames(http('http://0.0.0.0:8000', true)), false)
   assert.equal(mayReceiveRawFrames(http('http://[::]:8000', true)), false)
+  assert.equal(mayReceiveRawFrames(http('not a url', true)), false)
   // cloud endpoints never receive raw frames
   assert.equal(mayReceiveRawFrames({ kind: 'cloud', name: 'cloud', provider: 'anthropic', auth: 'keychain' }), false)
 })
@@ -131,17 +142,47 @@ test('resolveEgress: unknown content class is not a silent deny', () => {
 
 /* ---------- egressDecision: fuse reach with consent for provenance ---------- */
 
-test('egressDecision: local reach + denied consent records stayed-local + the layer', () => {
+test('egressDecision: coarse local reach never fabricates device-local destination scope', () => {
   const d = egressDecision('local', resolveEgress({ contentClass: 'screen' }))
   assert.equal(d.reach, 'local')
   assert.equal(d.allowed, false)
   assert.equal(d.decidedBy, 'content-class')
-  assert.match(d.reason, /stayed local/)
+  assert.equal(d.destination, undefined)
+  assert.match(d.reason, /destination scope was not recorded/)
+  assert.doesNotMatch(d.reason, /this device|device-local/)
 })
 
 test('egressDecision: egress reach can only pair with allowed consent (honest invariant)', () => {
   const d = egressDecision('egress', resolveEgress({ contentClass: 'transcript' }))
   assert.equal(d.reach, 'egress')
   assert.equal(d.allowed, true)
+  assert.equal(d.destination, 'hosted-public')
   assert.match(d.reason, /left the machine/)
+})
+
+test('egressDecision: trusted-LAN raw-frame detail records boundary crossing and explicit trust without an address', () => {
+  const d = egressDecision('local', resolveEgress({ contentClass: 'screen' }), {
+    destination: 'lan-local',
+    rawFrameTrust: 'explicit',
+  })
+  assert.deepEqual(
+    {
+      reach: d.reach,
+      destination: d.destination,
+      rawFrameTrust: d.rawFrameTrust,
+      allowed: d.allowed,
+      decidedBy: d.decidedBy,
+    },
+    {
+      reach: 'local',
+      destination: 'lan-local',
+      rawFrameTrust: 'explicit',
+      allowed: false,
+      decidedBy: 'content-class',
+    },
+  )
+  assert.match(d.reason, /crossed the device boundary/)
+  assert.match(d.reason, /explicitly trusted LAN destination/)
+  assert.match(d.reason, /hosted\/public egress remained denied/)
+  assert.equal(d.reason.includes('192.168.'), false)
 })

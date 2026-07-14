@@ -70,6 +70,41 @@ test('invokeLlm falls through to the next endpoint when the first fails', async 
   }
 })
 
+test('invokeLlm refuses a 307 redirect before forwarding the prompt body', async () => {
+  const sink = await startFakeLlm('redirected answer')
+  const redirect = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(307, { location: `${sink.url}${req.url ?? '/v1/chat/completions'}` })
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => redirect.listen(0, resolve))
+  const address = redirect.address()
+  assert.ok(address && typeof address === 'object')
+  const redirectingUrl = `http://127.0.0.1:${address.port}`
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [{ kind: 'http', name: 'redirecting-llm', url: redirectingUrl, api: 'openai-compat' }],
+      },
+    }
+    await assert.rejects(
+      () => invokeLlm(fabric, [{ role: 'user', content: 'PROMPT_MUST_NOT_REACH_REDIRECT_SINK' }]),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.failures[0]?.class, 'bad-response')
+        return true
+      },
+    )
+    assert.equal(sink.requests.length, 0, 'redirect target must never receive the prompt body')
+  } finally {
+    await new Promise<void>((resolve) => redirect.close(() => resolve()))
+    await stop(sink)
+  }
+})
+
 test('invokeLlm injects a resolved keyRef as Authorization: Bearer, never the ref/value in logs', async () => {
   const fake = await startFakeLlm('ok')
   authHeaders.length = 0
@@ -291,6 +326,7 @@ test('egress-denied consent SKIPS an egress endpoint and falls through to a loca
     assert.equal(result.endpoint, 'loopback')
     assert.equal(result.text, 'answered locally')
     assert.equal(result.egress?.reach, 'local')
+    assert.equal(result.egress?.destination, 'device-local')
     assert.equal(result.egress?.allowed, false)
     assert.equal(result.egress?.decidedBy, 'workspace')
   } finally {
@@ -320,6 +356,7 @@ test('ordinary LLM content preserves private-LAN endpoints as local (screen loop
     assert.equal(result.endpoint, 'lan-llm')
     assert.equal(result.text, 'answered over LAN')
     assert.equal(result.egress?.reach, 'local')
+    assert.equal(result.egress?.destination, 'lan-local')
     assert.deepEqual(attempted, [`${documentedUrl}/v1/chat/completions`])
   } finally {
     globalThis.fetch = originalFetch
@@ -334,7 +371,7 @@ test('egress-denied with ONLY egress endpoints degrades explainably (egress-deni
       llm: [{ kind: 'http', name: 'hosted', url: 'https://api.example.com', api: 'openai-compat' }],
     },
   }
-  const egress = resolveEgress({ contentClass: 'screen' }) // screen never egresses
+  const egress = resolveEgress({ contentClass: 'screen' }) // screen never reaches hosted/public
   await assert.rejects(
     invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { egress }),
     (err: unknown) => {
@@ -353,10 +390,40 @@ test('egress ALLOWED + a local endpoint answers ⇒ decision reach:local, allowe
     const fabric: Fabric = { slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'loopback', url: local.url, api: 'openai-compat' }] } }
     const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], { egress: resolveEgress({ contentClass: 'transcript' }) })
     assert.equal(result.egress?.reach, 'local')
+    assert.equal(result.egress?.destination, 'device-local')
     assert.equal(result.egress?.allowed, true)
     assert.equal(result.egress?.decidedBy, 'default')
   } finally {
     await stop(local)
+  }
+})
+
+test('egress ALLOWED + a hosted/public endpoint answers ⇒ physical destination is stamped without its URL', async () => {
+  const target = await startFakeLlm('hosted answer')
+  const documentedUrl = `http://203.0.113.10:${new URL(target.url).port}`
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    return originalFetch(url.replace(documentedUrl, target.url), init)
+  }
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [{ kind: 'http', name: 'hosted-service', url: documentedUrl, api: 'openai-compat' }],
+      },
+    }
+    const result = await invokeLlm(fabric, [{ role: 'user', content: 'hi' }], {
+      egress: resolveEgress({ contentClass: 'typed' }),
+    })
+    assert.equal(result.egress?.reach, 'egress')
+    assert.equal(result.egress?.destination, 'hosted-public')
+    assert.equal(result.egress?.allowed, true)
+    assert.match(result.egress?.reason ?? '', /hosted\/public destination/)
+    assert.equal(JSON.stringify(result.egress).includes(documentedUrl), false)
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(target)
   }
 })
 

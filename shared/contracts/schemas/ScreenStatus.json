@@ -12,7 +12,7 @@
   ],
   "properties": {
     "enabled": {
-      "description": "the screen.ocr flag state (read per-frame)",
+      "description": "whether the current legacy/workflow screen-recognition owner is enabled",
       "type": "boolean"
     },
     "processed": {

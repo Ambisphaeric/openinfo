@@ -65,8 +65,9 @@ export const OcrResult = Type.Object(
         endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this' }),
         model: Type.Optional(Type.String()),
         usage: Type.Optional(InvokeUsage),
-        // #64: screen-derived content is content-class `screen` and NEVER egresses, so this decision is
-        // reach:'local'/allowed:false/decidedBy:'content-class' whenever recorded. Append-only/optional.
+        // #64/#196: screen-derived content denies HOSTED/PUBLIC egress. A successful invoke is either
+        // device-local or an explicitly trusted LAN raw-frame hop; the optional additive destination /
+        // rawFrameTrust detail on EgressDecision distinguishes those without exposing a URL or payload.
         egress: Type.Optional(EgressDecision),
       },
       { additionalProperties: false },

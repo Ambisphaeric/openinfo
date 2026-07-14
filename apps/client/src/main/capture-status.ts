@@ -73,6 +73,40 @@ export interface EngineSenseVerdict {
   blocking?: { id: string; label: string; fix?: string }
 }
 
+/** Engine events that can change the derived GET /senses gate chain and therefore invalidate the tray cache. */
+export const invalidatesEngineSenseGates = (eventName: string): boolean =>
+  eventName === 'flag.changed' || eventName === 'fabric.changed' || eventName === 'workflow.updated'
+
+/**
+ * Small latest-request-wins cache for GET /senses. Invalidating clears the old verdict immediately;
+ * an older, slower request can never overwrite a newer result after back-to-back WS edits.
+ */
+export class EngineSenseGateCache {
+  private revision = 0
+  private gates: EngineSenseVerdict[] | undefined
+
+  current(): EngineSenseVerdict[] | undefined {
+    return this.gates
+  }
+
+  begin(): number {
+    this.gates = undefined
+    return ++this.revision
+  }
+
+  succeed(revision: number, gates: EngineSenseVerdict[]): boolean {
+    if (revision !== this.revision) return false
+    this.gates = gates
+    return true
+  }
+
+  fail(revision: number): boolean {
+    if (revision !== this.revision) return false
+    this.gates = undefined
+    return true
+  }
+}
+
 export interface CaptureStatusInput {
   /** process.platform — only 'darwin' has the TCC gates this readout describes. */
   platform: string

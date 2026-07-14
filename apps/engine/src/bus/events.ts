@@ -1,4 +1,4 @@
-import type { CaptureChunk, ChatDelta, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, SenseLaneSnapshot, Session, SessionAnnotation, Surface, TranscriptUpdate } from '@openinfo/contracts'
+import type { CaptureChunk, ChatDelta, Distillate, Draft, Entity, Fabric, FieldValue, Flag, GuardHold, Moment, OcrResult, QueueStatus, SenseLaneSnapshot, Session, SessionAnnotation, Surface, TranscriptUpdate, WorkflowSpec } from '@openinfo/contracts'
 
 export interface EngineEvents {
   'capture.received': CaptureChunk
@@ -34,6 +34,7 @@ export interface EngineEvents {
   'session.rerouted': Session
   'draft.created': Draft
   'fabric.changed': Fabric
+  'workflow.updated': WorkflowSpec
   'surface.updated': Surface
   // The egress guard (#63) suspended a hop, or a held hop was released/denied — surfaces refresh their
   // held indicator + release/deny affordance. Payload carries span descriptors, never the raw value.

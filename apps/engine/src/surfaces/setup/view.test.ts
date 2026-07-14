@@ -113,15 +113,15 @@ test('the endpoint row trends toward set → connect → test → benchmark (Tes
   assert.match(html, /<button type="button" disabled title="Benchmark[^>]*>Benchmark<\/button>/)
 })
 
-test('each slot carries an honest usage note — informational, never gating', () => {
+test('each slot carries an honest current usage note — informational, never gating', () => {
   const html = editorHtml(data())
-  // llm/stt say what they power today
+  // wired slots say what they power today
   assert.match(html, /powers distill, drafts, and the core pass today/)
   assert.match(html, /powers call transcription today/)
+  assert.match(html, /powers prompted screen understanding from an enabled workflow VLM step today/)
+  assert.match(html, /powers screen reading today, through legacy ingest or an enabled workflow OCR step/)
   // the not-yet-invoked slots say "stored … wired in a later phase … configure freely"
   assert.match(html, /speech .*wired in a later phase \(P5\)\. Configure it freely/)
-  assert.match(html, /vision is wired in a later phase\. Configure it freely/)
-  assert.match(html, /screen reading is wired in a later phase \(P3\)\. Configure it freely/)
   assert.match(html, /recall \/ vector search is wired in a later phase \(P3\)\. Configure it freely/)
   // the old inert language is gone — nothing is "not wired" / inert on the page
   assert.doesNotMatch(html, /not wired/)

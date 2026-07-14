@@ -24,6 +24,8 @@ export const Events = {
   'orientation.updated': 'SessionAnnotation',
   'draft.created': 'Draft',
   'fabric.changed': 'Fabric',
+  // A hot-edited workflow document; consumers re-read any derived pipeline diagnostics immediately.
+  'workflow.updated': 'WorkflowSpec',
   'surface.updated': 'Surface',
   'ledger.updated': 'Commitment',
   'drift.step': 'DriftChainStep',

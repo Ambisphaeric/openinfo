@@ -10,12 +10,12 @@ import { escapeHtml, type SetupData } from '../../setup/view.js'
  *
  * HONEST ABSENCES, not fabricated data:
  *  - GUARD (#63, now BUILT): renders each hop's recorded verdict — clean · redacted·N · unguarded — and
- *    "—" ("no guard configured") only for hops that genuinely carry no guard verdict (local, or pre-#63).
- *  - EGRESS (#64): the egress column now renders from REAL decision provenance when a record carries it —
- *    "local" (with the deciding layer when it stayed local BY POLICY) or "egress → endpoint" when content
- *    actually left. A record predating #64 has no decision, so it falls back to the honest local default
- *    (every invoke in that era was local). With a factory posture (no egress endpoint configured) nothing
- *    can leave, so the column stays "local" — but truthfully, from data, not hardcoded.
+ *    "—" ("no hosted/public guard") only for hops that genuinely carry no guard verdict
+ *    (device/LAN-local, or pre-#63).
+ *  - DESTINATION / EGRESS (#64/#196): newly recorded hops distinguish `device-local`, explicitly trusted
+ *    `LAN-local`, and `hosted/public`. Older provenance without the additive destination field renders
+ *    "local · scope not recorded" instead of pretending network-local proves on-device. No URL or secret
+ *    enters the decision or this view.
  *  - Token counts are shown with an `est` marker when the server reported no usage and the invoke layer
  *    estimated them (chars/4) — a measurement is never impersonated.
  *
@@ -115,24 +115,26 @@ const tokensCell = (usage: InvokeUsage | undefined): string => {
   return `<span class="ldg-tok">${fmt(inTok)} in · ${fmt(outTok)} out</span>${est}${dur}`
 }
 
-/**
- * The egress cell for a hop (#64), rendered from the recorded decision:
- *  - no decision (a record predating #64) ⇒ the honest local default;
- *  - `reach:'egress'` ⇒ content LEFT the machine — flagged distinctly (`ldg-egress`), with the reason on hover;
- *  - `reach:'local'` and denied ⇒ "local · <layer>" so the WHY-it-stayed-local is visible;
- *  - `reach:'local'` and allowed ⇒ plain "local".
- */
+/** The destination/egress cell (#64/#196), rendered only from persisted, payload-free provenance. */
 const egressCell = (egress: EgressDecision | undefined): string => {
   if (egress === undefined) {
-    return '<span class="ldg-local" title="no egress decision recorded for this hop — it ran locally">local</span>'
+    return '<span class="ldg-local" title="destination scope was not recorded for this legacy hop">local <span class="ldg-model">· scope not recorded</span></span>'
   }
-  if (egress.reach === 'egress') {
-    return `<span class="ldg-egress" title="${escapeHtml(egress.reason)}">egress</span>`
+  if (egress.destination === 'hosted-public' || (egress.destination === undefined && egress.reach === 'egress')) {
+    return `<span class="ldg-egress" title="${escapeHtml(egress.reason)}">hosted/public</span>`
   }
-  if (!egress.allowed) {
-    return `<span class="ldg-local" title="${escapeHtml(egress.reason)}">local <span class="ldg-model">· ${escapeHtml(egress.decidedBy)}</span></span>`
+  if (egress.destination === 'lan-local') {
+    const label = egress.rawFrameTrust === 'explicit' ? 'trusted LAN' : 'LAN-local'
+    const trust = egress.rawFrameTrust === 'explicit' ? ' <span class="ldg-model">· explicit raw-frame trust</span>' : ''
+    return `<span class="ldg-lan" title="${escapeHtml(egress.reason)}">${label}${trust}</span>`
   }
-  return '<span class="ldg-local" title="egress was allowed; a local endpoint answered">local</span>'
+  if (egress.destination === 'device-local') {
+    const layer = !egress.allowed ? ` <span class="ldg-model">· ${escapeHtml(egress.decidedBy)}</span>` : ''
+    return `<span class="ldg-local" title="${escapeHtml(egress.reason)}">device-local${layer}</span>`
+  }
+  // A #64 record can carry reach without the additive #196 destination detail. `local` cannot tell us
+  // whether that older endpoint was loopback or LAN, so preserve the uncertainty visibly.
+  return `<span class="ldg-local" title="${escapeHtml(egress.reason)}">local <span class="ldg-model">· scope not recorded</span></span>`
 }
 
 /**
@@ -143,7 +145,7 @@ const egressCell = (egress: EgressDecision | undefined): string => {
  *  - `unguarded` ⇒ no guard was active and egress proceeded under an explicit acknowledgment (flagged distinctly).
  */
 const guardCell = (guard: GuardVerdict | undefined): string => {
-  if (guard === undefined) return '<span class="ldg-absent" title="no guard verdict for this hop (local hop, or predates #63)">— no guard</span>'
+  if (guard === undefined) return '<span class="ldg-absent" title="no hosted/public egress guard verdict for this hop (device/LAN-local, or predates #63)">— no guard</span>'
   const spanKinds = guard.spans && guard.spans.length > 0 ? guard.spans.map((s) => s.kind).join(', ') : ''
   if (guard.outcome === 'redacted') {
     return `<span class="ldg-guard-redacted" title="${escapeHtml(guard.reason)}${spanKinds ? ` — kinds: ${escapeHtml(spanKinds)}` : ''}">redacted · ${guard.maskedSpanCount}</span>`
@@ -154,17 +156,23 @@ const guardCell = (guard: GuardVerdict | undefined): string => {
   return `<span class="ldg-guard-clean" title="${escapeHtml(guard.reason)}">clean</span>`
 }
 
-/** Totals across all passes' hops: in/out token sums, whether any count was estimated, and egress-hop count. */
-const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEstimated: boolean; hops: number; egressed: number } => {
+/** Totals across all passes, including physical device-boundary hops (LAN + hosted/public). */
+const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEstimated: boolean; hops: number; boundaryHops: number } => {
   let inTok = 0
   let outTok = 0
   let anyEstimated = false
   let hops = 0
-  let egressed = 0
+  let boundaryHops = 0
   for (const pass of passes) {
     for (const hop of pass.hops) {
       hops++
-      if (hop.egress?.reach === 'egress') egressed++
+      if (
+        hop.egress?.destination === 'lan-local' ||
+        hop.egress?.destination === 'hosted-public' ||
+        (hop.egress?.destination === undefined && hop.egress?.reach === 'egress')
+      ) {
+        boundaryHops++
+      }
       if (hop.usage) {
         inTok += hop.usage.promptTokens ?? 0
         outTok += hop.usage.completionTokens ?? 0
@@ -172,7 +180,7 @@ const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEs
       }
     }
   }
-  return { in: inTok, out: outTok, anyEstimated, hops, egressed }
+  return { in: inTok, out: outTok, anyEstimated, hops, boundaryHops }
 }
 
 const rowHtml = (pass: LedgerPass): string =>
@@ -268,7 +276,7 @@ export const renderLedger = (data: SetupData): string => {
     `<span><span class="n">${fmt(t.hops)}</span> hop${t.hops === 1 ? '' : 's'}</span>` +
     `<span><span class="n">${fmt(t.in)}</span> tokens in</span>` +
     `<span><span class="n">${fmt(t.out)}</span> tokens out</span>` +
-    `<span><span class="n">${fmt(t.egressed)}</span> egress hop${t.egressed === 1 ? '' : 's'}</span>` +
+    `<span><span class="n">${fmt(t.boundaryHops)}</span> device-boundary hop${t.boundaryHops === 1 ? '' : 's'}</span>` +
     (t.anyEstimated ? '<span class="ldg-est">some estimated</span>' : '') +
     '</div>'
 
@@ -287,11 +295,12 @@ const footerNote = (): string =>
   '<div class="ldg-note">The guard column (#63) renders from each pass’s recorded verdict: ' +
   '<span class="ldg-guard-clean">clean</span> (guard ran, nothing flagged), ' +
   '<span class="ldg-guard-redacted">redacted · N</span> (N spans masked before the content left — kinds on hover, never the raw value), ' +
-  '<span class="ldg-guard-unguarded">unguarded</span> (no guard active, egress acknowledged), or “— no guard” for a local hop (no egress ⇒ no filter). ' +
+  '<span class="ldg-guard-unguarded">unguarded</span> (no guard active, hosted/public egress acknowledged), or “— no guard” for a device/LAN-local hop (the hosted/public guard does not run). ' +
   'A SUSPENDED egress hop (strict mode, or a fail-closed empty guard slot) surfaces in the held block above with a release/deny affordance. ' +
-  'The egress column (#64) renders from each pass’s recorded decision: a hop shows ' +
-  '<span class="ldg-egress">egress</span> only when content actually left the machine, and “local · &lt;layer&gt;” ' +
-  'when it stayed local because a layer (mode / workspace / prompt / content-class) denied egress. A fresh ' +
-  'install has no egress-capable endpoint configured, so nothing can leave — the column stays local, truthfully ' +
-  'from data. Token counts marked <span class="ldg-est">est</span> were estimated (chars/4) because the server ' +
+  'The destination/egress column (#64/#196) distinguishes <span class="ldg-local">device-local</span>, ' +
+  '<span class="ldg-lan">trusted LAN</span> (raw bytes crossed this device’s boundary under an explicit endpoint opt-in), and ' +
+  '<span class="ldg-egress">hosted/public</span>. Older rows that lack additive destination detail say “scope not recorded”; ' +
+  'they are never relabeled device-local. The summary counts both LAN and hosted/public calls as device-boundary hops. ' +
+  'A fresh install has no hosted/public endpoint and raw frames default to device-local. Token counts marked ' +
+  '<span class="ldg-est">est</span> were estimated (chars/4) because the server ' +
   'reported no usage. This view reads the default workspace’s recorded passes (most recent 100).</div>'

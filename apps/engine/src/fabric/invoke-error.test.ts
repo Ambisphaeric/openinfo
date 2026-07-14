@@ -49,7 +49,7 @@ const failureOf = async (fabric: Fabric): Promise<AggregateInvokeError> => {
 test('classify: unreachable — nothing listening (ECONNREFUSED)', async () => {
   const agg = await failureOf(fabricWith('http://127.0.0.1:1'))
   assert.equal(agg.failures[0]?.class, 'unreachable')
-  assert.match(agg.failures[0]!.hint, /check the URL/)
+  assert.match(agg.failures[0]!.hint, /is the server running\? check .+ in Settings → Endpoints/)
 })
 
 test('classify: timeout — the server never answers within the timeout', async () => {

@@ -5,6 +5,7 @@ import type { Fabric } from '@openinfo/contracts'
 import { defaultFabric } from './document.js'
 import { invokeStt, type SttAudio } from './invoke.js'
 import { LocalRuntimeManager, type LocalEndpoint, type RuntimeSpec } from './endpoints/local.js'
+import { AggregateInvokeError } from './invoke-error.js'
 
 interface FakeStt {
   server: Server
@@ -89,6 +90,41 @@ test('invokeStt falls through to the next endpoint when the first fails', async 
     assert.equal(result.endpoint, 'live')
   } finally {
     await stop(good)
+  }
+})
+
+test('invokeStt refuses a 308 redirect before forwarding the audio body', async () => {
+  const sink = await startFakeStt('redirected transcript')
+  const redirect = createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(308, { location: `${sink.url}${req.url ?? '/v1/audio/transcriptions'}` })
+      res.end()
+    })
+  })
+  await new Promise<void>((resolve) => redirect.listen(0, resolve))
+  const address = redirect.address()
+  assert.ok(address && typeof address === 'object')
+  const redirectingUrl = `http://127.0.0.1:${address.port}`
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        stt: [{ kind: 'http', name: 'redirecting-stt', url: redirectingUrl, api: 'openai-compat' }],
+      },
+    }
+    await assert.rejects(
+      () => invokeStt(fabric, { base64: Buffer.from('AUDIO_MUST_NOT_REACH_REDIRECT_SINK').toString('base64'), contentType: 'audio/wav' }),
+      (error: unknown) => {
+        assert.ok(error instanceof AggregateInvokeError)
+        assert.equal(error.failures[0]?.class, 'bad-response')
+        return true
+      },
+    )
+    assert.equal(sink.bodies.length, 0, 'redirect target must never receive the multipart audio body')
+  } finally {
+    await new Promise<void>((resolve) => redirect.close(() => resolve()))
+    await stop(sink)
   }
 })
 

@@ -1,11 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk, Distillate, OcrResult, ScreenProcessingOutcome, VlmInvokeParams, WorkflowStep } from '@openinfo/contracts'
 import { createFixtureReplay, loadFixtureSync } from '../../../../tools/fixtures/model.mjs'
-import { AggregateInvokeError, FabricDocuments, type ClassifiedFailure, type ScreenTextResult } from '../fabric/index.js'
+import { AggregateInvokeError, FabricDocuments, defaultFabric, toQueueFailure, type ClassifiedFailure, type ScreenTextResult } from '../fabric/index.js'
+import { CaptureQueue } from '../queue/index.js'
 import { WorkspaceRegistry } from '../store/index.js'
 import { ScreenOcrProcessor, type ScreenOcrInvoke, type ScreenVlmInvoke } from './processor.js'
 
@@ -113,6 +115,48 @@ test('fixture replay: real screen processor persists byte-identical OCR/distilla
     assert.deepEqual(store.listOcrResults('workspace-synthetic')[0], firstRecords.ocr)
     assert.deepEqual(store.listDistillates('workspace-synthetic')[0], firstRecords.distillate)
     assert.deepEqual([ocrs.length, distillates.length], [2, 2])
+  })
+})
+
+test('trusted-LAN destination provenance is identical on OcrResult and mirror Distillate', async () => {
+  await withStore(async (store) => {
+    const egress = {
+      reach: 'local' as const,
+      allowed: false,
+      decidedBy: 'content-class' as const,
+      reason:
+        'raw screen bytes crossed the device boundary to an explicitly trusted LAN destination; hosted/public egress remained denied',
+      destination: 'lan-local' as const,
+      rawFrameTrust: 'explicit' as const,
+    }
+    const invoke: ScreenOcrInvoke = async (): Promise<ScreenTextResult> => ({
+      text: 'trusted LAN result',
+      endpoint: 'trusted-vision-box',
+      model: 'vision-local',
+      slot: 'ocr',
+      egress,
+    })
+    const processor = new ScreenOcrProcessor({
+      store,
+      fabric: new FabricDocuments(store),
+      isEnabled: () => true,
+      invoke,
+      newId: counterId(),
+    })
+
+    await processor.process(imageChunk())
+
+    const result = store.listOcrResults('default')[0]
+    const mirror = store.listDistillates('default')[0]
+    assert.ok(result)
+    assert.ok(mirror)
+    assert.deepEqual(result.provenance, mirror.provenance)
+    assert.deepEqual(result.provenance.egress, egress)
+    assert.equal(result.provenance.egress?.destination, 'lan-local')
+    assert.equal(result.provenance.egress?.rawFrameTrust, 'explicit')
+    const serialized = JSON.stringify({ result: result.provenance, mirror: mirror.provenance })
+    assert.equal(serialized.includes('http://'), false)
+    assert.equal(serialized.includes('secret'), false)
   })
 })
 
@@ -226,6 +270,110 @@ test('an invoke failure is classified into the last-failures ring and never thro
   })
 })
 
+test('an OCR server echoing a raw frame cannot copy it into processor status or logs', async () => {
+  const rawFrameSentinel = Buffer.from('RAW_FRAME_ECHO_SENTINEL_PROCESSOR_175').toString('base64')
+  let receivedBody = ''
+  const echo = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      receivedBody = Buffer.concat(chunks).toString('utf8')
+      res.writeHead(500, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: `server echoed request: ${receivedBody}` }))
+    })
+  })
+  await new Promise<void>((resolve) => echo.listen(0, resolve))
+  const address = echo.address()
+  assert.ok(address && typeof address === 'object')
+  const url = `http://127.0.0.1:${address.port}`
+  try {
+    await withStore(async (store) => {
+      const fabric = new FabricDocuments(store)
+      fabric.save({
+        slots: {
+          ...defaultFabric().slots,
+          ocr: [{ kind: 'http', name: 'echoing-paddle', url, api: 'paddle-serving', model: 'pp-ocrv4' }],
+        },
+      })
+      const logs: string[] = []
+      const processor = new ScreenOcrProcessor({
+        store,
+        fabric,
+        isEnabled: () => true,
+        log: (line) => void logs.push(line),
+      })
+
+      await processor.process(imageChunk({ data: rawFrameSentinel }))
+
+      const status = processor.status()
+      assert.equal(status.failed, 1)
+      assert.equal(status.lastFailures[0]?.class, 'model-load')
+      assert.equal(status.lastFailures[0]?.endpoint, 'echoing-paddle')
+      assert.equal(status.lastFailures[0]?.model, 'pp-ocrv4')
+      assert.equal(status.lastFailures[0]?.serverMessage, 'HTTP 500')
+      assert.match(status.lastFailures[0]?.hint ?? '', /model "pp-ocrv4" failed to load/)
+      assert.equal(receivedBody.includes(rawFrameSentinel), true, 'fake endpoint really received and echoed the sentinel')
+      assert.equal(JSON.stringify(status).includes(rawFrameSentinel), false, 'GET /screen/status source state must not retain frame bytes')
+      assert.equal(logs.join('\n').includes(rawFrameSentinel), false, 'processor logs must not retain frame bytes')
+    })
+  } finally {
+    await new Promise<void>((resolve) => echo.close(() => resolve()))
+  }
+})
+
+test('legacy OCR never surfaces a configured trusted-LAN endpoint URL in screen status or logs', async () => {
+  const configuredUrl = 'http://ocr-url-sentinel.example.invalid.local:48151/private-screen-route'
+  const attempted: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    // Deliberately omit an OS error code: this forces the actionable unreachable hint into the
+    // aggregate error/log, which is where a configured URL used to escape.
+    throw new Error('documentation-only transport failure')
+  }
+  try {
+    await withStore(async (store) => {
+      const fabric = new FabricDocuments(store)
+      fabric.save({
+        slots: {
+          ...defaultFabric().slots,
+          ocr: [{
+            kind: 'http',
+            name: 'trusted-lan-ocr',
+            url: configuredUrl,
+            api: 'paddle-serving',
+            model: 'screen-ocr-test-model',
+            trustRawFrames: true,
+          }],
+        },
+      })
+      const logs: string[] = []
+      const processor = new ScreenOcrProcessor({
+        store,
+        fabric,
+        isEnabled: () => true,
+        log: (line) => void logs.push(line),
+      })
+
+      await processor.process(imageChunk())
+
+      assert.deepEqual(attempted, [`${configuredUrl}/predict/ocr_system`], 'the configured endpoint was actually attempted')
+      const status = processor.status()
+      assert.equal(status.failed, 1)
+      assert.equal(status.lastFailures[0]?.class, 'unreachable')
+      assert.equal(status.lastFailures[0]?.endpoint, 'trusted-lan-ocr')
+      const surfaced = JSON.stringify({ status, logs })
+      assert.equal(surfaced.includes(configuredUrl), false)
+      assert.equal(surfaced.includes('ocr-url-sentinel.example.invalid.local'), false)
+      assert.equal(surfaced.includes('/private-screen-route'), false)
+      assert.match(surfaced, /trusted-lan-ocr/, 'the safe endpoint label remains actionable')
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('the last-failures ring is bounded to failureRingSize, keeping the newest', async () => {
   await withStore(async (store) => {
     let i = 0
@@ -321,6 +469,71 @@ test('runOnDrain: an invoke throw PROPAGATES (real drain work → re-queue), NOT
       completedAt: '2026-07-08T10:00:04.000Z',
     }])
   })
+})
+
+test('workflow VLM never surfaces a configured trusted-LAN endpoint URL in QueueFailure or drain logs', async () => {
+  const configuredUrl = 'http://vlm-url-sentinel.example.invalid.local:48152/private-workflow-route'
+  const attempted: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    attempted.push(url)
+    throw new Error('documentation-only transport failure')
+  }
+  try {
+    await withStore(async (store) => {
+      const fabric = new FabricDocuments(store)
+      fabric.save({
+        slots: {
+          ...defaultFabric().slots,
+          vlm: [{
+            kind: 'http',
+            name: 'trusted-lan-vlm',
+            url: configuredUrl,
+            api: 'openai-compat',
+            model: 'screen-vlm-test-model',
+            trustRawFrames: true,
+          }],
+        },
+      })
+      const processorLogs: string[] = []
+      const processor = new ScreenOcrProcessor({
+        store,
+        fabric,
+        isEnabled: () => true,
+        log: (line) => void processorLogs.push(line),
+      })
+      const step = ocrStep({
+        id: 'screen-vlm-private',
+        kind: 'vlm',
+        slot: 'vlm',
+        params: { prompt: 'Describe this documentation-only test frame.' },
+      })
+      const queueLogs: string[] = []
+      const queue = new CaptureQueue(
+        join(store.dataDir, 'privacy-workflow-queue'),
+        (chunks) => processor.runOnDrain(chunks, step),
+        (error, at) => toQueueFailure(error, at, async (failure) => failure.hint),
+      )
+      await queue.append(imageChunk())
+
+      await queue.drainNow((line) => void queueLogs.push(line))
+
+      assert.deepEqual(attempted, [`${configuredUrl}/v1/chat/completions`], 'the configured endpoint was actually attempted')
+      const status = await queue.status()
+      assert.equal(status.pendingFiles, 1, 'the failed workflow frame remains queued for retry')
+      assert.equal(status.lastFailure?.class, 'unreachable')
+      assert.equal(status.lastFailure?.endpoint, 'trusted-lan-vlm')
+      assert.equal(processor.status().lastFailures.length, 0, 'workflow failures remain queue-owned')
+      const surfaced = JSON.stringify({ queueFailure: status.lastFailure, queueLogs, processorLogs })
+      assert.equal(surfaced.includes(configuredUrl), false)
+      assert.equal(surfaced.includes('vlm-url-sentinel.example.invalid.local'), false)
+      assert.equal(surfaced.includes('/private-workflow-route'), false)
+      assert.match(surfaced, /trusted-lan-vlm/, 'the safe endpoint label remains actionable')
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('runOnDrain: an empty recognition is a blank frame — neither record persisted, counted as blank', async () => {

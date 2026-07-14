@@ -4927,7 +4927,10 @@ Contracts 90 (3 new schemas: ChatScreenshot/ChatDelta/ChatHistory; ChatRequest/B
 ### Disclosed deviations
 - The e2e's frame source is injected at the exact `ipcMain('hud:capture-frame')` seam shell.ts registers `captureAskFrame` on — the macOS Screen-Recording TCC grant cannot be conferred on a throwaway harness process. The preload bridge → InputSession → POST path is the real shipped code; the desktopCapturer grab is shared code with the cadence path.
 - The TCC posture for the ask grab mirrors the cadence path: 'not-determined' proceeds (the first grab is what surfaces the macOS prompt; an empty image reads honestly as "no frame yet") — only denied/restricted hard-refuses. "Granted+enabled" is therefore enforced as "enabled AND not refused", the same reality `capture-status.ts` documents (there is no pre-grab grant probe on macOS).
-- The screen-derived TEXT rides the chat hop as `typed` content (guarded on egress like every chat turn) rather than screen-classed — the same posture as screen-derived distillates entering chat via the `insights` source; the raw FRAME is what `screen`-class denial protects, and it never leaves.
+- The screen-derived TEXT rides the chat hop as `typed` content (guarded on hosted/public egress like every
+  chat turn) rather than screen-classed — the same posture as screen-derived distillates entering chat via
+  the `insights` source. The raw FRAME is what `screen`-class denial protects from hosted/public services;
+  device-local is the default, and a private-LAN hop requires the endpoint’s explicit raw-frame trust.
 - The eighth source appended to the `ChatContextSourceKind` closed union + `'ask'` appended to `PromptTemplate.kind` — both grow-by-appending on existing closed unions, per their own doc contracts.
 
 ## Slice: local schema-drift guard + README note — closes out #87's two leftovers  *(filler, branch fix/87-close-leftovers)*
@@ -5068,7 +5071,7 @@ way: an unflagged non-loopback endpoint reads "raw screen frames are loopback-on
 this endpoint to allow it" (the opt-in is discoverable at the point of denial); a flagged public host reads
 "raw screen frames require a local-network host — public endpoint skipped despite trustRawFrames" (the cap
 is stated, not silently applied). Nothing else moved: the egress consent layers (content-class `screen`
-still denies EGRESS), LLM/STT gating, diagnostics, and the client are untouched.
+still denies hosted/public egress), LLM/STT gating, diagnostics, and the client are untouched.
 
 ### 3 · Tests
 The predicate's full truth table is pinned in egress.test.ts (loopback no-flag · managed local · LAN+flag ·
@@ -5376,3 +5379,106 @@ capture-id attribution, byte-stable two-run determinism, mute-cannot-relabel, ho
 the driven pill e2e (`test:e2e:pill`) green twice consecutively with byte-identical lane geometry;
 `git diff --check` clean. No new contract, schema, persistence, capture policy, or flag change; the only new
 runtime artifact is a shared test-side fixture projection under `tools/fixtures/`.
+
+## Slice: real-frame OCR/VLM acceptance gate  *(#175, 2026-07-13)*
+
+The committed acceptance proof now covers both screen-result owners at the transport boundary without
+committing a real screen image. `apps/engine/src/screen/acceptance-175-e2e.test.ts` submits a valid synthetic
+2 × 2 JFIF through authenticated screen ingest, first with the legacy screen-OCR owner and then with the
+workflow drain as the VLM owner. Each path traverses the capture API → durable queue → fabric invocation and
+asserts the exact persisted pair: one `OcrResult` and one mirror `Distillate`, each carrying the expected
+slot, endpoint, model, capture time, and source provenance. (The separate owner-run gate below is the proof
+through the production client delta boundary.) The deterministic test also checks the corresponding status
+counters, results route, and standard `distillates` query,
+then proves ambient Ask receives the persisted derived text while no screenshot, image bytes, or base64
+payload crosses that boundary. Result counts and provenance establish single ownership in each mode, so
+legacy OCR and workflow VLM cannot both claim the same frame. All media in this deterministic committed
+regression is synthetic; real owner-screen pixels are reserved for the private live gate.
+
+Screen configuration diagnostics now follow the active owner. With workflow drain enabled, sense gates,
+status, setup, and Ask readiness derive their required OCR or VLM slots from the enabled screen workflow
+steps (including explicit slot overrides) instead of always diagnosing the legacy `screen.ocr` slot. With
+workflow drain disabled, the legacy OCR requirement remains unchanged. Missing steps, disabled steps,
+missing slots, invalid endpoints, and probe/model failures therefore surface against the slot that would
+actually process the next frame. `/screen/status.enabled` uses that same owner plan, including ungated steps
+and custom flags; the acceptance proof runs workflow VLM with `screen.ocr` off and `screen.vlm` on. A live
+healthy fallback endpoint clears slot health even if an earlier candidate is down, while an all-down slot
+closes honestly. Workflow PUT publishes `workflow.updated`, so an already-enabled workflow edit invalidates
+the client's cached `/senses` result instead of leaving the tray stale. The raw-frame fabric path also
+cancels an OCR/VLM non-OK response body
+without reading it: an endpoint that echoes submitted base64 in an error response cannot feed those bytes
+into a server message, aggregate error, status record, or log.
+
+The owner-run live gate lives in `apps/client/scripts/vision-live-e2e.mjs`, with its repeatable recipe and
+privacy contract in `tools/vision-live/README.md`. It captures the real primary display through Electron,
+drives both legacy OCR and workflow VLM modes at the production delta boundary, and schedules capture
+attempts independently from result completion so cadence and queue pressure remain observable. The harness
+runs an ABI-compatible engine child with isolated temporary control, data, run, and secrets roots; asserts
+exact result type, slot/endpoint/model provenance, mirror equality, counters, zero duplicate ownership, and
+raw-frame-free Ask behavior; and records capture cadence, delta outcomes, metadata-only queue file
+counts/bytes, engine and client memory, model inventory/load state, and the concurrent Gemma 12B-class
+workload. The workload must return a non-empty successful completion. Endpoint authentication is supplied
+through an isolated secret reference, never copied into the report. A separately spawned Node 25 engine is
+required because Electron's Node ABI and the installed `better-sqlite3` ABI differ; startup probes that
+native module before any frame is captured and terminates the child even when discovery fails.
+
+Raw frames can transiently exist only inside that isolated temporary run while the normal queue and engine
+boundaries do their work. They are never written to the repository, owner database, public events, or the
+private report, and the entire temporary tree is recursively removed during cleanup. The remaining private
+report is raw-frame-free and mode `0600`; it retains derived synthetic model text/provenance for private
+audit, and model output is rejected if it contains a submitted raw-frame marker. Raw-frame trust is opt-in
+and limited to loopback or an explicitly trusted LAN-local endpoint:
+public and wildcard targets are rejected even when the trust flag is present.
+
+The owner-present rig run passed on 2026-07-13 with two changed cards per owner plus one unchanged-card
+attempt per owner. The first strict run failed honestly because the OCR result did not reproduce an
+ambiguous numeral-ending sample token; it deleted the temporary tree and wrote no report. Replacing only
+the validation identifiers with large alphabetic code words (`ALPHA`/`BRAVO`) made the quality criterion
+unambiguous, and the complete rerun passed without relaxing exact attribution or text matching.
+
+Measured evidence from the passing private report (endpoint address and derived text omitted here):
+
+- Four changed attempts queued and produced exactly four `OcrResult` + four mirror-Distillate pairs; two
+  unchanged attempts delta-skipped; zero grabs, blanks, processing failures, or queue failure classes.
+- Actual attempt intervals were **5001–5005 ms** for legacy OCR and **5001–5006 ms** for workflow VLM
+  against the 5000 ms target. OCR invokes were **5627–5648 ms** and capture-to-record **5972–6021 ms**;
+  VLM invokes were **5868–6335 ms** and capture-to-record **6203–6683 ms**.
+- The primary queue never accumulated a sampled pending file; the independent text/workflow queue peaked
+  at one metadata-observed file / 363 bytes. Across 161 samples, Electron main RSS peaked at 291,176,448
+  bytes, aggregate Electron working set at 514,293,760 bytes, and the isolated engine RSS at 134,479,872
+  bytes. These are local-process measurements; remote pressure is disclosed only as advertised weights:
+  OCR 2,221,758,836 bytes and the shared VLM/Gemma-12B model 6,773,389,550 bytes, one loaded instance each.
+- Both concurrent Gemma-12B synthetic completions were non-empty and overlapped real-frame capture
+  (19,868 ms and 18,134 ms). Ambient Ask consumed the persisted latest VLM Distillate with no screenshot.
+- The OCR endpoint advertised the selected OCR model and recognized both real-frame validation codes, so
+  the endpoint-capability fallback/follow-up criterion is satisfied without filing an OCR-support issue.
+
+Cleanup removed the isolated temporary tree before PASS, the report is `0600`, raw markers were absent from
+collected logs/model results/Ask, and the recorded policy truth table allowed the explicitly trusted LAN
+host while refusing flagged public and wildcard hosts. #175 remains in flight for `/retro` verification;
+this implementation turn does not close the issue or advance #189.
+
+Repository evidence: recursive build green; contracts **99/99**, fixtures **15/15**, client **555/555**,
+and engine **868/868** on the final recursive Node-25 run; contract schema regeneration has no drift and
+`git diff --check` is clean. One earlier full-client run hit the known parallel-only
+`engine-link/seam.test.ts` timing flake (one extra receipt versus the simulator count); the untouched seam
+passed alone **1/1**, then the complete recursive rerun passed cleanly. No workflow governance rail changed,
+so the workflow dry-run gate is not required.
+
+## Slice: truthful raw-frame destination provenance  *(#196, 2026-07-14)*
+
+The compatibility egress reach bucket still classifies both loopback and private LAN as `local`, but new
+decisions now add a payload-free physical `destination`: `device-local`, `lan-local`, or `hosted-public`.
+A successful OCR/VLM hop to a private-LAN HTTP endpoint also carries `rawFrameTrust:'explicit'`; its safe
+reason says that raw screen bytes crossed the device boundary under explicit trust while hosted/public
+egress remained denied. Loopback and engine-managed runtimes stamp `device-local`. Existing records remain
+valid because both fields are additive/optional, and legacy local rows render “scope not recorded” rather
+than being relabeled on-device.
+
+The audit ledger renders device-local, trusted LAN, and hosted/public as distinct outcomes and counts both
+LAN and hosted/public calls as device-boundary hops. `OcrResult` and its mirror `Distillate` reuse the same
+provenance object, with a deterministic regression pinning exact equality. OCR/VLM invoke tests steer an
+honestly private-LAN endpoint document to loopback test servers, proving trusted-LAN stamping without a real
+LAN call; the same tests prove untrusted LAN, public, malformed, and wildcard targets are refused before
+fetch. The #175 live recipe now requires a real LAN vision endpoint and asserts persisted trusted-LAN
+provenance plus the absence of frame markers, URLs, and credentials from both records and its private report.

@@ -60,7 +60,8 @@ test('EngineLink bodyless mutations still declare JSON at the secured boundary',
   assert.equal(calls[0]?.body, undefined)
 })
 
-test('screen observations use Bearer auth, exact JSON, and the shared one-refresh-on-401 path', async () => {
+test('screen observations use Bearer auth, exact JSON, one-refresh-on-401, and clear their timeout', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const refreshes: Array<boolean | undefined> = []
   const credentials: EngineCredentialSource = {
     credentialFor: async (_baseUrl, options) => {
@@ -68,7 +69,13 @@ test('screen observations use Bearer auth, exact JSON, and the shared one-refres
       return { token: options?.refresh ? TOKEN_B : TOKEN_A }
     },
   }
-  const calls: Array<{ url: string; method?: string; headers?: Record<string, string>; body?: string }> = []
+  const calls: Array<{
+    url: string
+    method?: string
+    headers?: Record<string, string>
+    body?: string
+    signal?: AbortSignal
+  }> = []
   const fetchImpl: EngineFetchLike = async (url, init) => {
     calls.push({ url, ...init })
     const status = calls.length === 1 ? 401 : 200
@@ -94,7 +101,12 @@ test('screen observations use Bearer auth, exact JSON, and the shared one-refres
     occurredAt: '2026-07-13T10:11:12.345Z',
   }
 
-  await withLink({ baseUrl: 'http://127.0.0.1:8787', credentials, fetchImpl }, async (link) => {
+  await withLink({
+    baseUrl: 'http://127.0.0.1:8787',
+    credentials,
+    fetchImpl,
+    screenObservationTimeoutMs: 60_000,
+  }, async (link) => {
     assert.equal((await link.observeScreen(observation))?.source, 'screen')
   })
   assert.deepEqual(refreshes, [undefined, true])
@@ -104,6 +116,9 @@ test('screen observations use Bearer auth, exact JSON, and the shared one-refres
   assert.equal(calls[0]?.headers?.['authorization'], `Bearer ${TOKEN_A}`)
   assert.equal(calls[1]?.headers?.['authorization'], `Bearer ${TOKEN_B}`)
   assert.deepEqual(JSON.parse(calls[0]?.body ?? '{}'), observation)
+  assert.equal(calls[0]?.signal?.aborted, false)
+  t.mock.timers.tick(60_000)
+  assert.equal(calls[0]?.signal?.aborted, false, 'a completed observation clears its timeout')
 })
 
 test('failed screen observation reports are dropped and never enter the capture spool', async () => {
