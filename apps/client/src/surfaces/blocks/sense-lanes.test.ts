@@ -136,6 +136,35 @@ test('the glance copy never exposes correlation ids, captured content, endpoints
   assert.doesNotMatch(html, /[–—]/)
 })
 
+test('a blocked lane names its true blocker in human words, never the closed code or a flag key (#192)', () => {
+  const disabled: SenseLaneSnapshot = { ...lane('mic', 'waiting'), health: 'blocked', reason: 'disabled' }
+  const disabledHtml = render([disabled])
+  assert.match(disabledHtml, /Microphone · Waiting · Blocked/)
+  assert.match(disabledHtml, /Turned off in Settings/)
+
+  const denied: SenseLaneSnapshot = {
+    ...lane('screen', 'failed'),
+    health: 'blocked',
+    reason: 'permission-denied',
+    latestObservation: { id: 'observation-secret-3', occurredAt: '2026-07-13T14:47:00Z', outcome: 'permission-denied' },
+  }
+  const deniedHtml = render([denied])
+  assert.match(deniedHtml, /Screen · Failed · Blocked/)
+  assert.match(deniedHtml, /isn’t allowed yet — grant access in System Settings/)
+  assert.match(deniedHtml, /Capture refused 2:47p/)
+  assert.doesNotMatch(deniedHtml, /observation-secret-3/)
+
+  const configured: SenseLaneSnapshot = { ...lane('system-audio', 'waiting'), health: 'blocked', reason: 'configuration-blocked' }
+  assert.match(render([configured]), /No model is set up for this yet/)
+
+  // The closed reason codes and internal flag vocabulary never reach the DOM (hud-voice §2).
+  for (const html of [disabledHtml, deniedHtml, render([configured])]) {
+    for (const machine of ['permission-denied', 'configuration-blocked', 'screen\\.ocr', 'distill\\.']) {
+      assert.doesNotMatch(html, new RegExp(machine))
+    }
+  }
+})
+
 test('invented disposition or health values in initial hydration degrade safely instead of crashing', () => {
   for (const invalid of [
     { ...lane('mic', 'waiting'), disposition: 'invented-disposition' },
@@ -144,6 +173,36 @@ test('invented disposition or health values in initial hydration degrade safely 
     assert.doesNotThrow(() => render([invalid as unknown as SenseLaneSnapshot]))
     assert.match(render([invalid as unknown as SenseLaneSnapshot]), /Microphone · Status unavailable/)
   }
+})
+
+test('a block whose top asks for fewer lanes paints exactly those lanes, never a permanent placeholder (#193)', () => {
+  // The engine caps live-senses in canonical mic → system-audio → screen order, so top:2 hydrates the
+  // first two lanes. The configured-out screen lane must not paint as an ever-waiting unavailable row.
+  const renderWith = (stackBlock: Surface['stack'][0], items: SenseLaneSnapshot[]): string => renderToHtml(
+    renderSurface({ surface: { ...surface, stack: [stackBlock] }, now, results: [result(items)] }, defaultBlockRegistry),
+  )
+  const queryTopTwo: Surface['stack'][0] = {
+    block: 'sense-lanes',
+    show: 'always',
+    query: { source: 'live-senses', params: { session: 'current' }, top: 2 },
+  }
+  const html = renderWith(queryTopTwo, [lane('mic', 'waiting'), lane('system-audio', 'queued')])
+  assert.match(html, /data-sense-source="mic"/)
+  assert.match(html, /data-sense-source="system-audio"/)
+  assert.doesNotMatch(html, /data-sense-source="screen"/)
+  assert.doesNotMatch(html, /Status unavailable/)
+
+  // The client-side block cap shrinks the painted set the same way.
+  const blockTopOne: Surface['stack'][0] = { ...queryTopTwo, top: 1, query: { ...queryTopTwo.query!, top: 3 } }
+  const oneLane = renderWith(blockTopOne, [lane('mic', 'waiting'), lane('system-audio', 'queued'), lane('screen', 'waiting')])
+  assert.match(oneLane, /data-sense-source="mic"/)
+  assert.doesNotMatch(oneLane, /data-sense-source="system-audio"|data-sense-source="screen"/)
+
+  // Lanes the block DOES ask for keep the honest waiting placeholder until they hydrate.
+  const empty = renderWith(queryTopTwo, [])
+  assert.equal((empty.match(/Status unavailable/g) ?? []).length, 2)
+  assert.equal((empty.match(/Waiting for a live snapshot/g) ?? []).length, 2)
+  assert.doesNotMatch(empty, /data-sense-source="screen"/)
 })
 
 test('missing hydration stays explainable and collapsed mode stays compact', () => {

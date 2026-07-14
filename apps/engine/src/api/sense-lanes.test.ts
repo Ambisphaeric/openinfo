@@ -208,3 +208,139 @@ test('authenticated live-sense route + WS preserve three metadata-only physical 
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('#192: real gate state and capture-permission truth drive lane health end to end, without restart', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-sense-gate-lanes-'))
+  const app = createSecureTestEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, '127.0.0.1', resolve))
+  const address = app.server.address()
+  assert.ok(address && typeof address === 'object')
+  const base = `http://127.0.0.1:${address.port}`
+  const events: Array<{ name: string; payload: Record<string, unknown> }> = []
+  const socket = new WebSocket(`${base.replace(/^http/, 'ws')}/events`, testWsProtocols())
+  socket.addEventListener('message', (message) => {
+    events.push(JSON.parse(String(message.data)) as { name: string; payload: Record<string, unknown> })
+  })
+  const laneEvents = () => events.filter((event) => event.name === 'sense.lane.updated')
+  const lanes = async (): Promise<SenseLaneSnapshotSet> =>
+    (await (await fetch(`${base}/senses/live`)).json()) as SenseLaneSnapshotSet
+  const putFlag = async (key: string, on: boolean): Promise<void> => {
+    const response = await fetch(`${base}/flags/${key}`, {
+      method: 'PUT',
+      body: JSON.stringify({ key, default: on, scope: 'engine', description: 'gate-truth test' }),
+    })
+    assert.equal(response.status, 200, key)
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      socket.addEventListener('open', () => resolve(), { once: true })
+      socket.addEventListener('error', () => reject(new Error('event socket failed')), { once: true })
+    })
+
+    // Cold truth is unchanged by gates: with no session the honest blocker is "no session", never a gate.
+    const cold = await lanes()
+    assert.ok(cold.lanes.every((lane) => lane.disposition === 'stopped' && lane.health === 'unknown' && lane.reason === 'no-session'))
+
+    // Fresh-install defaults ship every processing flag OFF, so a live session's lanes are deliberately
+    // off — and must SAY so from their first row instead of reading idle (waiting/unknown).
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const disabled = await lanes()
+    assert.ok(disabled.lanes.every((lane) =>
+      lane.disposition === 'waiting' && lane.health === 'blocked' && lane.reason === 'disabled'))
+    await eventually(() => assert.equal(laneEvents().length, 3))
+
+    // Turning ONE audio flag on changes no lane's verdict yet (distill.transcribe still blocks first) —
+    // idempotent refresh, no relabel, no event.
+    await putFlag('distill.enabled', true)
+    // With transcription on but an EMPTY stt slot, the audio lanes' true blocker is missing configuration.
+    await putFlag('distill.transcribe', true)
+    await eventually(() => assert.equal(laneEvents().length, 5))
+    const configBlocked = await lanes()
+    assert.deepEqual(
+      configBlocked.lanes.map((lane) => [lane.source, lane.health, lane.reason]),
+      [
+        ['mic', 'blocked', 'configuration-blocked'],
+        ['system-audio', 'blocked', 'configuration-blocked'],
+        ['screen', 'blocked', 'disabled'], // screen.ocr is still the screen lane's own first blocker
+      ],
+    )
+
+    // Configure the fabric: the audio lanes restore their truthful idle state WITHOUT restart.
+    const fabricResponse = await fetch(`${base}/fabric`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        slots: {
+          stt: [{ kind: 'http', name: 'gate-truth-stt', url: 'http://127.0.0.1:1', api: 'openai-compat' }],
+          tts: [], llm: [], vlm: [], embed: [],
+          ocr: [{ kind: 'http', name: 'gate-truth-ocr', url: 'http://127.0.0.1:1', api: 'paddle-serving' }],
+        },
+      }),
+    })
+    assert.equal(fabricResponse.status, 200)
+    await eventually(() => assert.equal(laneEvents().length, 7))
+    const audioRestored = await lanes()
+    assert.deepEqual(
+      audioRestored.lanes.slice(0, 2).map((lane) => [lane.disposition, lane.health, lane.reason]),
+      [['waiting', 'unknown', 'awaiting-capture'], ['waiting', 'unknown', 'awaiting-capture']],
+    )
+
+    // Open the screen gate too, then deny capture permission: the lane must read blocked with the TRUE
+    // OS reason — never idle, never a generic failure.
+    await putFlag('screen.ocr', true)
+    await eventually(() => assert.equal(laneEvents().length, 8))
+    const beforeDenial = await lanes()
+    const denialResponse = await fetch(`${base}/screen/observations`, {
+      method: 'POST',
+      body: JSON.stringify({
+        workspaceId: 'default', sessionId: started.id, outcome: 'permission-denied',
+        observationId: 'attempt-denied-1', occurredAt: '2026-07-14T09:00:01.000Z',
+      }),
+    })
+    assert.equal(denialResponse.status, 200)
+    const deniedRow = (await denialResponse.json()) as SenseLaneSnapshot
+    assert.deepEqual([deniedRow.disposition, deniedRow.health, deniedRow.reason], ['failed', 'blocked', 'permission-denied'])
+    assert.equal(deniedRow.source, 'screen')
+    if (deniedRow.source === 'screen') {
+      assert.deepEqual(deniedRow.latestObservation, {
+        id: 'attempt-denied-1', occurredAt: '2026-07-14T09:00:01.000Z', outcome: 'permission-denied',
+      })
+    }
+    const afterDenial = await lanes()
+    assert.deepEqual(afterDenial.lanes[0], beforeDenial.lanes[0], 'a screen denial never relabels the mic lane')
+    assert.deepEqual(afterDenial.lanes[1], beforeDenial.lanes[1], 'a screen denial never relabels the system-audio lane')
+
+    // Deliberately disable ONE lane: only that lane changes; disabling cannot relabel a neighbour.
+    await putFlag('screen.ocr', false)
+    const oneDisabled = await lanes()
+    assert.deepEqual([oneDisabled.lanes[2].health, oneDisabled.lanes[2].reason], ['blocked', 'disabled'])
+    assert.deepEqual(oneDisabled.lanes[0], beforeDenial.lanes[0])
+    assert.deepEqual(oneDisabled.lanes[1], beforeDenial.lanes[1])
+
+    // Re-enabling restores the underlying truth — the overlay masked, it never clobbered: the screen lane
+    // returns to its real permission-denied state, not to an invented clean slate.
+    await putFlag('screen.ocr', true)
+    const reEnabled = await lanes()
+    assert.deepEqual([reEnabled.lanes[2].disposition, reEnabled.lanes[2].health, reEnabled.lanes[2].reason], ['failed', 'blocked', 'permission-denied'])
+
+    // Exactly the deliberate transitions were published: 3 session rows + 2 configuration-blocked +
+    // 2 restored audio + 1 screen clear + 1 denial + 1 disable + 1 re-enable = 11. Every public row stays
+    // the closed metadata contract: no content, endpoint, error-string, or fix-hint fields appeared.
+    await eventually(() => assert.equal(laneEvents().length, 11))
+    for (const event of laneEvents()) {
+      for (const key of ['data', 'text', 'preview', 'hash', 'error', 'blocks', 'endpoint', 'fix', 'detail', 'hint', 'label']) {
+        assert.equal(key in event.payload, false, `${key} is absent from public lane rows`)
+      }
+    }
+    const serialized = JSON.stringify(laneEvents())
+    for (const forbidden of ['gate-truth-stt', 'gate-truth-ocr', 'Settings', 'System Settings']) {
+      assert.equal(serialized.includes(forbidden), false, `sense events never include ${forbidden}`)
+    }
+  } finally {
+    socket.close()
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

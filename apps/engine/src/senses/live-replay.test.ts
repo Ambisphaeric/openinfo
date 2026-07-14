@@ -18,6 +18,8 @@ import { FabricDocuments, type SttResult } from '../fabric/index.js'
 import { WorkspaceRegistry } from '../store/index.js'
 import { ScreenOcrProcessor } from '../screen/processor.js'
 import { buildTranscriptUpdates, transcribeChunks, type TranscribedSegment } from '../distill/transcribe.js'
+import { evaluateSenseGates } from '../surfaces/settings/sense-gates.js'
+import { senseLaneGateState } from './gates.js'
 import { SenseLaneTracker } from './live.js'
 
 /**
@@ -257,5 +259,84 @@ test('ending the session stops every lane honestly, relabeling none', async () =
     const screen = stopped[2]!
     assert.equal(screen.source, 'screen')
     if (screen.source === 'screen') assert.equal(screen.latestObservation, undefined)
+  })
+})
+
+test('#192: disabling or blocking one lane through REAL gate state cannot relabel another, and reopening restores replayed truth', async () => {
+  // Extends the #174 no-relabel replay coverage for the gate-driven off states: the overlay comes from the
+  // ACTUAL evaluateSenseGates chain over honest flag/fabric inputs (via senseLaneGateState), never from a
+  // hand-picked reason, so gate reordering or reclassification breaks this proof, not just a unit test.
+  await withStore(async (store) => {
+    const fixture = loadFixtureSync(FIXTURE_URL)
+    const { tracker, snapshot } = await driveTriLane(store, createFixtureReplay(fixture))
+    const gateInput = (screenOcrOn: boolean) => ({
+      flags: [
+        { key: 'distill.enabled', default: true, scope: 'engine', description: 'replay' },
+        { key: 'distill.transcribe', default: true, scope: 'engine', description: 'replay' },
+        { key: 'screen.ocr', default: screenOcrOn, scope: 'engine', description: 'replay' },
+      ] as const,
+      fabric: {
+        slots: {
+          stt: [{ kind: 'http', name: 'replay-stt', url: 'http://127.0.0.1:1', api: 'openai-compat' }],
+          tts: [], llm: [], vlm: [], embed: [],
+          ocr: [{ kind: 'http', name: 'replay-ocr', url: 'http://127.0.0.1:1', api: 'paddle-serving' }],
+        },
+      },
+    })
+
+    // Every gate open: the overlay is empty and the replayed projection is untouched, byte for byte.
+    assert.deepEqual(tracker.applyGates(senseLaneGateState(evaluateSenseGates(gateInput(true) as never))), [])
+    assert.deepEqual(tracker.snapshotSet(FIXTURE_WORKSPACE, FIXTURE_SESSION), snapshot)
+
+    // Turn the screen feature off — the REAL chain names screen.ocr as the blocker for exactly one lane.
+    const blocked = tracker.applyGates(senseLaneGateState(evaluateSenseGates(gateInput(false) as never)))
+    assert.deepEqual(blocked.map((lane) => [lane.source, lane.disposition, lane.health, lane.reason]), [
+      ['screen', 'processed', 'blocked', 'disabled'],
+    ])
+    const gated = tracker.snapshotSet(FIXTURE_WORKSPACE, FIXTURE_SESSION)
+    // The audio lanes keep their exact replayed attribution — no merge, no swap, no relabel.
+    assert.deepEqual(gated.lanes[0], snapshot.lanes[0])
+    assert.deepEqual(gated.lanes[1], snapshot.lanes[1])
+    // The screen lane's capture/processing evidence survives the overlay untouched.
+    assert.deepEqual(gated.lanes[2].latestProcessing, snapshot.lanes[2].latestProcessing)
+    assert.deepEqual(gated.lanes[2].latestCapture, snapshot.lanes[2].latestCapture)
+
+    // Re-enable: the screen lane returns to its exact replayed truth without restart (updatedAt advances —
+    // the visible row genuinely changed twice).
+    const restored = tracker.applyGates(senseLaneGateState(evaluateSenseGates(gateInput(true) as never)))
+    assert.equal(restored.length, 1)
+    const { updatedAt: _restoredAt, ...restoredRest } = restored[0]!
+    const { updatedAt: _originalAt, ...originalRest } = snapshot.lanes[2]
+    assert.deepEqual(restoredRest, originalRest)
+    assert.deepEqual(tracker.snapshotSet(FIXTURE_WORKSPACE, FIXTURE_SESSION).lanes[0], snapshot.lanes[0])
+    assert.deepEqual(tracker.snapshotSet(FIXTURE_WORKSPACE, FIXTURE_SESSION).lanes[1], snapshot.lanes[1])
+  })
+})
+
+test('#192: a capture-permission denial blocks only the screen lane with its true reason, never an audio lane', async () => {
+  await withStore(async (store) => {
+    const fixture = loadFixtureSync(FIXTURE_URL)
+    const { tracker, snapshot } = await driveTriLane(store, createFixtureReplay(fixture))
+
+    const denied = tracker.recordScreenCaptureObservation({
+      workspaceId: FIXTURE_WORKSPACE, sessionId: FIXTURE_SESSION, outcome: 'permission-denied',
+      observationId: 'replay-denied-1', occurredAt: '2026-07-12T13:00:30.000Z',
+    })
+    assert.equal(denied?.source, 'screen')
+    assert.deepEqual([denied?.disposition, denied?.health, denied?.reason], ['failed', 'blocked', 'permission-denied'])
+    if (denied?.source === 'screen') {
+      assert.deepEqual(denied.latestObservation, {
+        id: 'replay-denied-1', occurredAt: '2026-07-12T13:00:30.000Z', outcome: 'permission-denied',
+      })
+    }
+
+    const after = tracker.snapshotSet(FIXTURE_WORKSPACE, FIXTURE_SESSION)
+    assert.deepEqual(after.lanes[0], snapshot.lanes[0], 'the mic lane is byte-identical after the screen denial')
+    assert.deepEqual(after.lanes[1], snapshot.lanes[1], 'the system-audio lane is byte-identical after the screen denial')
+    // The blocked row still validates the closed public contract and leaks nothing new.
+    assert.equal(Value.Check(SenseLaneSnapshotSchema, after.lanes[2]), true)
+    for (const forbidden of ['tcc', 'denied by', '"error"', '"detail"']) {
+      assert.equal(JSON.stringify(after).toLowerCase().includes(forbidden), false)
+    }
   })
 })

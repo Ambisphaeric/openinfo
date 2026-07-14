@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CaptureChunk, Flag, SenseLaneSnapshot, Session } from '@openinfo/contracts'
 import { createSecureTestEngineApp } from '../api/test-control-plane.js'
-import { AggregateInvokeError, type ClassifiedFailure, type ScreenTextResult } from '../fabric/index.js'
+import { AggregateInvokeError, FabricDocuments, type ClassifiedFailure, type ScreenTextResult } from '../fabric/index.js'
 import { wireScreenOcr } from './index.js'
 
 const image = (id: string, sequence: number, capturedAt: string): CaptureChunk => ({
@@ -23,6 +23,16 @@ test('wired processor projects blank/failed and ocr.completed success cannot reg
 
   const flag: Flag = { key: 'screen.ocr', default: true, scope: 'engine', description: 'test screen outcomes' }
   app.store.layouts.put('flag', flag.key, flag)
+  // #192: lane health now reflects the REAL screen gate chain. This fixture simulates a working OCR path
+  // (an injected invoke), so its configuration must honestly match: screen.ocr on AND an occupied ocr
+  // slot, refreshed through the same flag.changed seam a Settings edit publishes.
+  new FabricDocuments(app.store).save({
+    slots: {
+      stt: [], tts: [], llm: [], vlm: [], embed: [],
+      ocr: [{ kind: 'http', name: 'local-ocr', url: 'http://127.0.0.1:1', api: 'paddle-serving' }],
+    },
+  })
+  await app.bus.publish('flag.changed', flag)
   const session: Session = {
     id: 'screen-outcomes-session', workspaceId: 'default', modeId: 'mode-meeting',
     startedAt: '2026-07-13T12:00:00.000Z', attribution: { evidence: [], confidence: 1 },

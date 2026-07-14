@@ -1,4 +1,4 @@
-import type { PhysicalSenseSource, SenseLaneHealth, SenseLaneSnapshot } from '@openinfo/contracts'
+import type { Block, PhysicalSenseSource, SenseLaneHealth, SenseLaneSnapshot } from '@openinfo/contracts'
 import { clockLabel } from '../block-renderer/format.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
 import { h, type VNode } from '../block-renderer/vnode.js'
@@ -36,6 +36,17 @@ const HEALTH_MARK: Record<SenseLaneHealth, { glyph: string; tone: string }> = {
   failed: { glyph: '●', tone: 'c' },
 }
 
+/**
+ * The TRUE reason a blocked lane is blocked, in human words (#192, hud-voice): the engine only ever emits
+ * these three closed codes with health `blocked`, each stating what is actually wrong and the one place to
+ * fix it — never a flag key, slot name, or error string.
+ */
+const BLOCKED_REASON_LABEL: Partial<Record<SenseLaneSnapshot['reason'], string>> = {
+  disabled: 'Turned off in Settings — nothing captured here is processed until it is back on',
+  'permission-denied': 'This capture isn’t allowed yet — grant access in System Settings',
+  'configuration-blocked': 'No model is set up for this yet — connect one in Settings',
+}
+
 const lagLabel = (lagMs: number): string => {
   if (lagMs < 1_000) return `${lagMs} ms`
   const seconds = lagMs / 1_000
@@ -50,6 +61,9 @@ const timePhrase = (prefix: string, iso: string): string => {
 
 const detailLine = (lane: SenseLaneSnapshot): string => {
   const details: string[] = []
+  // A blocked lane leads with its true blocker (§3 honest states) — capture/processing evidence follows.
+  const blockedReason = lane.health === 'blocked' ? BLOCKED_REASON_LABEL[lane.reason] : undefined
+  if (blockedReason !== undefined) details.push(blockedReason)
   if (lane.latestCapture) details.push(timePhrase('Last captured', lane.latestCapture.capturedAt))
   if (lane.latestProcessing) {
     const outcome = lane.latestProcessing.outcome === 'processed'
@@ -62,7 +76,9 @@ const detailLine = (lane: SenseLaneSnapshot): string => {
   if (lane.source === 'screen' && lane.latestObservation) {
     const outcome = lane.latestObservation.outcome === 'delta-skipped'
       ? 'No screen change observed'
-      : 'Screen capture failed'
+      : lane.latestObservation.outcome === 'permission-denied'
+        ? 'Capture refused'
+        : 'Screen capture failed'
     details.push(timePhrase(outcome, lane.latestObservation.occurredAt))
   }
   return details.length > 0 ? details.join(' · ') : 'No capture yet'
@@ -98,6 +114,19 @@ const laneRow = (source: PhysicalSenseSource, lane: SenseLaneSnapshot | undefine
 }
 
 /**
+ * The lanes this block DOCUMENT asked for (#193). The engine caps `live-senses` rows in canonical
+ * mic → system-audio → screen order, so a `top` below the full trio (on the query or as the client-side
+ * block cap) selects a canonical prefix. Only those lanes paint: a lane the document configured out can
+ * never hydrate, and rendering it as an ever-waiting "Status unavailable" row would be a permanent
+ * placeholder for data that is not coming. Absent `top` ⇒ the full trio.
+ */
+const requestedSources = (block: Block): readonly PhysicalSenseSource[] => SENSE_LANE_SOURCES.slice(0, Math.min(
+  SENSE_LANE_SOURCES.length,
+  block.top ?? SENSE_LANE_SOURCES.length,
+  block.query?.top ?? SENSE_LANE_SOURCES.length,
+))
+
+/**
  * Compact, human-facing live-sense telemetry. It reads only the closed snapshot fields needed for the
  * glance and deliberately never renders correlation ids, captured content, endpoint/model data, or
  * arbitrary failure text. Source means the physical lane, never an inferred speaker identity.
@@ -111,6 +140,6 @@ export const renderSenseLanes: BlockRenderer = ({ block, result }) => {
     'div',
     { class: 'hgroup sense-lanes' },
     h('div', { class: 'glbl' }, LABEL),
-    ...SENSE_LANE_SOURCES.map((source) => laneRow(source, items.find((item) => item.source === source))),
+    ...requestedSources(block).map((source) => laneRow(source, items.find((item) => item.source === source))),
   )
 }
