@@ -25,6 +25,7 @@ export {
 export { parseJsonCandidates } from './parse.js'
 export {
   transcribeChunks,
+  TranscribeHeldWithProgress,
   buildTranscriptUpdates,
   isAudioChunk,
   captureLaneLabel,

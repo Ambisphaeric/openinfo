@@ -229,7 +229,9 @@ const rootHtml = (trail: TraceTrail): string => {
 }
 
 const hopHtml = (hop: TraceHop): string => {
-  const guard = hop.guard !== undefined || hop.egress !== undefined ? `<div class="trc-verdicts">${guardCell(hop.guard)} ${egressCell(hop.egress)}</div>` : ''
+  // Pass the hop's recorded egress alongside the verdict (#206): a recorded device-local destination is
+  // the fact that makes the guard's absence "not applicable" rather than merely "not recorded".
+  const guard = hop.guard !== undefined || hop.egress !== undefined ? `<div class="trc-verdicts">${guardCell(hop.guard, hop.egress)} ${egressCell(hop.egress)}</div>` : ''
   return (
     `<div class="trc-hop trc-${escapeHtml(hop.stage)}">` +
     `<div class="trc-title">${escapeHtml(hop.title)}</div>` +

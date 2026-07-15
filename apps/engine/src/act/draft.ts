@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import type { Distillate, Draft, Dials, Mode, Moment, PromptTemplate, Session, TodoItem, VoiceBinding } from '@openinfo/contracts'
+import type { ContentClass, Distillate, Draft, Dials, GuardHold, Mode, Moment, PromptTemplate, Session, TodoItem, VoiceBinding } from '@openinfo/contracts'
 import { DRAFT_SCHEMA_VERSION } from '@openinfo/contracts'
-import { FabricDocuments, invokeLlm, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import type { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice, type VoiceScope } from '../voice/index.js'
 import type { LlmInvoke } from '../distill/index.js'
 import { ActDocuments } from './documents.js'
 import { TodoDocuments, renderTodo } from './todo.js'
+import { effectiveActContentClass } from './privacy.js'
 
 /** Glyphs mirror the HUD moment stream (● commitment ◆ question ▲ decision ✱ artifact). */
 const MOMENT_GLYPH: Record<string, string> = {
@@ -37,6 +39,8 @@ export interface ComposeInput {
   registerId?: string
   templateId: string
   templateVersion?: number
+  /** Effective origin class of all material actually interpolated into the prompt. */
+  contentClass?: ContentClass
 }
 
 export interface ComposeDeps {
@@ -45,6 +49,8 @@ export interface ComposeDeps {
   now?: () => Date
   newId?: () => string
   maxTokens?: number
+  /** Layered privacy options resolved by Actor for this session/template (#206). */
+  invokeOptions?: Pick<InvokeOptions, 'egress' | 'guard'>
   /** bounded in-call re-sample when the model returns an empty draft (default 2). */
   maxAttempts?: number
   log?: (message: string) => void
@@ -86,7 +92,10 @@ export const composeFollowUpDraft = async (input: ComposeInput, deps: ComposeDep
   let attempts = 0
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attempts = attempt
-    const result = await deps.invoke([{ role: 'user', content: prompt }], { maxTokens: deps.maxTokens ?? 700 })
+    const result = await deps.invoke(
+      [{ role: 'user', content: prompt }],
+      { maxTokens: deps.maxTokens ?? 700, ...(deps.invokeOptions ?? {}) },
+    )
     const body = result.text.trim()
     if (body.length === 0) {
       if (attempt < maxAttempts) {
@@ -114,6 +123,10 @@ export const composeFollowUpDraft = async (input: ComposeInput, deps: ComposeDep
         slot: result.slot,
         endpoint: result.endpoint,
         ...(result.model !== undefined ? { model: result.model } : {}),
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        ...(input.contentClass !== undefined ? { contentClass: input.contentClass } : {}),
+        ...(result.egress !== undefined ? { egress: result.egress } : {}),
+        ...(result.guard !== undefined ? { guard: result.guard } : {}),
         sourceDistillates: input.distillates.map((d) => d.id),
         sourceMoments: input.moments.map((m) => m.id),
       },
@@ -141,6 +154,10 @@ export interface ActorDeps {
   resolveKey?: SecretResolver
   /** manages `local` endpoints' spawned runtimes (tier zero); optional. */
   runtimeManager?: LocalRuntimeManager
+  guardDocs?: GuardDocuments
+  guardHolds?: GuardHoldStore
+  guardEnabled?: () => boolean
+  publishHold?: (hold: GuardHold) => void | Promise<void>
   now?: () => Date
   newId?: () => string
   log?: (message: string) => void
@@ -162,6 +179,11 @@ export class Actor {
   private readonly mode: (id: string) => Mode
   private readonly publish: ((d: Draft) => void | Promise<void>) | undefined
   private readonly invoke: LlmInvoke
+  private readonly resolveKey: SecretResolver | undefined
+  private readonly guardDocs: GuardDocuments | undefined
+  private readonly guardHolds: GuardHoldStore | undefined
+  private readonly guardEnabled: () => boolean
+  private readonly publishHold: ((hold: GuardHold) => void | Promise<void>) | undefined
   private readonly now: () => Date
   private readonly newId: () => string
   private readonly log: (message: string) => void
@@ -174,6 +196,11 @@ export class Actor {
     this.todos = deps.todos
     this.mode = deps.mode
     this.publish = deps.publish
+    this.resolveKey = deps.resolveKey
+    this.guardDocs = deps.guardDocs
+    this.guardHolds = deps.guardHolds
+    this.guardEnabled = deps.guardEnabled ?? (() => false)
+    this.publishHold = deps.publishHold
     this.now = deps.now ?? (() => new Date())
     this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
@@ -187,6 +214,34 @@ export class Actor {
           ...(resolveKey ? { resolveKey } : {}),
           ...(runtimeManager ? { runtimeManager } : {}),
         }))
+  }
+
+  private guardOptions(): GuardOptions | undefined {
+    if (!this.guardEnabled() || this.guardDocs === undefined) return undefined
+    const policy = this.guardDocs.policy()
+    return {
+      endpoints: this.fabric.load().slots.guard ?? [],
+      behavior: policy.behavior,
+      acknowledgeUnguardedEgress: policy.acknowledgeUnguardedEgress,
+      ...(this.resolveKey ? { resolveKey: this.resolveKey } : {}),
+    }
+  }
+
+  private async recordHold(err: GuardHeldError, session: Session, sourceChunks: string[]): Promise<void> {
+    const hold: GuardHold = {
+      id: this.newId(),
+      workspaceId: session.workspaceId,
+      sessionId: session.id,
+      stage: 'follow-up-draft',
+      ...(sourceChunks.length > 0 ? { sourceChunks } : {}),
+      ...err.holdMetadata(),
+      verdict: err.verdict,
+      status: 'held',
+      createdAt: this.now().toISOString(),
+    }
+    this.guardHolds?.add(hold)
+    await this.publishHold?.(hold)
+    this.log(`guard held follow-up draft for session ${session.id}: ${err.verdict.reason}`)
   }
 
   async runFollowUpDraft(session: Session): Promise<Draft | undefined> {
@@ -219,22 +274,48 @@ export class Actor {
     // user's PUT-edited list is what THIS draft interpolates (the editable-document loop).
     const todo = this.todos.get(session.id)?.items ?? []
     const { template, version } = this.docs.followUpTemplate()
-
-    const { draft } = await composeFollowUpDraft(
-      {
-        sessionId: session.id,
-        workspaceId: session.workspaceId,
-        distillates,
-        moments,
-        todo,
-        dials: resolved.dials,
-        scope: resolved.scope,
-        ...(resolved.registerId !== undefined ? { registerId: resolved.registerId } : {}),
-        templateId: template.id,
-        ...(version !== undefined ? { templateVersion: version } : {}),
-      },
-      { invoke: this.invoke, template, now: this.now, newId: this.newId, maxTokens: mode.distill.tokenBudget, log: this.log },
-    )
+    const workspace = this.store.all().find((candidate) => candidate.id === session.workspaceId)
+    const contentClass = effectiveActContentClass({ distillates, moments, todo })
+    const egress = resolveEgress({
+      contentClass,
+      promptNeverEgress: template.neverEgress,
+      modeDenies: mode.egress?.deny,
+      workspaceDenies: workspace?.egress?.deny,
+    })
+    const guard = this.guardOptions()
+    let draft: Draft | undefined
+    try {
+      ;({ draft } = await composeFollowUpDraft(
+        {
+          sessionId: session.id,
+          workspaceId: session.workspaceId,
+          distillates,
+          moments,
+          todo,
+          dials: resolved.dials,
+          scope: resolved.scope,
+          ...(resolved.registerId !== undefined ? { registerId: resolved.registerId } : {}),
+          templateId: template.id,
+          ...(version !== undefined ? { templateVersion: version } : {}),
+          contentClass,
+        },
+        {
+          invoke: this.invoke,
+          template,
+          now: this.now,
+          newId: this.newId,
+          maxTokens: mode.distill.tokenBudget,
+          log: this.log,
+          invokeOptions: { egress, ...(guard !== undefined ? { guard } : {}) },
+        },
+      ))
+    } catch (error) {
+      if (error instanceof GuardHeldError) {
+        await this.recordHold(error, session, [...new Set(distillates.flatMap((d) => d.sourceChunks))])
+        return undefined
+      }
+      throw error
+    }
 
     if (!draft) {
       this.log(`follow-up draft: session ${session.id} produced no draft (no source distillates/moments)`)

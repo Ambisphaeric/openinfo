@@ -10,8 +10,8 @@ import { escapeHtml, type SetupData } from '../../setup/view.js'
  *
  * HONEST ABSENCES, not fabricated data:
  *  - GUARD (#63, now BUILT): renders each hop's recorded verdict — clean · redacted·N · unguarded — and
- *    "—" ("no hosted/public guard") only for hops that genuinely carry no guard verdict
- *    (device/LAN-local, or pre-#63).
+ *    "—" ("no recorded device-boundary guard") when no verdict was persisted (device-local, guard off,
+ *    or pre-#63); it never infers that a LAN/hosted call was guarded.
  *  - DESTINATION / EGRESS (#64/#196): newly recorded hops distinguish `device-local`, explicitly trusted
  *    `LAN-local`, and `hosted/public`. Older provenance without the additive destination field renders
  *    "local · scope not recorded" instead of pretending network-local proves on-device. No URL or secret
@@ -81,7 +81,8 @@ const MAX_PASSES = 100
  *  - a FieldValue is its own pass (its own fan-out invoke) whose trail gains a `judge` hop once a review
  *    (#62) has stamped it — the dual-input chain in one trail;
  *  - a GuardHold is its own pass with a single `held` hop: the window ran and was SUSPENDED, so the trail
- *    honestly shows the guard endpoint (when one classified) and no model endpoint (nothing was sent).
+ *    honestly shows the guard endpoint (when one classified) and no target-model endpoint. The target was
+ *    not called; a legacy record does not prove where its classifier ran.
  * All extras are optional — the existing flat "all passes" behavior is byte-identical without them.
  */
 export const buildLedger = (distillates: readonly Distillate[], ocrResults: readonly OcrResult[], extras: LedgerExtras = {}): LedgerPass[] => {
@@ -150,6 +151,8 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
         endpoint: v.provenance.endpoint,
         ...(v.provenance.model !== undefined ? { model: v.provenance.model } : {}),
         ...(v.provenance.usage !== undefined ? { usage: v.provenance.usage } : {}),
+        ...(v.provenance.egress !== undefined ? { egress: v.provenance.egress } : {}),
+        ...(v.provenance.guard !== undefined ? { guard: v.provenance.guard } : {}),
         detail: `${v.label} · ${v.state}`,
       },
     ]
@@ -161,6 +164,8 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
         endpoint: judge.endpoint,
         ...(judge.model !== undefined ? { model: judge.model } : {}),
         ...(judge.usage !== undefined ? { usage: judge.usage } : {}),
+        ...(judge.egress !== undefined ? { egress: judge.egress } : {}),
+        ...(judge.guard !== undefined ? { guard: judge.guard } : {}),
         detail: judge.verdict,
       })
     }
@@ -173,9 +178,20 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
       hops,
     })
   }
-  // #116: a SUSPENDED window is a pass too — its trail is the single held hop. No model endpoint is named
-  // because none was reached (fail closed); the guard endpoint that classified is named when one ran.
+  // #116/#206: a suspended window is a pass too. New holds retain safe intended-target metadata and
+  // distinguish a pre-target guard stop from a target delivery that failed after bytes crossed.
   for (const h of extras.guardHolds ?? []) {
+    const delivered = h.target?.delivery
+    const targetEgress =
+      delivered !== undefined && h.target?.destination !== undefined && h.consent !== undefined
+        ? {
+            reach: h.target.destination === 'hosted-public' ? 'egress' as const : 'local' as const,
+            destination: h.target.destination,
+            allowed: h.consent.allowed,
+            decidedBy: h.consent.decidedBy,
+            reason: `${delivered} delivery to the intended target; ${h.consent.reason}`,
+          }
+        : undefined
     passes.push({
       id: h.id,
       at: h.createdAt,
@@ -184,9 +200,23 @@ export const buildLedger = (distillates: readonly Distillate[], ocrResults: read
         {
           stage: 'held',
           slot: 'guard',
-          ...(h.verdict.guardEndpoint !== undefined ? { endpoint: h.verdict.guardEndpoint } : {}),
+          ...(h.target?.endpoint !== undefined
+            ? { endpoint: h.target.endpoint, ...(h.target.model !== undefined ? { model: h.target.model } : {}) }
+            : h.verdict.guardEndpoint !== undefined
+              ? { endpoint: h.verdict.guardEndpoint }
+              : {}),
           guard: h.verdict,
-          detail: h.status === 'held' ? `${h.stage} · awaiting release/deny` : `${h.stage} · ${h.status}`,
+          ...(targetEgress !== undefined ? { egress: targetEgress } : {}),
+          detail:
+            h.status === 'held'
+              ? delivered === 'confirmed'
+                ? `${h.stage} · target received request but failed · awaiting approve/deny`
+                : delivered === 'possible'
+                  ? `${h.stage} · target may have received request but failed · awaiting approve/deny`
+                  : `${h.stage} · target not called · awaiting approve/deny`
+              : h.status === 'released'
+                ? `${h.stage} · approved · original attempt not rerun`
+                : `${h.stage} · denied`,
         },
       ],
     })
@@ -212,7 +242,10 @@ const tokensCell = (usage: InvokeUsage | undefined): string => {
  * Exported for the Trace section (#116) so both diagnostics views speak the same egress language. */
 export const egressCell = (egress: EgressDecision | undefined): string => {
   if (egress === undefined) {
-    return '<span class="ldg-local" title="destination scope was not recorded for this legacy hop">local <span class="ldg-model">· scope not recorded</span></span>'
+    // No decision means NO destination fact: pre-#64/#206 calls could have been local OR hosted. Calling
+    // this "local" would turn missing evidence into a false privacy claim. A coarse *recorded* reach:local
+    // is handled separately below and may truthfully retain the narrower "scope not recorded" wording.
+    return '<span class="ldg-absent" title="egress and destination were not recorded for this hop">not recorded</span>'
   }
   if (egress.destination === 'hosted-public' || (egress.destination === undefined && egress.reach === 'egress')) {
     return `<span class="ldg-egress" title="${escapeHtml(egress.reason)}">hosted/public</span>`
@@ -238,19 +271,27 @@ export const egressCell = (egress: EgressDecision | undefined): string => {
  *  - `redacted` ⇒ N spans masked before the content left (the span kinds on hover — never the raw value);
  *  - `unguarded` ⇒ no guard was active and egress proceeded under an explicit acknowledgment (flagged distinctly).
  */
-export const guardCell = (guard: GuardVerdict | undefined): string => {
-  if (guard === undefined) return '<span class="ldg-absent" title="no hosted/public egress guard verdict for this hop (device/LAN-local, or predates #63)">— no guard</span>'
+export const guardCell = (guard: GuardVerdict | undefined, egress?: EgressDecision): string => {
+  if (guard === undefined) {
+    if (egress?.destination === 'device-local') {
+      return '<span class="ldg-absent" title="the recorded destination stayed on this device, so the device-boundary text guard was not applicable">not applicable · device-local</span>'
+    }
+    return '<span class="ldg-absent" title="no guard verdict was recorded; this does not prove that a guard ran or that the hop stayed on-device">guard verdict not recorded</span>'
+  }
   const spanKinds = guard.spans && guard.spans.length > 0 ? guard.spans.map((s) => s.kind).join(', ') : ''
+  const classifier = guard.classifierDestination !== undefined
+    ? ` <span class="ldg-model">· classifier ${escapeHtml(guard.classifierDestination)}</span>`
+    : ''
   if (guard.outcome === 'redacted') {
-    return `<span class="ldg-guard-redacted" title="${escapeHtml(guard.reason)}${spanKinds ? ` — kinds: ${escapeHtml(spanKinds)}` : ''}">redacted · ${guard.maskedSpanCount}</span>`
+    return `<span class="ldg-guard-redacted" title="${escapeHtml(guard.reason)}${spanKinds ? ` — kinds: ${escapeHtml(spanKinds)}` : ''}">redacted · ${guard.maskedSpanCount}</span>${classifier}`
   }
   if (guard.outcome === 'unguarded') {
     return `<span class="ldg-guard-unguarded" title="${escapeHtml(guard.reason)}">unguarded</span>`
   }
   if (guard.outcome === 'held') {
-    return `<span class="ldg-guard-held" title="${escapeHtml(guard.reason)}${spanKinds ? ` — kinds: ${escapeHtml(spanKinds)}` : ''}">held</span>`
+    return `<span class="ldg-guard-held" title="${escapeHtml(guard.reason)}${spanKinds ? ` — kinds: ${escapeHtml(spanKinds)}` : ''}">held</span>${classifier}`
   }
-  return `<span class="ldg-guard-clean" title="${escapeHtml(guard.reason)}">clean</span>`
+  return `<span class="ldg-guard-clean" title="${escapeHtml(guard.reason)}">clean</span>${classifier}`
 }
 
 /** Totals across all passes, including physical device-boundary hops (LAN + hosted/public). */
@@ -280,10 +321,10 @@ const totals = (passes: readonly LedgerPass[]): { in: number; out: number; anyEs
   return { in: inTok, out: outTok, anyEstimated, hops, boundaryHops }
 }
 
-/** The endpoint/model cell. A held hop that reached NO endpoint says so honestly instead of blanking. */
+/** The endpoint/model cell. Missing endpoint identity is legacy/unknown; it is not evidence of locality. */
 const endpointCell = (hop: LedgerHop): string => {
   if (hop.endpoint === undefined) {
-    return '<span class="ldg-absent" title="the guard suspended this hop before any model endpoint was called — nothing was sent">held before send</span>'
+    return '<span class="ldg-absent" title="endpoint identity was not recorded for this legacy hop">not recorded</span>'
   }
   return `${escapeHtml(hop.endpoint)}${hop.model ? ` <span class="ldg-model">${escapeHtml(hop.model)}</span>` : ''}`
 }
@@ -297,33 +338,44 @@ const rowHtml = (pass: LedgerPass): string =>
         `<td class="ldg-stage">${escapeHtml(hop.stage)}${hop.detail ? ` <span class="ldg-model">· ${escapeHtml(hop.detail)}</span>` : ''}</td>` +
         `<td class="ldg-ep">${endpointCell(hop)}</td>` +
         `<td>${tokensCell(hop.usage)}</td>` +
-        `<td>${guardCell(hop.guard)}</td>` +
+        `<td>${guardCell(hop.guard, hop.egress)}</td>` +
         `<td>${egressCell(hop.egress)}</td>` +
         '</tr>',
     )
     .join('')
 
 /** One held egress hop (#63): when · stage · reason (+ masked-span kinds, never the raw value) · a
- * release/deny affordance while still held, else the resolved status. */
+ * approve/deny affordance while still held, else the resolved status. */
 const heldRow = (h: GuardHold): string => {
   const kinds = h.verdict.spans && h.verdict.spans.length > 0 ? ` (kinds: ${escapeHtml(h.verdict.spans.map((s) => s.kind).join(', '))})` : ''
+  const delivery =
+    h.target?.delivery === 'confirmed'
+      ? ' · target received request, then failed'
+      : h.target?.delivery === 'possible'
+        ? ' · target may have received request, then failed'
+        : h.target !== undefined
+          ? ' · target not called'
+          : ' · target delivery not recorded'
+  const target = h.target !== undefined
+    ? ` · ${escapeHtml(h.target.endpoint)}${h.target.model !== undefined ? ` · ${escapeHtml(h.target.model)}` : ''}${delivery}`
+    : delivery
   const controls =
     h.status === 'held'
-      ? `<button type="button" class="ldg-held-act" data-guard-hold="${escapeHtml(h.id)}" data-guard-action="release">Release</button>` +
+      ? `<button type="button" class="ldg-held-act" data-guard-hold="${escapeHtml(h.id)}" data-guard-action="release">Approve</button>` +
         `<button type="button" class="ldg-held-act deny" data-guard-hold="${escapeHtml(h.id)}" data-guard-action="deny">Deny</button>`
-      : `<span class="ldg-held-status">${escapeHtml(h.status)}</span>`
+      : `<span class="ldg-held-status">${h.status === 'released' ? 'approved · not rerun' : 'denied'}</span>`
   return (
     '<div class="ldg-held-row">' +
     `<span class="ldg-held-when">${escapeHtml(h.createdAt)}</span>` +
     `<span class="ldg-stage">${escapeHtml(h.stage)}</span>` +
     `<span class="ldg-guard-held">held</span>` +
-    `<span class="ldg-held-reason">${escapeHtml(h.verdict.reason)}${kinds}</span>` +
+    `<span class="ldg-held-reason">${escapeHtml(h.verdict.reason)}${kinds}${target}</span>` +
     controls +
     '</div>'
   )
 }
 
-/** The client wiring for the release/deny buttons — a POST /guard-holds/resolve then reload. Inline in the
+/** The client wiring for the approve/deny buttons — a POST /guard-holds/resolve then reload. Inline in the
  * section (the Settings surface is server-rendered per request, so this executes on load). */
 const HELD_SCRIPT =
   '<script>(function(){' +
@@ -335,7 +387,7 @@ const HELD_SCRIPT =
 
 /**
  * The held-egress-hops block (#63) — a durable audit of every hop the guard SUSPENDED, each with its
- * verdict (span descriptors, never the raw value) and, while still held, a release/deny affordance. Empty
+ * verdict (span descriptors, never the raw value) and, while still held, an approve/deny affordance. Empty
  * ⇒ '' (nothing held). Kept SEPARATE from the completed-pass table (a held hop produced no distillate).
  */
 const heldBlock = (holds: readonly GuardHold[]): string => {
@@ -343,7 +395,7 @@ const heldBlock = (holds: readonly GuardHold[]): string => {
   const active = holds.filter((h) => h.status === 'held').length
   return (
     '<div class="ldg-held">' +
-    `<div class="ldg-held-title">${active > 0 ? `${fmt(active)} egress hop${active === 1 ? '' : 's'} held by the guard — release or deny` : 'held egress hops (resolved)'}</div>` +
+    `<div class="ldg-held-title">${active > 0 ? `${fmt(active)} egress hop${active === 1 ? '' : 's'} suspended — approve or deny` : 'held egress hops (resolved)'}</div>` +
     holds.map(heldRow).join('') +
     '</div>' +
     HELD_SCRIPT
@@ -400,12 +452,12 @@ const footerNote = (): string =>
   '<div class="ldg-note">A pass can carry several hops (#116): a distill window lists its summary call and, when moment ' +
   'extraction ran, a second <span class="ldg-stage">moments</span> row; a field lists its fast call and, once reviewed, a ' +
   '<span class="ldg-stage">judge</span> row; a window the guard suspended appears as a <span class="ldg-stage">held</span> row ' +
-  'that names no model endpoint — nothing was sent. To follow ONE input through its hops, use the Trace section. ' +
+  'that distinguishes a pre-target guard stop from a failed target delivery; safe target endpoint/model and destination metadata render when recorded, never a URL or payload. To follow ONE input through its hops, use the Trace section. ' +
   'The guard column (#63) renders from each pass’s recorded verdict: ' +
   '<span class="ldg-guard-clean">clean</span> (guard ran, nothing flagged), ' +
   '<span class="ldg-guard-redacted">redacted · N</span> (N spans masked before the content left — kinds on hover, never the raw value), ' +
-  '<span class="ldg-guard-unguarded">unguarded</span> (no guard active, hosted/public egress acknowledged), or “— no guard” for a device/LAN-local hop (the hosted/public guard does not run). ' +
-  'A SUSPENDED egress hop (strict mode, or a fail-closed empty guard slot) surfaces in the held block above with a release/deny affordance. ' +
+  '<span class="ldg-guard-unguarded">unguarded</span> (no guard active, device-boundary egress acknowledged), “not applicable” only for a recorded device-local destination, or “guard verdict not recorded” when evidence is absent. ' +
+  'A SUSPENDED egress hop (strict mode, fail-closed empty guard slot, or failed boundary delivery) surfaces above with an approve/deny affordance; approval records the decision but does not rerun the original pass. ' +
   'The destination/egress column (#64/#196) distinguishes <span class="ldg-local">device-local</span>, ' +
   '<span class="ldg-lan">trusted LAN</span> (raw bytes crossed this device’s boundary under an explicit endpoint opt-in), and ' +
   '<span class="ldg-egress">hosted/public</span>. Older rows that lack additive destination detail say “scope not recorded”; ' +

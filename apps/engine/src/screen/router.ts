@@ -37,12 +37,18 @@ export async function handleScreen(req: IncomingMessage, res: ServerResponse, ct
  * List a workspace's OcrResults (default `default`), oldest first; `?session=`/`?sessionId=` narrows to
  * one session (both accepted — sessionId matches the slice's route note, session matches /moments et al).
  * Mirrors readMoments: an unknown workspace is an empty list, not an error.
+ *
+ * Blank-frame checkpoints (#206) are durable retry markers, not recognized text: a blank frame persists a
+ * metadata/provenance-only row (text '') so a held sibling's requeue never resends the raw frame. They are
+ * internal accounting — surfacing them here would fabricate a "result" for a frame that said nothing
+ * (#175's honest-boundary contract), so the read filters them out.
  */
 function readResults(store: WorkspaceRegistry, url: URL): OcrResult[] {
   const workspaceId = url.searchParams.get('workspace') ?? 'default'
   if (!store.all().some((ws) => ws.id === workspaceId)) return []
   const sessionId = url.searchParams.get('sessionId') ?? url.searchParams.get('session')
-  return sessionId ? store.listOcrResults(workspaceId, sessionId) : store.listOcrResults(workspaceId)
+  const rows = sessionId ? store.listOcrResults(workspaceId, sessionId) : store.listOcrResults(workspaceId)
+  return rows.filter((row) => row.text.trim() !== '')
 }
 
 /** The processor's live status, or an honest zeroed status (with the real current-owner state) when unwired. */

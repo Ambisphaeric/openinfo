@@ -1,5 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Id, IsoTime, SlotName } from '../common.js'
+import { Id, IsoTime, SlotName, InvokeUsage } from '../common.js'
+import { ContentClass, EgressDecision } from '../config/egress.js'
+import { GuardVerdict } from '../config/guard.js'
 import { Dials } from '../config/voice.js'
 
 /**
@@ -41,6 +43,11 @@ export const Draft = Type.Object(
         slot: SlotName,
         endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this' }),
         model: Type.Optional(Type.String()),
+        usage: Type.Optional(InvokeUsage),
+        /** Effective origin class of the material actually interpolated into this pass. */
+        contentClass: Type.Optional(ContentClass),
+        egress: Type.Optional(EgressDecision),
+        guard: Type.Optional(GuardVerdict),
         sourceDistillates: Type.Array(Id, { description: 'distillate ids the draft was composed from' }),
         sourceMoments: Type.Array(Id, { description: 'moment ids the draft was composed from' }),
       },

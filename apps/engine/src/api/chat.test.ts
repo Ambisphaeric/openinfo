@@ -4,6 +4,32 @@ import assert from 'node:assert/strict'
 import type { ChatContextSource, Entity, Fabric, PinChunk, RelevantEntity, TranscriptUpdate } from '@openinfo/contracts'
 import { BUNDLE_PROMPT, computeBudget, estimateTokens, runChat, type ChatDeps } from './chat.js'
 import { DEFAULT_CONTEXT_SOURCES } from './context-assembly.js'
+import { GuardHeldError } from '../fabric/index.js'
+
+interface FakeLlm {
+  server: Server
+  url: string
+  requests: unknown[]
+}
+
+const startFakeLlm = async (reply: string): Promise<FakeLlm> => {
+  const requests: unknown[] = []
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: reply } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  return { server, url: `http://127.0.0.1:${address.port}`, requests }
+}
+
+const stop = (fake: FakeLlm): Promise<void> => new Promise((resolve) => fake.server.close(() => resolve()))
 
 const entity = (name: string, kind: Entity['kind']): Entity => ({
   id: `ent-${name}`, workspaceId: 'default', kind, name, aliases: [], momentRefs: [], outboundCount: 0, mentions: 1,
@@ -244,5 +270,137 @@ test('Ask face: the persisted thread (recentTurns seam) is the recent-turns trut
     assert.ok(seen.messages[1]!.some((m) => m.content === 'client-only memory'), 'request.history is the fallback')
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
+test('runChat composite privacy: included screen lineage stays local; capped-out lineage restores typed egress', async () => {
+  const hosted = await startFakeLlm('hosted answer')
+  const local = await startFakeLlm('local answer')
+  const originalFetch = globalThis.fetch
+  const documentedHosted = `http://chat.egress.test:${new URL(hosted.url).port}`
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (raw.startsWith(documentedHosted)) return originalFetch(`${hosted.url}${raw.slice(documentedHosted.length)}`, init)
+    return originalFetch(input, init)
+  }) as typeof fetch
+  const fabric: Fabric = {
+    slots: {
+      stt: [], tts: [], vlm: [], ocr: [], embed: [], guard: [],
+      llm: [
+        { kind: 'http', name: 'hosted-first', url: documentedHosted, api: 'openai-compat' },
+        { kind: 'http', name: 'local-second', url: local.url, api: 'openai-compat' },
+      ],
+    },
+  }
+  try {
+    const screenshot = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'screen' }]), screenText: async () => 'PRIVATE SCREEN TEXT' },
+      { message: 'explain', screenshot: { contentType: 'image/png', data: 'aGVsbG8=' } },
+    )
+    assert.equal(screenshot.contentClass, 'screen')
+    assert.equal(screenshot.endpoint, 'local-second')
+    assert.equal(screenshot.egress?.decidedBy, 'content-class')
+    assert.equal(hosted.requests.length, 0)
+
+    const history = [
+      { role: 'assistant' as const, content: 'screen-derived prior answer', contentClass: 'screen' as const },
+      { role: 'user' as const, content: 'typed follow-up', contentClass: 'typed' as const },
+    ]
+    const second = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'recent-turns', limit: 2 }]), recentTurns: () => history },
+      { message: 'continue' },
+    )
+    assert.equal(second.endpoint, 'local-second', 'the next turn preserves the persisted screen lineage')
+    assert.equal(hosted.requests.length, 0)
+
+    const capped = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'recent-turns', limit: 1 }]), recentTurns: () => history },
+      { message: 'only the latest typed turn remains' },
+    )
+    assert.equal(capped.endpoint, 'hosted-first', 'a screen turn actually capped out does not govern the composite')
+    assert.equal(hosted.requests.length, 1)
+
+    const insight = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'insights' }]), insights: () => [{ text: 'OCR mirror text', contentClass: 'screen' }] },
+      { message: 'use insight' },
+    )
+    assert.equal(insight.endpoint, 'local-second')
+    assert.equal(hosted.requests.length, 1)
+
+    const seenEntity = rel('Invoice', 'topic')
+    seenEntity.entity.sightings = [{ via: 'seen', at: '2026-07-10T14:00:00Z' }]
+    const relevant = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'relevant-entities' }]), relevant: () => [seenEntity] },
+      { message: 'use entity' },
+    )
+    assert.equal(relevant.endpoint, 'local-second')
+    assert.equal(hosted.requests.length, 1)
+
+    const preset = await runChat(
+      {
+        ...baseDeps(fabric, [{ kind: 'active-preset' }]),
+        resolveActivePreset: () => ({ label: 'Private', text: 'LOCAL PRESET', neverEgress: true }),
+      },
+      { message: 'use preset' },
+    )
+    assert.equal(preset.endpoint, 'local-second')
+    assert.equal(preset.egress?.decidedBy, 'prompt')
+    assert.equal(hosted.requests.length, 1)
+
+    const forged = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'recent-turns' }]), recentTurns: () => [] },
+      { message: 'continue', history: [{ role: 'assistant', content: 'untrusted prior answer', contentClass: 'typed' }] },
+    )
+    assert.equal(forged.endpoint, 'local-second', 'client-supplied assistant origin cannot forge hosted permission')
+    assert.equal(hosted.requests.length, 1)
+
+    const legacyInsight = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'insights' }]), insights: () => ['origin was discarded by a legacy caller'] },
+      { message: 'use legacy insight' },
+    )
+    assert.equal(legacyInsight.contentClass, 'screen')
+    assert.equal(legacyInsight.endpoint, 'local-second', 'unknown insight lineage is conservative')
+    assert.equal(hosted.requests.length, 1)
+
+    const transcript = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'insights' }]), insights: () => [{ text: 'spoken recap', contentClass: 'transcript' }] },
+      { message: 'use spoken recap' },
+    )
+    assert.equal(transcript.contentClass, 'transcript', 'the assistant turn retains the actual composite origin')
+    assert.equal(transcript.endpoint, 'hosted-first')
+    assert.equal(hosted.requests.length, 2)
+
+    const modeDenied = await runChat(
+      { ...baseDeps(fabric, [{ kind: 'bundle-prompt' }]), modeDeniesEgress: () => true },
+      { message: 'live mode keeps this local' },
+    )
+    assert.equal(modeDenied.endpoint, 'local-second')
+    assert.equal(modeDenied.egress?.decidedBy, 'mode')
+    assert.equal(hosted.requests.length, 2, 'mode denial skips the hosted endpoint before fetch')
+
+    const beforeHeld = local.requests.length
+    const held = new GuardHeldError(
+      { behavior: 'hold-and-surface', outcome: 'held', guarded: false, maskedSpanCount: 0, reason: 'trusted LAN OCR target may have received the frame but failed' },
+      {
+        endpoint: 'trusted-lan-ocr',
+        url: 'http://192.168.1.9:9999',
+        destination: 'lan-local',
+        delivery: 'confirmed',
+        failureClass: 'bad-response',
+        consent: { allowed: true, decidedBy: 'default', reason: 'trusted raw-frame endpoint' },
+      },
+    )
+    await assert.rejects(
+      () => runChat(
+        { ...baseDeps(fabric, [{ kind: 'screen' }]), screenText: async () => { throw held } },
+        { message: 'read this', screenshot: { contentType: 'image/png', data: 'cHJpdmF0ZS1mcmFtZQ==' } },
+      ),
+      (error: unknown) => error === held,
+    )
+    assert.equal(local.requests.length, beforeHeld, 'a screen delivery hold aborts before the chat LLM')
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(hosted)
+    await stop(local)
   }
 })

@@ -242,6 +242,35 @@ test('a judge invoke failure is caught — returns [], the fields are untouched'
   }
 })
 
+test('#206: judge review provenance names only chunks in the exact capped source tail', async () => {
+  const prompts: string[] = []
+  const invoke = async (messages: LlmMessage[]): Promise<LlmResult> => {
+    prompts.push(messages[0]!.content)
+    return {
+      text: JSON.stringify([{ fieldId: 'field-topic', verdict: 'confirm' }]),
+      endpoint: 'llm.judge',
+      slot: 'llm',
+    }
+  }
+  const { store, scheduler, values, dir } = await harness(invoke)
+  try {
+    seedValue(values, 'field-topic', 'topic', 'quarterly planning')
+    const older = chunk(0, `OLDER_JUDGE_SENTINEL_${'a'.repeat(100)}`)
+    // The exact 8k source tail starts inside this chunk; keep the marker inside that material tail.
+    const tail = chunk(1, `${'b'.repeat(9000)}_TAIL_JUDGE_SENTINEL`)
+    const produced = await scheduler.runJudge([older, tail])
+    assert.equal(produced.length, 1)
+    assert.ok(prompts.every((prompt) => !prompt.includes('OLDER_JUDGE_SENTINEL')))
+    assert.ok(prompts.every((prompt) => prompt.includes('TAIL_JUDGE_SENTINEL')))
+    const review = values.latest(WS, 'field-topic', SESS)?.provenance.judge
+    assert.deepEqual(review?.sourceChunks, ['c-1'])
+    assert.equal(review?.windowStart, tail.capturedAt)
+    assert.equal(review?.windowEnd, tail.capturedAt)
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
 test('explainable-empty: no fast values to review → the verdict judge overrules nothing (no invoke on the review path)', async () => {
   // The VERDICT judge short-circuits BEFORE invoking when there is nothing to review; the seeded #131
   // orientation judge still classifies the source (its own invoke), so we assert the verdict PATH is empty

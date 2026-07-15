@@ -87,11 +87,12 @@ test('renderLedger: an estimated pass is MARKED est (a measurement is never impe
   assert.match(html, /some estimated/)
 })
 
-test('renderLedger: legacy local provenance does not fabricate device-local scope', () => {
+test('renderLedger: absent legacy provenance stays unknown instead of fabricating local scope', () => {
   const passes = buildLedger([distillate({ id: 'd1', createdAt: '2026-07-10T10:00:00Z' })], [])
   const html = renderLedger(withLedger(passes))
   assert.match(html, /no guard/i)
-  assert.match(html, /class="ldg-local"[^>]*>local <span class="ldg-model">· scope not recorded/)
+  assert.match(html, /class="ldg-absent"[^>]*>not recorded/)
+  assert.doesNotMatch(html, /<td><span class="ldg-local"/, 'no persisted decision means local is not known')
   assert.match(html, /guard column \(#63\)/)
 })
 
@@ -130,7 +131,7 @@ test('renderLedger: a redacted guard verdict lights up the guard column (span co
           slot: 'llm',
           endpoint: 'hosted',
           egress: { reach: 'egress', allowed: true, decidedBy: 'default', reason: 'content left the machine (no layer denied egress)' },
-          guard: { behavior: 'redact-and-continue', outcome: 'redacted', guarded: true, maskedSpanCount: 2, spans: [{ kind: 'card-number', start: 0, length: 16 }, { kind: 'email', start: 30, length: 12 }], reason: 'masked 2' },
+          guard: { behavior: 'redact-and-continue', outcome: 'redacted', guarded: true, maskedSpanCount: 2, spans: [{ kind: 'card-number', start: 0, length: 16 }, { kind: 'email', start: 30, length: 12 }], classifierDestination: 'device-local', reason: 'masked 2' },
         },
       }),
     ],
@@ -138,6 +139,7 @@ test('renderLedger: a redacted guard verdict lights up the guard column (span co
   )
   const html = renderLedger(withLedger(passes))
   assert.match(html, /redacted · 2/)
+  assert.match(html, /classifier device-local/)
   assert.match(html, /class="ldg-egress"/)
 })
 
@@ -154,7 +156,7 @@ test('renderLedger: a held egress hop surfaces in the held block with a release/
     },
   ]
   const html = renderLedger(data)
-  assert.match(html, /held by the guard/i)
+  assert.match(html, /egress hop suspended/i)
   assert.match(html, /data-guard-hold="h1"[^>]*data-guard-action="release"/)
   assert.match(html, /data-guard-action="deny"/)
   assert.match(html, /kinds: card-number/)
@@ -367,7 +369,7 @@ test('#116 buildLedger: a guard hold is a held pass naming the guard endpoint an
     verdict: { behavior: 'redact-and-continue', outcome: 'held', guarded: false, maskedSpanCount: 0, reason: 'no guard endpoint is configured and unguarded egress is not acknowledged — the hop holds' },
   }
   const html2 = renderLedger(withLedger(buildLedger([], [], { guardHolds: [noGuard] })))
-  assert.match(html2, /held before send/, 'no fabricated endpoint for a hop that never reached one')
+  assert.match(html2, /target not called/, 'no fabricated endpoint for a hop that never reached one')
 })
 
 test('#116 buildLedger: without extras the flat behavior is unchanged (the "all passes" view keeps working)', () => {

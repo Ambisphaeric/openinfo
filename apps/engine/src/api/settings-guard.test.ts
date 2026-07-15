@@ -65,7 +65,7 @@ test('GET /settings/ledger (served): guard column lights up (redacted) + held bl
     // The egress hop shows it actually left the machine.
     assert.match(html, /class="ldg-egress"/)
     // The held block surfaces the suspended hop with its reason + a release/deny affordance.
-    assert.match(html, /held by the guard/i)
+    assert.match(html, /suspended — approve or deny/i)
     assert.match(html, /strict mode suspended the hop/)
     assert.match(html, /data-guard-hold="hold-1"[^>]*data-guard-action="release"/)
     assert.match(html, /data-guard-action="deny"/)
@@ -89,7 +89,7 @@ test('GET /settings/ledger (served): guard column lights up (redacted) + held bl
 
     // Re-render: the held row now shows the resolved status, no longer offering release/deny.
     const after = await (await fetch(`${base}/settings/ledger`)).text()
-    assert.match(after, /ldg-held-status">released</)
+    assert.match(after, /ldg-held-status">approved · not rerun</)
 
     // A bad action is a 400; an unknown id is a 404.
     const bad = await fetch(`${base}/guard-holds/resolve`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'hold-1', action: 'nope' }) })

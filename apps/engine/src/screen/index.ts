@@ -1,8 +1,10 @@
+import { randomUUID } from 'node:crypto'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { FabricDocuments, FileSecretStore } from '../fabric/index.js'
 import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { isFlagEnabled } from '../flags/read.js'
 import type { SenseLaneTracker } from '../senses/index.js'
+import type { GuardHoldStore } from '../guard/index.js'
 import { ScreenOcrProcessor, type ScreenOcrInvoke } from './processor.js'
 import { registerScreenProcessor } from './registry.js'
 import { screenRecognitionEnabledForStore, screenRecognitionOwner } from './ownership.js'
@@ -22,6 +24,7 @@ export interface ScreenWiringApp {
   bus: EventBus<EngineEvents>
   store: WorkspaceRegistry
   senseLanes: SenseLaneTracker
+  guardHolds: GuardHoldStore
 }
 
 export interface ScreenWiringOptions {
@@ -58,6 +61,31 @@ export const wireScreenOcr = (app: ScreenWiringApp, options: ScreenWiringOptions
       const update = app.senseLanes.recordScreenProcessingOutcome(outcome)
       if (update !== undefined) await app.bus.publish('sense.lane.updated', update)
     },
+    onHeld: async (chunk, error) => {
+      // Workflow retries preserve the raw frame in the queue. Keep one active audit hold per source frame
+      // instead of appending the same boundary failure on every retry.
+      const alreadyHeld = app.guardHolds
+        .list(chunk.workspaceId)
+        .some((hold) => hold.status === 'held' && hold.stage === 'screen' && hold.sourceChunks?.includes(chunk.id))
+      if (alreadyHeld) return
+      const hold = app.guardHolds.add({
+        id: randomUUID(),
+        workspaceId: chunk.workspaceId,
+        sessionId: chunk.sessionId,
+        stage: 'screen',
+        spanId: randomUUID(),
+        sourceChunks: [chunk.id],
+        ...error.holdMetadata(),
+        verdict: error.verdict,
+        status: 'held',
+        createdAt: new Date().toISOString(),
+      })
+      await app.bus.publish('guard.hold.updated', hold)
+    },
+    hasTerminalHold: (chunk) =>
+      app.guardHolds
+        .list(chunk.workspaceId)
+        .some((hold) => hold.stage === 'screen' && hold.sourceChunks?.includes(chunk.id)),
     ...(options.log ? { log: options.log } : {}),
     ...(options.invoke ? { invoke: options.invoke } : {}),
   })

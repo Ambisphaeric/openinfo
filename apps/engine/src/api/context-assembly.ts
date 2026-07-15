@@ -1,4 +1,4 @@
-import type { ChatCitation, ChatContextSource, ChatContextSourceKind, ChatTurn, Entity, PinChunk, RelevantEntity, TranscriptUpdate } from '@openinfo/contracts'
+import type { ChatCitation, ChatContextSource, ChatContextSourceKind, ChatTurn, ContentClass, Entity, PinChunk, RelevantEntity, TranscriptUpdate } from '@openinfo/contracts'
 
 /**
  * Chat context assembly — DATA, NOT CODE (owner canon 2026-07-11: "context assembly must be DECLARED in
@@ -78,6 +78,14 @@ export interface ActivePresetRef {
   label: string
   /** the preset's priming/overlay text injected into the system prompt. */
   text: string
+  /** The prompt document's own deny bit; applied only when nonempty preset text actually enters the turn. */
+  neverEgress?: boolean | undefined
+}
+
+/** One insight plus its retained origin. Strings remain accepted for legacy/test callers and mean unknown. */
+export interface ContextInsight {
+  text: string
+  contentClass?: ContentClass | undefined
 }
 
 /**
@@ -94,7 +102,7 @@ export interface GatheredContext {
   /** recent ephemeral transcript records; source/provenance stay attached and are never flattened. */
   transcript: readonly TranscriptUpdate[]
   /** session insight lines (distillate summaries), newest-last — [] when none. */
-  insights: readonly string[]
+  insights: readonly (string | ContextInsight)[]
   /** the recency×frequency relevant-now join. */
   entities: readonly RelevantEntity[]
   /** the attached pin's cite-ready chunks (empty when no pin is attached). */
@@ -125,6 +133,12 @@ export interface AssembledContext {
   reports: SourceReport[]
   /** true ⇒ at least one source was `capped` — feeds ChatBudget.truncated (disclosed, never silent). */
   truncated: boolean
+  /** True only when screen-derived text actually entered a rendered source block. */
+  containsScreenDerived: boolean
+  /** True only when transcript-derived text actually entered a rendered source block/message. */
+  containsTranscriptDerived: boolean
+  /** True only when an active preset with neverEgress contributed nonempty text. */
+  promptNeverEgress: boolean
 }
 
 const clip = (text: string, max: number): string => {
@@ -290,6 +304,15 @@ const entityLines = (entities: readonly RelevantEntity[]): string[] =>
     return recent ? `- ${e.name} (${e.kind}) — ${clip(recent, 120)}` : `- ${e.name} (${e.kind})`
   })
 
+/** Whether the exact entity line we render carries screen origin (not merely an omitted sibling moment). */
+const renderedEntityIsScreenDerived = (row: RelevantEntity): boolean => {
+  const renderedMoment = row.moments[0]
+  if (renderedMoment?.source === 'screen') return true
+  const sightings = row.entity.sightings ?? []
+  if (sightings.length > 0 && sightings.every((sighting) => sighting.via === 'seen')) return true
+  return (row.entity.provenance ?? []).some((provenance) => provenance.slot === 'ocr' || provenance.slot === 'vlm')
+}
+
 /**
  * Assemble ONE turn's context by iterating the DECLARED sources in order (PURE). Each source maps to a block
  * of the system prompt (or, for recent-turns, to message history), capped by its OWN declared budget; a
@@ -301,6 +324,9 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
   const citations: ChatCitation[] = []
   const reports: SourceReport[] = []
   let historyTurns: ChatTurn[] = []
+  let containsScreenDerived = false
+  let containsTranscriptDerived = false
+  let promptNeverEgress = false
 
   const push = (report: SourceReport, block?: string): void => {
     reports.push(report)
@@ -334,13 +360,23 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
           push({ kind: source.kind, status: 'empty', items: 0, available: 0, chars: 0 })
           break
         }
+        const full = ref.text.trim()
+        if (full === '') {
+          push({ kind: source.kind, status: 'empty', items: 0, available: 0, chars: 0 })
+          break
+        }
         const budget = charBudget(source, Number.POSITIVE_INFINITY)
-        const text = clip(ref.text, budget)
+        const text = clip(full, budget)
+        if (text === '') {
+          push({ kind: source.kind, status: 'capped', items: 0, available: 1, chars: 0 })
+          break
+        }
         const block = `Voice/register — ${ref.label}:\n${text}`
         push(
-          { kind: source.kind, status: text.length < ref.text.trim().length ? 'capped' : 'included', items: 1, available: 1, chars: block.length },
+          { kind: source.kind, status: text.length < full.length ? 'capped' : 'included', items: 1, available: 1, chars: block.length },
           block,
         )
+        if (ref.neverEgress === true) promptNeverEgress = true
         break
       }
 
@@ -359,6 +395,7 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
           { kind: source.kind, status: window.capped ? 'capped' : 'included', items: window.records.length, available: window.available, chars: block.length },
           block,
         )
+        containsTranscriptDerived = true
         break
       }
 
@@ -376,13 +413,21 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
         let used = 0
         let charCapped = false
         for (const insight of kept) {
-          const line = `- ${clip(insight, 200)}`
+          const text = typeof insight === 'string' ? insight : insight.text
+          const line = `- ${clip(text, 200)}`
           if (used > 0 && used + line.length > charCap) {
             charCapped = true
             break
           }
           lines.push(line)
           used += line.length
+          // Legacy strings and absent/unknown lineage are conservative: a caller that discarded origin
+          // metadata must not thereby make an OCR/VLM-derived insight hosted-eligible.
+          if (typeof insight === 'string' || insight.contentClass === undefined || insight.contentClass === 'unknown' || insight.contentClass === 'screen') {
+            containsScreenDerived = true
+          } else if (insight.contentClass === 'transcript') {
+            containsTranscriptDerived = true
+          }
         }
         const block = `Session insights:\n${lines.join('\n')}`
         const capped = lines.length < available || charCapped
@@ -402,6 +447,7 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
         const limit = source.limit ?? DEFAULT_ENTITY_LIMIT
         const kept = gathered.entities.slice(0, limit)
         const block = `Known in this session:\n${entityLines(kept).join('\n')}`
+        if (kept.some(renderedEntityIsScreenDerived)) containsScreenDerived = true
         push(
           { kind: source.kind, status: kept.length < available ? 'capped' : 'included', items: kept.length, available, chars: block.length },
           block,
@@ -462,11 +508,16 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
         }
         const budget = charBudget(source, DEFAULT_SCREEN_CHARS)
         const text = clip(full, budget)
+        if (text === '') {
+          push({ kind: source.kind, status: 'capped', items: 0, available: 1, chars: 0 })
+          break
+        }
         const block = `On the user's screen right now (read at send):\n${text}`
         push(
           { kind: source.kind, status: text.length < full.length ? 'capped' : 'included', items: 1, available: 1, chars: block.length },
           block,
         )
+        containsScreenDerived = true
         break
       }
 
@@ -479,6 +530,12 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
         const limit = source.limit ?? available
         // Keep the most recent turns (oldest-first array ⇒ take the tail).
         historyTurns = gathered.recentTurns.slice(Math.max(0, available - limit))
+        if (
+          historyTurns.some(
+            (turn) => turn.contentClass === 'screen' || (turn.role === 'assistant' && (turn.contentClass === undefined || turn.contentClass === 'unknown')),
+          )
+        ) containsScreenDerived = true
+        if (historyTurns.some((turn) => turn.contentClass === 'transcript')) containsTranscriptDerived = true
         push({ kind: source.kind, status: historyTurns.length < available ? 'capped' : 'included', items: historyTurns.length, available, chars: 0 })
         break
       }
@@ -491,6 +548,9 @@ export const assembleChatContext = (sources: readonly ChatContextSource[], gathe
     citations,
     reports,
     truncated: reports.some((r) => r.status === 'capped'),
+    containsScreenDerived,
+    containsTranscriptDerived,
+    promptNeverEgress,
   }
 }
 

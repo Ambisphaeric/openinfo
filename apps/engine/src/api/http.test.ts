@@ -3850,6 +3850,150 @@ test('POST /chat includes live transcript only from sessions owned by the reques
   }
 })
 
+test('POST /chat applies the live session mode egress deny before hosted fetch', async () => {
+  let targetRequests = 0
+  const target = createServer((req, res) => {
+    targetRequests += 1
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'local answer' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve))
+  const targetAddr = target.address()
+  assert.ok(targetAddr && typeof targetAddr === 'object')
+  const localUrl = `http://127.0.0.1:${targetAddr.port}`
+  const documentedHosted = `http://chat.egress.test:${targetAddr.port}`
+  let hostedFetches = 0
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (raw.startsWith(documentedHosted)) {
+      hostedFetches += 1
+      return originalFetch(`${localUrl}${raw.slice(documentedHosted.length)}`, init)
+    }
+    return originalFetch(input, init)
+  }) as typeof fetch
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-chat-mode-egress-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    assert.equal((await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [
+        { kind: 'http', name: 'hosted-first', url: documentedHosted, api: 'openai-compat' },
+        { kind: 'http', name: 'local-second', url: localUrl, api: 'openai-compat' },
+      ] } }),
+    })).status, 200)
+    const mode = (await (await fetch(`${base}/modes/mode-meeting`)).json()) as Mode
+    assert.equal((await fetch(`${base}/modes/mode-meeting`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...mode, egress: { deny: true } }),
+    })).status, 200)
+    app.store.saveSession({
+      id: 'ses-chat-mode-deny', workspaceId: 'default', modeId: 'mode-meeting', startedAt: '2026-07-14T12:00:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'test', weight: 1 }], confidence: 1 },
+    })
+
+    const response = await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'keep this local' }),
+    })
+    assert.equal(response.status, 200)
+    const reply = (await response.json()) as ChatReply
+    assert.equal(reply.endpoint, 'local-second')
+    assert.equal(reply.egress?.decidedBy, 'mode')
+    assert.equal(hostedFetches, 0)
+    assert.equal(targetRequests, 1)
+  } finally {
+    await app.close()
+    globalThis.fetch = originalFetch
+    await new Promise<void>((resolve) => target.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('POST /chat persists one confirmed-delivery hold when a hosted stream tears after a delta', async () => {
+  let hostedRequests = 0
+  let fallbackRequests = 0
+  const broken = createServer((req, res) => {
+    hostedRequests += 1
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'partial ' } }] })}\n\n`)
+      setTimeout(() => req.socket.resetAndDestroy(), 10)
+    })
+  })
+  const fallback = createServer((req, res) => {
+    fallbackRequests += 1
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'must not replace partial output' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => broken.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => fallback.listen(0, '127.0.0.1', resolve))
+  const brokenAddr = broken.address()
+  const fallbackAddr = fallback.address()
+  assert.ok(brokenAddr && typeof brokenAddr === 'object')
+  assert.ok(fallbackAddr && typeof fallbackAddr === 'object')
+  const brokenLoopback = `http://127.0.0.1:${brokenAddr.port}`
+  const documentedHosted = `http://chat-stream.egress.test:${brokenAddr.port}`
+  const fallbackUrl = `http://127.0.0.1:${fallbackAddr.port}`
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (raw.startsWith(documentedHosted)) return originalFetch(`${brokenLoopback}${raw.slice(documentedHosted.length)}`, init)
+    return originalFetch(input, init)
+  }) as typeof fetch
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-chat-stream-hold-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    assert.equal((await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [
+        { kind: 'http', name: 'hosted-stream', url: documentedHosted, api: 'openai-compat' },
+        { kind: 'http', name: 'local-fallback', url: fallbackUrl, api: 'openai-compat' },
+      ] } }),
+    })).status, 200)
+
+    const response = await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'stream this answer' }),
+    })
+    assert.equal(response.status, 502)
+    assert.equal(hostedRequests, 1)
+    assert.equal(fallbackRequests, 0)
+    const holds = app.guardHolds.list('default')
+    assert.equal(holds.length, 1)
+    assert.equal(holds[0]?.stage, 'chat')
+    assert.deepEqual(holds[0]?.target, {
+      endpoint: 'hosted-stream', destination: 'hosted-public', delivery: 'confirmed', failureClass: 'bad-response',
+    })
+    assert.match(holds[0]?.verdict.reason ?? '', /fallback suspended/)
+    assert.ok(!JSON.stringify(holds[0]).includes('stream this answer'))
+  } finally {
+    await app.close()
+    globalThis.fetch = originalFetch
+    await new Promise<void>((resolve) => broken.close(() => resolve()))
+    await new Promise<void>((resolve) => fallback.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('pill P1×P2: the active-preset read-seam is wired into chat context assembly end-to-end', async () => {
   // The merge-time integration wire (neither PR did it alone): P1 defined the OPTIONAL
   // `ChatDeps.resolveActivePreset` seam and left it unfilled (⇒ `unavailable`); P2 shipped
@@ -4145,6 +4289,86 @@ test('Ask face privacy: a screenshot can NEVER reach an egress ocr endpoint — 
   } finally {
     await app.close()
     await new Promise<void>((resolve) => up.close(() => resolve()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('Ask face privacy: trusted-LAN OCR failure after delivery becomes one durable hold and aborts chat', async () => {
+  let ocrRequests = 0
+  let llmRequests = 0
+  const rawFrameSentinel = 'UFJJVkFURV9DSEFUX0ZSQU1F'
+  const upstream = createServer((req, res) => {
+    if (req.url?.includes('/predict/ocr_system')) {
+      ocrRequests += 1
+      req.resume()
+      req.on('end', () => {
+        res.writeHead(500, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'ocr worker failed after accepting the request' }))
+      })
+      return
+    }
+    llmRequests += 1
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ choices: [{ message: { content: 'must not run' } }] }))
+    })
+  })
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve))
+  const upstreamAddr = upstream.address()
+  assert.ok(upstreamAddr && typeof upstreamAddr === 'object')
+  const loopbackUrl = `http://127.0.0.1:${upstreamAddr.port}`
+  const documentedLan = `http://192.168.1.50:${upstreamAddr.port}`
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (raw.startsWith(documentedLan)) return originalFetch(`${loopbackUrl}${raw.slice(documentedLan.length)}`, init)
+    return originalFetch(input, init)
+  }) as typeof fetch
+
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-chat-screen-hold-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const appAddr = app.server.address()
+    assert.ok(appAddr && typeof appAddr === 'object')
+    const base = `http://127.0.0.1:${appAddr.port}`
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    const saved = await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        slots: {
+          ...fabric.slots,
+          llm: [{ kind: 'http', name: 'llm.local', url: loopbackUrl, api: 'openai-compat' }],
+          ocr: [{ kind: 'http', name: 'trusted-lan-ocr', url: documentedLan, api: 'paddle-serving', trustRawFrames: true }],
+        },
+      }),
+    })
+    assert.equal(saved.status, 200)
+
+    const response = await fetch(`${base}/chat`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'read this', screenshot: { contentType: 'image/png', data: rawFrameSentinel } }),
+    })
+    assert.equal(response.status, 502)
+    assert.equal(ocrRequests, 1)
+    assert.equal(llmRequests, 0, 'the chat LLM is never called after the raw-frame delivery hold')
+
+    const holds = app.guardHolds.list('default')
+    assert.equal(holds.length, 1)
+    assert.equal(holds[0]?.stage, 'chat')
+    assert.deepEqual(holds[0]?.target, {
+      endpoint: 'trusted-lan-ocr',
+      destination: 'lan-local',
+      delivery: 'confirmed',
+      failureClass: 'model-load',
+    })
+    assert.equal(holds[0]?.consent?.decidedBy, 'content-class')
+    assert.ok(!JSON.stringify(holds[0]).includes(rawFrameSentinel), 'durable hold contains metadata only')
+  } finally {
+    await app.close()
+    globalThis.fetch = originalFetch
+    await new Promise<void>((resolve) => upstream.close(() => resolve()))
     await rm(dir, { recursive: true, force: true })
   }
 })

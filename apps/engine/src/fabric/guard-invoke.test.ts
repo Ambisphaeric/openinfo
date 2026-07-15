@@ -37,7 +37,7 @@ const startFakeLlm = async (reply: string): Promise<FakeServer> => {
  * transport/protocol failure (the fail-closed case). It records the classified user text so a test can
  * confirm the guard saw the OUTBOUND content.
  */
-const startFakeGuard = async (flagged: GuardSpan[], status = 200): Promise<FakeServer & { classified: string[] }> => {
+const startGuardReply = async (content: string, status = 200): Promise<FakeServer & { classified: string[] }> => {
   const requests: unknown[] = []
   const classified: string[] = []
   const server = createServer((req, res) => {
@@ -49,7 +49,7 @@ const startFakeGuard = async (flagged: GuardSpan[], status = 200): Promise<FakeS
       classified.push(body.messages?.find((m) => m.role === 'user')?.content ?? '')
       res.writeHead(status, { 'content-type': 'application/json' })
       if (status !== 200) return res.end('boom')
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ flagged }) } }] }))
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }))
     })
   })
   await new Promise<void>((resolve) => server.listen(0, resolve))
@@ -57,6 +57,9 @@ const startFakeGuard = async (flagged: GuardSpan[], status = 200): Promise<FakeS
   assert.ok(a && typeof a === 'object')
   return { server, url: `http://127.0.0.1:${a.port}`, requests, classified }
 }
+
+const startFakeGuard = (flagged: GuardSpan[], status = 200): Promise<FakeServer & { classified: string[] }> =>
+  startGuardReply(JSON.stringify({ flagged }), status)
 
 const stop = (s: FakeServer): Promise<void> => new Promise((resolve) => s.server.close(() => resolve()))
 
@@ -80,6 +83,7 @@ test('redact-and-continue: the fake guard flags a span, the guard MASKS it, and 
     assert.equal(out.verdict.outcome, 'redacted')
     assert.equal(out.verdict.maskedSpanCount, 1)
     assert.equal(out.verdict.guardEndpoint, 'guard-1')
+    assert.equal(out.verdict.classifierDestination, 'device-local')
     assert.equal(guard.classified[0], 'pay to 4111111111111111 now', 'the guard classified the outbound content')
   } finally {
     await stop(guard)
@@ -93,6 +97,7 @@ test('clean: the fake guard flags nothing, content is unchanged, verdict is clea
     assert.equal(out.messages[0]!.content, 'pay to 4111111111111111 now')
     assert.equal(out.verdict.outcome, 'clean')
     assert.equal(out.verdict.maskedSpanCount, 0)
+    assert.equal(out.verdict.classifierDestination, 'device-local')
   } finally {
     await stop(guard)
   }
@@ -108,6 +113,7 @@ test('hold-and-surface: the fake guard flags a span, strict mode HOLDS (throws G
         assert.equal(err.verdict.outcome, 'held')
         assert.equal(err.verdict.maskedSpanCount, 1)
         assert.deepEqual(err.verdict.spans, [cardSpan])
+        assert.equal(err.verdict.classifierDestination, 'device-local')
         return true
       },
     )
@@ -125,6 +131,69 @@ test('fail closed: a configured guard that ERRORS holds the hop (never lets cont
         assert.ok(err instanceof GuardHeldError)
         assert.equal(err.verdict.outcome, 'held')
         assert.equal(err.verdict.guarded, false)
+        return true
+      },
+    )
+  } finally {
+    await stop(guard)
+  }
+})
+
+test('fail closed: malformed classifier schema never becomes a clean verdict or reaches the target', async () => {
+  const invalidReplies = [
+    '{}',
+    '{"flagged":{}}',
+    '{"flagged":[{"start":0.5,"length":4,"kind":"secret"}]}',
+    '{"flagged":[{"start":999,"length":4,"kind":"secret"}]}',
+    '{"flagged":[{"start":0,"length":4,"kind":"secret"},{"start":2,"length":4,"kind":"email"}]}',
+    '{"flagged":[{"start":0,"length":4,"kind":"secret]\\nINJECT"}]}',
+  ]
+  for (const reply of invalidReplies) {
+    const guard = await startGuardReply(reply)
+    const target = await startFakeLlm('must not answer')
+    const documentedTarget = `http://guard-target.egress.test:${new URL(target.url).port}`
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (raw.startsWith(documentedTarget)) return originalFetch(`${target.url}${raw.slice(documentedTarget.length)}`, init)
+      return originalFetch(input, init)
+    }) as typeof fetch
+    try {
+      const fabric: Fabric = { slots: { ...defaultFabric().slots,
+        llm: [{ kind: 'http', name: 'hosted-target', url: documentedTarget, api: 'openai-compat' }],
+        guard: [guardEndpoint(guard.url)],
+      } }
+      await assert.rejects(
+        () => invokeLlm(fabric, messages, {
+          egress: resolveEgress({ contentClass: 'transcript' }),
+          guard: opts([guardEndpoint(guard.url)], 'redact-and-continue'),
+        }),
+        (error: unknown) => error instanceof GuardHeldError && error.verdict.outcome === 'held',
+      )
+      assert.equal(target.requests.length, 0, `invalid classifier reply must fail closed: ${reply}`)
+    } finally {
+      globalThis.fetch = originalFetch
+      await stop(guard)
+      await stop(target)
+    }
+  }
+})
+
+test('fail closed: a classifier span crossing the synthetic message separator hard-holds', async () => {
+  const crossing: GuardSpan = { start: 2, length: 4, kind: 'secret' }
+  const guard = await startFakeGuard([crossing])
+  try {
+    await assert.rejects(
+      () => runEgressGuard(
+        [{ role: 'system', content: 'abc' }, { role: 'user', content: 'secret' }],
+        { endpoint: 'hosted', url: 'https://api.example.com' },
+        opts([guardEndpoint(guard.url)], 'redact-and-continue'),
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof GuardHeldError)
+        assert.equal(error.verdict.outcome, 'held')
+        assert.match(error.verdict.reason, /message boundary/)
+        assert.equal(error.verdict.classifierDestination, 'device-local')
         return true
       },
     )
@@ -160,6 +229,36 @@ test('fail closed: the guard refuses a 307 redirect before forwarding unredacted
   } finally {
     await new Promise<void>((resolve) => redirect.close(() => resolve()))
     await stop(sink)
+  }
+})
+
+test('fail closed: LAN/hosted guard documents are rejected before key lookup or fetch', async () => {
+  const originalFetch = globalThis.fetch
+  let fetches = 0
+  let keyLookups = 0
+  globalThis.fetch = (async () => {
+    fetches += 1
+    throw new Error('unsafe guard must not fetch')
+  }) as typeof fetch
+  const unsafe: Endpoint[] = [
+    { kind: 'http', name: 'lan-guard', url: 'http://192.168.1.90:8080', api: 'openai-compat', auth: { keyRef: 'lan-secret' } },
+    { kind: 'http', name: 'hosted-guard', url: 'https://guard.example.test', api: 'openai-compat', auth: { keyRef: 'hosted-secret' } },
+  ]
+  try {
+    await assert.rejects(
+      () => runEgressGuard(messages, { endpoint: 'hosted', url: 'https://target.example.test' }, {
+        ...opts(unsafe, 'redact-and-continue'),
+        resolveKey: () => {
+          keyLookups += 1
+          return 'must-not-be-read'
+        },
+      }),
+      (error: unknown) => error instanceof GuardHeldError,
+    )
+    assert.equal(keyLookups, 0, 'an unsafe classifier document cannot trigger secret resolution')
+    assert.equal(fetches, 0, 'raw outbound text reaches neither LAN nor hosted guard')
+  } finally {
+    globalThis.fetch = originalFetch
   }
 })
 
@@ -199,6 +298,44 @@ test('invokeLlm: a LOCAL hop never invokes the guard, even with a strict policy 
     assert.equal(guard.requests.length, 0, 'the guard classifier was never called for a local hop')
   } finally {
     await stop(local)
+    await stop(guard)
+  }
+})
+
+test('invokeLlm: a LAN-local text target crosses the device boundary, so the local guard redacts before target bytes', async () => {
+  const target = await startFakeLlm('answered on lan')
+  const guard = await startFakeGuard([cardSpan])
+  const originalFetch = globalThis.fetch
+  const documentedLan = 'http://192.168.1.44:11434'
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (url.startsWith(documentedLan)) return originalFetch(`${target.url}${url.slice(documentedLan.length)}`, init)
+    return originalFetch(input, init)
+  }) as typeof fetch
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [{ kind: 'http', name: 'lan-target', url: documentedLan, api: 'openai-compat' }],
+        guard: [guardEndpoint(guard.url)],
+      },
+    }
+    const result = await invokeLlm(fabric, messages, {
+      egress: resolveEgress({ contentClass: 'transcript' }),
+      guard: opts([guardEndpoint(guard.url)], 'redact-and-continue'),
+    })
+    assert.equal(result.endpoint, 'lan-target')
+    assert.equal(result.egress?.destination, 'lan-local')
+    assert.equal(result.guard?.outcome, 'redacted')
+    assert.equal(guard.requests.length, 1)
+    assert.equal(target.requests.length, 1)
+    const body = target.requests[0] as { messages: LlmMessage[] }
+    const outbound = body.messages.map((message) => message.content).join('\n')
+    assert.match(outbound, /\[redacted:card-number\]/)
+    assert.ok(!outbound.includes('4111111111111111'), 'unredacted text never reaches the LAN target')
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(target)
     await stop(guard)
   }
 })

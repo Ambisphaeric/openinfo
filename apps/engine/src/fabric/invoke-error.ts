@@ -69,7 +69,7 @@ const hintFor = (cls: InvokeErrorClass, ctx: InvokeCtx): string => {
     case 'egress-denied':
       return `endpoint "${ctx.endpoint}" is egress-capable but this content may not leave the machine — add or keep a local endpoint for this slot, or lift the egress denial (mode/workspace/prompt) in Settings`
     case 'guard-held':
-      return `the egress guard suspended this hop before it reached "${ctx.endpoint}" — review the held item and release or deny it, add a guard endpoint, or switch the guard policy to redact-and-continue in Settings`
+      return `this hop is held at the device boundary for "${ctx.endpoint}" — review the held item and approve or deny it, add a guard endpoint, or switch the guard policy to redact-and-continue in Settings`
   }
 }
 
@@ -81,8 +81,10 @@ export class InvokeError extends Error {
   readonly keyRef?: string
   readonly serverMessage?: string
   readonly hint: string
+  /** Whether request bytes definitely did not leave, may have left, or reached an HTTP peer. Internal. */
+  readonly delivery: 'none' | 'possible' | 'confirmed'
 
-  constructor(cls: InvokeErrorClass, ctx: InvokeCtx, extra: { serverMessage?: string; hint?: string } = {}) {
+  constructor(cls: InvokeErrorClass, ctx: InvokeCtx, extra: { serverMessage?: string; hint?: string; delivery?: 'none' | 'possible' | 'confirmed' } = {}) {
     const serverMessage = extra.serverMessage
     const hint = extra.hint ?? hintFor(cls, ctx)
     super(`${cls}: ${serverMessage ?? hint}`)
@@ -94,6 +96,7 @@ export class InvokeError extends Error {
     if (ctx.keyRef !== undefined) this.keyRef = ctx.keyRef
     if (serverMessage !== undefined) this.serverMessage = serverMessage
     this.hint = hint
+    this.delivery = extra.delivery ?? 'none'
   }
 
   toFailure(): ClassifiedFailure {
@@ -142,9 +145,15 @@ const errorCode = (error: unknown): string | undefined => {
  * else (ECONNREFUSED / DNS / reset) becomes `unreachable`. The OS code, when present, is the serverMessage.
  */
 export const classifyFetchError = (error: unknown, ctx: InvokeCtx): InvokeError => {
-  if (error instanceof Error && error.name === 'AbortError') return new InvokeError('timeout', ctx)
+  if (error instanceof Error && error.name === 'AbortError') return new InvokeError('timeout', ctx, { delivery: 'possible' })
   const code = errorCode(error)
-  return new InvokeError('unreachable', ctx, code !== undefined ? { serverMessage: code } : {})
+  // DNS/connect refusal proves no peer received a request; resets and unknown transport failures may have
+  // happened after write, so boundary fallback must conservatively stop for those.
+  const definitelyUnsent = code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'ECONNREFUSED' || code === 'UND_ERR_CONNECT_TIMEOUT'
+  return new InvokeError('unreachable', ctx, {
+    ...(code !== undefined ? { serverMessage: code } : {}),
+    delivery: definitelyUnsent ? 'none' : 'possible',
+  })
 }
 
 /** Pull the server's own message out of an error body (JSON {error}/{error.message}/{message}, else raw). */
@@ -185,17 +194,55 @@ const looksLikeModelLoad = (bodyText: string): boolean =>
 export const classifyHttpResponse = (status: number, bodyText: string, ctx: InvokeCtx): InvokeError => {
   const serverMessage = extractServerMessage(bodyText)
   if (status === 401 || status === 403) {
-    return new InvokeError('auth', ctx, serverMessage !== undefined ? { serverMessage } : {})
+    return new InvokeError('auth', ctx, { ...(serverMessage !== undefined ? { serverMessage } : {}), delivery: 'confirmed' })
   }
   if (looksLikeModelLoad(bodyText) || status === 400 || status >= 500) {
-    return new InvokeError('model-load', ctx, { serverMessage: serverMessage ?? `HTTP ${status}` })
+    return new InvokeError('model-load', ctx, { serverMessage: serverMessage ?? `HTTP ${status}`, delivery: 'confirmed' })
   }
-  return new InvokeError('bad-response', ctx, { serverMessage: serverMessage ?? `HTTP ${status}` })
+  return new InvokeError('bad-response', ctx, { serverMessage: serverMessage ?? `HTTP ${status}`, delivery: 'confirmed' })
 }
 
 /** Pull the representative classified failure out of an invoke throw (the primary/first endpoint's). */
 export const describeInvokeFailure = (error: unknown): ClassifiedFailure | undefined => {
   if (error instanceof AggregateInvokeError) return error.failures[0]
   if (error instanceof InvokeError) return error.toFailure()
+  // GuardHeldError lives in guard.ts, which already imports ClassifiedFailure from this module. Keep this
+  // bridge structural to avoid a runtime cycle while still making boundary holds visible to the legacy
+  // screen ring and workflow queue. The URL remains internal diagnostic input; QueueFailure deliberately
+  // omits it, and the surfaced hint comes from the metadata-only verdict reason rather than a target URL or
+  // response body.
+  if (error && typeof error === 'object') {
+    // A progress-carrying hold (transcribe's TranscribeHeldWithProgress) wraps the safe GuardHeldError in
+    // `.held` so the wiring can commit completed siblings before rethrowing. The QUEUE classification must
+    // still read the hold itself — otherwise a strict STT hold records NO lastFailure and the suspension
+    // is silently reinterpreted as an unclassifiable drain error (#206). Structural, same as below.
+    const carrier = error as { held?: unknown }
+    if (carrier.held !== undefined && carrier.held !== error) {
+      const inner = describeInvokeFailure(carrier.held)
+      if (inner !== undefined) return inner
+    }
+    const held = error as {
+      class?: unknown
+      endpointName?: unknown
+      url?: unknown
+      targetModel?: unknown
+      verdict?: { reason?: unknown }
+    }
+    if (
+      held.class === 'guard-held' &&
+      typeof held.endpointName === 'string' &&
+      typeof held.url === 'string' &&
+      held.verdict &&
+      typeof held.verdict.reason === 'string'
+    ) {
+      return {
+        class: 'guard-held',
+        endpoint: held.endpointName,
+        url: held.url,
+        ...(typeof held.targetModel === 'string' ? { model: held.targetModel } : {}),
+        hint: held.verdict.reason,
+      }
+    }
+  }
   return undefined
 }

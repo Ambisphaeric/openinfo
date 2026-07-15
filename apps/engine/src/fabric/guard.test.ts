@@ -28,6 +28,10 @@ test('applyRedaction clamps an over-long span to the text and skips out-of-range
   assert.equal(applyRedaction(text, [{ start: 50, length: 3, kind: 'x' }]), 'secret')
 })
 
+test('applyRedaction never embeds an unsafe classifier kind in the outbound marker', () => {
+  assert.equal(applyRedaction('secret', [{ start: 0, length: 6, kind: 'secret]\nINJECT' }]), '[redacted:sensitive]')
+})
+
 /** ---------- redactMessages (offset mapping across the joined serialization) ---------- */
 
 test('serializeMessages joins contents with newlines and redactMessages maps global offsets back per-message', () => {
@@ -47,6 +51,16 @@ test('redactMessages with no spans returns fresh, equal copies', () => {
   const out = redactMessages(messages, [])
   assert.deepEqual(out, messages)
   assert.notEqual(out[0], messages[0], 'a fresh copy, not the same object')
+})
+
+test('redactMessages refuses a span crossing the synthetic message separator', () => {
+  assert.throws(
+    () => redactMessages(
+      [{ role: 'system', content: 'abc' }, { role: 'user', content: 'secret' }],
+      [{ start: 2, length: 4, kind: 'secret' }],
+    ),
+    /message boundary/,
+  )
 })
 
 /** ---------- evaluateGuard (the whole verdict→behavior decision table) ---------- */

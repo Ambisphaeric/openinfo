@@ -198,7 +198,7 @@ test('the companion ScreenFrameMeta chunk is skipped and counted, never recogniz
   })
 })
 
-test('empty recognized text is a blank frame — neither record persisted, counted as blank', async () => {
+test('empty recognized text persists only a blank completion checkpoint and is counted as blank', async () => {
   await withStore(async (store) => {
     const invoke: ScreenOcrInvoke = async (): Promise<ScreenTextResult> => ({ text: '   ', endpoint: 'vlm', slot: 'ocr' })
     const outcomes: ScreenProcessingOutcome[] = []
@@ -213,7 +213,10 @@ test('empty recognized text is a blank frame — neither record persisted, count
       log: (line) => void logs.push(line),
     })
     await processor.process(imageChunk())
-    assert.equal(store.listOcrResults('default').length, 0)
+    const checkpoints = store.listOcrResults('default')
+    assert.equal(checkpoints.length, 1)
+    assert.equal(checkpoints[0]?.text, '')
+    assert.equal(checkpoints[0]?.provenance.endpoint, 'vlm')
     assert.equal(store.listDistillates('default').length, 0)
     assert.deepEqual([processor.status().blank, processor.status().processed], [1, 0])
     assert.deepEqual(outcomes, [{
@@ -321,7 +324,7 @@ test('an OCR server echoing a raw frame cannot copy it into processor status or 
   }
 })
 
-test('legacy OCR never surfaces a configured trusted-LAN endpoint URL in screen status or logs', async () => {
+test('legacy OCR surfaces a boundary delivery hold without exposing the trusted-LAN endpoint URL', async () => {
   const configuredUrl = 'http://ocr-url-sentinel.example.invalid.local:48151/private-screen-route'
   const attempted: string[] = []
   const originalFetch = globalThis.fetch
@@ -361,7 +364,7 @@ test('legacy OCR never surfaces a configured trusted-LAN endpoint URL in screen 
       assert.deepEqual(attempted, [`${configuredUrl}/predict/ocr_system`], 'the configured endpoint was actually attempted')
       const status = processor.status()
       assert.equal(status.failed, 1)
-      assert.equal(status.lastFailures[0]?.class, 'unreachable')
+      assert.equal(status.lastFailures[0]?.class, 'guard-held')
       assert.equal(status.lastFailures[0]?.endpoint, 'trusted-lan-ocr')
       const surfaced = JSON.stringify({ status, logs })
       assert.equal(surfaced.includes(configuredUrl), false)
@@ -471,7 +474,7 @@ test('runOnDrain: an invoke throw PROPAGATES (real drain work → re-queue), NOT
   })
 })
 
-test('workflow VLM never surfaces a configured trusted-LAN endpoint URL in QueueFailure or drain logs', async () => {
+test('workflow VLM surfaces a boundary delivery hold without exposing its trusted-LAN URL', async () => {
   const configuredUrl = 'http://vlm-url-sentinel.example.invalid.local:48152/private-workflow-route'
   const attempted: string[] = []
   const originalFetch = globalThis.fetch
@@ -522,7 +525,7 @@ test('workflow VLM never surfaces a configured trusted-LAN endpoint URL in Queue
       assert.deepEqual(attempted, [`${configuredUrl}/v1/chat/completions`], 'the configured endpoint was actually attempted')
       const status = await queue.status()
       assert.equal(status.pendingFiles, 1, 'the failed workflow frame remains queued for retry')
-      assert.equal(status.lastFailure?.class, 'unreachable')
+      assert.equal(status.lastFailure?.class, 'guard-held')
       assert.equal(status.lastFailure?.endpoint, 'trusted-lan-vlm')
       assert.equal(processor.status().lastFailures.length, 0, 'workflow failures remain queue-owned')
       const surfaced = JSON.stringify({ queueFailure: status.lastFailure, queueLogs, processorLogs })
@@ -536,7 +539,7 @@ test('workflow VLM never surfaces a configured trusted-LAN endpoint URL in Queue
   }
 })
 
-test('runOnDrain: an empty recognition is a blank frame — neither record persisted, counted as blank', async () => {
+test('runOnDrain: an empty recognition persists a blank checkpoint without a text mirror', async () => {
   await withStore(async (store) => {
     const invoke: ScreenOcrInvoke = async (): Promise<ScreenTextResult> => ({ text: '', endpoint: 'paddle', slot: 'ocr' })
     const outcomes: ScreenProcessingOutcome[] = []
@@ -545,7 +548,9 @@ test('runOnDrain: an empty recognition is a blank frame — neither record persi
       reportProcessingOutcome: (outcome) => void outcomes.push(outcome),
     })
     await processor.runOnDrain([imageChunk()], ocrStep())
-    assert.equal(store.listOcrResults('default').length, 0)
+    assert.equal(store.listOcrResults('default').length, 1)
+    assert.equal(store.listOcrResults('default')[0]?.text, '')
+    assert.equal(store.listDistillates('default').length, 0)
     assert.deepEqual([processor.status().blank, processor.status().processed], [1, 0])
     assert.equal(outcomes[0]?.outcome, 'blank')
   })

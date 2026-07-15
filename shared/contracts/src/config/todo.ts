@@ -1,5 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Id, IsoTime } from '../common.js'
+import { Id, IsoTime, SlotName, InvokeUsage } from '../common.js'
+import { ContentClass, EgressDecision } from './egress.js'
+import { GuardVerdict } from './guard.js'
 
 /**
  * Where one to-do item came from — the extraction pass's provenance trail so every surfaced item
@@ -12,6 +14,16 @@ export const TodoProvenance = Type.Object(
     sessionId: Type.Optional(Id),
     distillateId: Type.Optional(Id),
     momentId: Type.Optional(Id),
+    /** Actual task-extract invocation facts (#206); absent for user-authored and legacy items. */
+    templateId: Type.Optional(Id),
+    slot: Type.Optional(SlotName),
+    endpoint: Type.Optional(Type.String({ minLength: 1 })),
+    model: Type.Optional(Type.String()),
+    usage: Type.Optional(InvokeUsage),
+    /** Effective origin class of material actually included in the task-extract pass. */
+    contentClass: Type.Optional(ContentClass),
+    egress: Type.Optional(EgressDecision),
+    guard: Type.Optional(GuardVerdict),
   },
   { $id: 'TodoProvenance', additionalProperties: false },
 )
