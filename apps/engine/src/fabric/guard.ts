@@ -1,14 +1,16 @@
-import type { Endpoint, GuardBehavior, GuardSpan, GuardVerdict } from '@openinfo/contracts'
+import type { EgressDestination, EgressLayer, Endpoint, GuardBehavior, GuardHold, GuardSpan, GuardVerdict } from '@openinfo/contracts'
 import type { SecretResolver } from './secrets.js'
 import type { LlmMessage } from './invoke.js'
 import type { ClassifiedFailure } from './invoke-error.js'
+import { isLoopbackEndpoint } from './egress.js'
 
 /**
- * The egress GUARD (#63) — the content/PII filter run on every hop MARKED egress, AFTER the #64 egress
- * gate has ALLOWED egress and BEFORE any bytes leave. This module is the pure core (redaction + policy
+ * The egress GUARD (#63) — the content/PII filter run on every TEXT hop that crosses the device boundary,
+ * AFTER the #64 egress gate has allowed it and BEFORE target bytes leave. This module is the pure core
+ * (redaction + policy
  * evaluation, exhaustively testable) plus a small OpenAI-compat classifier client. It never does egress
- * enforcement itself — invoke.ts calls it only at a `{allow:true, reach:'egress'}` hop, so local-only hops
- * never reach it (no egress ⇒ no filter).
+ * enforcement itself — invoke.ts calls it for LAN-local and hosted/public destinations; device-local hops
+ * never reach it (no device-boundary crossing ⇒ no filter).
  *
  * The verdict→behavior policy is DOCUMENT-DRIVEN (GuardPolicy / the guard.enabled flag), never hardcoded:
  * `redact-and-continue` masks flagged spans and proceeds; `hold-and-surface` suspends the hop. The
@@ -45,8 +47,25 @@ export const applyRedaction = (text: string, spans: readonly GuardSpan[]): strin
     .map((s) => ({ kind: s.kind, start: s.start, end: Math.min(text.length, s.start + s.length) }))
     .sort((a, b) => b.start - a.start)
   let out = text
-  for (const s of valid) out = out.slice(0, s.start) + `[redacted:${s.kind}]` + out.slice(s.end)
+  for (const s of valid) {
+    // Classifier labels are untrusted model output. Production parsing accepts only this closed printable
+    // token shape; keep a defensive fallback here for direct callers of the pure helper too.
+    const kind = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(s.kind) ? s.kind : 'sensitive'
+    out = out.slice(0, s.start) + `[redacted:${kind}]` + out.slice(s.end)
+  }
   return out
+}
+
+/** Whether a serialized global span lies wholly inside one message content window (never its separator). */
+const spanFitsOneMessage = (messages: readonly LlmMessage[], span: GuardSpan): boolean => {
+  let base = 0
+  const end = span.start + span.length
+  for (const message of messages) {
+    const windowEnd = base + message.content.length
+    if (span.start >= base && end <= windowEnd) return true
+    base = windowEnd + 1
+  }
+  return false
 }
 
 /**
@@ -58,6 +77,9 @@ export const applyRedaction = (text: string, spans: readonly GuardSpan[]): strin
 export const redactMessages = (messages: readonly LlmMessage[], spans: readonly GuardSpan[]): LlmMessage[] => {
   const result = messages.map((m) => ({ ...m }))
   if (spans.length === 0) return result
+  if (spans.some((span) => !spanFitsOneMessage(messages, span))) {
+    throw new Error('guard span crosses a message boundary and cannot be redacted safely')
+  }
   let base = 0
   for (const msg of result) {
     const winStart = base
@@ -78,6 +100,7 @@ export interface GuardEvalInput {
   behavior: GuardBehavior
   acknowledgeUnguardedEgress: boolean
   guardEndpoint?: string | undefined
+  classifierDestination?: EgressDestination | undefined
 }
 
 /** The pure policy output: whether to proceed, whether to redact first, and the verdict to record. */
@@ -98,8 +121,10 @@ export interface GuardDecision {
  * Span descriptors (kind/start/length — never the raw value) ride the verdict for redacted/held.
  */
 export const evaluateGuard = (input: GuardEvalInput): GuardDecision => {
-  const { spans, guardConfigured, behavior, acknowledgeUnguardedEgress, guardEndpoint } = input
-  const ep = guardEndpoint !== undefined ? { guardEndpoint } : {}
+  const { spans, guardConfigured, behavior, acknowledgeUnguardedEgress, guardEndpoint, classifierDestination } = input
+  const ep = guardEndpoint !== undefined
+    ? { guardEndpoint, ...(classifierDestination !== undefined ? { classifierDestination } : {}) }
+    : {}
 
   if (!guardConfigured) {
     if (behavior === 'hold-and-surface') {
@@ -151,12 +176,47 @@ export class GuardHeldError extends Error {
   readonly verdict: GuardVerdict
   readonly endpointName: string
   readonly url: string
-  constructor(verdict: GuardVerdict, ctx: { endpoint: string; url: string }) {
+  readonly targetModel?: string
+  readonly targetDestination?: EgressDestination
+  readonly targetDelivery?: 'possible' | 'confirmed'
+  readonly targetFailureClass?: string
+  readonly consent?: { allowed: boolean; decidedBy: EgressLayer; reason: string }
+  constructor(
+    verdict: GuardVerdict,
+    ctx: {
+      endpoint: string
+      url: string
+      model?: string | undefined
+      destination?: EgressDestination | undefined
+      delivery?: 'possible' | 'confirmed' | undefined
+      failureClass?: string | undefined
+      consent?: { allowed: boolean; decidedBy: EgressLayer; reason: string } | undefined
+    },
+  ) {
     super(`guard-held: ${verdict.reason}`)
     this.name = 'GuardHeldError'
     this.verdict = verdict
     this.endpointName = ctx.endpoint
     this.url = ctx.url
+    if (ctx.model !== undefined) this.targetModel = ctx.model
+    if (ctx.destination !== undefined) this.targetDestination = ctx.destination
+    if (ctx.delivery !== undefined) this.targetDelivery = ctx.delivery
+    if (ctx.failureClass !== undefined) this.targetFailureClass = ctx.failureClass
+    if (ctx.consent !== undefined) this.consent = ctx.consent
+  }
+  /** Safe metadata callers may spread into a durable GuardHold. */
+  holdMetadata(): Pick<GuardHold, 'target' | 'consent' | 'classifierDestination'> {
+    return {
+      target: {
+        endpoint: this.endpointName,
+        ...(this.targetModel !== undefined ? { model: this.targetModel } : {}),
+        ...(this.targetDestination !== undefined ? { destination: this.targetDestination } : {}),
+        ...(this.targetDelivery !== undefined ? { delivery: this.targetDelivery } : {}),
+        ...(this.targetFailureClass !== undefined ? { failureClass: this.targetFailureClass } : {}),
+      },
+      ...(this.consent !== undefined ? { consent: this.consent } : {}),
+      ...(this.verdict.classifierDestination !== undefined ? { classifierDestination: this.verdict.classifierDestination } : {}),
+    }
   }
   toFailure(): ClassifiedFailure {
     return { class: 'guard-held', endpoint: this.endpointName, url: this.url, hint: this.verdict.reason }
@@ -197,23 +257,32 @@ const extractJsonObject = (content: string): unknown => {
   }
 }
 
-/** Coerce a parsed `{flagged:[...]}` reply into validated GuardSpans (dropping malformed entries), clamped
- * to the classified text length so a span can never point outside the content. */
+/** Validate a parsed `{flagged:[...]}` reply strictly. Classifier output is untrusted: a missing array,
+ * malformed/non-integer/out-of-range entry, unsafe label, or overlap invalidates the WHOLE response so
+ * runEgressGuard fails closed. Silently dropping one bad entry could leak precisely the bytes it named. */
 const parseFlagged = (parsed: unknown, textLength: number): GuardSpan[] => {
-  const flagged = (parsed as { flagged?: unknown } | undefined)?.flagged
-  if (!Array.isArray(flagged)) return []
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('guard classifier response is not an object')
+  const flagged = (parsed as { flagged?: unknown }).flagged
+  if (!Array.isArray(flagged)) throw new Error('guard classifier response is missing a flagged array')
   const spans: GuardSpan[] = []
   for (const raw of flagged) {
-    if (!raw || typeof raw !== 'object') continue
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('guard classifier returned a malformed span')
     const start = (raw as { start?: unknown }).start
     const length = (raw as { length?: unknown }).length
     const kind = (raw as { kind?: unknown }).kind
-    if (typeof start !== 'number' || typeof length !== 'number') continue
-    const s = Math.max(0, Math.trunc(start))
-    if (s >= textLength) continue
-    const len = Math.min(textLength - s, Math.trunc(length))
-    if (len < 1) continue
-    spans.push({ start: s, length: len, kind: typeof kind === 'string' && kind.trim() !== '' ? kind : 'sensitive' })
+    if (!Number.isInteger(start) || !Number.isInteger(length)) throw new Error('guard classifier span offsets must be integers')
+    if ((start as number) < 0 || (length as number) < 1 || (start as number) + (length as number) > textLength) {
+      throw new Error('guard classifier span is outside the classified text')
+    }
+    if (typeof kind !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(kind)) {
+      throw new Error('guard classifier span kind is invalid')
+    }
+    spans.push({ start: start as number, length: length as number, kind })
+  }
+  spans.sort((a, b) => a.start - b.start)
+  for (let i = 1; i < spans.length; i += 1) {
+    const previous = spans[i - 1]!
+    if (spans[i]!.start < previous.start + previous.length) throw new Error('guard classifier spans overlap')
   }
   return spans
 }
@@ -266,16 +335,25 @@ const classifyOne = async (endpoint: Extract<Endpoint, { kind: 'http' }>, text: 
 }
 
 /**
- * Classify outbound text against the guard slot: try endpoints in fabric order, first that answers wins.
- * v0 speaks http/openai-compat guard endpoints; local/cloud guard endpoints are skipped (disclosed — a
- * managed-local guard runtime is a follow-up). Throws when NO configured guard endpoint could classify, so
- * the caller fails CLOSED (a configured-but-unreachable guard never lets content leave unguarded).
+ * Classify outbound text against the guard slot: try DEVICE-LOCAL endpoints in fabric order, first that
+ * answers wins. The classifier necessarily receives the UNREDACTED candidate text, so a LAN/hosted guard
+ * would itself be uncontrolled egress before it could protect the target call. v0 therefore accepts only
+ * loopback http/openai-compat guards; every other destination is skipped before auth/body/fetch and the hop
+ * fails closed if none remain. A managed-local guard runtime is a follow-up.
  */
 export const classifyEgressText = async (text: string, opts: GuardOptions): Promise<GuardClassification> => {
   const errors: string[] = []
   for (const endpoint of opts.endpoints) {
     if (endpoint.kind !== 'http' || endpoint.api !== 'openai-compat') {
       errors.push(`${endpoint.name}: unsupported guard endpoint (v0 supports http/openai-compat)`)
+      continue
+    }
+    // The guard sees raw outbound text. Device-local is an absolute v0 boundary: private LAN is still a
+    // device-boundary crossing, and hosted/public is the very destination the guard is meant to protect.
+    // Check the DOCUMENT before resolveKey, body construction, or fetch so an unsafe guard receives zero
+    // bytes and no credential lookup. Redirects remain disabled inside classifyOne as a second backstop.
+    if (!isLoopbackEndpoint(endpoint)) {
+      errors.push(`${endpoint.name}: guard classifiers must be device-local (managed/loopback); LAN or hosted/public guard skipped before send`)
       continue
     }
     try {
@@ -289,14 +367,20 @@ export const classifyEgressText = async (text: string, opts: GuardOptions): Prom
 }
 
 /**
- * The full egress-guard step for one allowed egress hop: classify (when a guard is configured), evaluate
+ * The full egress-guard step for one allowed device-boundary text hop: classify (when configured), evaluate
  * the policy, and either return the (possibly redacted) messages + verdict to proceed, or THROW
  * GuardHeldError to suspend the hop. A configured guard that cannot classify HOLDS (fail closed). This is
- * the ONE function invoke.ts calls at the `{allow:true, reach:'egress'}` hook point.
+ * the ONE function invoke.ts calls before a LAN-local or hosted/public target.
  */
 export const runEgressGuard = async (
   messages: readonly LlmMessage[],
-  ctx: { endpoint: string; url: string },
+  ctx: {
+    endpoint: string
+    url: string
+    model?: string | undefined
+    destination?: EgressDestination | undefined
+    consent?: { allowed: boolean; decidedBy: EgressLayer; reason: string } | undefined
+  },
   opts: GuardOptions,
 ): Promise<{ messages: LlmMessage[]; verdict: GuardVerdict }> => {
   const guardConfigured = opts.endpoints.length > 0
@@ -315,12 +399,30 @@ export const runEgressGuard = async (
       )
     }
   }
+  // serializeMessages inserts one newline between message contents. A classifier span touching that
+  // synthetic separator cannot be mapped to one target message without silently leaving intersected
+  // content unchanged. Hard-hold even under redact-and-continue; never claim a successful redaction.
+  if (flagged.some((span) => !spanFitsOneMessage(messages, span))) {
+    throw new GuardHeldError(
+      {
+        behavior: opts.behavior,
+        outcome: 'held',
+        guarded: true,
+        maskedSpanCount: flagged.length,
+        spans: flagged,
+        ...(guardEndpoint !== undefined ? { guardEndpoint, classifierDestination: 'device-local' as const } : {}),
+        reason: 'the egress guard returned a span crossing a message boundary; the hop was held because it could not be redacted safely',
+      },
+      ctx,
+    )
+  }
   const decision = evaluateGuard({
     spans: flagged,
     guardConfigured,
     behavior: opts.behavior,
     acknowledgeUnguardedEgress: opts.acknowledgeUnguardedEgress,
     guardEndpoint,
+    ...(guardEndpoint !== undefined ? { classifierDestination: 'device-local' as const } : {}),
   })
   if (!decision.proceed) throw new GuardHeldError(decision.verdict, ctx)
   return { messages: decision.redact ? redactMessages(messages, flagged) : messages.map((m) => ({ ...m })), verdict: decision.verdict }

@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
+import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
-import { DiscoveryDocuments, FabricDocuments, FileSecretStore, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
+import { DiscoveryDocuments, FabricDocuments, FileSecretStore, GuardHeldError, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
@@ -51,6 +51,8 @@ export interface EngineApp {
    * text stream here; this queue drains it on its OWN loop, so a parked LLM never blocks transcription.
    * Exposed so a test / embedder can inspect the LLM-track backlog independently of the audio backlog. */
   textQueue: CaptureQueue
+  /** The raw capture/STT spool, exposed symmetrically for lifecycle inspection and integration tests. */
+  captureQueue: CaptureQueue
   /** Process-local metadata-only read model for mic, system-audio, and screen. It deliberately does not
    * hydrate from persisted live sessions, so a fresh launch remains stopped until a lifecycle event. */
   senseLanes: SenseLaneTracker
@@ -233,6 +235,10 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     values: fieldValues,
     resolveKey,
     runtimeManager: runtime,
+    guardDocs,
+    guardHolds,
+    guardEnabled: () => isFlagEnabled(store, 'guard.egress'),
+    publishHold: (hold) => bus.publish('guard.hold.updated', hold),
     publish: (value) => bus.publish('field.updated', value),
     log,
   })
@@ -250,6 +256,10 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     values: fieldValues,
     resolveKey,
     runtimeManager: runtime,
+    guardDocs,
+    guardHolds,
+    guardEnabled: () => isFlagEnabled(store, 'guard.egress'),
+    publishHold: (hold) => bus.publish('guard.hold.updated', hold),
     publish: (value) => bus.publish('field.updated', value),
     // Orientation pass (#131): a judge document producing a session-nature classification lands a
     // SessionAnnotation and emits orientation.updated — the trigger source a contextual sidebar (#134)
@@ -308,7 +318,12 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   // text queue persists it and before the transcript.updated fan-out. OPENINFO_ECHO_DEDUPE=0 disables
   // (default ON — a no-op with no system stream). Resolved once at wiring time like the knobs above.
   const echoDedupe = echoDedupeEnabled(process.env) ? new EchoDedupe() : undefined
-  const runTranscribe = async (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> => {
+  /** One transcribe call's filtered stream plus metadata-only terminal checkpoints, not yet committed. */
+  interface TranscribeBatch {
+    ready: CaptureChunk[]
+    completions: SttSegment[]
+  }
+  const transcribeBatch = async (chunks: readonly CaptureChunk[]): Promise<TranscribeBatch> => {
     const segments: {
       id: string
       sourceChunkId: string
@@ -319,6 +334,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       capturedAt: string
       processedAt: string
     }[] = []
+    const completions: SttSegment[] = []
     // Skipped-as-silence accounting (#69): count windows fully filtered to nothing and total segments
     // dropped across the drain, so filtered content is VISIBLE in a log line rather than silently vanished.
     let skippedWindows = 0
@@ -327,6 +343,42 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     const transcribeSpanId = randomUUID()
     const ready = await transcribeChunks(chunks, {
       invoke: (audio, opts) => invokeStt(fabric.load(), audio, { ...opts, resolveKey, runtimeManager: runtime }),
+      // #206: resolve policy for EACH source chunk before STT sees its raw audio. The invoke layer filters
+      // a denied hosted endpoint before multipart/base64 bytes are materialized or sent, while a local
+      // fallback still answers and returns the actual endpoint-specific decision for SttSegment provenance.
+      egress: (chunk) => {
+        const session = store.getSession(chunk.workspaceId, chunk.sessionId)
+        const mode = session ? distillDocs.mode(session.modeId) : distillDocs.mode()
+        const workspace = store.all().find((candidate) => candidate.id === chunk.workspaceId)
+        return resolveEgress({
+          contentClass: 'transcript',
+          modeDenies: mode.egress?.deny,
+          workspaceDenies: workspace?.egress?.deny,
+        })
+      },
+      onHeld: async (chunk, error) => {
+        const alreadyHeld = guardHolds
+          .list(chunk.workspaceId)
+          .some((hold) => hold.status === 'held' && hold.stage === 'stt' && hold.sourceChunks?.includes(chunk.id))
+        if (alreadyHeld) return
+        const hold = guardHolds.add({
+          id: randomUUID(),
+          workspaceId: chunk.workspaceId,
+          sessionId: chunk.sessionId,
+          stage: 'stt',
+          spanId: transcribeSpanId,
+          sourceChunks: [chunk.id],
+          ...error.holdMetadata(),
+          verdict: error.verdict,
+          status: 'held',
+          createdAt: new Date().toISOString(),
+        })
+        await bus.publish('guard.hold.updated', hold)
+      },
+      hasTerminalHold: (chunk) =>
+        guardHolds
+          .list(chunk.workspaceId)
+          .some((hold) => hold.stage === 'stt' && hold.sourceChunks?.includes(chunk.id)),
       onTranscribed: (chunk, text, processedAt, stt) => {
         segments.push({
           id: chunk.id,
@@ -338,35 +390,31 @@ export function createEngineApp(options: EngineOptions): EngineApp {
           capturedAt: chunk.capturedAt,
           processedAt,
         })
-        // #116: persist per-segment STT provenance — the ROOT a pipeline trace walks from (closes the
-        // disclosed #65 gap). Recorded for EVERY successful transcription invoke, including chunks the
-        // echo-dedupe below later drops (the invoke happened; the audit never loses it). Carries the chunk
-        // id / endpoint / measured timing — never the transcript text (raw transcript stays ephemeral).
-        // Best-effort: a persistence failure must not sink the drain (chunks stay durable in the spool).
-        try {
-          store.saveSttSegment({
-            id: randomUUID(),
-            workspaceId: chunk.workspaceId,
-            sessionId: chunk.sessionId,
-            chunkId: chunk.id,
-            spanId: transcribeSpanId,
-            source: chunk.source,
-            capturedAt: chunk.capturedAt,
-            processedAt,
-            textChars: text.length,
-            provenance: {
-              slot: 'stt',
-              endpoint: stt.endpoint,
-              durationMs: stt.durationMs,
-              ...(stt.model !== undefined ? { model: stt.model } : {}),
-              ...(stt.egress !== undefined ? { egress: stt.egress } : {}),
-            },
-            schemaVersion: STT_SEGMENT_SCHEMA_VERSION,
-            createdAt: processedAt,
-          })
-        } catch (error) {
-          log(`stt segment for chunk ${chunk.id} not recorded: ${error instanceof Error ? error.message : String(error)}`)
-        }
+      },
+      // Stage a completion for BOTH text and silence. The audio queue commits it only after any transformed
+      // text has been appended to queue-text; a marker can therefore never make retry skip text that was
+      // not durably handed off. Deterministic per source chunk makes the marker idempotent across retries.
+      onCompleted: (chunk, processedAt, stt, textChars) => {
+        completions.push({
+          id: `stt:${chunk.sessionId}:${chunk.id}`,
+          workspaceId: chunk.workspaceId,
+          sessionId: chunk.sessionId,
+          chunkId: chunk.id,
+          spanId: transcribeSpanId,
+          source: chunk.source,
+          capturedAt: chunk.capturedAt,
+          processedAt,
+          textChars,
+          provenance: {
+            slot: 'stt',
+            endpoint: stt.endpoint,
+            durationMs: stt.durationMs,
+            ...(stt.model !== undefined ? { model: stt.model } : {}),
+            ...(stt.egress !== undefined ? { egress: stt.egress } : {}),
+          },
+          schemaVersion: STT_SEGMENT_SCHEMA_VERSION,
+          createdAt: processedAt,
+        })
       },
       onSilenceSkipped: (_chunk, info) => {
         droppedSegments += info.dropped
@@ -393,8 +441,15 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     }
     const live = echoDropped.size === 0 ? segments : segments.filter((segment) => !echoDropped.has(segment.id))
     for (const update of buildTranscriptUpdates(live)) await bus.publish('transcript.updated', update)
-    return echoDropped.size === 0 ? ready : ready.filter((chunk) => !echoDropped.has(chunk.id))
+    return {
+      ready: echoDropped.size === 0 ? ready : ready.filter((chunk) => !echoDropped.has(chunk.id)),
+      completions,
+    }
   }
+  // WorkflowExecutor receives only the already-transcribed queue-text stream in production, but retains
+  // this compatibility seam. Raw capture handoff/checkpoint ordering is owned by the audio queue below.
+  const runTranscribe = async (chunks: readonly CaptureChunk[]): Promise<CaptureChunk[]> =>
+    (await transcribeBatch(chunks)).ready
 
   // Distill cadence throttle (#58): transcription runs every drain (cheap now, and it feeds the live
   // fast-path above), but the LLM distill/moments/index pass must NOT fire per drain once segments
@@ -553,14 +608,36 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     const hasLatchedWorkflowScreen = chunks.some((chunk) => screenRecognitionOwner(chunk) === 'workflow-drain')
     if (!distillOn && !workflowOn && !hasLatchedWorkflowScreen) return
     // Transcription (distill.transcribe) is the STT stage: audio → utf8 text, emitting the live
-    // transcript.updated fast-path. Gated exactly as the legacy path was — INSIDE distill.enabled, because
-    // there is no persistence for transcribed-but-undistilled text (PHASE2-NOTES). With it off, raw chunks
-    // forward unchanged (the executor's ocr/vlm still need the screen frames; the distiller filters non-text).
-    const ready = distillOn && isFlagEnabled(store, 'distill.transcribe') ? await runTranscribe(chunks) : chunks
-    // Persist the transcript stream onto the LLM track and wake it — enqueue-then-schedule mirrors the
-    // capture ingest path (captureChunk). The text queue drains on its OWN single-flight loop, so a distill
-    // in flight there does not block this audio drain from returning and transcribing the next chunk.
-    for (const segment of ready) await textQueue.append(segment)
+    // transcript.updated fast-path. Process raw audio ONE SOURCE at a time so a later held sibling cannot
+    // roll back an earlier success and force its boundary invoke to repeat. For each successful source the
+    // ordering invariant is: (1) append any transformed text to durable queue-text, then (2) persist its
+    // deterministic metadata-only SttSegment checkpoint. A retry skips a checkpoint only after handoff,
+    // and silence receives a zero-text checkpoint. If the process dies between append and checkpoint the
+    // handoff is at-least-once (it may duplicate) but can never be stranded by a premature marker.
+    if (distillOn && isFlagEnabled(store, 'distill.transcribe')) {
+      for (const chunk of chunks) {
+        if (!isAudioChunk(chunk)) {
+          await textQueue.append(chunk)
+          continue
+        }
+        const completed = store.all().some((workspace) => workspace.id === chunk.workspaceId) &&
+          store.listSttSegments(chunk.workspaceId, chunk.sessionId).some((segment) => segment.chunkId === chunk.id)
+        if (completed) {
+          log(`transcribe: audio chunk ${chunk.id} already handed off; raw queue retry skipped`)
+          continue
+        }
+        const batch = await transcribeBatch([chunk])
+        for (const segment of batch.ready) await textQueue.append(segment)
+        // Marker AFTER the durable handoff: never skip a textful source whose queue append did not finish.
+        for (const completion of batch.completions) store.saveSttSegment(completion)
+      }
+    } else {
+      // With transcription off, raw chunks forward unchanged (workflow OCR/VLM still needs screen frames;
+      // the distiller filters non-text), preserving the legacy flag behavior.
+      for (const chunk of chunks) await textQueue.append(chunk)
+    }
+    // Wake the independent LLM track only after this raw-file pass completes. If a later source holds,
+    // prior text remains durably queued but unscheduled until the terminal retry succeeds.
     textQueue.scheduleDrain(log)
   }, toQueueFailure, measuredTokPerSec, overflowState, sessionLive, queueMaxAgeMinutes)
 
@@ -585,6 +662,10 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     todos: todoDocs,
     resolveKey,
     runtimeManager: runtime,
+    guardDocs,
+    guardHolds,
+    guardEnabled: () => isFlagEnabled(store, 'guard.egress'),
+    publishHold: (hold) => bus.publish('guard.hold.updated', hold),
     mode: (id) => distillDocs.mode(id),
     publish: (draft) => bus.publish('draft.created', draft),
     log,
@@ -600,6 +681,10 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     todos: todoDocs,
     resolveKey,
     runtimeManager: runtime,
+    guardDocs,
+    guardHolds,
+    guardEnabled: () => isFlagEnabled(store, 'guard.egress'),
+    publishHold: (hold) => bus.publish('guard.hold.updated', hold),
     mode: (id) => distillDocs.mode(id),
     log,
   })
@@ -761,6 +846,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     store,
     guardHolds,
     attributor,
+    captureQueue: queue,
     textQueue,
     senseLanes,
     firstTranscriptSeen: () => firstTranscriptAt !== undefined,
@@ -2194,8 +2280,15 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
       )
       return ctx.transcripts.recentForSessions(sessionIds).filter((update) => update.text.trim() !== '')
     },
-    // Session insights = the distillate summaries (oldest-first); the assembler keeps the most recent `limit`.
-    insights: (workspaceId) => (known(workspaceId) ? ctx.store.listDistillates(workspaceId).map((d) => d.text).filter((t) => t.trim() !== '') : []),
+    // Session insights retain origin through assembly. OCR/VLM mirror rows are screen-derived even though
+    // their payload is now text; if one is actually included, the composite chat hop stays off hosted.
+    insights: (workspaceId) =>
+      known(workspaceId)
+        ? ctx.store
+            .listDistillates(workspaceId)
+            .filter((d) => d.text.trim() !== '')
+            .map((d) => ({ text: d.text, contentClass: d.provenance.slot === 'ocr' || d.provenance.slot === 'vlm' ? 'screen' as const : 'transcript' as const }))
+        : [],
     pinTitle: (workspaceId, pinId) => ctx.store.getPin(workspaceId, pinId)?.title,
     pinChunks: (workspaceId, pinId) => (ctx.store.getPin(workspaceId, pinId) ? ctx.store.listPinChunks(workspaceId, pinId) : []),
     // active-preset read-seam (pill P1×P2 integration): P2 owns preset documents/selection; here we FILL P1's
@@ -2205,9 +2298,13 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     // the SAME resolver the distiller injects from, so chat context and distill injection agree on one truth.
     resolveActivePreset: (workspaceId) => {
       const preset = ctx.presets.resolveActive(workspaceId)
-      return preset !== undefined ? { label: preset.name, text: preset.body } : undefined
+      return preset !== undefined ? { label: preset.name, text: preset.body, ...(preset.neverEgress !== undefined ? { neverEgress: preset.neverEgress } : {}) } : undefined
     },
     workspaceDeniesEgress: (workspaceId) => ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true,
+    modeDeniesEgress: (workspaceId) => {
+      const live = ctx.store.liveSession(workspaceId)
+      return live !== undefined && ctx.distill.mode(live.modeId).egress?.deny === true
+    },
     ...(guard !== undefined ? { guard } : {}),
     resolveKey: (ref: string) => ctx.secrets.resolve(ref),
     runtimeManager: ctx.runtime,
@@ -2217,7 +2314,8 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     // (egress.ts, most-specific-denial-wins), and invokeOcr further restricts raw frame bytes to an
     // engine-managed runtime, loopback URL, or an explicitly `trustRawFrames`-flagged LAN-local endpoint;
     // untrusted LAN, wildcard, and public destinations are skipped before fetch.
-    // Only the DERIVED TEXT then rides the chat hop, which runs the normal typed-content gate + #63 guard.
+    // Only the DERIVED TEXT then rides the chat hop; runChat retains its screen origin in the composite
+    // content class, so hosted/public remains denied while a LAN text hop still runs the #63 guard.
     screenText: async (workspaceId: string, screenshot: ChatScreenshot) => {
       const consent = resolveEgress({ contentClass: 'screen', workspaceDenies: ctx.store.all().find((w) => w.id === workspaceId)?.egress?.deny === true })
       const read = await invokeOcr(
@@ -2243,10 +2341,28 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
     // chat window rehydrates from on open. Deliberately AFTER the turn succeeded (a failed turn leaves no
     // half-exchange) and after gathering (recent-turns must not see this turn's own user message).
     const workspaceId = request.workspace ?? 'default'
-    ctx.store.appendChatTurn(workspaceId, { role: 'user', content: request.message })
-    ctx.store.appendChatTurn(workspaceId, { role: 'assistant', content: reply.answer })
+    ctx.store.appendChatTurn(workspaceId, { role: 'user', content: request.message, contentClass: 'typed' })
+    ctx.store.appendChatTurn(workspaceId, { role: 'assistant', content: reply.answer, contentClass: reply.contentClass ?? 'unknown' })
     send(res, 200, reply)
   } catch (error) {
+    if (error instanceof GuardHeldError) {
+      // #206: a held chat produces no ChatReply record, so persist the verdict itself. Only safe routing
+      // metadata rides the hold: workspace and the currently-live session when one exists. `turnId` is
+      // client-minted and may itself contain sensitive text, so it is deliberately not persisted here.
+      const workspaceId = request.workspace ?? 'default'
+      const liveSession = ctx.store.liveSession(workspaceId)
+      const hold = ctx.guardHolds.add({
+        id: randomUUID(),
+        workspaceId,
+        ...(liveSession !== undefined ? { sessionId: liveSession.id } : {}),
+        stage: 'chat',
+        ...error.holdMetadata(),
+        verdict: error.verdict,
+        status: 'held',
+        createdAt: new Date().toISOString(),
+      })
+      await ctx.bus.publish('guard.hold.updated', hold)
+    }
     // Honest failure: name the reason (empty slot / held hop / transport) so the input block shows it.
     send(res, 502, { error: error instanceof Error ? error.message : String(error) })
   } finally {
@@ -2391,11 +2507,11 @@ async function postItemSignal(req: IncomingMessage, res: ServerResponse, ctx: Ha
 }
 
 /**
- * POST /guard-holds/resolve — RELEASE (let it proceed) or DENY (drop) a suspended egress hop (#63). Body:
+ * POST /guard-holds/resolve — record APPROVAL or DENIAL of a suspended egress hop (#63). Body:
  * `{ workspaceId, id, action: 'release'|'deny' }`. The status transition is stamped and the updated hold is
- * published on guard.hold.updated so the ledger's held indicator refreshes. This is the release/deny
- * affordance's HTTP action; automatically RE-DRIVING the exact held pass on release is deferred (the raw
- * content is not retained — fail closed), so release marks the hold resolved and surfaces it as such.
+ * published on guard.hold.updated so the ledger's held indicator refreshes. `release` is retained as the
+ * compatibility action name, but it records approval only: the original pass is NOT re-driven because raw
+ * content is not retained (fail closed).
  */
 async function resolveGuardHold(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
   const body = (await readJson(req)) as { workspaceId?: unknown; id?: unknown; action?: unknown }

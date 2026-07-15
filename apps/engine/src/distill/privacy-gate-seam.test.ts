@@ -9,6 +9,7 @@ import { FabricDocuments, defaultFabric } from '../fabric/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments } from '../voice/index.js'
+import { PresetDocuments } from '../presets/index.js'
 import { buildLedger, renderLedger } from '../surfaces/settings/sections/ledger.js'
 import type { SetupData } from '../surfaces/setup/view.js'
 import { Distiller } from './distiller.js'
@@ -118,6 +119,7 @@ interface Rig {
   guardDocs: GuardDocuments
   guardHolds: GuardHoldStore
   fabric: FabricDocuments
+  presets: PresetDocuments
 }
 
 const setup = async (): Promise<Rig> => {
@@ -131,7 +133,9 @@ const setup = async (): Promise<Rig> => {
   guardDocs.ensureDefaults()
   const guardHolds = new GuardHoldStore(store)
   const fabric = new FabricDocuments(store)
-  return { dir, store, voice, docs, guardDocs, guardHolds, fabric }
+  const presets = new PresetDocuments(store)
+  presets.ensureDefaults()
+  return { dir, store, voice, docs, guardDocs, guardHolds, fabric, presets }
 }
 const teardown = async (rig: Rig): Promise<void> => {
   rig.store.close()
@@ -232,7 +236,7 @@ test('seam: consent rides ALL THREE calls — an egress-first slot gets ZERO hit
   }
 })
 
-test('seam: a never-egress PROMPT denies the window (layer 2) — decidedBy prompt, egress endpoint untouched', async () => {
+test('seam: a summary never-egress PROMPT governs only the summary call it enters (layer 2)', async () => {
   const rig = await setup()
   const restore = installEgressRewrite()
   const egress = await startChat(llmReply)
@@ -248,8 +252,8 @@ test('seam: a never-egress PROMPT denies the window (layer 2) — decidedBy prom
     const produced = await new Distiller({ ...rig }).distillChunks(window(), { extractMoments: true, extractEntities: true })
 
     assert.equal(produced.length, 1)
-    assert.equal(egress.hits(), 0)
-    assert.equal(local.hits(), 3)
+    assert.equal(egress.hits(), 2, 'moment/entity templates remain independently egress-eligible')
+    assert.equal(local.hits(), 1, 'only the summary template carries neverEgress')
     assert.equal(produced[0]!.provenance.egress?.decidedBy, 'prompt')
   } finally {
     await stopChat(egress)
@@ -316,8 +320,97 @@ test('seam: an ALLOWED egress hop runs the guard on EVERY call — clean verdict
     assert.equal(produced[0]!.provenance.egress?.reach, 'egress', 'content genuinely left the machine')
     assert.equal(produced[0]!.provenance.guard?.outcome, 'clean')
     assert.equal(produced[0]!.provenance.guard?.guarded, true)
+    assert.equal(produced[0]!.provenance.guard?.classifierDestination, 'device-local')
   } finally {
     await stopChat(egress)
+    await stopChat(guard)
+    restore()
+    await teardown(rig)
+  }
+})
+
+test('seam: each distill template resolves its own never-egress policy', async () => {
+  const rig = await setup()
+  const restore = installEgressRewrite()
+  const hosted = await startChat(llmReply)
+  const local = await startChat(llmReply)
+  try {
+    rig.docs.saveTemplate({ ...rig.docs.extractTemplate(), neverEgress: true })
+    rig.docs.saveTemplate({ ...rig.docs.entitiesTemplate(), neverEgress: true })
+    saveFabric(rig, { llm: [
+      { kind: 'http', name: 'llm.hosted', url: `http://llm.egress.test:${hosted.port}`, api: 'openai-compat' },
+      { kind: 'http', name: 'llm.local', url: `http://127.0.0.1:${local.port}`, api: 'openai-compat' },
+    ] })
+
+    const produced = await new Distiller({ ...rig }).distillChunks(window(), { extractMoments: true, extractEntities: true })
+    assert.equal(produced.length, 1)
+    assert.equal(hosted.hits(), 1, 'only the summary document allows hosted egress')
+    assert.equal(local.hits(), 2, 'moment and entity documents each apply their own deny')
+    assert.equal(produced[0]?.provenance.endpoint, 'llm.hosted')
+    const entityProvenance = rig.store.listEntities('default')[0]?.provenance?.at(-1)
+    assert.equal(entityProvenance?.endpoint, 'llm.local')
+    assert.equal(entityProvenance?.egress?.decidedBy, 'prompt')
+  } finally {
+    await stopChat(hosted)
+    await stopChat(local)
+    restore()
+    await teardown(rig)
+  }
+})
+
+test('seam: an active preset never-egress governs only the summary call it actually enters', async () => {
+  const rig = await setup()
+  const restore = installEgressRewrite()
+  const hosted = await startChat(llmReply)
+  const local = await startChat(llmReply)
+  try {
+    const preset = rig.presets.get('preset-meetings')!
+    rig.store.layouts.put('prompt-template', preset.id, { ...preset, neverEgress: true })
+    rig.presets.setActive('default', preset.id)
+    saveFabric(rig, { llm: [
+      { kind: 'http', name: 'llm.hosted', url: `http://llm.egress.test:${hosted.port}`, api: 'openai-compat' },
+      { kind: 'http', name: 'llm.local', url: `http://127.0.0.1:${local.port}`, api: 'openai-compat' },
+    ] })
+
+    const produced = await new Distiller({ ...rig }).distillChunks(window(), { extractMoments: true, extractEntities: true })
+    assert.equal(produced.length, 1)
+    assert.equal(produced[0]?.provenance.endpoint, 'llm.local')
+    assert.equal(produced[0]?.provenance.egress?.decidedBy, 'prompt')
+    assert.equal(local.hits(), 1, 'the active preset is prepended only to the summary prompt')
+    assert.equal(hosted.hits(), 2, 'moment/entity templates remain independently hosted-eligible')
+  } finally {
+    await stopChat(hosted)
+    await stopChat(local)
+    restore()
+    await teardown(rig)
+  }
+})
+
+test('seam: strict guard independently holds moments and entities after a clean summary', async () => {
+  const rig = await setup()
+  const restore = installEgressRewrite()
+  const hosted = await startChat(llmReply)
+  const guard = await startChat((prompt) =>
+    prompt.includes('typed moments') || prompt.includes('named entities')
+      ? '{"flagged":[{"start":0,"length":4,"kind":"secret"}]}'
+      : '{"flagged":[]}',
+  )
+  try {
+    rig.guardDocs.savePolicy({ id: 'guard-policy', version: 2, behavior: 'hold-and-surface', acknowledgeUnguardedEgress: false })
+    saveFabric(rig, {
+      llm: [{ kind: 'http', name: 'llm.hosted', url: `http://llm.egress.test:${hosted.port}`, api: 'openai-compat' }],
+      guard: [{ kind: 'http', name: 'guard.local', url: `http://127.0.0.1:${guard.port}`, api: 'openai-compat' }],
+    })
+
+    const produced = await new Distiller({ ...rig, guardEnabled: () => true }).distillChunks(window(), { extractMoments: true, extractEntities: true })
+    assert.equal(produced.length, 1, 'the clean summary persists')
+    assert.equal(guard.hits(), 3, 'all three independently attempted documents were classified')
+    assert.equal(hosted.hits(), 1, 'only the clean summary reached the target')
+    assert.deepEqual(rig.guardHolds.list('default').map((hold) => hold.stage).sort(), ['entities', 'moments'])
+    assert.deepEqual(rig.store.listMoments('default'), [])
+    assert.deepEqual(rig.store.listEntities('default'), [])
+  } finally {
+    await stopChat(hosted)
     await stopChat(guard)
     restore()
     await teardown(rig)

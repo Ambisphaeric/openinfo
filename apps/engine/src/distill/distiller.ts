@@ -136,8 +136,8 @@ export class Distiller {
   /**
    * Build the egress-guard config (#63) for this pass, or undefined when the guard is off. When the
    * guard.egress flag is on and the policy docs are wired, EVERY invoke this pass makes carries it — so an
-   * allowed egress hop is filtered before any bytes leave (redact / hold per policy), and a local hop
-   * ignores it (no egress ⇒ no filter). An empty guard slot is the fail-closed edge the policy governs.
+   * allowed device-boundary text hop is filtered before target bytes leave (redact / hold per policy),
+   * and a device-local hop ignores it. An empty guard slot is the fail-closed edge the policy governs.
    */
   private guardOptions(): GuardOptions | undefined {
     if (!this.guardEnabled() || this.guardDocs === undefined) return undefined
@@ -169,6 +169,7 @@ export class Distiller {
       // and the window's chunk ids — the trail from an input still reaches the verdict (ids, never content).
       spanId: ctx.spanId,
       sourceChunks: ctx.sourceChunks,
+      ...err.holdMetadata(),
       verdict: err.verdict,
       status: 'held',
       createdAt: this.now().toISOString(),
@@ -213,23 +214,25 @@ export class Distiller {
         // a guard hold (if the window is suspended) all share it, so the audit trail joins them exactly.
         const spanId = this.newId()
         const resolved = resolveVoice(registers, bindings, { sessionId, workspaceId, modeId: mode.id })
-        // Resolve layered egress consent (#64) for THIS window's transcript content. A distill window is
-        // transcript-class content (mic/system audio), which MAY egress — unless the prompt is declared
-        // never-egress, or the mode/workspace denies. The resolved consent rides EVERY invoke for this
-        // window (summary + moments + entities) so a denial filters egress endpoints uniformly; the
-        // returned decision is stamped on provenance for the audit ledger. Most-specific denial wins.
+        // Resolve the workspace material shared by each call. Privacy consent itself is resolved PER
+        // ACTUAL prompt below: summary, moment extraction, and entity extraction are separate documents,
+        // and one template's neverEgress declaration must never be borrowed by either sibling (#206).
         const workspace = this.store.all().find((w) => w.id === workspaceId)
-        const egress = resolveEgress({
-          contentClass: 'transcript',
-          promptNeverEgress: template.neverEgress,
-          modeDenies: mode.egress?.deny,
-          workspaceDenies: workspace?.egress?.deny,
+        const activePreset = this.presets?.resolveActive(workspaceId)
+        const consentFor = (promptNeverEgress: boolean | undefined) => resolveEgress({
+          contentClass: 'transcript', promptNeverEgress,
+          modeDenies: mode.egress?.deny, workspaceDenies: workspace?.egress?.deny,
         })
         // #63: the egress guard rides EVERY invoke for this window alongside the #64 consent — so an
-        // allowed egress hop is filtered (redact / hold) before any bytes leave, and a local hop ignores
-        // it. Built once per window; undefined ⇒ the guard is off (pre-#63 behavior).
+        // allowed device-boundary text hop is filtered (redact / hold) before target bytes leave, and a
+        // device-local hop ignores it. Built once per window; undefined ⇒ the guard is off.
         const guard = this.guardOptions()
-        const egressInvoke: LlmInvoke = (messages, opts) => this.invoke(messages, { ...opts, egress, ...(guard !== undefined ? { guard } : {}) })
+        const invokeUnder = (egress: ReturnType<typeof resolveEgress>): LlmInvoke =>
+          (messages, invokeOpts) => this.invoke(messages, { ...invokeOpts, egress, ...(guard !== undefined ? { guard } : {}) })
+        // A preset is itself a PromptTemplate. Its body is prepended to the summary prompt, so its
+        // neverEgress declaration participates in the summary call exactly like the base template's.
+        const summaryEgress = consentFor(template.neverEgress === true || activePreset?.neverEgress === true)
+        const summaryInvoke = invokeUnder(summaryEgress)
         // Physical source attribution (see transcribe.ts::captureLaneLabel): microphone/system audio.
         // Prefixing the transcript line carries the lane into summary and extraction without claiming
         // person identity (same-mic diarization is #137). Non-audio sources are left bare.
@@ -252,7 +255,6 @@ export class Distiller {
         // WHATEVER distill template is in force, including a user-authored one, and the byte-identical
         // guarantee is exact: no preset ⇒ prompt === basePrompt (today's behavior). Only the distill
         // summary pass is steered; the moments/entities passes below (strict-JSON grammars) are left bare.
-        const activePreset = this.presets?.resolveActive(workspaceId)
         const prompt = activePreset ? `${activePreset.body}\n\n${basePrompt}` : basePrompt
         const messages: LlmMessage[] = [{ role: 'user', content: prompt }]
         // #63: a guard HOLD (strict flagged content, or a fail-closed empty slot) throws GuardHeldError out
@@ -261,7 +263,7 @@ export class Distiller {
         // nothing left the machine). A clean/redacted/unguarded verdict rides result.guard onto provenance.
         let result: LlmResult
         try {
-          result = await egressInvoke(messages, { maxTokens: mode.distill.tokenBudget })
+          result = await summaryInvoke(messages, { maxTokens: mode.distill.tokenBudget })
         } catch (err) {
           if (err instanceof GuardHeldError) {
             await this.recordHold(err, {
@@ -339,16 +341,24 @@ export class Distiller {
             distillateId: distillate.id,
             spanId,
           }
-          const extraction = await extractMoments(input, {
-            invoke: egressInvoke,
-            template: extractTemplate,
-            now: this.now,
-            newId: this.newId,
-            log: this.log,
-            maxTokens: mode.distill.tokenBudget,
-          })
-          windowMoments.push(...extraction.moments)
-          this.log(`extracted ${extraction.moments.length} moment(s) (dropped ${extraction.dropped}) from window ${window.start}→${window.end}`)
+          try {
+            const extraction = await extractMoments(input, {
+              invoke: invokeUnder(consentFor(extractTemplate.neverEgress)),
+              template: extractTemplate,
+              now: this.now,
+              newId: this.newId,
+              log: this.log,
+              maxTokens: mode.distill.tokenBudget,
+            })
+            windowMoments.push(...extraction.moments)
+            this.log(`extracted ${extraction.moments.length} moment(s) (dropped ${extraction.dropped}) from window ${window.start}→${window.end}`)
+          } catch (err) {
+            if (!(err instanceof GuardHeldError)) throw err
+            await this.recordHold(err, {
+              sessionId, workspaceId, stage: 'moments', windowStart: window.start, windowEnd: window.end,
+              spanId, sourceChunks: window.chunks.map((chunk) => chunk.id),
+            })
+          }
         }
 
         // Entity extraction (Index v0) rides the same window as a THIRD tight call, gated on
@@ -357,60 +367,76 @@ export class Distiller {
         // links this window's moments to this window's resolved entities by name match (same-pass
         // linking only — already-persisted moments from earlier passes are never rewritten).
         if (opts.extractEntities) {
-          const extraction = await extractEntities(
-            { transcript, summary: distillate.text, windowStart: window.start, windowEnd: window.end, dials: resolved.dials },
-            { invoke: egressInvoke, template: entitiesTemplate, log: this.log, maxTokens: mode.distill.tokenBudget },
-          )
-          const provenance: EntityProvenance = {
-            distillateId: distillate.id,
-            windowStart: window.start,
-            windowEnd: window.end,
-            spanId,
-            slot: 'llm',
-            endpoint: result.endpoint,
-            ...(result.model !== undefined ? { model: result.model } : {}),
+          let extraction: Awaited<ReturnType<typeof extractEntities>> | undefined
+          try {
+            extraction = await extractEntities(
+              { transcript, summary: distillate.text, windowStart: window.start, windowEnd: window.end, dials: resolved.dials },
+              { invoke: invokeUnder(consentFor(entitiesTemplate.neverEgress)), template: entitiesTemplate, log: this.log, maxTokens: mode.distill.tokenBudget },
+            )
+          } catch (err) {
+            if (!(err instanceof GuardHeldError)) throw err
+            await this.recordHold(err, {
+              sessionId, workspaceId, stage: 'entities', windowStart: window.start, windowEnd: window.end,
+              spanId, sourceChunks: window.chunks.map((chunk) => chunk.id),
+            })
           }
-          // #74: the screen-understanding stream this session persisted, read once per window so the
+          if (extraction !== undefined) {
+            const entityResult = extraction.invokeResult
+            if (entityResult === undefined) throw new Error('entity extraction completed without invoke provenance')
+            const provenance: EntityProvenance = {
+              distillateId: distillate.id,
+              windowStart: window.start,
+              windowEnd: window.end,
+              spanId,
+              slot: entityResult.slot,
+              endpoint: entityResult.endpoint,
+              ...(entityResult.model !== undefined ? { model: entityResult.model } : {}),
+              ...(entityResult.usage !== undefined ? { usage: entityResult.usage } : {}),
+              ...(entityResult.egress !== undefined ? { egress: entityResult.egress } : {}),
+              ...(entityResult.guard !== undefined ? { guard: entityResult.guard } : {}),
+            }
+            // #74: the screen-understanding stream this session persisted, read once per window so the
           // correlator can notice a heard mention that was ALSO seen on screen in the same window. It
           // consumes the persisted OcrResult stream (not the HTTP drain) — pure timestamp correlation, so a
           // late-arriving OCR pass simply corroborates a later window rather than racing this one.
-          const sessionOcr = this.store.listOcrResults(workspaceId, sessionId)
-          for (const candidate of extraction.entities) {
+            const sessionOcr = this.store.listOcrResults(workspaceId, sessionId)
+            for (const candidate of extraction.entities) {
             const mentionedBy = windowMoments.filter((m) => entityMentioned(m.text, candidate.name, candidate.aliases))
             // #74: correlate this heard mention against same-window OCR. A match feeds the resolver's
             // crossSourceCorroboration multiplier AND supplies a `seen` sighting — so a corroborated mention
             // auto-links (the multiplier lifts the score through the resolver's own band decision), the
             // record is promoted to confirmed, and the ASR-mangled surface form is taught as a heardAs alias,
             // all with no user ask. Neutral (multiplier 1.0, no seen sighting) when nothing on screen agreed.
-            const corr = correlateWindow({
-              heard: { name: candidate.name, aliases: candidate.aliases },
-              window: { start: window.start, end: window.end },
-              ocr: sessionOcr,
-            })
+              const corr = correlateWindow({
+                heard: { name: candidate.name, aliases: candidate.aliases },
+                window: { start: window.start, end: window.end },
+                ocr: sessionOcr,
+              })
             // Contract v2 (#73) evidence, populated from the signals we genuinely have HERE: this window
             // came from the transcript, so the mention is a `heard` sighting tied to the distillate, and
             // the extracted surface form is a `stt` heardAs variant. Per-variant ASR confidence is NOT
             // surfaced by the pipeline today, so it is left undefined (disclosed) rather than fabricated.
-            const entity = this.store.upsertEntity({
-              workspaceId,
-              kind: candidate.kind,
-              name: candidate.name,
-              aliases: candidate.aliases,
-              seenAt: window.end,
-              provenance,
-              momentRefs: mentionedBy.map((m) => m.id),
-              sighting: { via: 'heard', at: window.end, distillateId: distillate.id },
-              heardAs: { text: candidate.name, source: 'stt', at: window.end },
-              ...(corr.corroborated && corr.sighting !== undefined
-                ? { signals: { crossSourceCorroboration: corr.multiplier }, crossSighting: corr.sighting }
-                : {}),
-            })
-            for (const moment of mentionedBy) {
-              if (!moment.refs.includes(entity.id)) moment.refs.push(entity.id)
+              const entity = this.store.upsertEntity({
+                workspaceId,
+                kind: candidate.kind,
+                name: candidate.name,
+                aliases: candidate.aliases,
+                seenAt: window.end,
+                provenance,
+                momentRefs: mentionedBy.map((m) => m.id),
+                sighting: { via: 'heard', at: window.end, distillateId: distillate.id },
+                heardAs: { text: candidate.name, source: 'stt', at: window.end },
+                ...(corr.corroborated && corr.sighting !== undefined
+                  ? { signals: { crossSourceCorroboration: corr.multiplier }, crossSighting: corr.sighting }
+                  : {}),
+              })
+              for (const moment of mentionedBy) {
+                if (!moment.refs.includes(entity.id)) moment.refs.push(entity.id)
+              }
+              await this.publishEntity?.(entity)
             }
-            await this.publishEntity?.(entity)
+            this.log(`resolved ${extraction.entities.length} entit(y/ies) (dropped ${extraction.dropped}) from window ${window.start}→${window.end}`)
           }
-          this.log(`resolved ${extraction.entities.length} entit(y/ies) (dropped ${extraction.dropped}) from window ${window.start}→${window.end}`)
         }
 
         for (const moment of windowMoments) {

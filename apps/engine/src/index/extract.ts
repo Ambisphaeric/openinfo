@@ -1,6 +1,7 @@
 import type { Dials, Entity, PromptTemplate } from '@openinfo/contracts'
 import { parseJsonCandidates } from '../distill/parse.js'
 import type { LlmInvoke } from '../distill/distiller.js'
+import type { LlmResult } from '../fabric/index.js'
 import { compileVoiceVars, interpolateTemplate } from '../voice/index.js'
 
 /**
@@ -43,6 +44,9 @@ export interface ExtractEntitiesResult {
   dropped: number
   /** llm calls made (≥1; >1 only when an earlier response was wholly unparseable). */
   attempts: number
+  /** The ACTUAL completion that produced this candidate set (safe invoke metadata + model text in-memory
+   * only). Distiller persists only its endpoint/model/usage/egress/guard fields, never the raw response. */
+  invokeResult?: LlmResult
 }
 
 const ENTITY_KINDS = new Set<Entity['kind']>(['person', 'artifact', 'topic'])
@@ -119,7 +123,7 @@ export const extractEntities = async (
         continue
       }
       log(`entity extraction: unparseable after ${maxAttempts} attempts, dropping window ${input.windowStart}`)
-      return { entities: [], dropped: 0, attempts }
+      return { entities: [], dropped: 0, attempts, invokeResult: result }
     }
     const entities: EntityCandidate[] = []
     let dropped = 0
@@ -129,7 +133,7 @@ export const extractEntities = async (
       else dropped += 1
     }
     if (dropped > 0) log(`entity extraction: kept ${entities.length}, dropped ${dropped} invalid`)
-    return { entities, dropped, attempts }
+    return { entities, dropped, attempts, invokeResult: result }
   }
   return { entities: [], dropped: 0, attempts }
 }

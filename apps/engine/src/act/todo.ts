@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import type { CaptureChunk, Dials, Distillate, Moment, PromptTemplate, Session, TodoItem, TodoList, VoiceBinding, WorkflowStep } from '@openinfo/contracts'
+import type { CaptureChunk, ContentClass, Dials, Distillate, GuardHold, Moment, PromptTemplate, Session, TodoItem, TodoList, VoiceBinding, WorkflowStep } from '@openinfo/contracts'
 import { TodoList as TodoListSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { parseJsonCandidates } from '../distill/index.js'
 import type { LlmInvoke } from '../distill/index.js'
-import { FabricDocuments, invokeLlm, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import type { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
 import type { ActDocuments } from './documents.js'
+import { effectiveActContentClass } from './privacy.js'
 
 const TODO_KIND = 'todo-list'
 
@@ -65,6 +67,8 @@ export interface TaskExtractInput {
   dials: Dials
   /** provenance seed stamped onto every extracted item (the most recent distillate links the trail) */
   provenanceDistillateId?: string
+  /** Effective origin class of all material actually interpolated into the prompt. */
+  contentClass?: ContentClass
 }
 
 export interface TaskExtractDeps {
@@ -73,6 +77,8 @@ export interface TaskExtractDeps {
   now?: () => Date
   newId?: () => string
   maxTokens?: number
+  /** Layered privacy options resolved by TaskExtractor for this session/template (#206). */
+  invokeOptions?: Pick<InvokeOptions, 'egress' | 'guard'>
   /** bounded in-call re-sample when a response is wholly unparseable (default 2). */
   maxAttempts?: number
   log?: (message: string) => void
@@ -126,7 +132,7 @@ export const composeTaskExtract = async (input: TaskExtractInput, deps: TaskExtr
     moments: renderMoments(input.moments),
   })
 
-  const provenance =
+  const sourceProvenance =
     input.provenanceDistillateId !== undefined
       ? { sessionId: input.sessionId, distillateId: input.provenanceDistillateId }
       : { sessionId: input.sessionId }
@@ -134,7 +140,10 @@ export const composeTaskExtract = async (input: TaskExtractInput, deps: TaskExtr
   let attempts = 0
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attempts = attempt
-    const result = await deps.invoke([{ role: 'user', content: prompt }], { maxTokens: deps.maxTokens ?? 500 })
+    const result = await deps.invoke(
+      [{ role: 'user', content: prompt }],
+      { maxTokens: deps.maxTokens ?? 500, ...(deps.invokeOptions ?? {}) },
+    )
     const { candidates, parsedAnything } = parseJsonCandidates(result.text, 'tasks')
     if (!parsedAnything) {
       if (attempt < maxAttempts) {
@@ -146,6 +155,17 @@ export const composeTaskExtract = async (input: TaskExtractInput, deps: TaskExtr
     }
     const items: TodoItem[] = []
     let dropped = 0
+    const provenance = {
+      ...sourceProvenance,
+      templateId: deps.template.id,
+      slot: result.slot,
+      endpoint: result.endpoint,
+      ...(result.model !== undefined ? { model: result.model } : {}),
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      ...(input.contentClass !== undefined ? { contentClass: input.contentClass } : {}),
+      ...(result.egress !== undefined ? { egress: result.egress } : {}),
+      ...(result.guard !== undefined ? { guard: result.guard } : {}),
+    }
     for (const candidate of candidates) {
       const text = candidateText(candidate)
       if (text.length === 0) {
@@ -235,6 +255,10 @@ export interface TaskExtractorDeps {
   invoke?: LlmInvoke
   resolveKey?: SecretResolver
   runtimeManager?: LocalRuntimeManager
+  guardDocs?: GuardDocuments
+  guardHolds?: GuardHoldStore
+  guardEnabled?: () => boolean
+  publishHold?: (hold: GuardHold) => void | Promise<void>
   now?: () => Date
   newId?: () => string
   log?: (message: string) => void
@@ -256,6 +280,11 @@ export class TaskExtractor {
   private readonly todos: TodoDocuments
   private readonly mode: (id: string) => import('@openinfo/contracts').Mode
   private readonly invoke: LlmInvoke
+  private readonly resolveKey: SecretResolver | undefined
+  private readonly guardDocs: GuardDocuments | undefined
+  private readonly guardHolds: GuardHoldStore | undefined
+  private readonly guardEnabled: () => boolean
+  private readonly publishHold: ((hold: GuardHold) => void | Promise<void>) | undefined
   private readonly now: () => Date
   private readonly newId: () => string
   private readonly log: (message: string) => void
@@ -267,6 +296,11 @@ export class TaskExtractor {
     this.templates = deps.templates
     this.todos = deps.todos
     this.mode = deps.mode
+    this.resolveKey = deps.resolveKey
+    this.guardDocs = deps.guardDocs
+    this.guardHolds = deps.guardHolds
+    this.guardEnabled = deps.guardEnabled ?? (() => false)
+    this.publishHold = deps.publishHold
     this.now = deps.now ?? (() => new Date())
     this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
@@ -280,6 +314,34 @@ export class TaskExtractor {
           ...(resolveKey ? { resolveKey } : {}),
           ...(runtimeManager ? { runtimeManager } : {}),
         }))
+  }
+
+  private guardOptions(): GuardOptions | undefined {
+    if (!this.guardEnabled() || this.guardDocs === undefined) return undefined
+    const policy = this.guardDocs.policy()
+    return {
+      endpoints: this.fabric.load().slots.guard ?? [],
+      behavior: policy.behavior,
+      acknowledgeUnguardedEgress: policy.acknowledgeUnguardedEgress,
+      ...(this.resolveKey ? { resolveKey: this.resolveKey } : {}),
+    }
+  }
+
+  private async recordHold(err: GuardHeldError, session: Session, sourceChunks: string[]): Promise<void> {
+    const hold: GuardHold = {
+      id: this.newId(),
+      workspaceId: session.workspaceId,
+      sessionId: session.id,
+      stage: 'task-extract',
+      ...(sourceChunks.length > 0 ? { sourceChunks } : {}),
+      ...err.holdMetadata(),
+      verdict: err.verdict,
+      status: 'held',
+      createdAt: this.now().toISOString(),
+    }
+    this.guardHolds?.add(hold)
+    await this.publishHold?.(hold)
+    this.log(`guard held task-extract for session ${session.id}: ${err.verdict.reason}`)
   }
 
   /**
@@ -310,19 +372,46 @@ export class TaskExtractor {
     const moments = this.store.listMoments(session.workspaceId, session.id)
     if (distillates.length === 0 && moments.length === 0) return undefined
 
-    const dials = this.resolveDials(session)
+    const mode = this.mode(session.modeId)
+    const dials = this.resolveDials(session, mode)
     const { template } = this.templates.taskExtractTemplate(step.templateId)
-    const { items } = await composeTaskExtract(
-      {
-        sessionId: session.id,
-        workspaceId: session.workspaceId,
-        distillates,
-        moments,
-        dials,
-        ...(distillates.length > 0 ? { provenanceDistillateId: distillates[distillates.length - 1]!.id } : {}),
-      },
-      { invoke: this.invoke, template, now: this.now, newId: this.newId, log: this.log },
-    )
+    const workspace = this.store.all().find((candidate) => candidate.id === session.workspaceId)
+    const contentClass = effectiveActContentClass({ distillates, moments })
+    const egress = resolveEgress({
+      contentClass,
+      promptNeverEgress: template.neverEgress,
+      modeDenies: mode.egress?.deny,
+      workspaceDenies: workspace?.egress?.deny,
+    })
+    const guard = this.guardOptions()
+    let items: TodoItem[]
+    try {
+      ;({ items } = await composeTaskExtract(
+        {
+          sessionId: session.id,
+          workspaceId: session.workspaceId,
+          distillates,
+          moments,
+          dials,
+          ...(distillates.length > 0 ? { provenanceDistillateId: distillates[distillates.length - 1]!.id } : {}),
+          contentClass,
+        },
+        {
+          invoke: this.invoke,
+          template,
+          now: this.now,
+          newId: this.newId,
+          log: this.log,
+          invokeOptions: { egress, ...(guard !== undefined ? { guard } : {}) },
+        },
+      ))
+    } catch (error) {
+      if (error instanceof GuardHeldError) {
+        await this.recordHold(error, session, [...new Set(distillates.flatMap((d) => d.sourceChunks))])
+        return undefined
+      }
+      throw error
+    }
 
     const saved = this.todos.upsert(session.id, session.workspaceId, items)
     this.log(`task-extract: session ${session.id} now has ${saved.items.length} to-do item(s) (+${items.length} extracted this pass)`)
@@ -330,8 +419,7 @@ export class TaskExtractor {
   }
 
   /** Resolve the session's effective dials, mirroring the Actor (session register wins over mode default). */
-  private resolveDials(session: Session): Dials {
-    const mode = this.mode(session.modeId)
+  private resolveDials(session: Session, mode = this.mode(session.modeId)): Dials {
     const registers = this.voice.registers()
     const storedBindings = this.voice.bindings()
     const modeDefault: VoiceBinding[] =

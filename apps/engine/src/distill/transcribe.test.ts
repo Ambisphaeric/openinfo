@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { CaptureChunk, Distillate, Fabric } from '@openinfo/contracts'
-import { FabricDocuments, defaultFabric, invokeStt, type TranscriptSegment } from '../fabric/index.js'
+import { FabricDocuments, GuardHeldError, defaultFabric, invokeStt, type TranscriptSegment } from '../fabric/index.js'
 import { CaptureQueue } from '../queue/spool.js'
 import { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments } from '../voice/index.js'
@@ -93,6 +93,42 @@ test('transcribeChunks propagates transport failure (so the drain re-queues)', a
     throw new Error('stt endpoint down')
   }
   await assert.rejects(() => transcribeChunks([audioChunk('a', 'mic', 0)], { invoke }), /stt endpoint down/)
+})
+
+test('a durable STT hold is terminal: queue retry consumes raw audio without re-invoke or downstream text', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-stt-terminal-hold-'))
+  let terminal = false
+  let invokes = 0
+  const downstream: CaptureChunk[] = []
+  const held = new GuardHeldError(
+    {
+      behavior: 'hold-and-surface', outcome: 'held', guarded: false, maskedSpanCount: 0,
+      reason: 'audio target may have received the payload; retry is suspended',
+    },
+    { endpoint: 'hosted-stt', url: 'https://stt.example.invalid', destination: 'hosted-public', delivery: 'possible', failureClass: 'unreachable' },
+  )
+  const queue = new CaptureQueue(join(dir, 'queue'), async (chunks) => {
+    const ready = await transcribeChunks(chunks, {
+      invoke: async () => { invokes += 1; throw held },
+      onHeld: () => { terminal = true },
+      hasTerminalHold: () => terminal,
+    })
+    downstream.push(...ready)
+  })
+  try {
+    await queue.append(audioChunk('held-audio', 'mic', 0))
+    await queue.drainNow(() => undefined)
+    assert.equal((await queue.status()).pendingFiles, 1)
+    assert.equal(invokes, 1)
+
+    await queue.drainNow(() => undefined)
+    assert.equal((await queue.status()).pendingFiles, 0, 'terminal retry consumes the queued raw item')
+    assert.equal(invokes, 1, 'the held raw audio is never sent a second time')
+    assert.deepEqual(downstream, [], 'a consumed held chunk cannot flow into transcript/distill output')
+  } finally {
+    await queue.stop()
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 // ---- silence filter (#69): no-speech/hallucinated segments never enter the accumulator ----

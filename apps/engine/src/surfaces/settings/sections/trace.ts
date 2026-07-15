@@ -395,7 +395,9 @@ const unknownPolicyCell = (what: string): string =>
   `<span class="ldg-absent" title="${escapeHtml(what)} provenance was not recorded for this legacy invoke">${escapeHtml(what)} not recorded</span>`
 
 const policyHtml = (guard: GuardVerdict | undefined, egress: EgressDecision | undefined, mode: 'invoke' | 'blocked' | 'delivery-failure'): string => {
-  const guardMarkup = guard !== undefined ? guardCell(guard) : egress !== undefined ? guardCell(undefined) : unknownPolicyCell('guard')
+  // #206: pass the recorded egress alongside the verdict — a recorded device-local destination renders
+  // the guard's absence as "not applicable · device-local" rather than merely "not recorded".
+  const guardMarkup = guard !== undefined ? guardCell(guard, egress) : egress !== undefined ? guardCell(undefined, egress) : unknownPolicyCell('guard')
   const egressMarkup =
     egress !== undefined
       ? egressCell(egress)

@@ -1,5 +1,5 @@
 import type { CaptureChunk, CaptureSource, EgressDecision, TranscriptUpdate } from '@openinfo/contracts'
-import { dropSilentSegments, DEFAULT_NO_SPEECH_THRESHOLD, type SttAudio, type SttOptions, type SttResult } from '../fabric/index.js'
+import { dropSilentSegments, DEFAULT_NO_SPEECH_THRESHOLD, GuardHeldError, resolveEgress, type SttAudio, type SttOptions, type SttResult } from '../fabric/index.js'
 
 /** Injected stt invoker (defaults to the fabric stt slot in the wiring; tests pass a fake). */
 export type SttInvoke = (audio: SttAudio, opts?: SttOptions) => Promise<SttResult>
@@ -19,6 +19,12 @@ export interface SttInvokeMeta {
 
 export interface TranscribeDeps {
   invoke: SttInvoke
+  /**
+   * Resolve layered egress consent for this audio chunk before its STT invoke (#206). Production supplies
+   * the chunk's workspace/mode decision. The default still supplies an explicit transcript-class decision,
+   * so a caller can never accidentally invoke STT with the legacy "consent absent" posture.
+   */
+  egress?: (chunk: CaptureChunk) => NonNullable<SttOptions['egress']>
   /** optional ISO-639-1 hint forwarded to the transcriber */
   language?: string
   /** Wall clock used to stamp successful STT completion. Injected only for deterministic tests. */
@@ -29,8 +35,22 @@ export interface TranscribeDeps {
    * hook (#58). transcribeChunks stays pure of the bus; the wiring aggregates these into TranscriptUpdate
    * events. Never throws into the transcribe loop (the wiring keeps it side-effect-only). `stt` (#116)
    * carries the invoke's provenance so the wiring can persist the per-segment STT record.
-   */
+  */
   onTranscribed?: (chunk: CaptureChunk, text: string, processedAt: string, stt: SttInvokeMeta) => void
+  /**
+   * Fired after any successful STT invoke reaches a terminal filtered outcome, including silence.
+   * Production turns this metadata into a per-source completion marker only after any text result has
+   * been durably handed to the downstream queue. `textChars` is a size, never transcript content.
+   */
+  onCompleted?: (chunk: CaptureChunk, processedAt: string, stt: SttInvokeMeta, textChars: number) => void
+  /** A target-boundary delivery was suspended; production persists the metadata-only audit hold. */
+  onHeld?: (chunk: CaptureChunk, error: GuardHeldError) => void | Promise<void>
+  /**
+   * Whether this source audio chunk already produced a durable STT hold. Any hold state is terminal for
+   * that raw source in v0 (approval is audit-only, never replay), so a queue retry consumes it without a
+   * second boundary invoke.
+   */
+  hasTerminalHold?: (chunk: CaptureChunk) => boolean
   /**
    * No-speech probability (0..1) at/above which a whisper-class segment is dropped as silence before it
    * can enter the distill accumulator (#69). Defaults to DEFAULT_NO_SPEECH_THRESHOLD (0.8). Configurable
@@ -45,6 +65,23 @@ export interface TranscribeDeps {
    */
   onSilenceSkipped?: (chunk: CaptureChunk, info: { dropped: number; total: number; windowSkipped: boolean }) => void
   log?: (message: string) => void
+}
+
+/**
+ * Internal progress carrier for a terminal per-source hold inside a mixed batch. The safe GuardHeldError
+ * remains the public failure/classification; `completed` is transient transformed text already produced
+ * by earlier siblings so the production handoff can commit that prefix before rethrowing the hold.
+ */
+export class TranscribeHeldWithProgress extends Error {
+  readonly held: GuardHeldError
+  readonly completed: CaptureChunk[]
+
+  constructor(held: GuardHeldError, completed: readonly CaptureChunk[]) {
+    super(held.message)
+    this.name = 'TranscribeHeldWithProgress'
+    this.held = held
+    this.completed = [...completed]
+  }
 }
 
 /**
@@ -87,11 +124,25 @@ export const transcribeChunks = async (chunks: readonly CaptureChunk[], deps: Tr
       out.push(chunk)
       continue
     }
+    if (deps.hasTerminalHold?.(chunk)) {
+      log(`transcribe: audio chunk ${chunk.id} already has a terminal privacy hold; retry consumed without invoke`)
+      continue
+    }
     const invokeStarted = Date.now()
-    const result = await deps.invoke(
-      { base64: chunk.data, contentType: chunk.contentType },
-      deps.language !== undefined ? { language: deps.language } : {},
-    )
+    const egress = deps.egress?.(chunk) ?? resolveEgress({ contentClass: 'transcript' })
+    let result: SttResult
+    try {
+      result = await deps.invoke(
+        { base64: chunk.data, contentType: chunk.contentType },
+        { ...(deps.language !== undefined ? { language: deps.language } : {}), egress },
+      )
+    } catch (error) {
+      if (error instanceof GuardHeldError) {
+        await deps.onHeld?.(chunk, error)
+        throw new TranscribeHeldWithProgress(error, out)
+      }
+      throw error
+    }
     // #116: the measured wall-clock invoke duration + the answering endpoint, carried to onTranscribed so
     // the wiring can persist per-segment STT provenance (a measurement, never a guess from capturedAt).
     const sttMeta: SttInvokeMeta = {
@@ -106,7 +157,11 @@ export const transcribeChunks = async (chunks: readonly CaptureChunk[], deps: Tr
     // transcript rebuilt from the surviving speech segments.
     const filtered = dropSilentSegments(result, deps.noSpeechThreshold ?? DEFAULT_NO_SPEECH_THRESHOLD)
     const text = filtered.text
+    const processedAt = (deps.now ?? (() => new Date().toISOString()))()
     if (text.length === 0) {
+      // Silence is a successful terminal invoke too. Recording it prevents a held sibling in the same
+      // queue file from making a retry resend the raw silent audio.
+      deps.onCompleted?.(chunk, processedAt, sttMeta, 0)
       // A fully-silent window: either the transcript was empty ('' silence) or EVERY segment was dropped
       // as no-speech. Either way it contributes NOTHING — no text chunk, and (crucially) no onTranscribed
       // call, so a hallucinated phrase never reaches the live transcript strip. A filtered-to-nothing
@@ -129,8 +184,8 @@ export const transcribeChunks = async (chunks: readonly CaptureChunk[], deps: Tr
     // Stamp the actual completion boundary, after STT + silence filtering succeeded and immediately
     // before the transcript outcome leaves this stage. The caller threads this value into the public
     // TranscriptUpdate; it must never guess a processing time from capturedAt.
-    const processedAt = (deps.now ?? (() => new Date().toISOString()))()
     deps.onTranscribed?.(chunk, text, processedAt, sttMeta)
+    deps.onCompleted?.(chunk, processedAt, sttMeta, text.length)
     log(`transcribe: ${chunk.source} chunk ${chunk.id} → ${text.length} chars via ${result.endpoint}`)
   }
   return out

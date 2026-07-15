@@ -154,7 +154,7 @@ test('e2e (#116 trace view, served): an utterance walks heard → summary → mo
       assert.match(html, /Judge confirmed it/, 'the judge hop on the same trail')
       assert.match(html, /big-32b/, 'the judge lane is named')
       assert.match(html, /device-local/, 'the egress consent decision renders on the hop (#64)')
-      assert.match(html, /— no guard/, 'no fabricated guard verdict for a local hop — the honest absence (#63)')
+      assert.match(html, /not applicable · device-local/, 'no fabricated guard verdict for a device-local hop — the honest absence (#63/#206)')
     }, 15_000)
 
     // A later fast pass reuses the deterministic field document id. Advance that projection with unrelated

@@ -3,7 +3,7 @@ import type { SecretResolver } from './secrets.js'
 import type { LocalEndpoint, LocalRuntimeManager, RuntimeSpec } from './endpoints/local.js'
 import { selectSttAdapter, type SttAdapter, type TranscriptResult } from './stt-adapters.js'
 import { classifyDestination, classifyEndpoint, egressDecision, mayReceiveRawFrames, type EgressConsent } from './egress.js'
-import { runEgressGuard, type GuardOptions } from './guard.js'
+import { GuardHeldError, runEgressGuard, type GuardOptions } from './guard.js'
 import {
   AggregateInvokeError,
   InvokeError,
@@ -69,6 +69,46 @@ type EgressGate =
       rawFrameTrust?: 'explicit'
     }
   | { allow: false }
+
+/**
+ * Once a device-boundary peer may have received payload bytes, a later winner would erase that delivery
+ * from winner-only provenance. Stop fallback in that case. Failures proven pre-delivery (DNS/connect
+ * refusal, missing auth before fetch) may still fall through safely.
+ */
+const boundaryDeliveryMayHaveOccurred = (gate: Extract<EgressGate, { allow: true }>, error: unknown): boolean =>
+  gate.destination !== 'device-local' && (!(error instanceof InvokeError) || error.delivery !== 'none')
+
+/** Convert an ambiguous/confirmed boundary delivery failure into the same durable hold path every LLM
+ * caller already owns. This is not a classifier verdict: it is a privacy/audit suspension that prevents a
+ * later winner from erasing the attempted delivery. No response body or URL enters the verdict. */
+const boundaryDeliveryHold = (
+  endpoint: Endpoint,
+  gate: Extract<EgressGate, { allow: true }>,
+  consent: EgressConsent | undefined,
+  error: unknown,
+  guarded?: GuardVerdict,
+): GuardHeldError => {
+  const certainty = error instanceof InvokeError && error.delivery === 'confirmed' ? 'received the request' : 'may have received the request'
+  const verdict: GuardVerdict = {
+    behavior: guarded?.behavior ?? 'hold-and-surface',
+    outcome: 'held',
+    guarded: guarded?.guarded ?? false,
+    maskedSpanCount: guarded?.maskedSpanCount ?? 0,
+    ...(guarded?.spans !== undefined ? { spans: guarded.spans } : {}),
+    ...(guarded?.guardEndpoint !== undefined ? { guardEndpoint: guarded.guardEndpoint } : {}),
+    ...(guarded?.classifierDestination !== undefined ? { classifierDestination: guarded.classifierDestination } : {}),
+    reason: `target endpoint "${endpoint.name}" ${certainty} but did not complete; fallback suspended so that boundary delivery cannot be hidden by a later winner`,
+  }
+  return new GuardHeldError(verdict, {
+    endpoint: endpoint.name,
+    url: endpoint.kind === 'http' ? endpoint.url : `${endpoint.kind}:${endpoint.name}`,
+    ...(endpoint.model !== undefined && endpoint.model !== '' ? { model: endpoint.model } : {}),
+    destination: gate.destination,
+    delivery: error instanceof InvokeError && error.delivery === 'confirmed' ? 'confirmed' : 'possible',
+    failureClass: error instanceof InvokeError ? error.class : 'unknown',
+    ...(consent !== undefined ? { consent } : {}),
+  })
+}
 
 /**
  * The egress ENFORCEMENT + guard (#63) decision point, run for each candidate endpoint BEFORE any bytes
@@ -165,8 +205,8 @@ export interface LlmResult {
   usage?: InvokeUsage
   /** the resolved egress decision this invoke ran under (#64) — present only when consent was supplied. */
   egress?: EgressDecision
-  /** the egress guard verdict (#63) — present only when this invoke ran through an egress hop with the
-   * guard active (clean / redacted / unguarded). A local hop never runs the guard, so it is absent. */
+  /** the egress guard verdict (#63) — present only when this text invoke crossed the device boundary
+   * (LAN-local or hosted/public) with the guard active. A device-local hop never runs it. */
   guard?: GuardVerdict
 }
 
@@ -227,10 +267,10 @@ export interface InvokeOptions {
    */
   egress?: EgressConsent
   /**
-   * The egress GUARD config (#63). When present, an ALLOWED egress hop (`reach:'egress'`) runs the guard
-   * on the outbound content BEFORE any bytes leave: redact-and-continue masks flagged spans and proceeds;
+   * The egress GUARD config (#63). When present, an allowed device-boundary TEXT hop (LAN-local or
+   * hosted/public) runs the guard on outbound content BEFORE target bytes leave: redact-and-continue masks flagged spans and proceeds;
    * hold-and-surface (or a fail-closed empty slot) THROWS GuardHeldError to suspend the hop. Absent ⇒ the
-   * guard does not run (pre-#63 behavior). Local hops never invoke it (no egress). Only invokeLlm (the
+   * guard does not run (pre-#63 behavior). Device-local hops never invoke it. Only invokeLlm (the
    * text-egress path) applies it — screen (ocr/vlm) content never egresses and stt audio is not a
    * text-span filter (disclosed).
    */
@@ -276,7 +316,7 @@ const readSseCompletion = async (
   ctx: InvokeCtx,
 ): Promise<{ text: string; usage: RawUsage | undefined; finishReason: string | undefined; sawReasoning: boolean }> => {
   const body = response.body
-  if (body === null) throw new InvokeError('bad-response', ctx, { serverMessage: 'empty body on a streaming completions response' })
+  if (body === null) throw new InvokeError('bad-response', ctx, { serverMessage: 'empty body on a streaming completions response', delivery: 'confirmed' })
   const decoder = new TextDecoder()
   let buffer = ''
   let text = ''
@@ -307,17 +347,23 @@ const readSseCompletion = async (
       onDelta(delta)
     }
   }
-  for await (const piece of body as unknown as AsyncIterable<Uint8Array>) {
-    buffer += decoder.decode(piece, { stream: true })
-    let newline = buffer.indexOf('\n')
-    while (newline >= 0) {
-      handleLine(buffer.slice(0, newline))
-      buffer = buffer.slice(newline + 1)
-      newline = buffer.indexOf('\n')
+  try {
+    for await (const piece of body as unknown as AsyncIterable<Uint8Array>) {
+      buffer += decoder.decode(piece, { stream: true })
+      let newline = buffer.indexOf('\n')
+      while (newline >= 0) {
+        handleLine(buffer.slice(0, newline))
+        buffer = buffer.slice(newline + 1)
+        newline = buffer.indexOf('\n')
+      }
     }
+  } catch {
+    // The HTTP peer already answered and began an SSE response, so delivery is confirmed even when the
+    // body transport tears later. Preserve a payload-free class for the durable boundary hold.
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'stream interrupted before completion', delivery: 'confirmed' })
   }
   if (buffer !== '') handleLine(buffer)
-  if (!sawFrame) throw new InvokeError('bad-response', ctx, { serverMessage: 'no SSE data frames in the streaming completions response' })
+  if (!sawFrame) throw new InvokeError('bad-response', ctx, { serverMessage: 'no SSE data frames in the streaming completions response', delivery: 'confirmed' })
   return { text, usage, finishReason, sawReasoning }
 }
 
@@ -382,6 +428,7 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
     if (streamed.text.trim() === '' && (streamed.sawReasoning || streamed.finishReason === 'length')) {
       throw new InvokeError('reasoning-exhausted', ctx, {
         serverMessage: streamed.finishReason === 'length' ? 'finish_reason: length, no streamed content' : 'reasoning consumed the token budget, no streamed content',
+        delivery: 'confirmed',
       })
     }
     const usage = buildUsage(streamed.usage, messages.map((m) => m.content).join('\n'), streamed.text, Date.now() - started)
@@ -391,7 +438,7 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
   try {
     json = (await response.json()) as ChatCompletion
   } catch {
-    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the completions endpoint' })
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the completions endpoint', delivery: 'confirmed' })
   }
   const choice = json.choices?.[0]
   const text = choice?.message?.content
@@ -402,15 +449,17 @@ const callHttp = async (endpoint: HttpEndpoint, messages: LlmMessage[], opts: In
     if (isReasoningExhausted(choice)) {
       throw new InvokeError('reasoning-exhausted', ctx, {
         serverMessage: choice?.finish_reason === 'length' ? 'finish_reason: length, no content' : 'reasoning consumed the token budget, no content',
+        delivery: 'confirmed',
       })
     }
-    throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in response' })
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in response', delivery: 'confirmed' })
   }
   // Empty output where the model spent its budget reasoning is its OWN class (not a garbled response) —
   // a distinct, user-actionable failure (raise the token budget, or use a non-reasoning instruct model).
   if (text.trim() === '' && isReasoningExhausted(choice)) {
     throw new InvokeError('reasoning-exhausted', ctx, {
       serverMessage: choice?.finish_reason === 'length' ? 'finish_reason: length, empty content' : 'reasoning consumed the token budget, empty content',
+      delivery: 'confirmed',
     })
   }
   const usage = buildUsage(json.usage, messages.map((m) => m.content).join('\n'), text, Date.now() - started)
@@ -451,16 +500,27 @@ export const invokeLlm = async (
     }
     const gate = egressGate(endpoint, opts.egress, classified, lines) // #64: deny short-circuits before any call
     if (!gate.allow) continue
-    // #63 GUARD SLOT HOOK: on an ALLOWED EGRESS hop, run the content/PII guard on the outbound messages
+    // #63 GUARD SLOT HOOK: on an ALLOWED DEVICE-BOUNDARY hop, run the content/PII guard on outbound messages
     // BEFORE any bytes leave. redact-and-continue masks flagged spans (outbound is the masked copy);
     // hold-and-surface / a fail-closed empty slot THROWS GuardHeldError, a HARD STOP for this invoke (the
     // held content must not silently reroute to a local endpoint — it surfaces for release/deny). This
     // runs OUTSIDE the per-endpoint try so a held throw propagates out of invokeLlm rather than falling
-    // through. A local hop never enters this branch (reach !== 'egress'), so it is never guarded.
+    // through. Device-local loopback/managed calls never enter this branch; LAN-local calls DO because
+    // #196 makes their device-boundary crossing explicit even though the compatibility reach is `local`.
     let outbound = messages
     let guardVerdict: GuardVerdict | undefined
-    if (gate.reach === 'egress' && opts.guard !== undefined) {
-      const guarded = await runEgressGuard(messages, { endpoint: endpoint.name, url: endpoint.kind === 'http' ? endpoint.url : `${endpoint.kind}:${endpoint.name}` }, opts.guard)
+    if (gate.destination !== 'device-local' && opts.guard !== undefined) {
+      const guarded = await runEgressGuard(
+        messages,
+        {
+          endpoint: endpoint.name,
+          url: endpoint.kind === 'http' ? endpoint.url : `${endpoint.kind}:${endpoint.name}`,
+          ...(endpoint.model !== undefined && endpoint.model !== '' ? { model: endpoint.model } : {}),
+          destination: gate.destination,
+          ...(opts.egress !== undefined ? { consent: opts.egress } : {}),
+        },
+        opts.guard,
+      )
       outbound = guarded.messages
       guardVerdict = guarded.verdict
     }
@@ -479,10 +539,17 @@ export const invokeLlm = async (
       if (guardVerdict !== undefined) result.guard = guardVerdict
       return result
     } catch (error) {
-      // Deltas already streamed to the consumer ⇒ no silent fall-through (see callOpts above) — surface it.
-      if (deltasEmitted) throw error
+      // Deltas already streamed ⇒ no fallback. If this was a boundary target, route the failed delivery
+      // through the durable hold path too; stopping fallback alone would leave the attempt unaudited.
+      if (deltasEmitted) {
+        if (gate.destination !== 'device-local') throw boundaryDeliveryHold(endpoint, gate, opts.egress, error, guardVerdict)
+        throw error
+      }
       if (error instanceof InvokeError) classified.push(error.toFailure())
       lines.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
+      if (boundaryDeliveryMayHaveOccurred(gate, error)) {
+        throw boundaryDeliveryHold(endpoint, gate, opts.egress, error, guardVerdict)
+      }
     }
   }
   throw new AggregateInvokeError(
@@ -575,12 +642,12 @@ const postTranscription = async (
   try {
     json = await response.json()
   } catch {
-    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the transcription endpoint' })
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the transcription endpoint', delivery: 'confirmed' })
   }
   // A transcriber that answers must carry a `text` field; '' (silence) is valid, missing is not. The
   // adapter maps a well-formed body and returns undefined when there is none — one honest bad-response.
   const transcript = adapter.normalize(json)
-  if (transcript === undefined) throw new InvokeError('bad-response', ctx, { serverMessage: 'no transcript text in response' })
+  if (transcript === undefined) throw new InvokeError('bad-response', ctx, { serverMessage: 'no transcript text in response', delivery: 'confirmed' })
   return transcript
 }
 
@@ -636,6 +703,9 @@ export const invokeStt = async (fabric: Fabric, audio: SttAudio, opts: SttOption
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
       lines.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
+      if (boundaryDeliveryMayHaveOccurred(gate, error)) {
+        throw boundaryDeliveryHold(endpoint, gate, opts.egress, error)
+      }
     }
   }
   throw new AggregateInvokeError(
@@ -752,10 +822,10 @@ const callVlmHttp = async (endpoint: HttpEndpoint, params: VlmInvokeParams, opts
   try {
     json = (await response.json()) as ChatCompletion
   } catch {
-    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the vision completions endpoint' })
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the vision completions endpoint', delivery: 'confirmed' })
   }
   const text = json.choices?.[0]?.message?.content
-  if (typeof text !== 'string') throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in vision response' })
+  if (typeof text !== 'string') throw new InvokeError('bad-response', ctx, { serverMessage: 'no completion content in vision response', delivery: 'confirmed' })
   // '' is a valid empty-frame result, not an error. The estimate covers only the text prompt (image
   // tokens are not derivable from chars) — `estimated` keeps that honest when the server reports no usage.
   const usage = buildUsage(json.usage, params.prompt, text, Date.now() - started)
@@ -798,6 +868,9 @@ export const invokeVlm = async (
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
       lines.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
+      if (boundaryDeliveryMayHaveOccurred(gate, error)) {
+        throw boundaryDeliveryHold(endpoint, gate, opts.egress, error)
+      }
     }
   }
   throw new AggregateInvokeError(
@@ -897,12 +970,12 @@ const callPaddleOcr = async (
   try {
     json = (await response.json()) as PaddleResponse
   } catch {
-    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the paddle-serving endpoint' })
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'invalid JSON from the paddle-serving endpoint', delivery: 'confirmed' })
   }
   // A paddle server that answers MUST return a `results` array (one entry per image); anything else is a
   // genuinely bad response (wrong URL/dialect), said honestly rather than guessed.
   if (!Array.isArray(json.results)) {
-    throw new InvokeError('bad-response', ctx, { serverMessage: 'no results array in the paddle-serving response' })
+    throw new InvokeError('bad-response', ctx, { serverMessage: 'no results array in the paddle-serving response', delivery: 'confirmed' })
   }
   const first = json.results[0] // our single image's region list; absent/empty ⇒ a blank frame (normal)
   const regions = Array.isArray(first) ? first : []
@@ -968,6 +1041,9 @@ export const invokeOcr = async (
     } catch (error) {
       if (error instanceof InvokeError) classified.push(error.toFailure())
       lines.push(`${endpoint.name}: ${error instanceof Error ? error.message : String(error)}`)
+      if (boundaryDeliveryMayHaveOccurred(gate, error)) {
+        throw boundaryDeliveryHold(endpoint, gate, opts.egress, error)
+      }
     }
   }
   throw new AggregateInvokeError(

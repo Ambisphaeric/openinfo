@@ -392,6 +392,24 @@
               "description": "the guard endpoint NAME that classified — never a url/secret; absent when no guard ran",
               "type": "string"
             },
+            "classifierDestination": {
+              "$id": "EgressDestination",
+              "description": "physical destination of a completed invoke: device-local (managed/loopback), lan-local (device boundary crossed within the private network), or hosted-public",
+              "anyOf": [
+                {
+                  "const": "device-local",
+                  "type": "string"
+                },
+                {
+                  "const": "lan-local",
+                  "type": "string"
+                },
+                {
+                  "const": "hosted-public",
+                  "type": "string"
+                }
+              ]
+            },
             "reason": {
               "minLength": 1,
               "description": "one-line, human-readable why — safe to surface (no raw value)",

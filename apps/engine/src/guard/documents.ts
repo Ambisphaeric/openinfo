@@ -58,7 +58,7 @@ interface HoldsDoc {
 
 /**
  * Store-backed held-hops (#63) — the durable audit of every SUSPENDED egress hop, so a held verdict IS in
- * the audit trail (surfaced in the ledger with a release/deny affordance). One document per workspace via
+ * the audit trail (surfaced in the ledger with an approve/deny affordance). One document per workspace via
  * LayoutStore (the ItemSignalStore pattern), each hold contract-validated before write. The verdict carries
  * span descriptors, never the raw value; the raw content is not retained (fail-closed: nothing leaked).
  */
@@ -81,9 +81,9 @@ export class GuardHoldStore {
   }
 
   /**
-   * Resolve a held hop — release (let it proceed) or deny (drop it). Idempotent: resolving an
-   * already-resolved hold returns it unchanged. Stamps `resolvedAt`. Returns the updated hold, or undefined
-   * when no such held id exists in the workspace.
+   * Resolve a held hop — record approval (`released`, the compatibility wire value) or denial. Approval
+   * does not replay the original pass because raw content is deliberately not retained. Idempotent:
+   * resolving an already-resolved hold returns it unchanged. Stamps `resolvedAt`.
    */
   resolve(workspaceId: string, id: string, status: 'released' | 'denied', at: string): GuardHold | undefined {
     const current = this.store.layouts.getLatest<HoldsDoc>(HOLDS_KIND, workspaceId)?.body.holds ?? []

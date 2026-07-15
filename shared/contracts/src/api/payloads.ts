@@ -4,7 +4,7 @@ import { Entity } from '../records/entity.js'
 import { Moment } from '../records/moment.js'
 import { StarterModel } from '../config/local.js'
 import { AttributionPattern } from '../config/hints.js'
-import { EgressDecision } from '../config/egress.js'
+import { ContentClass, EgressDecision } from '../config/egress.js'
 import { ScreenContentType } from '../records/screen.js'
 
 export const Health = Type.Object(
@@ -664,11 +664,16 @@ export const LocalDownloadRequest = Type.Object(
 )
 export type LocalDownloadRequest = Static<typeof LocalDownloadRequest>
 
-/** One prior turn of a chat exchange (#134) — role + text. `assistant` turns are the engine's prior replies. */
+/**
+ * One prior turn of a chat exchange (#134). `contentClass` is server-stamped on persisted turns so a
+ * screen-derived answer cannot lose its origin when the next turn reuses history. Optional for legacy
+ * rows; the engine treats an assistant turn with absent/untrusted origin conservatively.
+ */
 export const ChatTurn = Type.Object(
   {
     role: Type.Union([Type.Literal('user'), Type.Literal('assistant')]),
     content: Type.String({ minLength: 1 }),
+    contentClass: Type.Optional(ContentClass),
   },
   { $id: 'ChatTurn', additionalProperties: false },
 )
@@ -756,6 +761,8 @@ export const ChatReply = Type.Object(
     citations: Type.Array(ChatCitation),
     budget: ChatBudget,
     endpoint: Type.Optional(Type.String({ description: 'the fabric endpoint that answered' })),
+    /** Effective origin of the material actually included in this answer's prompt. */
+    contentClass: Type.Optional(ContentClass),
     egress: Type.Optional(EgressDecision),
   },
   { $id: 'ChatReply', additionalProperties: false },

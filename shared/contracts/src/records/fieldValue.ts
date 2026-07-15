@@ -1,5 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Id, IsoTime, SlotName, InvokeUsage } from '../common.js'
+import { EgressDecision } from '../config/egress.js'
+import { GuardVerdict } from '../config/guard.js'
 
 /** Schema version of the FieldValue record shape — bumped when the persisted shape changes. */
 export const FIELD_VALUE_SCHEMA_VERSION = 1
@@ -37,9 +39,17 @@ export const JudgeReview = Type.Object(
     // #116: the correlation id of the judge pass this review ran in — one per reviewed session batch, so
     // the audit trail can group a batch's verdicts. Append-only/optional: reviews predating #116 omit it.
     spanId: Type.Optional(Id),
+    windowStart: Type.Optional(IsoTime),
+    windowEnd: Type.Optional(IsoTime),
+    sourceChunks: Type.Optional(Type.Array(Id, { description: 'capture chunk ids of the exact transcript tail reviewed by this judge pass' })),
     // #65/#116: token accounting for the judge invoke, when the invoke layer recorded it — completes the
     // ledger's consumption picture for the judge hop. Append-only/optional.
     usage: Type.Optional(InvokeUsage),
+    // #206: the ACTUAL endpoint-specific privacy facts returned by invokeLlm. Optional keeps records from
+    // before the privacy wiring valid; new judge reviews always carry egress, and carry guard when the
+    // answering endpoint crossed to hosted/public under an enabled guard policy.
+    egress: Type.Optional(EgressDecision),
+    guard: Type.Optional(GuardVerdict),
   },
   { $id: 'JudgeReview', additionalProperties: false },
 )
@@ -59,6 +69,11 @@ export const FieldValueProvenance = Type.Object(
     sourceChunks: Type.Optional(Type.Array(Id, { description: 'capture chunk ids of the material window this value was drawn from' })),
     // #65/#116: token accounting for the fast invoke, when the invoke layer recorded it. Append-only/optional.
     usage: Type.Optional(InvokeUsage),
+    // #206: completed-invoke truth, never inferred from configuration by a reader. A local fallback after
+    // a hosted endpoint was denied therefore records the local endpoint's fused decision; a guarded hosted
+    // answer records its returned verdict. Optional for additive compatibility with legacy values.
+    egress: Type.Optional(EgressDecision),
+    guard: Type.Optional(GuardVerdict),
     // The judge's overrule stamp (#62), present once a judge has reviewed this value — the fast producer
     // above is untouched (lineage is preserved); this annotates it with the confirm/correct/flag verdict
     // and, on a correct, the overruled priorValue. Absent ⇒ the value is still provisional (unjudged).

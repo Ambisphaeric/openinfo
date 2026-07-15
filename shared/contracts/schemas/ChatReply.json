@@ -92,6 +92,28 @@
       "description": "the fabric endpoint that answered",
       "type": "string"
     },
+    "contentClass": {
+      "$id": "ContentClass",
+      "description": "layer 4: content origin — screen denies hosted/public egress; transcript/typed may allow it",
+      "anyOf": [
+        {
+          "const": "screen",
+          "type": "string"
+        },
+        {
+          "const": "transcript",
+          "type": "string"
+        },
+        {
+          "const": "typed",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "type": "string"
+        }
+      ]
+    },
     "egress": {
       "$id": "EgressDecision",
       "additionalProperties": false,
