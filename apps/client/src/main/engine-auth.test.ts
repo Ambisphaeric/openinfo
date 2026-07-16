@@ -41,8 +41,8 @@ const fixture = async (): Promise<{ root: string; runDir: string; file: string }
 }
 
 test('discovery path is keyed by the configured effective port and honors the run-dir override', () => {
-  assert.equal(engineDiscoveryPath('http://localhost:8787', { runDir: '/safe/run' }), '/safe/run/engine-8787.json')
-  assert.equal(engineDiscoveryPath('https://control.example', { runDir: '/safe/run' }), '/safe/run/engine-443.json')
+  assert.equal(engineDiscoveryPath('http://localhost:8787', { runDir: '/safe/run' }), path.join('/safe/run', 'engine-8787.json'))
+  assert.equal(engineDiscoveryPath('https://control.example', { runDir: '/safe/run' }), path.join('/safe/run', 'engine-443.json'))
 })
 
 test('loads a private local record across loopback aliases, caches, then refreshes a rotated token', async () => {
@@ -94,10 +94,16 @@ test('missing records are unauthenticated, while group/world-readable files fail
     assert.equal(await source.credentialFor('http://127.0.0.1:8787'), undefined)
     await writeFile(f.file, JSON.stringify(record()), { mode: 0o644 })
     await chmod(f.file, 0o644)
-    await assert.rejects(
-      () => source.credentialFor('http://127.0.0.1:8787', { refresh: true }),
-      (error: unknown) => error instanceof EngineAuthError && error.code === 'insecure-record',
-    )
+    if (process.platform === 'win32') {
+      // Windows has no POSIX mode bits, so the "group/world-readable fails closed" guard is a documented
+      // no-op there (engine-auth assertOwnedPrivate returns early on win32): the record loads instead.
+      assert.equal((await source.credentialFor('http://127.0.0.1:8787', { refresh: true }))?.token, TOKEN_A)
+    } else {
+      await assert.rejects(
+        () => source.credentialFor('http://127.0.0.1:8787', { refresh: true }),
+        (error: unknown) => error instanceof EngineAuthError && error.code === 'insecure-record',
+      )
+    }
   } finally {
     await rm(f.root, { recursive: true, force: true })
   }
@@ -106,12 +112,16 @@ test('missing records are unauthenticated, while group/world-readable files fail
 test('symlink and malformed records fail without including the token in the error', async () => {
   const f = await fixture()
   const target = path.join(f.root, 'target.json')
+  const source = new EngineAuthDiscovery({ runDir: f.runDir })
   try {
-    await writeFile(target, JSON.stringify(record()), { mode: 0o600 })
-    await symlink(target, f.file)
-    const source = new EngineAuthDiscovery({ runDir: f.runDir })
-    await assert.rejects(() => source.credentialFor('http://127.0.0.1:8787'), EngineAuthError)
-    await rm(f.file)
+    if (process.platform !== 'win32') {
+      // Symlink creation needs privilege on Windows (EPERM) and O_NOFOLLOW is absent there, so the
+      // symlink-rejection guarantee is POSIX-only (a documented gap).
+      await writeFile(target, JSON.stringify(record()), { mode: 0o600 })
+      await symlink(target, f.file)
+      await assert.rejects(() => source.credentialFor('http://127.0.0.1:8787'), EngineAuthError)
+      await rm(f.file)
+    }
 
     const secret = 'secret-that-must-not-appear'
     await writeFile(f.file, JSON.stringify({ ...record(), token: secret }), { mode: 0o600 })
@@ -154,7 +164,12 @@ test('configured tunnel credentials come from explicit environment or a private 
     })
     assert.equal((await file.credentialFor('https://control.example'))?.token, TOKEN_B)
     await chmod(tokenFile, 0o644)
-    await assert.rejects(() => file.credentialFor('https://control.example', { refresh: true }), EngineAuthError)
+    if (process.platform === 'win32') {
+      // POSIX-only: on Windows a 0o644 token file is not rejected (no mode enforcement) — documented gap.
+      assert.equal((await file.credentialFor('https://control.example', { refresh: true }))?.token, TOKEN_B)
+    } else {
+      await assert.rejects(() => file.credentialFor('https://control.example', { refresh: true }), EngineAuthError)
+    }
   } finally {
     await rm(root, { recursive: true, force: true })
   }

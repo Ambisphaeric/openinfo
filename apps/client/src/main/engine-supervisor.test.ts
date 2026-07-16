@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import {
   decideEngineDisposition,
   checkEngineReachable,
@@ -97,7 +98,7 @@ test('waitForEngine: gives up false after the attempt budget', async () => {
 test('bundledEngineEntry: repo-shaped path under resourcesPath so the engine data-file paths resolve', () => {
   assert.equal(
     bundledEngineEntry('/Apps/openinfo.app/Contents/Resources'),
-    '/Apps/openinfo.app/Contents/Resources/engine-bundle/apps/engine/dist/main.js',
+    join('/Apps/openinfo.app/Contents/Resources', 'engine-bundle', 'apps', 'engine', 'dist', 'main.js'),
   )
 })
 
@@ -281,7 +282,7 @@ test('parseAllowSkew: only an explicit truthy token opts into skew adoption', ()
 })
 
 test('buildStampPath: the stamp lives beside the app resources', () => {
-  assert.equal(buildStampPath('/Applications/openinfo.app/Contents/Resources'), '/Applications/openinfo.app/Contents/Resources/build-stamp.json')
+  assert.equal(buildStampPath('/Applications/openinfo.app/Contents/Resources'), join('/Applications/openinfo.app/Contents/Resources', 'build-stamp.json'))
 })
 
 test('readBuildStamp: reads {build} from the resources file (injected reader, no filesystem)', () => {

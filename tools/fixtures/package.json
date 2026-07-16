@@ -5,7 +5,7 @@
   "scripts": {
     "cli": "node cli.mjs",
     "schema": "node write-schema.mjs",
-    "test": "node --test '*.test.mjs'"
+    "test": "node --test \"*.test.mjs\""
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.49"

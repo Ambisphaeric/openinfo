@@ -1,10 +1,14 @@
+import { basename } from 'node:path'
 import { createEngineApp } from './api/http.js'
 import { resolveControlPlane, type ControlPlane, type ResolveControlPlaneOptions } from './api/control-plane.js'
 import { startCalendarCollector } from './route/index.js'
 import { wireScreenOcr } from './screen/index.js'
 import { wireTeach } from './teach/index.js'
 
-const isEntry = process.argv[1]?.endsWith('/main.js') ?? false
+// Detect "run directly" by the entry file's basename, not a hardcoded `/main.js` suffix: process.argv[1]
+// is backslash-separated on Windows, so an `endsWith('/main.js')` check is always false there and the
+// engine would never start. basename normalizes the separator on every OS.
+const isEntry = process.argv[1] !== undefined && basename(process.argv[1]) === 'main.js'
 
 export interface RunningEngine {
   app: ReturnType<typeof createEngineApp>

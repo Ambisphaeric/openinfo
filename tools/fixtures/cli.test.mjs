@@ -36,7 +36,9 @@ test('record CLI is no-overwrite by default and force replacement pins owner-onl
     await assert.rejects(() => exec(process.execPath, args, { cwd: root }), /exists \(pass --force to replace\)/)
     await chmod(output, 0o644)
     await exec(process.execPath, [...args, '--force'], { cwd: root })
-    assert.equal((await stat(output)).mode & 0o777, 0o600)
+    // POSIX-only: Windows has no 0o600 equivalent (stat reports 0o666). The owner-only write is a real
+    // guarantee off-Windows; on Windows the file is NOT mode-restricted (a documented platform gap).
+    if (process.platform !== 'win32') assert.equal((await stat(output)).mode & 0o777, 0o600)
     assert.equal((await readFile(output, 'utf8')).endsWith('\n'), true)
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -57,7 +59,7 @@ test('sensitive fixtures are refused outside the ignored fixture root and accept
       /refusing committable output/,
     )
     await exec(process.execPath, [...base, '--output', inside], { cwd: root })
-    assert.equal((await stat(inside)).mode & 0o777, 0o600)
+    if (process.platform !== 'win32') assert.equal((await stat(inside)).mode & 0o777, 0o600)
   } finally {
     await rm(outsideDir, { recursive: true, force: true })
     await rm(privateDir, { recursive: true, force: true })

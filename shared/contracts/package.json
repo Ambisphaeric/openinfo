@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p .",
     "gen": "node ../../tools/schema-gen/gen.mjs",
-    "test": "node --test 'dist/**/*.test.js'"
+    "test": "node --test \"dist/**/*.test.js\""
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
