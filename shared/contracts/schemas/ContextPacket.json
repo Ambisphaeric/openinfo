@@ -1,0 +1,388 @@
+{
+  "$id": "ContextPacket",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "sessionId",
+    "windowStart",
+    "windowEnd",
+    "microphone",
+    "systemAudio",
+    "screen",
+    "candidates",
+    "gaps",
+    "confidence",
+    "provenance",
+    "revision",
+    "schemaVersion",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "windowStart": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "windowEnd": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "microphone": {
+      "description": "mic-lane observation refs — attribution never merges with the other lanes",
+      "type": "array",
+      "items": {
+        "$id": "ContextPacketRef",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "record",
+          "id",
+          "at"
+        ],
+        "properties": {
+          "record": {
+            "description": "which record table the id names — the closed set of packet-referencable observations",
+            "anyOf": [
+              {
+                "const": "stt-segment",
+                "type": "string"
+              },
+              {
+                "const": "ocr-result",
+                "type": "string"
+              },
+              {
+                "const": "distillate",
+                "type": "string"
+              },
+              {
+                "const": "moment",
+                "type": "string"
+              }
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "systemAudio": {
+      "description": "system-audio-lane observation refs — the OTHER audio attribution, kept separate",
+      "type": "array",
+      "items": {
+        "$id": "ContextPacketRef",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "record",
+          "id",
+          "at"
+        ],
+        "properties": {
+          "record": {
+            "description": "which record table the id names — the closed set of packet-referencable observations",
+            "anyOf": [
+              {
+                "const": "stt-segment",
+                "type": "string"
+              },
+              {
+                "const": "ocr-result",
+                "type": "string"
+              },
+              {
+                "const": "distillate",
+                "type": "string"
+              },
+              {
+                "const": "moment",
+                "type": "string"
+              }
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "screen": {
+      "description": "screen-understanding observation refs (OcrResults)",
+      "type": "array",
+      "items": {
+        "$id": "ContextPacketRef",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "record",
+          "id",
+          "at"
+        ],
+        "properties": {
+          "record": {
+            "description": "which record table the id names — the closed set of packet-referencable observations",
+            "anyOf": [
+              {
+                "const": "stt-segment",
+                "type": "string"
+              },
+              {
+                "const": "ocr-result",
+                "type": "string"
+              },
+              {
+                "const": "distillate",
+                "type": "string"
+              },
+              {
+                "const": "moment",
+                "type": "string"
+              }
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "focus": {
+      "description": "foreground/app evidence from the session record's attribution (kinds window/repo) — sourced via sessionId, never model-derived",
+      "type": "array",
+      "items": {
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind",
+          "detail",
+          "weight"
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "const": "calendar",
+                "type": "string"
+              },
+              {
+                "const": "window",
+                "type": "string"
+              },
+              {
+                "const": "repo",
+                "type": "string"
+              },
+              {
+                "const": "voice",
+                "type": "string"
+              },
+              {
+                "const": "manual",
+                "type": "string"
+              }
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "weight": {
+            "minimum": 0,
+            "maximum": 1,
+            "type": "number"
+          }
+        }
+      }
+    },
+    "candidates": {
+      "description": "entities the in-window evidence names, each traceable to its moments",
+      "type": "array",
+      "items": {
+        "$id": "ContextPacketCandidate",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "entityId",
+          "name",
+          "momentRefs"
+        ],
+        "properties": {
+          "entityId": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "description": "the entity record name at build time — the lookup key stays entityId",
+            "type": "string"
+          },
+          "momentRefs": {
+            "minItems": 1,
+            "description": "in-window moment ids whose refs name this entity",
+            "type": "array",
+            "items": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            }
+          },
+          "seenOnScreen": {
+            "additionalProperties": false,
+            "description": "cross-source corroboration by an in-window screen observation (#74 correlator)",
+            "type": "object",
+            "required": [
+              "ocrId",
+              "form",
+              "similarity"
+            ],
+            "properties": {
+              "ocrId": {
+                "minLength": 1,
+                "description": "opaque identifier",
+                "type": "string"
+              },
+              "form": {
+                "minLength": 1,
+                "description": "the on-screen surface form that corroborated (evidence, not a secret value)",
+                "type": "string"
+              },
+              "similarity": {
+                "minimum": 0,
+                "maximum": 1,
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    },
+    "gaps": {
+      "description": "senses honestly missing from this window, with machine-readable reasons",
+      "type": "array",
+      "items": {
+        "$id": "ContextPacketGap",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "lane",
+          "reason"
+        ],
+        "properties": {
+          "lane": {
+            "description": "the physical sense lane that is missing from this window",
+            "anyOf": [
+              {
+                "const": "mic",
+                "type": "string"
+              },
+              {
+                "const": "system-audio",
+                "type": "string"
+              },
+              {
+                "const": "screen",
+                "type": "string"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "const": "no-observations-this-session",
+                "type": "string"
+              },
+              {
+                "const": "no-observations-in-window",
+                "type": "string"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "confidence": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "provenance": {
+      "$id": "ContextPacketProvenance",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "builder",
+        "windowMs"
+      ],
+      "properties": {
+        "builder": {
+          "const": "deterministic-correlation",
+          "type": "string"
+        },
+        "windowMs": {
+          "minimum": 1,
+          "description": "the correlation window length this packet was bucketed with",
+          "type": "integer"
+        }
+      }
+    },
+    "revision": {
+      "minimum": 1,
+      "description": "position in this window’s append-only supersession chain",
+      "type": "integer"
+    },
+    "supersedes": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

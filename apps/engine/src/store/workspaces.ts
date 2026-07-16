@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
-import { ChatTurn as ChatTurnSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
+import type { ChatTurn, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
+import { ChatTurn as ChatTurnSchema, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
 import { DEFAULT_GAZETTEER, GAZETTEER_KEY, GAZETTEER_KIND, gazetteerRivals, type GazetteerDocument } from '../index/gazetteer.js'
@@ -289,6 +289,57 @@ export class WorkspaceRegistry {
       ? (db.prepare('select body from stt_segments where session_id = ? order by created_at').all(sessionId) as { body: string }[])
       : (db.prepare('select body from stt_segments order by created_at').all() as { body: string }[])
     return rows.map((row) => JSON.parse(row.body) as SttSegment)
+  }
+
+  /**
+   * Append one ContextPacket (#176) to its workspace's OWN sqlite file. Packets are APPEND-ONLY derived
+   * records: a revision never mutates or deletes its predecessor — it is a new row whose `supersedes`
+   * links the chain. `insert or replace` keyed on the content-derived id makes a replayed build byte-stable
+   * (same content ⇒ same id ⇒ replace-in-place), mirroring saveDistillate's idempotence. Contract-validated
+   * before write (the savePin last-line-of-defense idiom). Only this path writes context packets.
+   */
+  saveContextPacket(packet: ContextPacket): ContextPacket {
+    this.ensureWorkspace({ id: packet.workspaceId, name: packet.workspaceId })
+    const db = this.openWorkspace(packet.workspaceId)
+    const { sessionId, windowStart } = packet
+    if (!Value.Check(ContextPacketSchema, packet)) {
+      throw new Error(`context packet failed contract validation: ${sessionId} ${windowStart}`)
+    }
+    db.prepare(
+      'insert or replace into context_packets (id, session_id, window_start, window_end, created_at, body) values (?, ?, ?, ?, ?, ?)',
+    ).run(packet.id, packet.sessionId, packet.windowStart, packet.windowEnd, packet.createdAt, JSON.stringify(packet))
+    return packet
+  }
+
+  /**
+   * Query a workspace's ContextPackets (#176) — the four query axes the issue names: workspace (the DB),
+   * session, time window (`from`/`to` keep packets whose window INTERSECTS the range), and related entity
+   * (a candidate names it). Default reads return only each window's LIVE chain head — superseded revisions
+   * stay retrievable with `includeSuperseded` (append-only means history is data, not noise). Supersession
+   * is resolved over the WHOLE workspace/session scope BEFORE the time/entity filters, so a filtered read
+   * can never present a superseded packet as live merely because its successor fell outside the filter.
+   * Unknown workspace reads as [] (mirrors listPins) — asking is never an error.
+   */
+  listContextPackets(
+    workspaceId: string,
+    opts: { sessionId?: string; from?: string; to?: string; entityId?: string; includeSuperseded?: boolean } = {},
+  ): ContextPacket[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const rows = opts.sessionId
+      ? (db
+          .prepare('select body from context_packets where session_id = ? order by window_start, created_at, id')
+          .all(opts.sessionId) as { body: string }[])
+      : (db.prepare('select body from context_packets order by window_start, created_at, id').all() as { body: string }[])
+    let packets = rows.map((row) => JSON.parse(row.body) as ContextPacket)
+    if (!opts.includeSuperseded) {
+      const superseded = new Set(packets.map((p) => p.supersedes).filter((id): id is string => id !== undefined))
+      packets = packets.filter((p) => !superseded.has(p.id))
+    }
+    if (opts.from !== undefined) packets = packets.filter((p) => p.windowEnd > opts.from!)
+    if (opts.to !== undefined) packets = packets.filter((p) => p.windowStart < opts.to!)
+    if (opts.entityId !== undefined) packets = packets.filter((p) => p.candidates.some((c) => c.entityId === opts.entityId))
+    return packets
   }
 
   /** List a workspace's OcrResults (default all), oldest first; `sessionId` narrows to one session. */
@@ -703,7 +754,8 @@ export class WorkspaceRegistry {
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
    *
    * WHAT MOVES: the session record (with the authoritative manual correction appended atomically), its
-   * distillates, moments, drafts, OcrResults, and SttSegments, plus
+   * distillates, moments, drafts, OcrResults, SttSegments, and ContextPackets (the whole append-only
+   * chain, superseded revisions included), plus
    * the session-scoped document state in _meta.db: complete FieldValue and SessionAnnotation histories,
    * GuardHolds, and the current TodoList. ENTITIES are workspace-level aggregates, not session-keyed,
    * so they are re-aggregated (see below), never blindly copied.
@@ -751,6 +803,9 @@ export class WorkspaceRegistry {
     const drafts = this.listDrafts(fromWorkspaceId, sessionId)
     const ocrResults = this.listOcrResults(fromWorkspaceId, sessionId)
     const sttSegments = this.listSttSegments(fromWorkspaceId, sessionId)
+    // #176: the WHOLE append-only packet chain moves (includeSuperseded) — dropping superseded revisions
+    // would silently rewrite history the chain promises to keep.
+    const contextPackets = this.listContextPackets(fromWorkspaceId, { sessionId, includeSuperseded: true })
     const movedDistillateIds = new Set(distillates.map((d) => d.id))
     const movedMomentIds = new Set(moments.map((m) => m.id))
 
@@ -816,6 +871,12 @@ export class WorkspaceRegistry {
         const moved: SttSegment = { ...segment, workspaceId: toWorkspaceId }
         toDb.prepare('insert or replace into stt_segments (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
       }
+      for (const packet of contextPackets) {
+        // The id stays stable across the move (an id is opaque once minted); only the workspace scope is
+        // rewritten, so a destination rebuild converges on the moved chain instead of forking a new one.
+        const moved: ContextPacket = { ...packet, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into context_packets (id, session_id, window_start, window_end, created_at, body) values (?, ?, ?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.windowStart, moved.windowEnd, moved.createdAt, JSON.stringify(moved))
+      }
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
@@ -836,6 +897,7 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from drafts where session_id = ?').run(sessionId)
       fromDb.prepare('delete from ocr_results where session_id = ?').run(sessionId)
       fromDb.prepare('delete from stt_segments where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from context_packets where session_id = ?').run(sessionId)
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
@@ -1347,6 +1409,12 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists pin_chunks (id text primary key, pin_id text not null, ordinal integer not null, page integer, body text not null)',
+    ).run()
+    // #176: converged ContextPackets — session-keyed, append-only derived records over the observation
+    // tables above (refs only, no copied content). Additive `create table if not exists` in the
+    // per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
+    db.prepare(
+      'create table if not exists context_packets (id text primary key, session_id text not null, window_start text not null, window_end text not null, created_at text not null, body text not null)',
     ).run()
     // The Ask face's persistent app-scoped chat thread — one thread per workspace (owner canon 2026-07-11;
     // upstream glass left ask-history vestigial). `seq` (autoincrement) is the stable turn order: turns in

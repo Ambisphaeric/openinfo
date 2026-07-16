@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type Bundle, type CaptureChunk, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type Bundle, type CaptureChunk, type ContextPacket, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, GuardHeldError, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
-import { relevantNow, ingestPin, defaultFetchers } from '../index/index.js'
+import { relevantNow, ingestPin, defaultFetchers, buildContextPackets } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
@@ -1088,6 +1088,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/drafts') return send(res, 200, readDrafts(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/context/packets') return send(res, 200, readContextPackets(ctx.store, url))
+  if (req.method === 'POST' && url.pathname === '/context/packets/build') return buildPackets(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/todos') return send(res, 200, ctx.todos.list())
   const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
   if (req.method === 'GET' && todo?.[1]) return getTodo(res, ctx, decodeURIComponent(todo[1]))
@@ -1785,6 +1787,60 @@ function readDrafts(store: WorkspaceRegistry, url: URL): Draft[] {
   if (!store.all().some((ws) => ws.id === workspaceId)) return []
   const sessionId = url.searchParams.get('session')
   return sessionId ? store.listDrafts(workspaceId, sessionId) : store.listDrafts(workspaceId)
+}
+
+/**
+ * Serve converged ContextPackets (#176) — queryable by workspace (default `default`), session, time
+ * window (`from`/`to`, window-intersection), and related entity (`entity` = a candidate's entity id).
+ * Default reads return each window's live chain head only; `superseded=true` includes the whole
+ * append-only revision history. Mirrors readMoments: a read over store/, the only DB-handle holder;
+ * an unknown workspace is an empty list, not an error.
+ */
+function readContextPackets(store: WorkspaceRegistry, url: URL): ContextPacket[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const sessionId = url.searchParams.get('session')
+  const from = url.searchParams.get('from')
+  const to = url.searchParams.get('to')
+  const entityId = url.searchParams.get('entity')
+  return store.listContextPackets(workspaceId, {
+    ...(sessionId !== null ? { sessionId } : {}),
+    ...(from !== null ? { from } : {}),
+    ...(to !== null ? { to } : {}),
+    ...(entityId !== null ? { entityId } : {}),
+    ...(url.searchParams.get('superseded') === 'true' ? { includeSuperseded: true } : {}),
+  })
+}
+
+/**
+ * Run the deterministic ContextPacket builder (#176) over one session's stored observations and persist
+ * what it appends. The response is the APPENDED packets only — an empty array is the honest idempotent
+ * no-op (same observations ⇒ same packets ⇒ nothing written), and a late/out-of-order observation shows
+ * up as a new supersession revision, never a mutation. Route decides, store moves (the DB-handle rule):
+ * unknown workspace/session are the caller's error (404), never silently built into empty packets.
+ */
+async function buildPackets(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('BuildContextPacketsRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid BuildContextPacketsRequest', details: errors })
+  const { workspaceId, sessionId } = body as BuildContextPacketsRequest
+  if (!ctx.store.all().some((ws) => ws.id === workspaceId)) return send(res, 404, { error: `no such workspace: ${workspaceId}` })
+  const session = ctx.store.getSession(workspaceId, sessionId)
+  if (!session) return send(res, 404, { error: `no session ${sessionId} in workspace ${workspaceId}` })
+  const result = buildContextPackets({
+    workspaceId,
+    sessionId,
+    session,
+    sttSegments: ctx.store.listSttSegments(workspaceId, sessionId),
+    ocrResults: ctx.store.listOcrResults(workspaceId, sessionId),
+    moments: ctx.store.listMoments(workspaceId, sessionId),
+    entities: ctx.store.listEntities(workspaceId),
+    existing: ctx.store.listContextPackets(workspaceId, { sessionId, includeSuperseded: true }),
+  })
+  for (const packet of result.created) ctx.store.saveContextPacket(packet)
+  if (result.created.length > 0) {
+    ctx.log(`context packets: appended ${result.created.length} for session ${sessionId} (${result.unchanged.length} unchanged)`)
+  }
+  send(res, 200, result.created)
 }
 
 /**

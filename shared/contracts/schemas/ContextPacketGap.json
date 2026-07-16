@@ -1,0 +1,40 @@
+{
+  "$id": "ContextPacketGap",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "lane",
+    "reason"
+  ],
+  "properties": {
+    "lane": {
+      "description": "the physical sense lane that is missing from this window",
+      "anyOf": [
+        {
+          "const": "mic",
+          "type": "string"
+        },
+        {
+          "const": "system-audio",
+          "type": "string"
+        },
+        {
+          "const": "screen",
+          "type": "string"
+        }
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "const": "no-observations-this-session",
+          "type": "string"
+        },
+        {
+          "const": "no-observations-in-window",
+          "type": "string"
+        }
+      ]
+    }
+  }
+}
