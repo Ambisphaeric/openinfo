@@ -1,0 +1,20 @@
+{
+  "$id": "ContextPacketProvenance",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "builder",
+    "windowMs"
+  ],
+  "properties": {
+    "builder": {
+      "const": "deterministic-correlation",
+      "type": "string"
+    },
+    "windowMs": {
+      "minimum": 1,
+      "description": "the correlation window length this packet was bucketed with",
+      "type": "integer"
+    }
+  }
+}

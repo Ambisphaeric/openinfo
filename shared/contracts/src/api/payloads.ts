@@ -514,6 +514,22 @@ export const RerouteRequest = Type.Object(
 export type RerouteRequest = Static<typeof RerouteRequest>
 
 /**
+ * The body of `POST /context/packets/build` (#176) — run the deterministic ContextPacket builder over
+ * ONE session's stored observations. The caller names only the scope; every packet field (ids, windows,
+ * refs, revisions, timestamps) is engine-derived from the stored records — the caller invents nothing,
+ * mirroring RerouteRequest's precedent. The response is the packets this run APPENDED (an empty array is
+ * the honest idempotent no-op: nothing changed, so nothing was written).
+ */
+export const BuildContextPacketsRequest = Type.Object(
+  {
+    workspaceId: Id,
+    sessionId: Id,
+  },
+  { $id: 'BuildContextPacketsRequest', additionalProperties: false },
+)
+export type BuildContextPacketsRequest = Static<typeof BuildContextPacketsRequest>
+
+/**
  * The body of `POST /fabric/profiles/:id/clone` — the new profile's id (+ optional name). Cloning is
  * copying a document (ARCHITECTURE §2/§8): the engine reads the source profile, restamps id/name/
  * version, and writes a fresh document. Kept as a route (not client GET+PUT) so a clone is atomic.

@@ -1,0 +1,33 @@
+{
+  "id": "cp-9c1f4a2b7d3e5f60718293a4b5c6d7e8",
+  "workspaceId": "workspace-synthetic",
+  "sessionId": "session-synthetic",
+  "windowStart": "2026-07-12T13:00:00.000Z",
+  "windowEnd": "2026-07-12T13:01:00.000Z",
+  "microphone": [
+    { "record": "stt-segment", "id": "stt-mic-0001", "at": "2026-07-12T13:00:00.000Z" }
+  ],
+  "systemAudio": [
+    { "record": "stt-segment", "id": "stt-system-0001", "at": "2026-07-12T13:00:01.000Z" }
+  ],
+  "screen": [
+    { "record": "ocr-result", "id": "ocr-0001", "at": "2026-07-12T13:00:02.000Z" }
+  ],
+  "focus": [
+    { "kind": "window", "detail": "app: Code", "weight": 0.6 }
+  ],
+  "candidates": [
+    {
+      "entityId": "ent-pidev",
+      "name": "pi.dev",
+      "momentRefs": ["moment-0001"],
+      "seenOnScreen": { "ocrId": "ocr-0001", "form": "pi.dev", "similarity": 0.92 }
+    }
+  ],
+  "gaps": [],
+  "confidence": 0.9,
+  "provenance": { "builder": "deterministic-correlation", "windowMs": 60000 },
+  "revision": 1,
+  "schemaVersion": 1,
+  "createdAt": "2026-07-12T13:00:03.000Z"
+}

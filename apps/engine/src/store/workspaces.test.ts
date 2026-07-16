@@ -732,3 +732,132 @@ test('#116: moveSession carries the stt segments with the session (source identi
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+const packetFixture = (over: Partial<import('@openinfo/contracts').ContextPacket> = {}): import('@openinfo/contracts').ContextPacket => ({
+  id: 'cp-a1',
+  workspaceId: 'default',
+  sessionId: 'ses-p',
+  windowStart: '2026-07-12T13:00:00.000Z',
+  windowEnd: '2026-07-12T13:01:00.000Z',
+  microphone: [{ record: 'stt-segment', id: 'stt-1', at: '2026-07-12T13:00:00.000Z' }],
+  systemAudio: [],
+  screen: [],
+  candidates: [],
+  gaps: [
+    { lane: 'system-audio', reason: 'no-observations-this-session' },
+    { lane: 'screen', reason: 'no-observations-this-session' },
+  ],
+  confidence: 0.4,
+  provenance: { builder: 'deterministic-correlation', windowMs: 60000 },
+  revision: 1,
+  schemaVersion: 1,
+  createdAt: '2026-07-12T13:01:00.000Z',
+  ...over,
+})
+
+test('#176: context packets round-trip, resolve supersession, and answer all four query axes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-packets-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    // Window 1's append-only chain: v1 (partial) superseded by v2 (the late screen ref arrived).
+    const v1 = packetFixture()
+    const v2 = packetFixture({
+      id: 'cp-a2',
+      screen: [{ record: 'ocr-result', id: 'ocr-1', at: '2026-07-12T13:00:02.000Z' }],
+      candidates: [{ entityId: 'ent-pidev', name: 'pi.dev', momentRefs: ['m-1'] }],
+      gaps: [{ lane: 'system-audio', reason: 'no-observations-this-session' }],
+      confidence: 0.7,
+      revision: 2,
+      supersedes: 'cp-a1',
+      createdAt: '2026-07-12T13:02:00.000Z',
+    })
+    // Window 2, another session.
+    const other = packetFixture({
+      id: 'cp-b1',
+      sessionId: 'ses-q',
+      windowStart: '2026-07-12T14:00:00.000Z',
+      windowEnd: '2026-07-12T14:01:00.000Z',
+      microphone: [{ record: 'stt-segment', id: 'stt-9', at: '2026-07-12T14:00:00.000Z' }],
+      createdAt: '2026-07-12T14:01:00.000Z',
+    })
+    registry.saveContextPacket(v1)
+    registry.saveContextPacket(v2)
+    registry.saveContextPacket(other)
+
+    // Default read: live chain heads only — the superseded v1 stays retrievable, not presented as live.
+    assert.deepEqual(registry.listContextPackets('default').map((p) => p.id), ['cp-a2', 'cp-b1'])
+    assert.deepEqual(
+      registry.listContextPackets('default', { includeSuperseded: true }).map((p) => p.id),
+      ['cp-a1', 'cp-a2', 'cp-b1'],
+      'history is data — the whole chain is retrievable on request',
+    )
+    // Session axis.
+    assert.deepEqual(registry.listContextPackets('default', { sessionId: 'ses-p' }).map((p) => p.id), ['cp-a2'])
+    // Time axis: window INTERSECTION with [from, to).
+    assert.deepEqual(
+      registry.listContextPackets('default', { from: '2026-07-12T13:00:30.000Z', to: '2026-07-12T13:00:45.000Z' }).map((p) => p.id),
+      ['cp-a2'],
+      'a range inside window 1 finds its live head',
+    )
+    assert.deepEqual(
+      registry.listContextPackets('default', { from: '2026-07-12T13:30:00.000Z' }).map((p) => p.id),
+      ['cp-b1'],
+      'a later range excludes window 1',
+    )
+    // Entity axis.
+    assert.deepEqual(registry.listContextPackets('default', { entityId: 'ent-pidev' }).map((p) => p.id), ['cp-a2'])
+    assert.deepEqual(registry.listContextPackets('default', { entityId: 'ent-none' }), [])
+    // Unknown workspace reads as [] — asking is never an error.
+    assert.deepEqual(registry.listContextPackets('never-made'), [])
+    // The contract gate rejects a malformed packet BEFORE write (savePin's last line of defense).
+    assert.throws(() => registry.saveContextPacket({ ...v1, confidence: 2 } as never))
+    registry.close()
+
+    // Durable: a fresh registry over the same dir reads the same chain (persisted, not in-memory).
+    const reopened = new WorkspaceRegistry(dir)
+    assert.deepEqual(reopened.listContextPackets('default').map((p) => p.id), ['cp-a2', 'cp-b1'])
+    reopened.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#176: a filtered read never presents a superseded packet as live when its successor falls outside the filter', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-packets-filter-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.saveContextPacket(packetFixture({ candidates: [{ entityId: 'ent-x', name: 'X', momentRefs: ['m-1'] }] }))
+    // The successor no longer names ent-x — the moment evidence was re-read differently on the late rebuild.
+    registry.saveContextPacket(packetFixture({ id: 'cp-a2', revision: 2, supersedes: 'cp-a1', candidates: [] }))
+    // An entity-filtered read matches only the SUPERSEDED v1 — it must not resurrect as live.
+    assert.deepEqual(registry.listContextPackets('default', { entityId: 'ent-x' }), [])
+    assert.deepEqual(
+      registry.listContextPackets('default', { entityId: 'ent-x', includeSuperseded: true }).map((p) => p.id),
+      ['cp-a1'],
+      'history remains reachable when history is asked for',
+    )
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#176: moveSession carries the whole append-only packet chain with the session', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-packets-move-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.ensureWorkspace({ id: 'sales', name: 'Sales' })
+    registry.saveSession({ id: 'ses-p', workspaceId: 'default', modeId: 'mode-meeting', startedAt: '2026-07-12T13:00:00.000Z', attribution: { evidence: [], confidence: 1 } })
+    registry.saveContextPacket(packetFixture())
+    registry.saveContextPacket(packetFixture({ id: 'cp-a2', revision: 2, supersedes: 'cp-a1', confidence: 0.7, screen: [{ record: 'ocr-result', id: 'ocr-1', at: '2026-07-12T13:00:02.000Z' }], gaps: [{ lane: 'system-audio', reason: 'no-observations-this-session' }] }))
+    registry.moveSession('ses-p', 'default', 'sales')
+    assert.deepEqual(registry.listContextPackets('default', { includeSuperseded: true }), [], 'gone from the source')
+    const moved = registry.listContextPackets('sales', { sessionId: 'ses-p', includeSuperseded: true })
+    assert.deepEqual(moved.map((p) => p.id), ['cp-a1', 'cp-a2'], 'superseded history moves too — never rewritten')
+    assert.ok(moved.every((p) => p.workspaceId === 'sales'), 'workspaceId re-stamped')
+    assert.equal(moved[1]!.supersedes, 'cp-a1', 'the chain link is intact')
+    assert.deepEqual(registry.listContextPackets('sales', { sessionId: 'ses-p' }).map((p) => p.id), ['cp-a2'], 'the live head is still the head')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

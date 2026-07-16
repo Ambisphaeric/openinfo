@@ -5648,3 +5648,55 @@ synchronously on a hydrated-source payload with zero re-queries, and an unhydrat
 repaint, no refetch, and no invented row. No cross-source or cross-scope acceptance was added — the
 existing scope/order/widening rejection tests all still pass unchanged except the one assertion that
 previously pinned the defect itself (a two-lane hydration rejecting its own hydrated source).
+
+## Slice: converge separate senses into inspectable ContextPackets  *(#176 slice 1, 2026-07-16)*
+
+Runtime context now has a first-class converged unit: `ContextPacket`
+(`shared/contracts/src/records/contextPacket.ts`) — a typed, versioned, REFS-ONLY derived record over
+one correlation window of a session. It carries separate `microphone` / `systemAudio` / `screen` ref
+arrays (each ref = record kind + id + observation instant), optional focus/app evidence lifted from the
+Session record's window/repo attribution entries, entity `candidates` (each traceable to its in-window
+moments, plus `seenOnScreen` corroboration evidence when the #74 correlator finds the entity's form in
+an in-window OcrResult — ocrId, matched form, and measured similarity, never a bare boolean), honest
+`gaps` for missing senses (`no-observations-this-session` vs `no-observations-in-window` — a partial
+packet with a machine-readable reason, never a guessed value), a deterministic lane-count confidence
+(0.4/0.7/0.9 — a fixed inspectable map, not a model score), and append-only supersession metadata
+(`revision` + `supersedes`). There is deliberately NO prose field: packet prose is a derived view over
+the refs at read time — persisting it would duplicate ambient content into a second table and detach
+assertions from their sources. Source identity is the non-negotiable invariant: one packet correlates a
+screen observation with BOTH audio lanes without ever merging their attribution, and the contract test
+pins that a ref cannot smuggle content and a packet cannot carry prose.
+
+The builder (`apps/engine/src/index/packets.ts`, `buildContextPackets`) is pure, deterministic engine
+code like the rest of index/: epoch-aligned `windowMs` buckets (default 60s) over stored SttSegments and
+OcrResults by TRUE capture instant (an unparseable timestamp is skipped, never guessed into a window),
+correlation over time + session + foreground context + entity evidence, and packet ids content-derived
+(sha-256 over canonical JSON + chain position). Idempotence and supersession are decided against the
+window's existing chain head by canonical-content equality: identical ⇒ the existing packet is kept
+byte-for-byte (a different clock cannot change a no-op); different (a late/out-of-order observation
+arrived) ⇒ a NEW packet with `revision + 1` and `supersedes` naming the prior, which is never mutated or
+deleted. Determinism is proven over the #32 record/replay harness: `index/packets-replay.test.ts` drives
+the committed synthetic fixture through the real store twice (fresh DB each time, replay clock/id
+factories) and asserts byte-identical packets, plus an in-place rebuild that appends nothing.
+
+Persistence and query live where every record does: `store/workspaces.ts` gains the `context_packets`
+per-workspace table (additive DDL in the open path), `saveContextPacket` (contract-validated,
+insert-or-replace on the content-derived id), and `listContextPackets` with the issue's four query axes —
+workspace, session, time window (intersection), related entity — resolving supersession over the WHOLE
+scope before any filter, so a filtered read can never present a superseded packet as live merely because
+its successor fell outside the filter; `includeSuperseded` keeps the chain reachable (history is data).
+`moveSession` carries the whole chain, superseded revisions included. Over HTTP: GET `/context/packets`
+(auth-consistent with every other read; unknown workspace = empty list) and POST `/context/packets/build`
+(BuildContextPacketsRequest; returns ONLY the appended packets — `[]` is the honest idempotent no-op;
+unknown workspace/session are 404s, never silently built into empty packets). Both are registered in the
+/routes manifest.
+
+Proof: builder unit tests (`index/packets.test.ts` — dual-lane attribution, partial packets + gap
+reasons, candidates + corroboration provenance, focus evidence, idempotence, append-only supersession on
+a late observation, read-order independence, corrupt-timestamp exclusion, session isolation), store tests
+(round-trip + four axes + supersession-vs-filter honesty + moveSession chain carry), the replay
+determinism e2e, and a served route test (`api/context-packets.test.ts`: 401s without/with a wrong
+bearer, 400/404 caller errors, build → idempotent rebuild → late-observation supersession → every query
+axis over HTTP). Deferred to slice 2 (per the issue): the diagnostics surface rendering packet
+membership, exclusions, timing, and confidence. Non-goals honored: no diarization, no durable user
+facts/tasks, no model-written graph edges — no model runs anywhere in this path.

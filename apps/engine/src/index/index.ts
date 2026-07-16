@@ -43,6 +43,13 @@ export {
   type WindowCorrelation,
   type WindowCorrelationInput,
 } from './correlate.js'
+export {
+  buildContextPackets,
+  DEFAULT_PACKET_BUILDER_CONFIG,
+  type PacketBuilderConfig,
+  type PacketBuildInput,
+  type PacketBuildResult,
+} from './packets.js'
 export { mergeCanon, type CanonGroup, type CanonResult } from './canon.js'
 export { relevantNow, type RelevantNowOptions } from './relevant.js'
 export * from './ingest/index.js'

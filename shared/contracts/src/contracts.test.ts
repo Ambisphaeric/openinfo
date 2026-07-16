@@ -17,7 +17,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   ocrInvokeParams: 'OcrInvokeParams', vlmInvokeParams: 'VlmInvokeParams',
   captureChunk: 'CaptureChunk', captureReceipt: 'CaptureReceipt', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', transcriptUpdate: 'TranscriptUpdate', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', ocrResult: 'OcrResult', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity', fieldValue: 'FieldValue',
-  sessionAnnotation: 'SessionAnnotation', sttSegment: 'SttSegment',
+  sessionAnnotation: 'SessionAnnotation', sttSegment: 'SttSegment', contextPacket: 'ContextPacket',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', queryResult: 'QueryResult',
   pin: 'Pin', pinChunk: 'PinChunk', teachSignal: 'TeachSignal', entityCorrection: 'EntityCorrection',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
@@ -47,6 +47,22 @@ test('drift card steps always offer exactly two ways back', () => {
   const mode = JSON.parse(readFileSync(join(examplesDir, 'mode.meeting.json'), 'utf8'))
   const card = mode.drift.chain.find((s: { step: string }) => s.step === 'card')
   assert.equal(card.offer.length, 2)
+})
+
+test('ContextPacket is refs-only and rejects copied prose or content fields (#176)', () => {
+  const packet = JSON.parse(readFileSync(join(examplesDir, 'contextPacket.window.json'), 'utf8'))
+  assert.deepEqual([...Value.Errors(AllSchemas.ContextPacket, packet)], [], 'refs-only packet validates')
+  // A packet must never duplicate observation content into a second table: no prose/text/transcript
+  // field validates, and a ref cannot smuggle content alongside its id.
+  for (const forbidden of ['text', 'prose', 'transcript', 'summary']) {
+    const unsafe = { ...packet, [forbidden]: 'copied ambient content' }
+    assert.ok([...Value.Errors(AllSchemas.ContextPacket, unsafe)].length > 0, `${forbidden} is rejected`)
+  }
+  const smuggling = {
+    ...packet,
+    microphone: [{ record: 'stt-segment', id: 'stt-mic-0001', at: '2026-07-12T13:00:00.000Z', text: 'heard words' }],
+  }
+  assert.ok([...Value.Errors(AllSchemas.ContextPacket, smuggling)].length > 0, 'a ref carrying content is rejected')
 })
 
 test('CaptureReceipt is metadata-only and rejects raw or derived content fields', () => {

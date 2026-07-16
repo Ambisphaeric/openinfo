@@ -1,0 +1,21 @@
+{
+  "$id": "BuildContextPacketsRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "sessionId"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    }
+  }
+}

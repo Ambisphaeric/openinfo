@@ -1,0 +1,59 @@
+{
+  "$id": "ContextPacketCandidate",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "entityId",
+    "name",
+    "momentRefs"
+  ],
+  "properties": {
+    "entityId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "description": "the entity record name at build time — the lookup key stays entityId",
+      "type": "string"
+    },
+    "momentRefs": {
+      "minItems": 1,
+      "description": "in-window moment ids whose refs name this entity",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "description": "opaque identifier",
+        "type": "string"
+      }
+    },
+    "seenOnScreen": {
+      "additionalProperties": false,
+      "description": "cross-source corroboration by an in-window screen observation (#74 correlator)",
+      "type": "object",
+      "required": [
+        "ocrId",
+        "form",
+        "similarity"
+      ],
+      "properties": {
+        "ocrId": {
+          "minLength": 1,
+          "description": "opaque identifier",
+          "type": "string"
+        },
+        "form": {
+          "minLength": 1,
+          "description": "the on-screen surface form that corroborated (evidence, not a secret value)",
+          "type": "string"
+        },
+        "similarity": {
+          "minimum": 0,
+          "maximum": 1,
+          "type": "number"
+        }
+      }
+    }
+  }
+}
