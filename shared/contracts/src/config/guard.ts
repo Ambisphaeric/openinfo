@@ -1,5 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Id, IsoTime } from '../common.js'
+import { EgressDestination, EgressLayer } from './egress.js'
 
 /**
  * The egress GUARD (#63) — a content/PII filter on every hop MARKED egress (content leaving the machine,
@@ -67,6 +68,8 @@ export const GuardVerdict = Type.Object(
     maskedSpanCount: Type.Integer({ minimum: 0, description: 'how many spans were masked (0 for clean/held/unguarded)' }),
     spans: Type.Optional(Type.Array(GuardSpan, { description: 'span descriptors (kind/start/length) — never the raw value; present when spans were flagged' })),
     guardEndpoint: Type.Optional(Type.String({ description: 'the guard endpoint NAME that classified — never a url/secret; absent when no guard ran' })),
+    /** Physical destination of the classifier that actually saw candidate text; v0 records device-local only. */
+    classifierDestination: Type.Optional(EgressDestination),
     reason: Type.String({ minLength: 1, description: 'one-line, human-readable why — safe to surface (no raw value)' }),
   },
   { $id: 'GuardVerdict', additionalProperties: false },
@@ -94,20 +97,23 @@ export const GuardPolicy = Type.Object(
 )
 export type GuardPolicy = Static<typeof GuardPolicy>
 
-/** A held hop's lifecycle: `held` until the user resolves it; `released` (let it proceed) or `denied` (dropped). */
+/**
+ * A held hop's lifecycle. `released` is the compatibility wire value for a user APPROVAL of the recorded
+ * attempt; it does not mean the original pass ran. Holds retain metadata only, so v0 cannot replay the
+ * content after approval. `denied` records that the user rejected the attempt.
+ */
 export const GuardHoldStatus = Type.Union(
   ['held', 'released', 'denied'].map((s) => Type.Literal(s)),
-  { $id: 'GuardHoldStatus', description: 'held | released (proceed) | denied (dropped)' },
+  { $id: 'GuardHoldStatus', description: 'held | released (approved, original attempt not rerun) | denied' },
 )
 export type GuardHoldStatus = Static<typeof GuardHoldStatus>
 
 /**
  * A SUSPENDED egress hop (hold-and-surface, or a fail-closed empty slot) — the durable audit record of a
  * block, carrying the verdict (with span-level detail, never the raw value) so a held verdict IS in the
- * audit trail. Surfaces in the ledger with a release/deny affordance; the release/deny HTTP action flips
- * `status`. v0 records the hold + surfaces it + resolves status; automatically re-driving the exact held
- * pass on release is deferred (see PHASE4-NOTES) — the raw content is NOT retained (fail-closed: nothing
- * leaked), only the verdict descriptor.
+ * audit trail. Surfaces in the ledger with an approve/deny affordance; the compatibility HTTP action
+ * `release` records approval by flipping `status`. v0 does NOT re-drive the held pass after approval: raw
+ * content is not retained (fail-closed: nothing leaked), only the verdict descriptor.
  */
 export const GuardHold = Type.Object(
   {
@@ -115,6 +121,38 @@ export const GuardHold = Type.Object(
     workspaceId: Id,
     sessionId: Type.Optional(Id),
     stage: Type.String({ minLength: 1, description: "the pipeline stage that was held (e.g. 'distill')" }),
+    // #116: the correlation id of the pipeline pass that was suspended — a held window produced no
+    // distillate, so this (plus sourceChunks below) is how the audit trail reaches the hold from its
+    // input. Append-only/optional: holds predating #116 omit both.
+    spanId: Type.Optional(Id),
+    sourceChunks: Type.Optional(Type.Array(Id, { description: 'capture chunk ids of the held window — the parent link a trace walks; ids only, never content' })),
+    /** Safe intended-target metadata. Endpoint/model names and destination class only; never URL/body. */
+    target: Type.Optional(
+      Type.Object(
+        {
+          endpoint: Type.String({ minLength: 1 }),
+          model: Type.Optional(Type.String()),
+          destination: Type.Optional(EgressDestination),
+          /** Absent means the guard stopped the hop before target invocation. */
+          delivery: Type.Optional(
+            Type.Union([Type.Literal('possible'), Type.Literal('confirmed')], {
+              description: 'possible = transport failed after write may have begun; confirmed = an HTTP peer answered',
+            }),
+          ),
+          failureClass: Type.Optional(Type.String({ minLength: 1, description: 'safe failure taxonomy label; never response body' })),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    /** Content-side consent that governed the suspended target attempt. */
+    consent: Type.Optional(
+      Type.Object(
+        { allowed: Type.Boolean(), decidedBy: EgressLayer, reason: Type.String({ minLength: 1 }) },
+        { additionalProperties: false },
+      ),
+    ),
+    /** Physical destination of the classifier that saw raw candidate text, when one answered. */
+    classifierDestination: Type.Optional(EgressDestination),
     verdict: GuardVerdict,
     status: GuardHoldStatus,
     createdAt: IsoTime,

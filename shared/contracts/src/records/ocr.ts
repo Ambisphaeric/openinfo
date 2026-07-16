@@ -55,6 +55,9 @@ export const OcrResult = Type.Object(
     sessionId: Id,
     workspaceId: Id,
     sourceChunks: Type.Array(Id, { description: 'screen CaptureChunk ids understood in this pass' }),
+    // #116: the correlation id of the screen-understanding pass — shared with the mirror Distillate the
+    // same pass persists, so the pair reads as ONE pass. Append-only/optional: records predating #116 omit it.
+    spanId: Type.Optional(Id),
     text: Type.String({ description: 'the recognized text — flattened join of blocks (ocr) or the VLM prose' }),
     blocks: Type.Optional(
       Type.Array(OcrBlock, { description: 'per-region boxes+confidence; present for a region-aware (ocr) runtime, absent for a vlm' }),

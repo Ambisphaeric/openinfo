@@ -83,6 +83,64 @@ test('active-preset: wired seam with no selection is empty; with a ref it is inj
   assert.equal(report(withPreset.reports, 'active-preset').status, 'included')
   assert.match(withPreset.contextText, /Voice\/register — Terse:/)
   assert.match(withPreset.contextText, /Be very terse\./)
+
+  const denied = assembleChatContext([{ kind: 'active-preset' }], {
+    ...bare,
+    activePreset: { available: true, ref: { label: 'Private', text: 'Keep this local.', neverEgress: true } },
+  })
+  assert.equal(denied.promptNeverEgress, true, 'a contributing preset carries its prompt-level deny')
+  const blankDenied = assembleChatContext([{ kind: 'active-preset' }], {
+    ...bare,
+    activePreset: { available: true, ref: { label: 'Blank', text: '   ', neverEgress: true } },
+  })
+  assert.equal(blankDenied.promptNeverEgress, false, 'an empty preset contributed no text and cannot govern the hop')
+})
+
+test('composite privacy derives only from sources that actually survive declaration caps', () => {
+  const screenInsight = { text: 'OCR invoice', contentClass: 'screen' as const }
+  const transcriptInsight = { text: 'spoken recap', contentClass: 'transcript' as const }
+  assert.equal(
+    assembleChatContext([{ kind: 'insights', limit: 1 }], { ...bare, insights: [screenInsight, transcriptInsight] }).containsScreenDerived,
+    false,
+    'the older screen insight was capped out',
+  )
+  assert.equal(
+    assembleChatContext([{ kind: 'insights', limit: 2 }], { ...bare, insights: [screenInsight, transcriptInsight] }).containsScreenDerived,
+    true,
+  )
+  assert.equal(
+    assembleChatContext([{ kind: 'insights' }], { ...bare, insights: ['legacy insight with no retained lineage'] }).containsScreenDerived,
+    true,
+    'legacy string lineage is unknown, so it is conservatively screen-derived',
+  )
+  const transcriptOnly = assembleChatContext([{ kind: 'insights' }], { ...bare, insights: [transcriptInsight] })
+  assert.equal(transcriptOnly.containsScreenDerived, false)
+  assert.equal(transcriptOnly.containsTranscriptDerived, true)
+  const transcriptAssistant = assembleChatContext([{ kind: 'recent-turns' }], {
+    ...bare,
+    recentTurns: [{ role: 'assistant', content: 'spoken-material answer', contentClass: 'transcript' }],
+  })
+  assert.equal(transcriptAssistant.containsScreenDerived, false, 'explicit server-stamped transcript lineage is not unknown')
+  assert.equal(transcriptAssistant.containsTranscriptDerived, true)
+
+  const turns = [
+    { role: 'assistant' as const, content: 'screen-derived answer', contentClass: 'screen' as const },
+    { role: 'user' as const, content: 'typed follow-up', contentClass: 'typed' as const },
+  ]
+  assert.equal(assembleChatContext([{ kind: 'recent-turns', limit: 1 }], { ...bare, recentTurns: turns }).containsScreenDerived, false)
+  assert.equal(assembleChatContext([{ kind: 'recent-turns', limit: 2 }], { ...bare, recentTurns: turns }).containsScreenDerived, true)
+
+  const seen = entity('SeenOnly', 'topic')
+  seen.entity.sightings = [{ via: 'seen', at: '2026-07-10T14:00:00Z' }]
+  assert.equal(
+    assembleChatContext([{ kind: 'relevant-entities', limit: 1 }], { ...bare, entities: [entity('Heard', 'topic'), seen] }).containsScreenDerived,
+    false,
+    'screen-only entity was capped out',
+  )
+  assert.equal(
+    assembleChatContext([{ kind: 'relevant-entities', limit: 2 }], { ...bare, entities: [entity('Heard', 'topic'), seen] }).containsScreenDerived,
+    true,
+  )
 })
 
 test('limit caps item count and reports capped with the honest of-count', () => {
@@ -250,6 +308,7 @@ test('Ask face `screen` source: the four honest states (no frame / unreadable / 
   assert.equal(rep.status, 'capped')
   assert.match(out.contextText, /On the user's screen right now \(read at send\):\nINVOICE #42/)
   assert.ok(out.truncated, 'a capped screen source flips the honest truncated flag')
+  assert.equal(out.containsScreenDerived, true)
   // Within budget ⇒ included, whole text.
   const short = assembleChatContext([{ kind: 'screen' }], { ...bare, screen: { attempted: true, text: 'a tiny toolbar' } })
   assert.equal(report(short.reports, 'screen').status, 'included')

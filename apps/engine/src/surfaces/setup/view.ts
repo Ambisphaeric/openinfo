@@ -92,6 +92,13 @@ export interface SetupData {
    * the Audit-ledger section, rendered as held rows with a release/deny affordance. Absent ⇒ none held.
    */
   guardHolds?: import('@openinfo/contracts').GuardHold[]
+  /**
+   * The Trace section's data (#116) — the selectable inputs (recent utterance segments + screen captures)
+   * and, when one is selected, its walked trail. Assembled by the settings route ONLY when that section is
+   * active (the ledger's read discipline); an assembly failure lands here as `problem` so the page shows
+   * the true reason as text, never a blank. Absent ⇒ the section renders its unavailable state.
+   */
+  trace?: import('../settings/sections/trace.js').TraceData
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */

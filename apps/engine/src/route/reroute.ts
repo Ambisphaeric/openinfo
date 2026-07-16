@@ -22,10 +22,10 @@ export type RerouteResult =
  *    DB), and moving it would race the drain writing into a workspace the session just left. End it,
  *    then reroute — the correction loop corrects a completed span.
  *
- * On success the store moves the records + stamps reroutedFrom; here we APPEND a `manual`
- * attribution-evidence entry ("rerouted by user") rather than replacing history — the original
- * (router) evidence is preserved so the teaching loop can later read "router said X, user corrected
- * to Y". Confidence becomes 1.0: a manual correction is the authoritative attribution.
+ * On success the store moves the records, stamps reroutedFrom, and APPENDS a `manual` attribution-
+ * evidence entry ("rerouted by user") in the same durable destination write. Keeping that correction
+ * inside the move means a crash after the store returns cannot strand a moved session without its
+ * authoritative evidence. The original router trail remains intact and confidence becomes 1.0.
  */
 export function rerouteSession(store: WorkspaceRegistry, sessionId: string, toWorkspaceId: string): RerouteResult {
   const session = store.findSession(sessionId)
@@ -35,13 +35,5 @@ export function rerouteSession(store: WorkspaceRegistry, sessionId: string, toWo
   if (!store.all().some((ws) => ws.id === toWorkspaceId)) return { status: 400, error: `no such workspace: ${toWorkspaceId}` }
   if (session.endedAt === undefined) return { status: 409, error: `end session ${sessionId} before rerouting (v0 reroutes ended sessions only)` }
 
-  const moved = store.moveSession(sessionId, fromWorkspaceId, toWorkspaceId)
-  const attributed: Session = {
-    ...moved,
-    attribution: {
-      evidence: [...moved.attribution.evidence, { kind: 'manual', detail: `rerouted from workspace ${fromWorkspaceId} by user`, weight: 1 }],
-      confidence: 1,
-    },
-  }
-  return { status: 200, session: store.saveSession(attributed) }
+  return { status: 200, session: store.moveSession(sessionId, fromWorkspaceId, toWorkspaceId) }
 }

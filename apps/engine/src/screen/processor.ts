@@ -14,6 +14,7 @@ import type {
 import { DISTILLATE_SCHEMA_VERSION, OCR_RESULT_SCHEMA_VERSION } from '@openinfo/contracts'
 import {
   FabricDocuments,
+  GuardHeldError,
   invokeOcr,
   invokeVlm,
   describeInvokeFailure,
@@ -64,6 +65,14 @@ export interface ScreenOcrProcessorDeps {
    * the existing `ocr.completed` path as its one canonical signal; this seam reports only blank/failed.
    */
   reportProcessingOutcome?: (outcome: ScreenProcessingOutcome) => void | Promise<void>
+  /** Persist/surface metadata-only privacy holds for failed device-boundary frame deliveries. */
+  onHeld?: (chunk: CaptureChunk, error: GuardHeldError) => void | Promise<void>
+  /**
+   * Whether this exact source frame already produced a durable screen hold. Holds are terminal in v0:
+   * approval records intent but does not replay raw content, so queue retries must consume the frame
+   * without sending it across the device boundary again.
+   */
+  hasTerminalHold?: (chunk: CaptureChunk) => boolean
   now?: () => Date
   newId?: () => string
   log?: (message: string) => void
@@ -110,6 +119,8 @@ export class ScreenOcrProcessor {
   private readonly publishDistillate: ((d: Distillate) => void | Promise<void>) | undefined
   private readonly publishOcr: ((r: OcrResult) => void | Promise<void>) | undefined
   private readonly reportProcessingOutcome: ((outcome: ScreenProcessingOutcome) => void | Promise<void>) | undefined
+  private readonly onHeld: ((chunk: CaptureChunk, error: GuardHeldError) => void | Promise<void>) | undefined
+  private readonly hasTerminalHold: ((chunk: CaptureChunk) => boolean) | undefined
   private readonly now: () => Date
   private readonly newId: () => string
   private readonly log: (message: string) => void
@@ -129,6 +140,8 @@ export class ScreenOcrProcessor {
     this.publishDistillate = deps.publishDistillate
     this.publishOcr = deps.publishOcr
     this.reportProcessingOutcome = deps.reportProcessingOutcome
+    this.onHeld = deps.onHeld
+    this.hasTerminalHold = deps.hasTerminalHold
     this.now = deps.now ?? (() => new Date())
     this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
@@ -150,6 +163,14 @@ export class ScreenOcrProcessor {
       // application/json, encoding utf8) — skip it. Only image/* chunks carry a frame to recognize.
       if (!chunk.contentType.startsWith('image/')) {
         this.counts.skipped++
+        return
+      }
+      if (this.hasTerminalHold?.(chunk)) {
+        this.log(`screen frame ${chunk.id} already has a terminal privacy hold; legacy retry skipped`)
+        return
+      }
+      if (this.hasBlankCheckpoint(chunk)) {
+        this.log(`screen frame ${chunk.id} already has a durable blank checkpoint; legacy retry skipped`)
         return
       }
       await this.recognize(chunk)
@@ -209,6 +230,17 @@ export class ScreenOcrProcessor {
         continue
       }
       try {
+        // A durable privacy hold is terminal for this raw source in v0. The original payload is not
+        // retained/replayed after approval, and a queue retry must not silently resend it before review.
+        // Returning normally lets the queue consume its raw file after the first held attempt.
+        if (this.hasTerminalHold?.(chunk)) {
+          this.log(`screen frame ${chunk.id} already has a terminal privacy hold; workflow retry consumed without invoke`)
+          continue
+        }
+        if (this.hasBlankCheckpoint(chunk)) {
+          this.log(`screen frame ${chunk.id} already has a durable blank checkpoint; workflow retry skipped`)
+          continue
+        }
         // A queue retries its whole per-session file. Earlier frames in a partially successful batch already
         // own a complete record pair and must not be invoked or persisted a second time on that retry.
         if (this.hasPersistedPair(chunk)) {
@@ -227,6 +259,7 @@ export class ScreenOcrProcessor {
         }
         const result = await this.invokeSlot(slot, chunk, prompt) // throws PROPAGATE → the drain re-queues
         if (result.text.trim() === '') {
+          this.persistBlankCheckpoint(chunk, result)
           this.counts.blank++
           await this.reportOutcome(chunk, 'blank')
           this.log(`screen frame ${chunk.id} recognized as blank (no text) [${slot}]`)
@@ -243,6 +276,7 @@ export class ScreenOcrProcessor {
         // original rejection so retry/classification semantics remain unchanged. Reporter errors are
         // swallowed inside reportOutcome and therefore can never replace this error.
         this.counts.failed++
+        if (error instanceof GuardHeldError) await this.onHeld?.(chunk, error)
         await this.reportOutcome(chunk, 'failed')
         throw error
       }
@@ -265,6 +299,7 @@ export class ScreenOcrProcessor {
       result = await this.invoke({ image: chunk.data, contentType: chunk.contentType as ScreenContentType }, this.invokeOptions())
     } catch (error) {
       this.counts.failed++
+      if (error instanceof GuardHeldError) await this.onHeld?.(chunk, error)
       this.recordFailure(error)
       await this.reportOutcome(chunk, 'failed')
       this.log(`screen ocr failed on frame ${chunk.id}: ${message(error)}`)
@@ -274,6 +309,7 @@ export class ScreenOcrProcessor {
     // A blank frame (no recognized text) is a normal outcome, not an error — persist NEITHER record
     // (nothing to say) but count it so status is honest about how many frames were seen.
     if (result.text.trim() === '') {
+      this.persistBlankCheckpoint(chunk, result)
       this.counts.blank++
       await this.reportOutcome(chunk, 'blank')
       this.log(`screen frame ${chunk.id} recognized as blank (no text)`)
@@ -342,6 +378,39 @@ export class ScreenOcrProcessor {
     return pair.ocr !== undefined && pair.distillate !== undefined
   }
 
+  /** A blank invoke has no text mirror, but its real successful boundary call must still be terminal. */
+  private hasBlankCheckpoint(chunk: CaptureChunk): boolean {
+    return this.persistedPair(chunk).ocr?.text.trim() === ''
+  }
+
+  /**
+   * Persist a metadata/provenance-only blank OcrResult as the durable source checkpoint. It deliberately
+   * has no mirror Distillate and is never published as recognized text. Without it, a later held sibling
+   * would requeue the mixed raw-frame file and send this successfully processed frame a second time.
+   */
+  private persistBlankCheckpoint(chunk: CaptureChunk, result: ScreenTextResult): void {
+    if (this.hasBlankCheckpoint(chunk)) return
+    const createdAt = this.now().toISOString()
+    this.store.saveOcrResult({
+      id: this.newId(),
+      sessionId: chunk.sessionId,
+      workspaceId: chunk.workspaceId,
+      sourceChunks: [chunk.id],
+      spanId: this.newId(),
+      text: '',
+      provenance: {
+        slot: result.slot,
+        endpoint: result.endpoint,
+        ...(result.model !== undefined ? { model: result.model } : {}),
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        ...(result.egress !== undefined ? { egress: result.egress } : {}),
+      },
+      schemaVersion: OCR_RESULT_SCHEMA_VERSION,
+      createdAt,
+      capturedAt: chunk.capturedAt,
+    })
+  }
+
   /** Publish a complete canonical pair already committed for this source chunk. */
   private async publishPersistedPair(chunk: CaptureChunk): Promise<void> {
     const pair = this.persistedPair(chunk)
@@ -392,11 +461,15 @@ export class ScreenOcrProcessor {
     // blocks from a later retry whose text/model may differ from the committed recognition.
     const blocks = existing.distillate === undefined ? result.blocks : undefined
 
+    // #116: ONE correlation id per screen pass, shared by the OcrResult and its mirror Distillate so the
+    // pair reads as one pass. On a repair/replay the surviving half's spanId wins (never re-minted apart).
+    const spanId = existing.ocr?.spanId ?? existing.distillate?.spanId ?? this.newId()
     const ocr: OcrResult = existing.ocr ?? {
       id: this.newId(),
       sessionId: chunk.sessionId,
       workspaceId: chunk.workspaceId,
       sourceChunks: [chunk.id],
+      spanId,
       text,
       ...(blocks !== undefined ? { blocks } : {}),
       provenance,
@@ -414,6 +487,7 @@ export class ScreenOcrProcessor {
         windowStart: capturedAt,
         windowEnd: capturedAt,
         sourceChunks: [chunk.id],
+        spanId,
         text: text.trim(),
         voice: { scope: 'global', dials: NEUTRAL_DIALS },
         provenance,

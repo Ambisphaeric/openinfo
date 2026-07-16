@@ -1,0 +1,26 @@
+{
+  "id": "stt-000001",
+  "workspaceId": "default",
+  "sessionId": "ses-000001",
+  "chunkId": "cap-000042",
+  "spanId": "span-000007",
+  "source": "mic",
+  "capturedAt": "2026-07-12T12:00:00.000Z",
+  "processedAt": "2026-07-12T12:00:01.250Z",
+  "textChars": 118,
+  "provenance": {
+    "slot": "stt",
+    "endpoint": "whisper-box",
+    "model": "whisper-large-v3",
+    "durationMs": 940,
+    "egress": {
+      "reach": "local",
+      "allowed": true,
+      "decidedBy": "content-class",
+      "reason": "transcript-class content resolved to a local endpoint",
+      "destination": "device-local"
+    }
+  },
+  "schemaVersion": 1,
+  "createdAt": "2026-07-12T12:00:01.250Z"
+}

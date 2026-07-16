@@ -1,5 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Confidence, Id, IsoTime, SlotName } from '../common.js'
+import { Confidence, Id, IsoTime, SlotName, InvokeUsage } from '../common.js'
+import { EgressDecision } from '../config/egress.js'
+import { GuardVerdict } from '../config/guard.js'
 
 export const EntityKind = Type.Union(['person', 'artifact', 'topic'].map((k) => Type.Literal(k)))
 
@@ -126,6 +128,12 @@ export const EntityProvenance = Type.Object(
     slot: SlotName,
     endpoint: Type.String({ minLength: 1, description: 'fabric endpoint name that produced this mention' }),
     model: Type.Optional(Type.String()),
+    usage: Type.Optional(InvokeUsage),
+    egress: Type.Optional(EgressDecision),
+    guard: Type.Optional(GuardVerdict),
+    // #116: the correlation id of the pipeline pass this mention was extracted in — shared with the
+    // window's distillate and moments. Append-only/optional: entries predating #116 omit it.
+    spanId: Type.Optional(Id),
   },
   { additionalProperties: false },
 )

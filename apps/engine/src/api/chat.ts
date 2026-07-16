@@ -1,8 +1,8 @@
 import type { ChatBudget, ChatContextSource, ChatReply, ChatRequest, ChatScreenshot, ChatTurn, Fabric, PinChunk, RelevantEntity, TranscriptUpdate } from '@openinfo/contracts'
 import {
+  GuardHeldError,
   invokeLlm,
   resolveEgress,
-  egressDecision,
   type EgressConsent,
   type GuardOptions,
   type LlmMessage,
@@ -92,11 +92,14 @@ export interface ChatDeps {
   relevant(workspaceId: string): RelevantEntity[]
   /** Ephemeral source-tagged transcript records for sessions owned by this workspace. */
   transcript(workspaceId: string): TranscriptUpdate[]
-  insights(workspaceId: string): string[]
+  /** Origin-retaining insight records; legacy string callers are treated as unknown-origin text. */
+  insights(workspaceId: string): GatheredContext['insights']
   pinTitle(workspaceId: string, pinId: string): string | undefined
   pinChunks(workspaceId: string, pinId: string): PinChunk[]
   resolveActivePreset?: ((workspaceId: string) => ActivePresetRef | undefined) | undefined
   workspaceDeniesEgress(workspaceId: string): boolean
+  /** The currently-live session's mode deny bit; false/absent when no live session governs the turn. */
+  modeDeniesEgress?: ((workspaceId: string) => boolean) | undefined
   guard?: GuardOptions | undefined
   resolveKey: SecretResolver
   runtimeManager: LocalRuntimeManager
@@ -134,7 +137,9 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
 
   // Ask face `screen` source: read the shipped frame into text through the seam (ocr/vlm under `screen`
   // consent, route-owned). Three honest states for the assembler — no frame / unreadable / text in hand.
-  // A read failure NEVER fails the turn: the send proceeds without the screen and the note says so.
+  // Ordinary read failures degrade honestly into an unavailable source. A guard hold is different: it
+  // proves a raw-frame device-boundary attempt was suspended or failed after possible delivery, so it must
+  // reach postChat and become a durable hold instead of being erased into assembly accounting.
   const screen: GatheredContext['screen'] =
     request.screenshot === undefined
       ? { attempted: false }
@@ -143,12 +148,22 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
         : await deps
             .screenText(workspaceId, request.screenshot)
             .then((text): GatheredContext['screen'] => ({ attempted: true, text }))
-            .catch((error: unknown): GatheredContext['screen'] => ({ attempted: true, failure: error instanceof Error ? error.message : String(error) }))
+            .catch((error: unknown): GatheredContext['screen'] => {
+              if (error instanceof GuardHeldError) throw error
+              return { attempted: true, failure: error instanceof Error ? error.message : String(error) }
+            })
 
   // Ask-history: the persisted per-workspace thread is the truth when the seam is wired; the request's
   // client-supplied history still counts against a fresh/empty store (never amnesiac mid-conversation).
+  // Client origin fields are not trusted: user text is typed; prior assistant text without server-backed
+  // lineage is conservatively screen-class so a forged `typed` marker cannot open hosted egress.
   const persistedTurns = deps.recentTurns?.(workspaceId) ?? []
-  const recentTurns = persistedTurns.length > 0 ? persistedTurns : (request.history ?? [])
+  const requestTurns = (request.history ?? []).map((turn): ChatTurn => ({
+    role: turn.role,
+    content: turn.content,
+    contentClass: turn.role === 'assistant' ? 'screen' : 'typed',
+  }))
+  const recentTurns = persistedTurns.length > 0 ? persistedTurns : requestTurns
 
   const gathered: GatheredContext = {
     bundlePrompt: deps.bundlePrompt,
@@ -174,10 +189,20 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
   for (const turn of assembled.historyTurns) messages.push({ role: turn.role, content: turn.content })
   messages.push({ role: 'user', content: request.message })
 
-  // Every hop is egress-gated (#64): the chat message is user-`typed` content, which MAY egress unless the
-  // workspace denies. The #63 guard rides alongside when configured — an allowed egress hop is filtered
-  // (redact / hold) before any bytes leave; a hold throws out of invokeLlm and the route surfaces it.
-  const consent: EgressConsent = resolveEgress({ contentClass: 'typed', workspaceDenies: deps.workspaceDeniesEgress(workspaceId) })
+  // Composite origin is derived from what ACTUALLY entered the assembled prompt. Screen text dominates:
+  // a direct screenshot or retained ocr/vlm insight keeps the entire mixed turn off hosted/public targets.
+  // The active preset's deny flag applies only when its nonempty text contributed to this turn.
+  const contentClass = assembled.containsScreenDerived
+    ? 'screen' as const
+    : assembled.containsTranscriptDerived
+      ? 'transcript' as const
+      : 'typed' as const
+  const consent: EgressConsent = resolveEgress({
+    contentClass,
+    promptNeverEgress: assembled.promptNeverEgress,
+    modeDenies: deps.modeDeniesEgress?.(workspaceId),
+    workspaceDenies: deps.workspaceDeniesEgress(workspaceId),
+  })
 
   const result = await invokeLlm(deps.fabric, messages, {
     maxTokens: CHAT_MAX_TOKENS,
@@ -197,8 +222,8 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
     assemblyNote: describeAssembly(assembled.reports),
   })
 
-  const reply: ChatReply = { answer: result.text, citations: assembled.citations, budget }
+  const reply: ChatReply = { answer: result.text, citations: assembled.citations, budget, contentClass }
   if (result.endpoint !== undefined) reply.endpoint = result.endpoint
-  reply.egress = result.egress ?? egressDecision('local', consent, { destination: 'device-local' })
+  if (result.egress !== undefined) reply.egress = result.egress
   return reply
 }

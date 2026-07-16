@@ -5,6 +5,7 @@ import type { Fabric } from '@openinfo/contracts'
 import { defaultFabric } from './document.js'
 import { invokeLlm } from './invoke.js'
 import { resolveEgress } from './egress.js'
+import { GuardHeldError } from './guard.js'
 import { AggregateInvokeError } from './invoke-error.js'
 
 interface FakeServer {
@@ -67,6 +68,45 @@ test('invokeLlm falls through to the next endpoint when the first fails', async 
     assert.equal(result.endpoint, 'live')
   } finally {
     await stop(good)
+  }
+})
+
+test('invokeLlm never hides a delivered hosted failure behind a later local winner', async () => {
+  const hosted = await startFakeLlm('failed after receiving prompt', 500)
+  const local = await startFakeLlm('must not answer')
+  const originalFetch = globalThis.fetch
+  const documentedHosted = `http://llm.egress.test:${new URL(hosted.url).port}`
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (raw.startsWith(documentedHosted)) return originalFetch(`${hosted.url}${raw.slice(documentedHosted.length)}`, init)
+    return originalFetch(input, init)
+  }) as typeof fetch
+  try {
+    const fabric: Fabric = {
+      slots: {
+        ...defaultFabric().slots,
+        llm: [
+          { kind: 'http', name: 'hosted-first', url: documentedHosted, api: 'openai-compat' },
+          { kind: 'http', name: 'local-second', url: local.url, api: 'openai-compat' },
+        ],
+      },
+    }
+    await assert.rejects(
+      () => invokeLlm(fabric, [{ role: 'user', content: 'DELIVERED_HOSTED_SENTINEL' }], { egress: resolveEgress({ contentClass: 'typed' }) }),
+      (error: unknown) => {
+        assert.ok(error instanceof GuardHeldError)
+        assert.equal(error.targetDelivery, 'confirmed')
+        assert.equal(error.targetDestination, 'hosted-public')
+        assert.match(error.message, /received the request but did not complete/)
+        return true
+      },
+    )
+    assert.equal(hosted.requests.length, 1, 'hosted endpoint really received the prompt before failing')
+    assert.equal(local.requests.length, 0, 'no local success can overwrite the hosted delivery fact')
+  } finally {
+    globalThis.fetch = originalFetch
+    await stop(hosted)
+    await stop(local)
   }
 })
 

@@ -1,6 +1,6 @@
 {
   "$id": "GuardHoldStatus",
-  "description": "held | released (proceed) | denied (dropped)",
+  "description": "held | released (approved, original attempt not rerun) | denied",
   "anyOf": [
     {
       "const": "held",

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, Sighting, TodoList, Workspace } from '@openinfo/contracts'
+import type { ChatTurn, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
 import { ChatTurn as ChatTurnSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
@@ -20,6 +20,30 @@ import { resolveDataDir } from './paths.js'
  */
 const CREATE_PROVISIONAL_MARGIN = 0.1
 
+const FIELD_VALUE_KIND = 'field-value'
+const GUARD_HOLDS_KIND = 'guard-holds'
+const SESSION_ANNOTATION_KIND = 'session-annotation'
+const TODO_LIST_KIND = 'todo-list'
+
+interface GuardHoldsDocument {
+  workspaceId: string
+  holds: GuardHold[]
+}
+
+interface HistoricalDocument<T> {
+  key: string
+  version: number
+  body: T
+  createdAt: string
+}
+
+interface HistoricalDocumentRow {
+  key: string
+  version: number
+  body: string
+  created_at: string
+}
+
 /**
  * Normalize an entity name for the v0 resolution match key: trim, lowercase, collapse internal
  * whitespace. Deliberately simple — case/whitespace-insensitive only, no fuzzy or coreference
@@ -27,6 +51,20 @@ const CREATE_PROVISIONAL_MARGIN = 0.1
  * normalization; store owns the match key so it stays decoupled from the (DB-free) extractor.
  */
 const normalizeEntityName = (name: string): string => name.trim().toLowerCase().replace(/\s+/g, ' ')
+
+/**
+ * Reconcile the two lifecycle copies an interrupted cross-workspace move can temporarily expose.
+ * A completed decision always outranks `held`. If the duplicated copies were resolved in opposite
+ * ways, deny wins: the conflict is exceptional, and the only deterministic fail-closed outcome is to
+ * avoid turning an explicit denial into permission. Returning the winning record also preserves its
+ * exact `resolvedAt` rather than manufacturing a new resolution time during recovery.
+ */
+const reconcileMovedGuardHold = (destination: GuardHold, source: GuardHold): GuardHold => {
+  if (destination.status === source.status) return destination
+  if (destination.status === 'held') return source
+  if (source.status === 'held') return destination
+  return destination.status === 'denied' ? destination : source
+}
 
 /**
  * The fields the distiller hands store to merge into a canonical entity record. Ids, timestamps,
@@ -224,6 +262,33 @@ export class WorkspaceRegistry {
       JSON.stringify(result),
     )
     return result
+  }
+
+  /**
+   * Persist one transcribed segment's STT provenance (#116) to its workspace's OWN sqlite file. Mirrors
+   * saveDistillate exactly — session-scoped, workspace created on demand, idempotent per id. The record
+   * carries chunk id / endpoint / timing, never the transcript text (raw transcript stays ephemeral; the
+   * durable text stream is the Distillate). Only this path writes SttSegments (DB-handle hard rule).
+   */
+  saveSttSegment(segment: SttSegment): SttSegment {
+    this.ensureWorkspace({ id: segment.workspaceId, name: segment.workspaceId })
+    const db = this.openWorkspace(segment.workspaceId)
+    db.prepare('insert or replace into stt_segments (id, session_id, created_at, body) values (?, ?, ?, ?)').run(
+      segment.id,
+      segment.sessionId,
+      segment.createdAt,
+      JSON.stringify(segment),
+    )
+    return segment
+  }
+
+  /** List a workspace's STT segments (default all), oldest first; `sessionId` narrows to one session. */
+  listSttSegments(workspaceId: string, sessionId?: string): SttSegment[] {
+    const db = this.openWorkspace(workspaceId)
+    const rows = sessionId
+      ? (db.prepare('select body from stt_segments where session_id = ? order by created_at').all(sessionId) as { body: string }[])
+      : (db.prepare('select body from stt_segments order by created_at').all() as { body: string }[])
+    return rows.map((row) => JSON.parse(row.body) as SttSegment)
   }
 
   /** List a workspace's OcrResults (default all), oldest first; `sessionId` narrows to one session. */
@@ -637,11 +702,13 @@ export class WorkspaceRegistry {
    * (Phase 3, the correction loop the router's mistakes require; IMPLEMENTATION §3 risk register).
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
    *
-   * WHAT MOVES: the session record, its distillates, moments, drafts, and OcrResults (everything keyed
-   * by sessionId). ENTITIES are workspace-level aggregates, not session-keyed, so they are re-aggregated
-   * (see below), never blindly copied.
+   * WHAT MOVES: the session record (with the authoritative manual correction appended atomically), its
+   * distillates, moments, drafts, OcrResults, and SttSegments, plus
+   * the session-scoped document state in _meta.db: complete FieldValue and SessionAnnotation histories,
+   * GuardHolds, and the current TodoList. ENTITIES are workspace-level aggregates, not session-keyed,
+   * so they are re-aggregated (see below), never blindly copied.
    *
-   * CRASH-SAFETY (v0, honest): sqlite transactions are per-file, so a move across two files cannot be
+   * CRASH-SAFETY (v0, honest): sqlite transactions are per-file, so a move across three files cannot be
    * one ACID transaction. The guarantee instead: (1) each per-file mutation is atomic (better-sqlite3
    * `.transaction`); (2) order is destination-writes FIRST, then source-deletes; (3) every step is
    * IDEMPOTENT — entity contributions union/subtract by distillate id (a set), record copies are
@@ -668,7 +735,13 @@ export class WorkspaceRegistry {
     const session = this.getSession(fromWorkspaceId, sessionId)
     if (!session) {
       const dest = this.getSession(toWorkspaceId, sessionId)
-      if (dest && dest.reroutedFrom === fromWorkspaceId) return dest // already moved — idempotent no-op
+      if (dest && dest.reroutedFrom === fromWorkspaceId) {
+        // A crash can land after the source workspace DB was deleted but before the global document
+        // cleanup committed. Re-running the move must therefore converge that final _meta.db phase too.
+        this.copySessionLayoutState(sessionId, fromWorkspaceId, toWorkspaceId)
+        this.removeSessionLayoutSourceState(sessionId, fromWorkspaceId)
+        return dest
+      }
       throw new Error(`moveSession: no session ${sessionId} in workspace ${fromWorkspaceId}`)
     }
     this.ensureWorkspace({ id: toWorkspaceId, name: toWorkspaceId })
@@ -677,6 +750,7 @@ export class WorkspaceRegistry {
     const moments = this.listMoments(fromWorkspaceId, sessionId)
     const drafts = this.listDrafts(fromWorkspaceId, sessionId)
     const ocrResults = this.listOcrResults(fromWorkspaceId, sessionId)
+    const sttSegments = this.listSttSegments(fromWorkspaceId, sessionId)
     const movedDistillateIds = new Set(distillates.map((d) => d.id))
     const movedMomentIds = new Set(moments.map((m) => m.id))
 
@@ -699,7 +773,22 @@ export class WorkspaceRegistry {
       })
     }
 
-    const movedSession: Session = { ...session, workspaceId: toWorkspaceId, reroutedFrom: fromWorkspaceId }
+    // Attribution is part of the destination record written in phase 1, not a route-layer follow-up.
+    // Therefore a crash after this move returns cannot leave a rerouted session without the user's
+    // authoritative correction. A retry while the source copy still exists derives the same destination
+    // body from the unchanged source, so it replaces rather than duplicates this evidence entry.
+    const movedSession: Session = {
+      ...session,
+      workspaceId: toWorkspaceId,
+      reroutedFrom: fromWorkspaceId,
+      attribution: {
+        evidence: [
+          ...session.attribution.evidence,
+          { kind: 'manual', detail: `rerouted from workspace ${fromWorkspaceId} by user`, weight: 1 },
+        ],
+        confidence: 1,
+      },
+    }
 
     // PHASE 1 — destination writes, idempotent, one atomic per-file transaction.
     const toDb = this.openWorkspace(toWorkspaceId)
@@ -723,10 +812,20 @@ export class WorkspaceRegistry {
         const moved: OcrResult = { ...result, workspaceId: toWorkspaceId }
         toDb.prepare('insert or replace into ocr_results (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
       }
+      for (const segment of sttSegments) {
+        const moved: SttSegment = { ...segment, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into stt_segments (id, session_id, created_at, body) values (?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, JSON.stringify(moved))
+      }
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
-    if (opts.stopAfterCopy) return movedSession // test seam: leave the source intact to stage a mid-move crash
+    // _meta.db is a third sqlite file in the move. Copy destination layout state before touching the
+    // source, in one transaction, and preserve the exact audit versions/timestamps of record histories.
+    this.copySessionLayoutState(sessionId, fromWorkspaceId, toWorkspaceId)
+
+    // Test seam: the source workspace DB and source-keyed histories stay intact. The globally keyed todo
+    // has only one current owner, so its copy revision already points at the destination.
+    if (opts.stopAfterCopy) return movedSession
 
     // PHASE 2 — source subtraction + deletes, idempotent, one atomic per-file transaction.
     const fromDb = this.openWorkspace(fromWorkspaceId)
@@ -736,10 +835,152 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from distillates where session_id = ?').run(sessionId)
       fromDb.prepare('delete from drafts where session_id = ?').run(sessionId)
       fromDb.prepare('delete from ocr_results where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from stt_segments where session_id = ?').run(sessionId)
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
+    // Delete only source-owned session state. The TodoList is one globally-keyed document, so its latest
+    // version already names the destination; its earlier source versions remain as editable history.
+    this.removeSessionLayoutSourceState(sessionId, fromWorkspaceId)
+
     return movedSession
+  }
+
+  /**
+   * Copy the session-scoped records that live in the global documents store. Field/annotation rows are
+   * audit histories, so they retain their source version numbers and created_at values under remapped
+   * deterministic keys. Holds and todos are current-state documents and append only when state changes.
+   */
+  private copySessionLayoutState(sessionId: string, fromWorkspaceId: string, toWorkspaceId: string): void {
+    this.metaDb.transaction(() => {
+      const fieldVersions = this.documentHistory<FieldValue>(
+        FIELD_VALUE_KIND,
+        `fv:${fromWorkspaceId}:${sessionId}:`,
+        true,
+      ).filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+      for (const doc of fieldVersions) {
+        const key = `fv:${toWorkspaceId}:${sessionId}:${doc.body.fieldId}`
+        const moved: FieldValue = { ...doc.body, id: key, workspaceId: toWorkspaceId }
+        this.insertHistoricalDocument(FIELD_VALUE_KIND, key, doc.version, moved, doc.createdAt)
+      }
+
+      const annotationVersions = this.documentHistory<SessionAnnotation>(
+        SESSION_ANNOTATION_KIND,
+        `oa:${fromWorkspaceId}:${sessionId}`,
+      ).filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+      for (const doc of annotationVersions) {
+        const key = `oa:${toWorkspaceId}:${sessionId}`
+        const moved: SessionAnnotation = { ...doc.body, id: key, workspaceId: toWorkspaceId }
+        this.insertHistoricalDocument(SESSION_ANNOTATION_KIND, key, doc.version, moved, doc.createdAt)
+      }
+
+      const sourceHolds = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, fromWorkspaceId)?.body.holds ?? []
+      const movedHolds = sourceHolds
+        .filter((hold) => hold.sessionId === sessionId)
+        .map((hold): GuardHold => ({ ...hold, workspaceId: toWorkspaceId }))
+      if (movedHolds.length > 0) {
+        const current = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, toWorkspaceId)?.body.holds ?? []
+        const movedById = new Map(movedHolds.map((hold) => [hold.id, hold]))
+        const currentIds = new Set(current.map((hold) => hold.id))
+        // A user can resolve either visible copy between an interrupted phase 1 and recovery. Reconcile
+        // rather than keeping the destination wholesale: resolved beats held, and a contradictory pair
+        // resolves fail-closed to denied (see reconcileMovedGuardHold).
+        const holds = [
+          ...current.map((hold) => {
+            const source = movedById.get(hold.id)
+            return source === undefined ? hold : reconcileMovedGuardHold(hold, source)
+          }),
+          ...movedHolds.filter((hold) => !currentIds.has(hold.id)),
+        ]
+        const next: GuardHoldsDocument = { workspaceId: toWorkspaceId, holds }
+        const currentDoc = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, toWorkspaceId)?.body
+        if (JSON.stringify(currentDoc) !== JSON.stringify(next)) this.layouts.put(GUARD_HOLDS_KIND, toWorkspaceId, next)
+      }
+
+      const todo = this.layouts.getLatest<TodoList>(TODO_LIST_KIND, sessionId)?.body
+      if (todo !== undefined && todo.sessionId === sessionId) {
+        if (todo.workspaceId === fromWorkspaceId) {
+          const moved: TodoList = { ...todo, workspaceId: toWorkspaceId, version: todo.version + 1 }
+          this.layouts.put(TODO_LIST_KIND, sessionId, moved)
+        } else if (todo.workspaceId !== toWorkspaceId) {
+          throw new Error(
+            `moveSession: to-do ${sessionId} belongs to workspace ${todo.workspaceId}, not ${fromWorkspaceId} or ${toWorkspaceId}`,
+          )
+        }
+      }
+    })()
+  }
+
+  /** Remove source-visible layout state only after both destination copies have committed. */
+  private removeSessionLayoutSourceState(sessionId: string, fromWorkspaceId: string): void {
+    this.metaDb.transaction(() => {
+      const fieldKeys = new Set(
+        this.documentHistory<FieldValue>(FIELD_VALUE_KIND, `fv:${fromWorkspaceId}:${sessionId}:`, true)
+          .filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+          .map((doc) => doc.key),
+      )
+      for (const key of fieldKeys) this.layouts.delete(FIELD_VALUE_KIND, key)
+
+      const annotationKeys = new Set(
+        this.documentHistory<SessionAnnotation>(SESSION_ANNOTATION_KIND, `oa:${fromWorkspaceId}:${sessionId}`)
+          .filter((doc) => doc.body.workspaceId === fromWorkspaceId && doc.body.sessionId === sessionId)
+          .map((doc) => doc.key),
+      )
+      for (const key of annotationKeys) this.layouts.delete(SESSION_ANNOTATION_KIND, key)
+
+      const sourceDoc = this.layouts.getLatest<GuardHoldsDocument>(GUARD_HOLDS_KIND, fromWorkspaceId)?.body
+      if (sourceDoc !== undefined) {
+        const holds = sourceDoc.holds.filter((hold) => hold.sessionId !== sessionId)
+        if (holds.length !== sourceDoc.holds.length) {
+          this.layouts.put(GUARD_HOLDS_KIND, fromWorkspaceId, { workspaceId: fromWorkspaceId, holds })
+        }
+      }
+    })()
+  }
+
+  /**
+   * Read one exact document history (or one deterministic key prefix) without parsing every document of
+   * that kind. A malformed unrelated field/annotation document must not make a healthy session immovable.
+   */
+  private documentHistory<T>(kind: string, key: string, prefix = false): HistoricalDocument<T>[] {
+    const rows = prefix
+      ? (this.metaDb
+          .prepare(
+            `select key, version, body, created_at from documents
+             where kind = ? and substr(key, 1, ?) = ?
+             order by key, version`,
+          )
+          .all(kind, key.length, key) as HistoricalDocumentRow[])
+      : (this.metaDb
+          .prepare(
+            `select key, version, body, created_at from documents
+             where kind = ? and key = ?
+             order by version`,
+          )
+          .all(kind, key) as HistoricalDocumentRow[])
+    return rows.map((row) => ({
+      key: row.key,
+      version: row.version,
+      body: JSON.parse(row.body) as T,
+      createdAt: row.created_at,
+    }))
+  }
+
+  /** Insert one immutable history row exactly once; a same-version mismatch is an integrity failure. */
+  private insertHistoricalDocument<T>(kind: string, key: string, version: number, body: T, createdAt: string): void {
+    const encoded = JSON.stringify(body)
+    const existing = this.metaDb
+      .prepare('select body, created_at from documents where kind = ? and key = ? and version = ?')
+      .get(kind, key, version) as { body: string; created_at: string } | undefined
+    if (existing !== undefined) {
+      if (existing.body !== encoded || existing.created_at !== createdAt) {
+        throw new Error(`moveSession: conflicting ${kind} history at ${key} version ${version}`)
+      }
+      return
+    }
+    this.metaDb
+      .prepare('insert into documents (kind, key, version, body, created_at) values (?, ?, ?, ?, ?)')
+      .run(kind, key, version, encoded, createdAt)
   }
 
   /**
@@ -1097,6 +1338,12 @@ export class WorkspaceRegistry {
     ).run()
     db.prepare(
       'create table if not exists pins (id text primary key, kind text not null, created_at text not null, body text not null)',
+    ).run()
+    // #116: per-transcribed-segment STT provenance — the root a pipeline trace walks from (closes the
+    // disclosed #65 gap: STT invokes persisted no provenance row). Additive `create table if not exists`
+    // in the per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
+    db.prepare(
+      'create table if not exists stt_segments (id text primary key, session_id text not null, created_at text not null, body text not null)',
     ).run()
     db.prepare(
       'create table if not exists pin_chunks (id text primary key, pin_id text not null, ordinal integer not null, page integer, body text not null)',

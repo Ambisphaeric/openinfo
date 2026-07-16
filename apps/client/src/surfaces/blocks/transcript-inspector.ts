@@ -13,12 +13,14 @@ const LABEL = 'Transcription · inspector'
  * per transcript chunk: clock · physical stream · duration · raw text. A physical input is never
  * presented as a speaker identity because one microphone or system stream can contain several people.
  *
- * HONESTY (the whole point): per-chunk stt provenance is NOT recorded anywhere — STT invokes persist no
- * provenance row, unlike DISTILLATE records (the disclosed #65 gap). So the block does NOT stamp a per-chunk
- * endpoint/model it cannot know. Instead it renders the current stt slot as a SEPARATE labelled line
- * ("stt slot · <endpoint> · <model>") and a disclosure line naming the gap and the ring's retention (last N,
- * session-lived, not persisted). Empty is EXPLAINABLE, never silent: no chunks yet ⇒ a "start a session"
- * line; a missing snapshot (the source unwired — only in a unit caller) ⇒ an explainable "unavailable" line.
+ * HONESTY (the whole point): this LIVE snapshot does not carry per-chunk stt provenance — the ring is the
+ * ephemeral fast-path. Since #116 the engine DOES persist a per-segment provenance record (endpoint/model/
+ * timing per transcribed chunk; the old #65 gap is closed), inspectable in Settings → Trace — but this
+ * block still does NOT stamp a per-chunk endpoint/model onto ring rows the snapshot cannot vouch for.
+ * It renders the current stt slot as a SEPARATE labelled line ("stt slot · <endpoint> · <model>") and a
+ * disclosure line pointing at the durable trail plus the ring's retention (last N, session-lived, not
+ * persisted). Empty is EXPLAINABLE, never silent: no chunks yet ⇒ a "start a session" line; a missing
+ * snapshot (the source unwired — only in a unit caller) ⇒ an explainable "unavailable" line.
  */
 const streamLabel = (source: CaptureSource): string =>
   source === 'mic' ? 'Microphone' : source === 'system-audio' ? 'System audio' : source
@@ -49,7 +51,7 @@ const chunkRow = (chunk: TranscriptUpdate): VNode => {
   )
 }
 
-/** The stt slot line — the CURRENT config, explicitly NOT a per-chunk claim (the #65 disclosure follows). */
+/** The stt slot line — the CURRENT config, explicitly NOT a per-chunk claim (per-chunk truth: Settings → Trace, #116). */
 const slotRow = (sttSlot: SttSlotEndpoint[]): VNode => {
   const desc =
     sttSlot.length === 0
@@ -63,7 +65,7 @@ const slotRow = (sttSlot: SttSlotEndpoint[]): VNode => {
       'span',
       { class: 'body' },
       h('span', { class: 'ttl' }, `stt slot · ${desc}`),
-      h('span', { class: 'why' }, 'the current stt slot — NOT which endpoint served each chunk (per-chunk stt provenance is not recorded, #65)'),
+      h('span', { class: 'why' }, 'the current stt slot — NOT which endpoint served each chunk here; each segment’s own record lives in Settings → Trace'),
     ),
   )
 }

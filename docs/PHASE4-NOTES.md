@@ -5483,6 +5483,39 @@ LAN call; the same tests prove untrusted LAN, public, malformed, and wildcard ta
 fetch. The #175 live recipe now requires a real LAN vision endpoint and asserts persisted trusted-LAN
 provenance plus the absence of frame markers, URLs, and credentials from both records and its private report.
 
+## Slice: one input traced through every engine hop to its output  *(#116, 2026-07-14)*
+
+The ledger could list every pass, but an auditor could not pick one utterance and follow it. Two schema
+gaps made that impossible: nothing correlated the records of one pipeline pass, and STT persisted no
+provenance at all (the disclosed #65 gap — an utterance had no ledger identity to trace from). Both close
+additively. Every pass now mints one `spanId` shared by all records it produces — the distiller per merge
+window (distillate + moments + entity mentions + a guard hold), the fast-field fan-out per session batch,
+the judge per review batch, the screen processor per OcrResult/mirror-Distillate pair, the transcribe
+drain per pass — and derived records name their material as ids: `FieldValueProvenance.sourceChunks` ends
+field values' fuzzy time-linkage, and a `GuardHold` carries its held window's chunk ids so a suspended
+window is still reachable from its input. The new `SttSegment` record (one per transcribed chunk, written
+at the `onTranscribed` seam) is the trace root: chunk id, physical lane, capturedAt→processedAt, a measured
+invoke duration, endpoint/model — and deliberately no transcript text, preserving the posture that spoken
+words stay ephemeral until distilled (`textChars` records size, never content).
+
+`buildLedger` folds the other records onto trails instead of new flat rows: a window's moments become one
+aggregated hop on its distill pass, each field value is a pass that gains a judge hop once reviewed, and a
+guard hold renders as a held pass that names the guard endpoint and honestly no model endpoint ("held
+before send" — nothing was sent). Without the new inputs its output is unchanged, so the flat "all passes"
+table keeps working. The new Settings → Diagnostics → Trace section walks one selected input to everything
+recorded from it, with each hop's guard verdict and egress decision alongside; it walks only persisted
+links, and the page says plainly that pre-#116 records cannot be walked. Every state renders text: empty,
+unknown selection, transcribed-but-nothing-downstream-yet, and a failed store read surfaces its true
+reason through the route's try/catch seam (proven by corrupting a record store in the e2e).
+
+The driven e2e goes through the served entry point per the QA rule: a real engine server, fake stt/llm/
+judge model servers on loopback, real `/capture/mic` POSTs through the dual-track drain, then the trace is
+read exactly as a browser would — follow the input link the page itself serves, assert the full heard →
+summarized → moment → field → judge chain plus the honest guard absence and the device-local egress
+decision. The DoD item "pick a real parakeet utterance from a live session" needs the owner's rig and
+stays open; the deterministic replay is the stand-in. Chasing full-suite greens also fixed a real teardown
+race: `close()` now stops both drain queues before the store closes (`CaptureQueue.stop()`), which was the
+"database connection is not open" mid-sequence flake CI retried around.
 ## Slice: blocked and disabled lane health from real gate state  *(#192, 2026-07-14)*
 
 The sense-lane read model reserved health `blocked` and reasons `disabled`/`permission-denied`/

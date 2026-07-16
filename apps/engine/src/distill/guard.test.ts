@@ -130,3 +130,26 @@ test('guard OFF (guardEnabled false) skips the guard entirely — pre-#63 behavi
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('#116: a recorded hold carries the window pass spanId + the held chunk ids (ids only, never content)', async () => {
+  const { dir, store, deps } = await setup()
+  try {
+    deps.guardDocs.savePolicy({ id: 'guard-policy', version: 2, behavior: 'hold-and-surface', acknowledgeUnguardedEgress: false })
+    const invoke: LlmInvoke = () =>
+      Promise.reject(
+        new GuardHeldError(
+          { behavior: 'hold-and-surface', outcome: 'held', guarded: true, maskedSpanCount: 1, spans: [{ kind: 'card-number', start: 0, length: 16 }], guardEndpoint: 'guard-local', reason: 'the egress guard flagged 1 span(s); strict mode suspended the hop for review' },
+          { endpoint: 'hosted', url: 'https://api.example.com' },
+        ),
+      )
+    const distiller = makeDistiller({ ...deps, invoke })
+    await distiller.distillChunks([speech(1, 'pay card 4111111111111111')])
+    const hold = deps.guardHolds.list('default')[0]!
+    assert.ok(hold.spanId !== undefined && hold.spanId.length > 0, 'the hold carries the suspended pass correlation id')
+    assert.deepEqual(hold.sourceChunks, ['sp-1'], 'the hold names the held window chunk IDS — the trace parent link')
+    assert.ok(!JSON.stringify(hold).includes('4111111111111111'), 'the raw flagged content is never retained')
+    void store
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

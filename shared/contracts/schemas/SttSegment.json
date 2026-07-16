@@ -1,0 +1,215 @@
+{
+  "$id": "SttSegment",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "sessionId",
+    "chunkId",
+    "source",
+    "capturedAt",
+    "processedAt",
+    "textChars",
+    "provenance",
+    "schemaVersion",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "chunkId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "spanId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "source": {
+      "description": "the physical capture lane of the source chunk — a stream, never a speaker identity",
+      "anyOf": [
+        {
+          "const": "mic",
+          "type": "string"
+        },
+        {
+          "const": "screen",
+          "type": "string"
+        },
+        {
+          "const": "calendar",
+          "type": "string"
+        },
+        {
+          "const": "repo",
+          "type": "string"
+        },
+        {
+          "const": "camera",
+          "type": "string"
+        },
+        {
+          "const": "system-audio",
+          "type": "string"
+        }
+      ]
+    },
+    "capturedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "processedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "textChars": {
+      "minimum": 0,
+      "description": "transcript length in characters — a size for auditing, never the content",
+      "type": "integer"
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "slot",
+        "endpoint"
+      ],
+      "properties": {
+        "slot": {
+          "const": "stt",
+          "type": "string"
+        },
+        "endpoint": {
+          "minLength": 1,
+          "description": "fabric endpoint name that transcribed this segment — never a url/secret",
+          "type": "string"
+        },
+        "model": {
+          "description": "the stt model that answered, when the endpoint names one",
+          "type": "string"
+        },
+        "durationMs": {
+          "minimum": 0,
+          "description": "wall-clock duration of the transcription invoke in ms",
+          "type": "integer"
+        },
+        "egress": {
+          "$id": "EgressDecision",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "reach",
+            "allowed",
+            "decidedBy",
+            "reason"
+          ],
+          "properties": {
+            "reach": {
+              "$id": "EgressReach",
+              "description": "layer 1 compatibility bucket: local-network (device loopback/managed or private LAN) vs hosted/public egress; use EgressDecision.destination for physical boundary truth",
+              "anyOf": [
+                {
+                  "const": "local",
+                  "type": "string"
+                },
+                {
+                  "const": "egress",
+                  "type": "string"
+                }
+              ]
+            },
+            "allowed": {
+              "description": "did the layered content-side policy permit hosted/public egress for this content?",
+              "type": "boolean"
+            },
+            "decidedBy": {
+              "$id": "EgressLayer",
+              "description": "which of the four layers decided (or `default` = no denial, `endpoint` = destination-classification decided)",
+              "anyOf": [
+                {
+                  "const": "endpoint",
+                  "type": "string"
+                },
+                {
+                  "const": "prompt",
+                  "type": "string"
+                },
+                {
+                  "const": "mode",
+                  "type": "string"
+                },
+                {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                {
+                  "const": "content-class",
+                  "type": "string"
+                },
+                {
+                  "const": "default",
+                  "type": "string"
+                }
+              ]
+            },
+            "reason": {
+              "minLength": 1,
+              "description": "one-line, human-readable why — safe to surface (no url/secret)",
+              "type": "string"
+            },
+            "destination": {
+              "$id": "EgressDestination",
+              "description": "physical destination of a completed invoke: device-local (managed/loopback), lan-local (device boundary crossed within the private network), or hosted-public",
+              "anyOf": [
+                {
+                  "const": "device-local",
+                  "type": "string"
+                },
+                {
+                  "const": "lan-local",
+                  "type": "string"
+                },
+                {
+                  "const": "hosted-public",
+                  "type": "string"
+                }
+              ]
+            },
+            "rawFrameTrust": {
+              "description": "present only when raw screen bytes crossed to a LAN-local HTTP endpoint under that endpoint’s explicit trustRawFrames opt-in",
+              "const": "explicit",
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "schemaVersion": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

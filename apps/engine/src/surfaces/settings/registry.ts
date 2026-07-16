@@ -4,6 +4,7 @@ import { renderFeatures } from './sections/features.js'
 import { renderLedger } from './sections/ledger.js'
 import { renderPrivacy } from './sections/privacy.js'
 import { renderStatus } from './sections/status.js'
+import { renderTrace } from './sections/trace.js'
 
 /**
  * The Settings section registry — the spine of the sidebar: many nested configuration
@@ -121,6 +122,9 @@ export const SECTIONS: readonly SettingsSection[] = [
   // from provenance; Benchmarks reserves the home for the coming capability-benchmarking system (hardware
   // envelope → measured tok/s per endpoint → queue policies). Its own later slice.
   { id: 'ledger', group: 'diagnostics', label: 'Audit ledger', render: renderLedger, liveDot: (d) => ({ on: (d.ledger?.length ?? 0) > 0, suffix: String(d.ledger?.length ?? 0) }) },
+  // #116: follow ONE input (utterance/capture) through every engine step to its output — the ledger's
+  // per-input counterpart. Assembled by the route only when active (the ledger's read discipline).
+  { id: 'trace', group: 'diagnostics', label: 'Trace', render: renderTrace, liveDot: (d) => ({ on: (d.trace?.inputs.length ?? 0) > 0 }) },
   { id: 'benchmarks', group: 'diagnostics', label: 'Benchmarks', render: renderBenchmarks },
   { id: 'try-it', group: 'bottom', label: 'Try it', render: tryItBody },
   { id: 'privacy', group: 'bottom', label: 'Privacy', render: renderPrivacy },

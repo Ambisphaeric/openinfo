@@ -195,3 +195,62 @@ test('the fields query source hydrates the current field values with provenance,
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('#116: a fan-out pass stamps ONE shared spanId + the material chunk ids + usage on every value', async () => {
+  const invoke = async (): Promise<LlmResult> => ({
+    text: 'answer',
+    endpoint: 'fake-fast',
+    model: 'tiny-1b',
+    slot: 'llm',
+    usage: { estimated: false, promptTokens: 42, completionTokens: 7, totalTokens: 49 },
+  })
+  const { store, scheduler, dir } = await harness(invoke)
+  try {
+    const produced = await scheduler.runFields([richChunk()])
+    assert.equal(produced.length, 3)
+    const spanId = produced[0]!.spanId
+    assert.ok(spanId !== undefined && spanId.length > 0, 'the pass correlation id is stamped')
+    for (const value of produced) {
+      assert.equal(value.spanId, spanId, 'every value of the same fan-out pass shares the spanId')
+      assert.deepEqual(value.provenance.sourceChunks, ['c-0'], 'the material chunk ids are the parent link')
+      assert.equal(value.provenance.usage?.promptTokens, 42, 'the invoke usage rides onto provenance')
+    }
+    // The persisted latest value carries all of it too (the ledger/trace read this).
+    const stored = new FieldValueStore(store).list(WS, SESS)
+    assert.equal(stored.length, 3)
+    for (const value of stored) {
+      assert.equal(value.spanId, spanId)
+      assert.deepEqual(value.provenance.sourceChunks, ['c-0'])
+    }
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#206: a capped field tail names only chunks that actually contributed to the prompt', async () => {
+  const prompts: string[] = []
+  const invoke = async (messages: LlmMessage[]): Promise<LlmResult> => {
+    prompts.push(messages[0]!.content)
+    return { text: 'answer', endpoint: 'fake-fast', slot: 'llm' }
+  }
+  const { store, scheduler, dir } = await harness(invoke)
+  try {
+    const older = chunk(0, `OLDER_FIELD_SENTINEL_${'a'.repeat(100)}`)
+    // Put the marker at the END: the exact 4k tail starts inside this chunk, so a marker at its beginning
+    // would correctly be omitted even though the chunk id remains the sole contributing parent.
+    const tail = chunk(1, `${'b'.repeat(5000)}_TAIL_FIELD_SENTINEL`)
+    const produced = await scheduler.runFields([older, tail])
+    assert.equal(produced.length, 3)
+    assert.ok(prompts.every((prompt) => !prompt.includes('OLDER_FIELD_SENTINEL')))
+    assert.ok(prompts.every((prompt) => prompt.includes('TAIL_FIELD_SENTINEL')))
+    for (const value of produced) {
+      assert.deepEqual(value.provenance.sourceChunks, ['c-1'])
+      assert.equal(value.provenance.windowStart, tail.capturedAt)
+      assert.equal(value.provenance.windowEnd, tail.capturedAt)
+    }
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

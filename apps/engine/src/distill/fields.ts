@@ -1,6 +1,8 @@
-import type { CaptureChunk, FieldValue, Mode, PromptTemplate, VoiceBinding } from '@openinfo/contracts'
+import { randomUUID } from 'node:crypto'
+import type { CaptureChunk, FieldValue, GuardHold, Mode, PromptTemplate, VoiceBinding } from '@openinfo/contracts'
 import { FIELD_VALUE_SCHEMA_VERSION } from '@openinfo/contracts'
-import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import type { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
 import { DistillDocuments } from './documents.js'
@@ -51,7 +53,14 @@ export interface FastFieldSchedulerDeps {
   resolveKey?: SecretResolver
   /** manages `local` endpoints' spawned runtimes (tier zero); optional. */
   runtimeManager?: LocalRuntimeManager
+  /** Guard policy + held-hop audit wiring (#206). All remain optional for isolated/legacy embedders. */
+  guardDocs?: GuardDocuments
+  guardHolds?: GuardHoldStore
+  guardEnabled?: () => boolean
+  publishHold?: (hold: GuardHold) => void | Promise<void>
   now?: () => Date
+  /** id minter for the per-pass correlation id (#116); injected only for deterministic tests. */
+  newId?: () => string
   log?: (message: string) => void
 }
 
@@ -78,7 +87,13 @@ export class FastFieldScheduler {
   private readonly values: FieldValueStore
   private readonly publish: ((v: FieldValue) => void | Promise<void>) | undefined
   private readonly invoke: LlmInvoke
+  private readonly resolveKey: SecretResolver | undefined
+  private readonly guardDocs: GuardDocuments | undefined
+  private readonly guardHolds: GuardHoldStore | undefined
+  private readonly guardEnabled: () => boolean
+  private readonly publishHold: ((hold: GuardHold) => void | Promise<void>) | undefined
   private readonly now: () => Date
+  private readonly newId: () => string
   private readonly log: (message: string) => void
 
   constructor(deps: FastFieldSchedulerDeps) {
@@ -88,7 +103,13 @@ export class FastFieldScheduler {
     this.docs = deps.docs
     this.values = deps.values
     this.publish = deps.publish
+    this.resolveKey = deps.resolveKey
+    this.guardDocs = deps.guardDocs
+    this.guardHolds = deps.guardHolds
+    this.guardEnabled = deps.guardEnabled ?? (() => false)
+    this.publishHold = deps.publishHold
     this.now = deps.now ?? (() => new Date())
+    this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
     const resolveKey = deps.resolveKey
     const runtimeManager = deps.runtimeManager
@@ -100,6 +121,40 @@ export class FastFieldScheduler {
           ...(resolveKey ? { resolveKey } : {}),
           ...(runtimeManager ? { runtimeManager } : {}),
         }))
+  }
+
+  /** Resolve the live #63 policy for an allowed hosted/public call. Local answers ignore this downstream. */
+  private guardOptions(): GuardOptions | undefined {
+    if (!this.guardEnabled() || this.guardDocs === undefined) return undefined
+    const policy = this.guardDocs.policy()
+    return {
+      endpoints: this.fabric.load().slots.guard ?? [],
+      behavior: policy.behavior,
+      acknowledgeUnguardedEgress: policy.acknowledgeUnguardedEgress,
+      ...(this.resolveKey ? { resolveKey: this.resolveKey } : {}),
+    }
+  }
+
+  /** A strict/fail-closed guard stop produces no FieldValue, so persist its metadata-only audit record. */
+  private async recordHold(
+    err: GuardHeldError,
+    ctx: { workspaceId: string; sessionId: string; spanId: string; sourceChunks: string[]; fieldId: string },
+  ): Promise<void> {
+    const hold: GuardHold = {
+      id: this.newId(),
+      workspaceId: ctx.workspaceId,
+      sessionId: ctx.sessionId,
+      stage: `field:${ctx.fieldId}`,
+      spanId: ctx.spanId,
+      sourceChunks: ctx.sourceChunks,
+      ...err.holdMetadata(),
+      verdict: err.verdict,
+      status: 'held',
+      createdAt: this.now().toISOString(),
+    }
+    this.guardHolds?.add(hold)
+    await this.publishHold?.(hold)
+    this.log(`guard held fast-field pass for session ${ctx.sessionId}: ${err.verdict.reason}`)
   }
 
   /**
@@ -124,6 +179,7 @@ export class FastFieldScheduler {
       // dials/{{voice.rules}} (the shipped defaults are transcript-only, but the seam is first-class).
       const record = this.store.getSession(workspaceId, sessionId)
       const mode: Mode = record ? this.docs.mode(record.modeId) : defaultMode
+      const workspaceDenies = this.store.all().find((w) => w.id === workspaceId)?.egress?.deny
       const modeDefault: VoiceBinding[] = mode.registerId !== undefined ? [{ scope: 'mode', targetId: mode.id, registerId: mode.registerId }] : []
       const sessionBinding: VoiceBinding[] = record?.registerId !== undefined ? [{ scope: 'session', targetId: sessionId, registerId: record.registerId }] : []
       const bindings = [...storedBindings, ...sessionBinding, ...modeDefault]
@@ -131,17 +187,25 @@ export class FastFieldScheduler {
 
       // ONE shared recent-material window per session (the released batch, tail-capped), physical-lane
       // labeled like the distiller's transcript. Gated per-field by minChars.
-      const full = sessionChunks
-        .map((chunk) => {
+      const renderedChunks = sessionChunks.map((chunk) => {
           const label = captureLaneLabel(chunk.source)
-          return label ? `${label}: ${chunk.data}` : chunk.data
+          return { chunk, text: label ? `${label}: ${chunk.data}` : chunk.data }
         })
-        .join('\n')
+      const full = renderedChunks.map((rendered) => rendered.text).join('\n')
       const recent = full.length > CONTEXT_CHARS ? full.slice(-CONTEXT_CHARS) : full
+      const tailStart = Math.max(0, full.length - CONTEXT_CHARS)
+      let cursor = 0
+      const contributingChunks: CaptureChunk[] = []
+      for (const rendered of renderedChunks) {
+        const end = cursor + rendered.text.length
+        if (end > tailStart) contributingChunks.push(rendered.chunk)
+        cursor = end + 1 // join('\n') separator before the next rendered chunk
+      }
       // Relevance is about observed material, not our machine-owned label vocabulary. Counting
       // "microphone" vs "system audio" would make a label rename spuriously cross minChars gates.
       const evidenceChars = sessionChunks.map((chunk) => chunk.data).join('\n').length
-      const { windowStart, windowEnd } = this.windowSpan(sessionChunks)
+      const materialChunks = contributingChunks.length > 0 ? contributingChunks : sessionChunks.slice(-1)
+      const { windowStart, windowEnd } = this.windowSpan(materialChunks)
 
       // The inexpensive relevance gate (#61): a field is TRIGGERED only when the recent material meets its
       // trigger. Fast tier only — a `judge`-tier binding has no confirm pass yet, so it is skipped (never
@@ -161,9 +225,25 @@ export class FastFieldScheduler {
       // Fan out CONCURRENTLY — N triggered prompts → N concurrent llm invokes. A per-field failure is
       // caught below so it never rejects the whole batch (Promise.all short-circuits on reject; each
       // runOne resolves to a FieldValue or undefined instead of throwing).
+      // #116: ONE correlation id per (session, batch) fan-out pass, shared by every value it produces, and
+      // only the tail-contributing chunk ids as the deterministic parent link. A flushed backlog may be
+      // much larger than CONTEXT_CHARS; naming the whole batch would falsely claim omitted material fed
+      // the field. These ids therefore match the exact rendered tail the model saw.
+      const spanId = this.newId()
+      const sourceChunks = materialChunks.map((chunk) => chunk.id)
       const vars = { ...compileVoiceVars(resolved.dials), transcript: recent, windowStart, windowEnd }
       const results = await Promise.all(
-        triggered.map((tpl) => this.runOne(tpl, { workspaceId, sessionId, vars, windowStart, windowEnd })),
+        triggered.map((tpl) => this.runOne(tpl, {
+          workspaceId,
+          sessionId,
+          vars,
+          windowStart,
+          windowEnd,
+          spanId,
+          sourceChunks,
+          ...(mode.egress?.deny !== undefined ? { modeDenies: mode.egress.deny } : {}),
+          ...(workspaceDenies !== undefined ? { workspaceDenies } : {}),
+        })),
       )
       for (const value of results) if (value !== undefined) produced.push(value)
       this.log(`fast-fields: ${produced.length} field(s) updated for session ${sessionId} (${triggered.length} triggered)`)
@@ -174,15 +254,36 @@ export class FastFieldScheduler {
   /** Run one fast-field prompt: interpolate → invoke → persist latest + publish. Undefined on invoke failure. */
   private async runOne(
     template: PromptTemplate,
-    ctx: { workspaceId: string; sessionId: string; vars: Record<string, string>; windowStart: string; windowEnd: string },
+    ctx: {
+      workspaceId: string
+      sessionId: string
+      vars: Record<string, string>
+      windowStart: string
+      windowEnd: string
+      spanId: string
+      sourceChunks: string[]
+      modeDenies?: boolean
+      workspaceDenies?: boolean
+    },
   ): Promise<FieldValue | undefined> {
     const binding = template.field!
     const prompt = interpolateTemplate(template.body, ctx.vars)
     const messages: LlmMessage[] = [{ role: 'user', content: prompt }]
+    const egress = resolveEgress({
+      contentClass: 'transcript',
+      promptNeverEgress: template.neverEgress,
+      modeDenies: ctx.modeDenies,
+      workspaceDenies: ctx.workspaceDenies,
+    })
+    const guard = this.guardOptions()
     let result: LlmResult
     try {
-      result = await this.invoke(messages, { maxTokens: 200 })
+      result = await this.invoke(messages, { maxTokens: 200, egress, ...(guard !== undefined ? { guard } : {}) })
     } catch (error) {
+      if (error instanceof GuardHeldError) {
+        await this.recordHold(error, { ...ctx, fieldId: binding.fieldId })
+        return undefined
+      }
       this.log(`fast-field ${binding.fieldId} failed: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
     }
@@ -195,6 +296,7 @@ export class FastFieldScheduler {
       label: template.name,
       value: result.text.trim(),
       state: 'provisional',
+      spanId: ctx.spanId,
       provenance: {
         templateId: template.id,
         slot: result.slot,
@@ -202,6 +304,13 @@ export class FastFieldScheduler {
         ...(result.model !== undefined ? { model: result.model } : {}),
         windowStart: ctx.windowStart,
         windowEnd: ctx.windowEnd,
+        // #116: the material window's chunk ids — the deterministic parent link a trace walks.
+        sourceChunks: ctx.sourceChunks,
+        // #65/#116: the invoke's token accounting, when recorded — the field hop's consumption.
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        // #206: stamp only what the invocation that ACTUALLY answered returned (after endpoint fallback).
+        ...(result.egress !== undefined ? { egress: result.egress } : {}),
+        ...(result.guard !== undefined ? { guard: result.guard } : {}),
       },
       updatedAt: this.now().toISOString(),
       schemaVersion: FIELD_VALUE_SCHEMA_VERSION,

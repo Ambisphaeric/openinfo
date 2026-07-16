@@ -1,6 +1,8 @@
-import type { CaptureChunk, Endpoint, Fabric, FieldValue, JudgeReview, PromptTemplate, SessionAnnotation } from '@openinfo/contracts'
+import { randomUUID } from 'node:crypto'
+import type { CaptureChunk, Endpoint, Fabric, FieldValue, GuardHold, JudgeReview, Mode, PromptTemplate, SessionAnnotation } from '@openinfo/contracts'
 import { SESSION_ANNOTATION_SCHEMA_VERSION } from '@openinfo/contracts'
-import { FabricDocuments, invokeLlm, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
+import type { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { interpolateTemplate } from '../voice/index.js'
 import { DistillDocuments } from './documents.js'
@@ -93,9 +95,16 @@ export interface JudgeSchedulerDeps {
   invoke?: LlmInvoke
   resolveKey?: SecretResolver
   runtimeManager?: LocalRuntimeManager
+  /** Guard policy + held-hop audit wiring (#206). All remain optional for isolated/legacy embedders. */
+  guardDocs?: GuardDocuments
+  guardHolds?: GuardHoldStore
+  guardEnabled?: () => boolean
+  publishHold?: (hold: GuardHold) => void | Promise<void>
   /** the judge endpoint name; defaults to OPENINFO_JUDGE_ENDPOINT or JUDGE_ENDPOINT_NAME. */
   endpointName?: string
   now?: () => Date
+  /** id minter for the per-pass correlation id (#116); injected only for deterministic tests. */
+  newId?: () => string
   log?: (message: string) => void
 }
 
@@ -127,8 +136,14 @@ export class JudgeScheduler {
   private readonly publishAnnotation: ((a: SessionAnnotation) => void | Promise<void>) | undefined
   private readonly orientationDisposition: OrientationDisposition
   private readonly invoke: LlmInvoke
+  private readonly resolveKey: SecretResolver | undefined
+  private readonly guardDocs: GuardDocuments | undefined
+  private readonly guardHolds: GuardHoldStore | undefined
+  private readonly guardEnabled: () => boolean
+  private readonly publishHold: ((hold: GuardHold) => void | Promise<void>) | undefined
   private readonly endpointName: string
   private readonly now: () => Date
+  private readonly newId: () => string
   private readonly log: (message: string) => void
 
   constructor(deps: JudgeSchedulerDeps) {
@@ -139,8 +154,14 @@ export class JudgeScheduler {
     this.publish = deps.publish
     this.publishAnnotation = deps.publishAnnotation
     this.orientationDisposition = deps.orientationDisposition ?? 'annotate'
+    this.resolveKey = deps.resolveKey
+    this.guardDocs = deps.guardDocs
+    this.guardHolds = deps.guardHolds
+    this.guardEnabled = deps.guardEnabled ?? (() => false)
+    this.publishHold = deps.publishHold
     this.endpointName = deps.endpointName ?? process.env['OPENINFO_JUDGE_ENDPOINT'] ?? JUDGE_ENDPOINT_NAME
     this.now = deps.now ?? (() => new Date())
+    this.newId = deps.newId ?? (() => randomUUID())
     this.log = deps.log ?? (() => undefined)
     const resolveKey = deps.resolveKey
     const runtimeManager = deps.runtimeManager
@@ -159,6 +180,40 @@ export class JudgeScheduler {
           ...(runtimeManager ? { runtimeManager } : {}),
         })
       })
+  }
+
+  /** Resolve the live #63 policy for an allowed hosted/public judge call. Local answers ignore it. */
+  private guardOptions(): GuardOptions | undefined {
+    if (!this.guardEnabled() || this.guardDocs === undefined) return undefined
+    const policy = this.guardDocs.policy()
+    return {
+      endpoints: this.fabric.load().slots.guard ?? [],
+      behavior: policy.behavior,
+      acknowledgeUnguardedEgress: policy.acknowledgeUnguardedEgress,
+      ...(this.resolveKey ? { resolveKey: this.resolveKey } : {}),
+    }
+  }
+
+  /** A strict/fail-closed stop emits no review/annotation, so preserve its metadata-only verdict instead. */
+  private async recordHold(
+    err: GuardHeldError,
+    ctx: { workspaceId: string; sessionId: string; spanId: string; sourceChunks: string[]; stage: string },
+  ): Promise<void> {
+    const hold: GuardHold = {
+      id: this.newId(),
+      workspaceId: ctx.workspaceId,
+      sessionId: ctx.sessionId,
+      stage: ctx.stage,
+      spanId: ctx.spanId,
+      sourceChunks: ctx.sourceChunks,
+      ...err.holdMetadata(),
+      verdict: err.verdict,
+      status: 'held',
+      createdAt: this.now().toISOString(),
+    }
+    this.guardHolds?.add(hold)
+    await this.publishHold?.(hold)
+    this.log(`guard held judge pass for session ${ctx.sessionId}: ${err.verdict.reason}`)
   }
 
   /** The judge-designated llm endpoint in the fabric, or undefined — the tier-gate primitive. */
@@ -190,6 +245,7 @@ export class JudgeScheduler {
     }
     const text = chunks.filter(isText)
     if (text.length === 0) return []
+    const defaultMode: Mode = this.docs.mode()
 
     // The fast fieldIds a judge may review by default (every fast-tier field) — the fast-result set.
     const fastFieldIds = this.docs
@@ -200,22 +256,46 @@ export class JudgeScheduler {
     const produced: FieldValue[] = []
     for (const [sessionId, sessionChunks] of groupBySession(text)) {
       const workspaceId = sessionChunks[0]!.workspaceId
+      const record = this.store.getSession(workspaceId, sessionId)
+      const mode = record ? this.docs.mode(record.modeId) : defaultMode
+      const workspaceDenies = this.store.all().find((w) => w.id === workspaceId)?.egress?.deny
+      // #116: ONE correlation id per (session, batch) judge pass — every review it stamps shares it.
+      const spanId = this.newId()
       // The SAME source shape the fast tier saw: physical-lane-labeled recent transcript window, tail-capped.
-      const full = sessionChunks
-        .map((chunk) => {
+      const renderedChunks = sessionChunks.map((chunk) => {
           const label = captureLaneLabel(chunk.source)
-          return label ? `${label}: ${chunk.data}` : chunk.data
+          return { chunk, text: label ? `${label}: ${chunk.data}` : chunk.data }
         })
-        .join('\n')
+      const full = renderedChunks.map((rendered) => rendered.text).join('\n')
       const source = full.length > JUDGE_CONTEXT_CHARS ? full.slice(-JUDGE_CONTEXT_CHARS) : full
-      const { windowStart, windowEnd } = this.windowSpan(sessionChunks)
+      const tailStart = Math.max(0, full.length - JUDGE_CONTEXT_CHARS)
+      let cursor = 0
+      const contributingChunks: CaptureChunk[] = []
+      for (const rendered of renderedChunks) {
+        const end = cursor + rendered.text.length
+        if (end > tailStart) contributingChunks.push(rendered.chunk)
+        cursor = end + 1
+      }
+      const materialChunks = contributingChunks.length > 0 ? contributingChunks : sessionChunks.slice(-1)
+      const { windowStart, windowEnd } = this.windowSpan(materialChunks)
       const sessionValues = this.values.list(workspaceId, sessionId)
+      const sourceChunks = materialChunks.map((chunk) => chunk.id)
 
       for (const judge of judges) {
         // #131: an orientation judge document classifies the session (nature/direction/topics) and lands a
         // SessionAnnotation — a DIFFERENT output than the #62 per-field verdict path. Routed by `produces`.
         if (judge.field?.produces === 'orientation') {
-          await this.runOrientation(judge, { workspaceId, sessionId, source, windowStart, windowEnd })
+          await this.runOrientation(judge, {
+            workspaceId,
+            sessionId,
+            source,
+            windowStart,
+            windowEnd,
+            spanId,
+            sourceChunks,
+            ...(mode.egress?.deny !== undefined ? { modeDenies: mode.egress.deny } : {}),
+            ...(workspaceDenies !== undefined ? { workspaceDenies } : {}),
+          })
           continue
         }
         const overruled = await this.runOne(judge, {
@@ -226,6 +306,10 @@ export class JudgeScheduler {
           windowEnd,
           sessionValues,
           fastFieldIds,
+          spanId,
+          sourceChunks,
+          ...(mode.egress?.deny !== undefined ? { modeDenies: mode.egress.deny } : {}),
+          ...(workspaceDenies !== undefined ? { workspaceDenies } : {}),
         })
         produced.push(...overruled)
       }
@@ -245,6 +329,10 @@ export class JudgeScheduler {
       windowEnd: string
       sessionValues: FieldValue[]
       fastFieldIds: string[]
+      spanId: string
+      sourceChunks: string[]
+      modeDenies?: boolean
+      workspaceDenies?: boolean
     },
   ): Promise<FieldValue[]> {
     const binding = template.field!
@@ -260,10 +348,25 @@ export class JudgeScheduler {
       windowStart: ctx.windowStart,
       windowEnd: ctx.windowEnd,
     })
+    const egress = resolveEgress({
+      contentClass: 'transcript',
+      promptNeverEgress: template.neverEgress,
+      modeDenies: ctx.modeDenies,
+      workspaceDenies: ctx.workspaceDenies,
+    })
+    const guard = this.guardOptions()
     let result: LlmResult
     try {
-      result = await this.invoke([{ role: 'user', content: prompt }], { maxTokens: JUDGE_MAX_TOKENS })
+      result = await this.invoke([{ role: 'user', content: prompt }], {
+        maxTokens: JUDGE_MAX_TOKENS,
+        egress,
+        ...(guard !== undefined ? { guard } : {}),
+      })
     } catch (error) {
+      if (error instanceof GuardHeldError) {
+        await this.recordHold(error, { ...ctx, stage: `judge:${template.id}` })
+        return []
+      }
       this.log(`judge ${template.id} failed: ${error instanceof Error ? error.message : String(error)}`)
       return []
     }
@@ -283,6 +386,15 @@ export class JudgeScheduler {
         verdict: verdict.verdict,
         priorState: current.state,
         judgedAt,
+        // #116: the judge pass's correlation id; #65: the judge invoke's token accounting when recorded.
+        spanId: ctx.spanId,
+        windowStart: ctx.windowStart,
+        windowEnd: ctx.windowEnd,
+        sourceChunks: ctx.sourceChunks,
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        // #206: completed-invoke privacy truth from the endpoint that actually answered.
+        ...(result.egress !== undefined ? { egress: result.egress } : {}),
+        ...(result.guard !== undefined ? { guard: result.guard } : {}),
       }
       let value = current.value
       if (verdict.verdict === 'correct') {
@@ -319,7 +431,17 @@ export class JudgeScheduler {
    */
   private async runOrientation(
     template: PromptTemplate,
-    ctx: { workspaceId: string; sessionId: string; source: string; windowStart: string; windowEnd: string },
+    ctx: {
+      workspaceId: string
+      sessionId: string
+      source: string
+      windowStart: string
+      windowEnd: string
+      spanId: string
+      sourceChunks: string[]
+      modeDenies?: boolean
+      workspaceDenies?: boolean
+    },
   ): Promise<SessionAnnotation | undefined> {
     // Orientation is a SINGLE-input classification: it takes only {{source}} (the same window the tiers saw)
     // plus the window bounds — no {{results}} set (that is the #62 verdict contract, not this one).
@@ -328,10 +450,25 @@ export class JudgeScheduler {
       windowStart: ctx.windowStart,
       windowEnd: ctx.windowEnd,
     })
+    const egress = resolveEgress({
+      contentClass: 'transcript',
+      promptNeverEgress: template.neverEgress,
+      modeDenies: ctx.modeDenies,
+      workspaceDenies: ctx.workspaceDenies,
+    })
+    const guard = this.guardOptions()
     let result: LlmResult
     try {
-      result = await this.invoke([{ role: 'user', content: prompt }], { maxTokens: JUDGE_MAX_TOKENS })
+      result = await this.invoke([{ role: 'user', content: prompt }], {
+        maxTokens: JUDGE_MAX_TOKENS,
+        egress,
+        ...(guard !== undefined ? { guard } : {}),
+      })
     } catch (error) {
+      if (error instanceof GuardHeldError) {
+        await this.recordHold(error, { ...ctx, stage: `orientation:${template.id}` })
+        return undefined
+      }
       this.log(`orientation ${template.id} failed: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
     }
@@ -356,7 +493,11 @@ export class JudgeScheduler {
         ...(result.model !== undefined ? { model: result.model } : {}),
         windowStart: ctx.windowStart,
         windowEnd: ctx.windowEnd,
+        sourceChunks: ctx.sourceChunks,
         classifiedAt,
+        ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        ...(result.egress !== undefined ? { egress: result.egress } : {}),
+        ...(result.guard !== undefined ? { guard: result.guard } : {}),
       },
       updatedAt: classifiedAt,
       schemaVersion: SESSION_ANNOTATION_SCHEMA_VERSION,

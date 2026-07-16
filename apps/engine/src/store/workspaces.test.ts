@@ -666,3 +666,69 @@ test('Ask face: the chat thread persists per workspace, ordered, capped honestly
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('#116: stt segments round-trip per workspace, narrow by session, and survive a reopened DB', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-stt-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const segment = (id: string, sessionId: string, sec: number) => ({
+      id,
+      workspaceId: 'default',
+      sessionId,
+      chunkId: `cap-${id}`,
+      spanId: 'span-1',
+      source: 'mic' as const,
+      capturedAt: new Date(Date.UTC(2026, 6, 12, 12, 0, sec)).toISOString(),
+      processedAt: new Date(Date.UTC(2026, 6, 12, 12, 0, sec + 1)).toISOString(),
+      textChars: 42,
+      provenance: { slot: 'stt' as const, endpoint: 'whisper-box', model: 'whisper-large-v3', durationMs: 900 },
+      schemaVersion: 1,
+      createdAt: new Date(Date.UTC(2026, 6, 12, 12, 0, sec + 1)).toISOString(),
+    })
+    registry.saveSttSegment(segment('s1', 'ses-a', 0))
+    registry.saveSttSegment(segment('s2', 'ses-a', 5))
+    registry.saveSttSegment(segment('s3', 'ses-b', 10))
+
+    assert.equal(registry.listSttSegments('default').length, 3, 'workspace-wide read sees all')
+    assert.deepEqual(registry.listSttSegments('default', 'ses-a').map((s) => s.id), ['s1', 's2'], 'session narrow works, oldest first')
+    assert.equal(registry.listSttSegments('default', 'ses-a')[0]!.provenance.endpoint, 'whisper-box')
+    registry.close()
+
+    // The record is durable, not process-lived (unlike the transcript ring).
+    const reopened = new WorkspaceRegistry(dir)
+    assert.equal(reopened.listSttSegments('default').length, 3)
+    reopened.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#116: moveSession carries the stt segments with the session (source identity never destroyed)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-ws-stt-move-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.ensureWorkspace({ id: 'sales', name: 'Sales' })
+    registry.saveSession({ id: 'ses-m', workspaceId: 'default', modeId: 'mode-meeting', startedAt: '2026-07-12T12:00:00.000Z', attribution: { evidence: [], confidence: 1 } })
+    registry.saveSttSegment({
+      id: 'seg-m',
+      workspaceId: 'default',
+      sessionId: 'ses-m',
+      chunkId: 'cap-m',
+      source: 'mic',
+      capturedAt: '2026-07-12T12:00:00.000Z',
+      processedAt: '2026-07-12T12:00:01.000Z',
+      textChars: 10,
+      provenance: { slot: 'stt', endpoint: 'whisper-box' },
+      schemaVersion: 1,
+      createdAt: '2026-07-12T12:00:01.000Z',
+    })
+    registry.moveSession('ses-m', 'default', 'sales')
+    assert.equal(registry.listSttSegments('default', 'ses-m').length, 0, 'gone from the source')
+    const moved = registry.listSttSegments('sales', 'ses-m')
+    assert.equal(moved.length, 1, 'present in the destination')
+    assert.equal(moved[0]!.workspaceId, 'sales', 'workspaceId re-stamped')
+    assert.equal(moved[0]!.chunkId, 'cap-m', 'the trace parent link is intact')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

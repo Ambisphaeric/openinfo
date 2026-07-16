@@ -18,9 +18,6 @@ const input: ExtractInput = {
   source: 'mic',
   dials,
   distillateId: 'dst-x',
-  endpoint: 'llm.fast',
-  model: 'llama-3.2-3b',
-  slot: 'llm',
 }
 
 const canned = (...responses: string[]) => {
@@ -127,6 +124,47 @@ test('wholly unparseable output re-samples once (bounded), then yields zero mome
   assert.equal(empty.attempts, 2)
   assert.equal(hopeless.calls(), 2) // bounded — never a third call
   assert.deepEqual(empty.moments, [])
+})
+
+test('a successful retry stamps the extraction endpoint and policy result, never the preceding summary call', async () => {
+  let call = 0
+  const invoke = async (): Promise<LlmResult> => {
+    call += 1
+    if (call === 1) {
+      return { text: 'not json', endpoint: 'moment-primary', model: 'small-primary', slot: 'llm' }
+    }
+    return {
+      text: '[{"kind":"decision","text":"use the fallback"}]',
+      endpoint: 'moment-fallback',
+      model: 'large-fallback',
+      slot: 'llm',
+      usage: { estimated: false, promptTokens: 45, completionTokens: 8, totalTokens: 53, durationMs: 321 },
+      egress: {
+        reach: 'egress',
+        allowed: true,
+        decidedBy: 'default',
+        reason: 'no policy layer denied this transcript hop',
+        destination: 'hosted-public',
+      },
+      guard: {
+        behavior: 'redact-and-continue',
+        outcome: 'clean',
+        guarded: true,
+        maskedSpanCount: 0,
+        guardEndpoint: 'guard-local',
+        reason: 'nothing sensitive found',
+      },
+    }
+  }
+
+  const result = await extractMoments(input, { invoke, template: defaultExtractTemplate })
+  assert.equal(result.attempts, 2)
+  const provenance = result.moments[0]!.provenance!
+  assert.equal(provenance.endpoint, 'moment-fallback')
+  assert.equal(provenance.model, 'large-fallback')
+  assert.equal(provenance.usage?.totalTokens, 53)
+  assert.equal(provenance.egress?.destination, 'hosted-public')
+  assert.equal(provenance.guard?.outcome, 'clean')
 })
 
 test('transport failure propagates (drain re-queue owns retry-at-idle)', async () => {

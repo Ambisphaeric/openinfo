@@ -74,6 +74,11 @@ test('moveSession relocates the session + all its records; source emptied, rerou
     const moved = reg.moveSession('ses-1', 'ws-a', 'ws-b')
     assert.equal(moved.workspaceId, 'ws-b')
     assert.equal(moved.reroutedFrom, 'ws-a')
+    assert.equal(moved.attribution.confidence, 1)
+    assert.deepEqual(moved.attribution.evidence, [
+      { kind: 'window', detail: 'code — repo/api', weight: 0.6 },
+      { kind: 'manual', detail: 'rerouted from workspace ws-a by user', weight: 1 },
+    ])
 
     // present in destination
     assert.equal(reg.getSession('ws-b', 'ses-1')?.reroutedFrom, 'ws-a')
@@ -177,10 +182,22 @@ test('moveSession is idempotent: re-run after a simulated mid-move crash converg
     // crash staged: destination copy committed, source delete never ran
     reg.moveSession('ses-1', 'ws-a', 'ws-b', { stopAfterCopy: true })
     assert.deepEqual(reg.sessionWorkspaces('ses-1').sort(), ['ws-a', 'ws-b'], 'the detectable duplicate')
+    const copiedSession = reg.getSession('ws-b', 'ses-1')!
+    assert.equal(copiedSession.attribution.confidence, 1, 'manual correction is durable in phase 1')
+    assert.deepEqual(
+      copiedSession.attribution.evidence.filter((evidence) => evidence.kind === 'manual'),
+      [{ kind: 'manual', detail: 'rerouted from workspace ws-a by user', weight: 1 }],
+      'a crash after the destination copy cannot lose the authoritative reroute marker',
+    )
 
     // re-running the SAME move converges: source cleaned, one copy, entities not double-counted
     reg.moveSession('ses-1', 'ws-a', 'ws-b')
     assert.deepEqual(reg.sessionWorkspaces('ses-1'), ['ws-b'])
+    assert.equal(
+      reg.getSession('ws-b', 'ses-1')!.attribution.evidence.filter((evidence) => evidence.kind === 'manual').length,
+      1,
+      'recovery replaces the copied session instead of duplicating the correction',
+    )
     assert.equal(reg.listEntities('ws-b').find((e) => e.name === 'Dana')?.mentions, 1, 'Dana not double-counted')
     assert.equal(reg.listEntities('ws-b').find((e) => e.name === 'Mercury')?.mentions, 1, 'Mercury not double-counted')
     assert.deepEqual(reg.listMoments('ws-a', 'ses-1'), [])

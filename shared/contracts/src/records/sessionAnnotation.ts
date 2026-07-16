@@ -1,5 +1,7 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Id, IsoTime } from '../common.js'
+import { Id, IsoTime, InvokeUsage } from '../common.js'
+import { EgressDecision } from '../config/egress.js'
+import { GuardVerdict } from '../config/guard.js'
 
 /** Schema version of the SessionAnnotation record shape — bumped when the persisted shape changes. */
 export const SESSION_ANNOTATION_SCHEMA_VERSION = 1
@@ -18,7 +20,13 @@ export const OrientationProvenance = Type.Object(
     model: Type.Optional(Type.String({ description: 'the model that answered, when the endpoint names one' })),
     windowStart: Type.Optional(IsoTime),
     windowEnd: Type.Optional(IsoTime),
+    sourceChunks: Type.Optional(Type.Array(Id, { description: 'capture chunk ids of the exact transcript tail classified' })),
     classifiedAt: IsoTime,
+    usage: Type.Optional(InvokeUsage),
+    // #206: orientation uses the same JudgeScheduler invoke seam. Persist the answering endpoint's actual
+    // privacy facts so this judge output is no less auditable than a per-field JudgeReview.
+    egress: Type.Optional(EgressDecision),
+    guard: Type.Optional(GuardVerdict),
   },
   { $id: 'OrientationProvenance', additionalProperties: false },
 )

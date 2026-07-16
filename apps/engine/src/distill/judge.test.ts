@@ -242,6 +242,35 @@ test('a judge invoke failure is caught — returns [], the fields are untouched'
   }
 })
 
+test('#206: judge review provenance names only chunks in the exact capped source tail', async () => {
+  const prompts: string[] = []
+  const invoke = async (messages: LlmMessage[]): Promise<LlmResult> => {
+    prompts.push(messages[0]!.content)
+    return {
+      text: JSON.stringify([{ fieldId: 'field-topic', verdict: 'confirm' }]),
+      endpoint: 'llm.judge',
+      slot: 'llm',
+    }
+  }
+  const { store, scheduler, values, dir } = await harness(invoke)
+  try {
+    seedValue(values, 'field-topic', 'topic', 'quarterly planning')
+    const older = chunk(0, `OLDER_JUDGE_SENTINEL_${'a'.repeat(100)}`)
+    // The exact 8k source tail starts inside this chunk; keep the marker inside that material tail.
+    const tail = chunk(1, `${'b'.repeat(9000)}_TAIL_JUDGE_SENTINEL`)
+    const produced = await scheduler.runJudge([older, tail])
+    assert.equal(produced.length, 1)
+    assert.ok(prompts.every((prompt) => !prompt.includes('OLDER_JUDGE_SENTINEL')))
+    assert.ok(prompts.every((prompt) => prompt.includes('TAIL_JUDGE_SENTINEL')))
+    const review = values.latest(WS, 'field-topic', SESS)?.provenance.judge
+    assert.deepEqual(review?.sourceChunks, ['c-1'])
+    assert.equal(review?.windowStart, tail.capturedAt)
+    assert.equal(review?.windowEnd, tail.capturedAt)
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
 test('explainable-empty: no fast values to review → the verdict judge overrules nothing (no invoke on the review path)', async () => {
   // The VERDICT judge short-circuits BEFORE invoking when there is nothing to review; the seeded #131
   // orientation judge still classifies the source (its own invoke), so we assert the verdict PATH is empty
@@ -392,6 +421,34 @@ test('#131 gate-ready seam: gate disposition annotates-and-logs (hold not yet en
     assert.equal(a.nature, 'solo-work', 'gate still annotates today (no half-built hold)')
     assert.equal(annotations.length, 1, 'orientation.updated still emitted under gate')
     assert.ok(logs.some((l) => /gate.*not yet enforced/i.test(l)), 'the seam logs that gate is not yet enforced')
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
+test('#116: a review carries the judge pass spanId and the invoke usage', async () => {
+  const invoke = async (): Promise<LlmResult> => ({
+    text: JSON.stringify([
+      { fieldId: 'field-topic', verdict: 'confirm' },
+      { fieldId: 'field-entities', verdict: 'flag', note: 'thin evidence' },
+    ]),
+    endpoint: 'llm.judge',
+    model: 'big-32b',
+    slot: 'llm',
+    usage: { estimated: false, promptTokens: 300, completionTokens: 40, totalTokens: 340 },
+  })
+  const { store, scheduler, values, dir } = await harness(invoke)
+  try {
+    seedValue(values, 'field-topic', 'topic', 'Q3 GTM launch sequencing')
+    seedValue(values, 'field-entities', 'entities', 'Dana, Priya')
+    const produced = await scheduler.runJudge([sourceChunk()])
+    assert.equal(produced.length, 2)
+    const topic = values.latest(WS, 'field-topic', SESS)!
+    const entities = values.latest(WS, 'field-entities', SESS)!
+    const spanId = topic.provenance.judge!.spanId
+    assert.ok(spanId !== undefined && spanId.length > 0, 'the judge pass correlation id is stamped')
+    assert.equal(entities.provenance.judge!.spanId, spanId, 'both verdicts of the same pass share the spanId')
+    assert.equal(topic.provenance.judge!.usage?.promptTokens, 300, 'the judge invoke usage rides onto the review')
   } finally {
     await cleanup(store, dir)
   }

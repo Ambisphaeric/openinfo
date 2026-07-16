@@ -47,6 +47,11 @@
       "description": "field micro-state / judge tier (#66) — a fast result is `provisional`; a judge review (#62) moves it to `confirmed` (value stands), `corrected` (value overruled in place), or `flagged` (questionable). Document-configurable vocab per surface; never fabricated.",
       "type": "string"
     },
+    "spanId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
     "provenance": {
       "$id": "FieldValueProvenance",
       "additionalProperties": false,
@@ -109,6 +114,254 @@
           "description": "ISO-8601 timestamp",
           "type": "string"
         },
+        "sourceChunks": {
+          "description": "capture chunk ids of the material window this value was drawn from",
+          "type": "array",
+          "items": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          }
+        },
+        "usage": {
+          "$id": "InvokeUsage",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "estimated"
+          ],
+          "properties": {
+            "promptTokens": {
+              "minimum": 0,
+              "description": "input tokens (prompt), when known",
+              "type": "integer"
+            },
+            "completionTokens": {
+              "minimum": 0,
+              "description": "output tokens (generated), when known",
+              "type": "integer"
+            },
+            "totalTokens": {
+              "minimum": 0,
+              "description": "prompt + completion, when the server reports it or both halves are known",
+              "type": "integer"
+            },
+            "estimated": {
+              "description": "true ⇒ counts are chars/4 estimates (the server reported no usage); false ⇒ measured from the API",
+              "type": "boolean"
+            },
+            "durationMs": {
+              "minimum": 0,
+              "description": "wall-clock duration of the invoke in ms",
+              "type": "integer"
+            }
+          }
+        },
+        "egress": {
+          "$id": "EgressDecision",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "reach",
+            "allowed",
+            "decidedBy",
+            "reason"
+          ],
+          "properties": {
+            "reach": {
+              "$id": "EgressReach",
+              "description": "layer 1 compatibility bucket: local-network (device loopback/managed or private LAN) vs hosted/public egress; use EgressDecision.destination for physical boundary truth",
+              "anyOf": [
+                {
+                  "const": "local",
+                  "type": "string"
+                },
+                {
+                  "const": "egress",
+                  "type": "string"
+                }
+              ]
+            },
+            "allowed": {
+              "description": "did the layered content-side policy permit hosted/public egress for this content?",
+              "type": "boolean"
+            },
+            "decidedBy": {
+              "$id": "EgressLayer",
+              "description": "which of the four layers decided (or `default` = no denial, `endpoint` = destination-classification decided)",
+              "anyOf": [
+                {
+                  "const": "endpoint",
+                  "type": "string"
+                },
+                {
+                  "const": "prompt",
+                  "type": "string"
+                },
+                {
+                  "const": "mode",
+                  "type": "string"
+                },
+                {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                {
+                  "const": "content-class",
+                  "type": "string"
+                },
+                {
+                  "const": "default",
+                  "type": "string"
+                }
+              ]
+            },
+            "reason": {
+              "minLength": 1,
+              "description": "one-line, human-readable why — safe to surface (no url/secret)",
+              "type": "string"
+            },
+            "destination": {
+              "$id": "EgressDestination",
+              "description": "physical destination of a completed invoke: device-local (managed/loopback), lan-local (device boundary crossed within the private network), or hosted-public",
+              "anyOf": [
+                {
+                  "const": "device-local",
+                  "type": "string"
+                },
+                {
+                  "const": "lan-local",
+                  "type": "string"
+                },
+                {
+                  "const": "hosted-public",
+                  "type": "string"
+                }
+              ]
+            },
+            "rawFrameTrust": {
+              "description": "present only when raw screen bytes crossed to a LAN-local HTTP endpoint under that endpoint’s explicit trustRawFrames opt-in",
+              "const": "explicit",
+              "type": "string"
+            }
+          }
+        },
+        "guard": {
+          "$id": "GuardVerdict",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "outcome",
+            "behavior",
+            "guarded",
+            "maskedSpanCount",
+            "reason"
+          ],
+          "properties": {
+            "outcome": {
+              "description": "clean = guard ran, nothing flagged; redacted = flagged spans masked, hop proceeded; held = hop suspended (strict, or fail-closed empty slot); unguarded = no guard active, proceeded under explicit acknowledgment",
+              "anyOf": [
+                {
+                  "const": "clean",
+                  "type": "string"
+                },
+                {
+                  "const": "redacted",
+                  "type": "string"
+                },
+                {
+                  "const": "held",
+                  "type": "string"
+                },
+                {
+                  "const": "unguarded",
+                  "type": "string"
+                }
+              ]
+            },
+            "behavior": {
+              "$id": "GuardBehavior",
+              "description": "redact-and-continue (default, mask spans + proceed) | hold-and-surface (strict, suspend the hop)",
+              "anyOf": [
+                {
+                  "const": "redact-and-continue",
+                  "type": "string"
+                },
+                {
+                  "const": "hold-and-surface",
+                  "type": "string"
+                }
+              ]
+            },
+            "guarded": {
+              "description": "true ⇒ a guard endpoint classified the content; false ⇒ no guard ran (acknowledged-unguarded or fail-closed-empty)",
+              "type": "boolean"
+            },
+            "maskedSpanCount": {
+              "minimum": 0,
+              "description": "how many spans were masked (0 for clean/held/unguarded)",
+              "type": "integer"
+            },
+            "spans": {
+              "description": "span descriptors (kind/start/length) — never the raw value; present when spans were flagged",
+              "type": "array",
+              "items": {
+                "$id": "GuardSpan",
+                "additionalProperties": false,
+                "type": "object",
+                "required": [
+                  "kind",
+                  "start",
+                  "length"
+                ],
+                "properties": {
+                  "kind": {
+                    "minLength": 1,
+                    "description": "the classifier label for this span (e.g. card-number) — a category, never the value",
+                    "type": "string"
+                  },
+                  "start": {
+                    "minimum": 0,
+                    "description": "character offset of the span in the outbound text",
+                    "type": "integer"
+                  },
+                  "length": {
+                    "minimum": 1,
+                    "description": "character length of the masked span (extent only — never the value)",
+                    "type": "integer"
+                  }
+                }
+              }
+            },
+            "guardEndpoint": {
+              "description": "the guard endpoint NAME that classified — never a url/secret; absent when no guard ran",
+              "type": "string"
+            },
+            "classifierDestination": {
+              "$id": "EgressDestination",
+              "description": "physical destination of a completed invoke: device-local (managed/loopback), lan-local (device boundary crossed within the private network), or hosted-public",
+              "anyOf": [
+                {
+                  "const": "device-local",
+                  "type": "string"
+                },
+                {
+                  "const": "lan-local",
+                  "type": "string"
+                },
+                {
+                  "const": "hosted-public",
+                  "type": "string"
+                }
+              ]
+            },
+            "reason": {
+              "minLength": 1,
+              "description": "one-line, human-readable why — safe to surface (no raw value)",
+              "type": "string"
+            }
+          }
+        },
         "judge": {
           "$id": "JudgeReview",
           "additionalProperties": false,
@@ -166,6 +419,269 @@
               "format": "date-time",
               "description": "ISO-8601 timestamp",
               "type": "string"
+            },
+            "spanId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "windowStart": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "windowEnd": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "sourceChunks": {
+              "description": "capture chunk ids of the exact transcript tail reviewed by this judge pass",
+              "type": "array",
+              "items": {
+                "minLength": 1,
+                "description": "opaque identifier",
+                "type": "string"
+              }
+            },
+            "usage": {
+              "$id": "InvokeUsage",
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "estimated"
+              ],
+              "properties": {
+                "promptTokens": {
+                  "minimum": 0,
+                  "description": "input tokens (prompt), when known",
+                  "type": "integer"
+                },
+                "completionTokens": {
+                  "minimum": 0,
+                  "description": "output tokens (generated), when known",
+                  "type": "integer"
+                },
+                "totalTokens": {
+                  "minimum": 0,
+                  "description": "prompt + completion, when the server reports it or both halves are known",
+                  "type": "integer"
+                },
+                "estimated": {
+                  "description": "true ⇒ counts are chars/4 estimates (the server reported no usage); false ⇒ measured from the API",
+                  "type": "boolean"
+                },
+                "durationMs": {
+                  "minimum": 0,
+                  "description": "wall-clock duration of the invoke in ms",
+                  "type": "integer"
+                }
+              }
+            },
+            "egress": {
+              "$id": "EgressDecision",
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "reach",
+                "allowed",
+                "decidedBy",
+                "reason"
+              ],
+              "properties": {
+                "reach": {
+                  "$id": "EgressReach",
+                  "description": "layer 1 compatibility bucket: local-network (device loopback/managed or private LAN) vs hosted/public egress; use EgressDecision.destination for physical boundary truth",
+                  "anyOf": [
+                    {
+                      "const": "local",
+                      "type": "string"
+                    },
+                    {
+                      "const": "egress",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "allowed": {
+                  "description": "did the layered content-side policy permit hosted/public egress for this content?",
+                  "type": "boolean"
+                },
+                "decidedBy": {
+                  "$id": "EgressLayer",
+                  "description": "which of the four layers decided (or `default` = no denial, `endpoint` = destination-classification decided)",
+                  "anyOf": [
+                    {
+                      "const": "endpoint",
+                      "type": "string"
+                    },
+                    {
+                      "const": "prompt",
+                      "type": "string"
+                    },
+                    {
+                      "const": "mode",
+                      "type": "string"
+                    },
+                    {
+                      "const": "workspace",
+                      "type": "string"
+                    },
+                    {
+                      "const": "content-class",
+                      "type": "string"
+                    },
+                    {
+                      "const": "default",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "reason": {
+                  "minLength": 1,
+                  "description": "one-line, human-readable why — safe to surface (no url/secret)",
+                  "type": "string"
+                },
+                "destination": {
+                  "$id": "EgressDestination",
+                  "description": "physical destination of a completed invoke: device-local (managed/loopback), lan-local (device boundary crossed within the private network), or hosted-public",
+                  "anyOf": [
+                    {
+                      "const": "device-local",
+                      "type": "string"
+                    },
+                    {
+                      "const": "lan-local",
+                      "type": "string"
+                    },
+                    {
+                      "const": "hosted-public",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "rawFrameTrust": {
+                  "description": "present only when raw screen bytes crossed to a LAN-local HTTP endpoint under that endpoint’s explicit trustRawFrames opt-in",
+                  "const": "explicit",
+                  "type": "string"
+                }
+              }
+            },
+            "guard": {
+              "$id": "GuardVerdict",
+              "additionalProperties": false,
+              "type": "object",
+              "required": [
+                "outcome",
+                "behavior",
+                "guarded",
+                "maskedSpanCount",
+                "reason"
+              ],
+              "properties": {
+                "outcome": {
+                  "description": "clean = guard ran, nothing flagged; redacted = flagged spans masked, hop proceeded; held = hop suspended (strict, or fail-closed empty slot); unguarded = no guard active, proceeded under explicit acknowledgment",
+                  "anyOf": [
+                    {
+                      "const": "clean",
+                      "type": "string"
+                    },
+                    {
+                      "const": "redacted",
+                      "type": "string"
+                    },
+                    {
+                      "const": "held",
+                      "type": "string"
+                    },
+                    {
+                      "const": "unguarded",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "behavior": {
+                  "$id": "GuardBehavior",
+                  "description": "redact-and-continue (default, mask spans + proceed) | hold-and-surface (strict, suspend the hop)",
+                  "anyOf": [
+                    {
+                      "const": "redact-and-continue",
+                      "type": "string"
+                    },
+                    {
+                      "const": "hold-and-surface",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "guarded": {
+                  "description": "true ⇒ a guard endpoint classified the content; false ⇒ no guard ran (acknowledged-unguarded or fail-closed-empty)",
+                  "type": "boolean"
+                },
+                "maskedSpanCount": {
+                  "minimum": 0,
+                  "description": "how many spans were masked (0 for clean/held/unguarded)",
+                  "type": "integer"
+                },
+                "spans": {
+                  "description": "span descriptors (kind/start/length) — never the raw value; present when spans were flagged",
+                  "type": "array",
+                  "items": {
+                    "$id": "GuardSpan",
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "start",
+                      "length"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "minLength": 1,
+                        "description": "the classifier label for this span (e.g. card-number) — a category, never the value",
+                        "type": "string"
+                      },
+                      "start": {
+                        "minimum": 0,
+                        "description": "character offset of the span in the outbound text",
+                        "type": "integer"
+                      },
+                      "length": {
+                        "minimum": 1,
+                        "description": "character length of the masked span (extent only — never the value)",
+                        "type": "integer"
+                      }
+                    }
+                  }
+                },
+                "guardEndpoint": {
+                  "description": "the guard endpoint NAME that classified — never a url/secret; absent when no guard ran",
+                  "type": "string"
+                },
+                "classifierDestination": {
+                  "$id": "EgressDestination",
+                  "description": "physical destination of a completed invoke: device-local (managed/loopback), lan-local (device boundary crossed within the private network), or hosted-public",
+                  "anyOf": [
+                    {
+                      "const": "device-local",
+                      "type": "string"
+                    },
+                    {
+                      "const": "lan-local",
+                      "type": "string"
+                    },
+                    {
+                      "const": "hosted-public",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "reason": {
+                  "minLength": 1,
+                  "description": "one-line, human-readable why — safe to surface (no raw value)",
+                  "type": "string"
+                }
+              }
             }
           }
         }

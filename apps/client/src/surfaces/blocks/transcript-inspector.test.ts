@@ -45,10 +45,11 @@ test('the inspector renders each transcript chunk newest-first: clock · stream 
   assert.match(html, /820ms/) // the sub-second span of the second chunk renders in ms
 })
 
-test('the stt slot is a SEPARATE line — the current config, NOT a per-chunk claim — and the #65 gap is disclosed', () => {
+test('the stt slot is a SEPARATE line — the current config, NOT a per-chunk claim — pointing at the durable trail (#116)', () => {
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([snapshot()])] }, defaultBlockRegistry))
   assert.match(html, /stt slot · whisper-cpp · ggml-base\.en/) // the CURRENT slot config, labelled
-  assert.match(html, /per-chunk stt provenance is not recorded, #65/) // the honest disclosure — never faked
+  assert.match(html, /NOT which endpoint served each chunk here/) // still no per-chunk claim on ring rows
+  assert.match(html, /Settings → Trace/) // the per-segment record now exists (#116) — the line says where
 })
 
 test('an empty stt slot reads "none configured" — honest, not blank', () => {

@@ -37,6 +37,11 @@
         "type": "string"
       }
     },
+    "spanId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
     "text": {
       "description": "the recognized text — flattened join of blocks (ocr) or the VLM prose",
       "type": "string"

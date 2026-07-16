@@ -25,11 +25,13 @@ export {
 export { parseJsonCandidates } from './parse.js'
 export {
   transcribeChunks,
+  TranscribeHeldWithProgress,
   buildTranscriptUpdates,
   isAudioChunk,
   captureLaneLabel,
   speakerLabel,
   type SttInvoke,
+  type SttInvokeMeta,
   type TranscribeDeps,
   type TranscribedSegment,
 } from './transcribe.js'
