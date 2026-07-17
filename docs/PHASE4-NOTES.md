@@ -6126,3 +6126,59 @@ their why-line / title — display context is not removed, only the copy payload
 
 **Gates.** contracts 110 · fixtures 15 · client 577 (574 + 3 added) · engine 1035 (one parallel-load flake,
 `api/summaries-surface-e2e.test.ts`, green on isolated rerun) — all green under Node 22.
+
+## #222 — chat input survives the live refresh (focus, Enter, calm strip)
+
+Rig QA of the chat/Ask window surfaced a cluster of chat-input defects, all rooted in one seam: the surface
+re-renders on live events by replacing the whole panel's `innerHTML` (`block-renderer/mount.ts` `renderInto`),
+and the `#134` input primitive was built to preserve DISPLAY state (draft/turns/status) across that wipe but
+not INTERACTION state (focus, caret, IME, keyboard submit).
+
+**The focus thief (mechanism, found before fixing).** `Hud.render()` → `onRender` → `renderInto` sets
+`target.innerHTML = renderToHtml(node)`, destroying and recreating every node — including the `.in-text`
+textarea the user is typing into. The trigger is the live-transcript fast path (`hud.ts` `ingestTranscript`
+→ `render()`), which fires on every `transcript.updated` event — roughly once a second during capture. The
+`#134` controller restored the draft TEXT after each wipe (`repaintFrom`) but never re-focused the fresh
+textarea or restored its caret, so keyboard focus landed on `document.body`: the owner "typed into nothing."
+This is DOM-node replacement inside the (already `focusable:true`) chat window, NOT a cross-window focus grab —
+verified: no renderer-side `.focus()`/`blur` on the refresh path, and the only window `focus()` calls are the
+shell's app-registry ops, not tied to a refresh.
+
+**The minimal honest repair (not a renderer rewrite).** `InputSession.rerenderInto(container, doRender)` now
+owns the destructive re-render: it snapshots focus + caret BEFORE the wipe and restores them in the paired
+`repaint` AFTER (one synchronous turn, so the input never visibly loses focus), keyed off a one-shot
+`focusSnapshot` that only `captureFocus` sets — so ordinary repaints (a streamed `chat.delta`, a status change)
+never move focus. Focus is tracked with delegated `focusin`/`focusout` (they bubble; `focus`/`blur` do not).
+dev-entry's `onRender` calls `rerenderInto(panel, () => renderInto(panel, node))` instead of a bare
+`renderInto` + `repaint`. renderInto itself is untouched (keyed DOM diffing of the input subtree was the
+heavier alternative; preserve/restore is the sanctioned minimal repair).
+
+**IME composition.** Restoring focus cannot restore an in-flight composition buffer once the node is gone, so
+the wipe is DEFERRED while a composition is active (`compositionstart`/`compositionend` set a `composing`
+flag; `rerenderInto` early-returns and remembers a `renderDeferred`), and flushed on `compositionend` via an
+injected `requestRender` (dev-entry → `hud.rerender()`). `repaint` also refuses to rewrite `.value` while
+composing. Live transcript lines accumulate in the Hud meanwhile, so nothing is lost — the flush paints them.
+
+**Enter submits (the missing keyboard path).** There was no keydown handler at all — submission was
+click-only. A delegated `keydown` gated on the focused `.in-text` makes Enter SUBMIT and Shift+Enter insert a
+newline. It is NOT a global capture (keydown only fires on the focused element, and the handler acts only when
+that element is the chat input), and Enter DURING composition confirms the IME candidate (both our `composing`
+flag and the event's own `isComposing` guard it) rather than submitting.
+
+**Calm strip (the sane-defaults complaint).** The status strip beneath the box painted `reply.budget.note`
+verbatim — the raw context-assembly disclosure ("Context: transcript(3 of 12, capped). Omitted: pins
+(empty).") — exactly the machine-speak hud-voice bans from a glanceable surface. `calmChatStatus` now makes
+the DEFAULT calm: a clean answer shows nothing (the answer itself is the feedback), a DEGRADED turn says so in
+human words ("Answered from a trimmed view of the conversation."; "Answered without your screen — …"), and the
+full machine note moves behind a hover `title` (its true home is the Diagnostics surface). The engine's note
+is unchanged — it stays the honest machine record; the client decides how calmly to surface it. Follow-up
+noted for the screen-context owner: whether to disclose a screen-skip on EVERY typed send (vs only the
+explain-my-screen path) when screen capture is simply off is that domain's call, not this strip's.
+
+**Proof.** DOM-level focus/caret retention, the composition defer+flush, the composition-safe `.value` guard,
+Enter/Shift+Enter/composition-Enter, the focus-scope gate, and `calmChatStatus` are all driven deterministically
+through the REAL `InputSession` over the structural-DOM shim in `input-submit.test.ts` (the fake textarea
+carries `focus()`/`selectionStart`/`selectionEnd`, and `dispatch` fires the real delegated listeners). The
+true real-window proof — a real `transcript.updated` WS event re-rendering the panel mid-type while focus,
+caret, and text survive — is added to `scripts/chat-input-e2e.mjs` (real Electron + hud.html + preload);
+like the other `test:e2e:*` scripts it needs a GUI/darwin and is rig-verified, not in headless CI.

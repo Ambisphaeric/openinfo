@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { ChatReply, ChatTurn } from '@openinfo/contracts'
-import { InputSession, type AttachedDoc, type InputDomNode, type UploadFile } from './input-submit.js'
+import { InputSession, calmChatStatus, type AttachedDoc, type InputDomEvent, type InputDomEventType, type InputDomNode, type UploadFile } from './input-submit.js'
 
 /**
  * A tiny structural-DOM shim — enough of querySelector/closest/getAttribute/addEventListener + the value/
@@ -17,11 +17,24 @@ class FakeNode implements InputDomNode {
   value = ''
   innerHTML = ''
   files: { length: number; item(i: number): UploadFile | null } | null = null
-  private listeners = new Map<string, ((event: { target: InputDomNode | null }) => void)[]>()
+  // textarea interaction state (the #222 focus repair): a real HTMLTextAreaElement carries these.
+  selectionStart: number | null = null
+  selectionEnd: number | null = null
+  focused = false
+  private listeners = new Map<string, ((event: InputDomEvent) => void)[]>()
 
   constructor(tag: string, classes: string[] = []) {
     this.tag = tag
     this.classes = new Set(classes)
+  }
+
+  focus(): void {
+    this.focused = true
+  }
+
+  setSelectionRange(start: number, end: number): void {
+    this.selectionStart = start
+    this.selectionEnd = end
   }
 
   add(child: FakeNode): FakeNode {
@@ -59,20 +72,30 @@ class FakeNode implements InputDomNode {
     return this.attrs.get(name) ?? null
   }
 
-  addEventListener(type: 'click' | 'change' | 'input', handler: (event: { target: InputDomNode | null }) => void): void {
+  addEventListener(type: InputDomEventType, handler: (event: InputDomEvent) => void): void {
     const list = this.listeners.get(type) ?? []
     list.push(handler)
     this.listeners.set(type, list)
   }
 
-  dispatch(type: 'click' | 'change' | 'input', target: FakeNode): void {
-    for (const h of this.listeners.get(type) ?? []) h({ target })
+  /** Fire a delegated event on the container toward `target`. `extra` carries key/modifier/composition fields.
+   * Returns true if a handler called preventDefault (the Enter-submits path stops the textarea's newline). */
+  dispatch(type: InputDomEventType, target: FakeNode, extra: Partial<InputDomEvent> = {}): boolean {
+    let defaultPrevented = false
+    const event: InputDomEvent = { target, preventDefault: () => { defaultPrevented = true }, ...extra }
+    for (const h of this.listeners.get(type) ?? []) h(event)
+    return defaultPrevented
   }
 }
 
-/** Build the DOM the renderer emits (fresh each render — re-injection regions start empty). */
-const buildContainer = (): { container: FakeNode; textarea: FakeNode; file: FakeNode; submit: FakeNode } => {
-  const container = new FakeNode('div', ['hud'])
+interface Block {
+  textarea: FakeNode
+  file: FakeNode
+  submit: FakeNode
+}
+
+/** Add the block subtree the pure renderer emits into `container` (re-injection regions start empty). */
+const addBlock = (container: FakeNode): Block => {
   const block = container.add(new FakeNode('div', ['input-block']))
   block.attrs.set('data-target', 'chat')
   block.attrs.set('data-submit', '/chat')
@@ -86,7 +109,24 @@ const buildContainer = (): { container: FakeNode; textarea: FakeNode; file: Fake
   const submit = row.add(new FakeNode('button', ['mini', 'in-submit']))
   submit.attrs.set('data-verb', 'input-submit')
   block.add(new FakeNode('div', ['in-status']))
-  return { container, textarea, file, submit }
+  return { textarea, file, submit }
+}
+
+/** Build the DOM the renderer emits (fresh each render — re-injection regions start empty). */
+const buildContainer = (): { container: FakeNode; textarea: FakeNode; file: FakeNode; submit: FakeNode } => {
+  const container = new FakeNode('div', ['hud'])
+  const block = addBlock(container)
+  return { container, ...block }
+}
+
+/**
+ * Simulate a destructive `renderInto` on the SAME container the listeners live on: the container node
+ * persists (the delegated listeners survive), but its children — including the focused textarea — are
+ * replaced with a fresh subtree. Returns the fresh block, exactly as it is after the innerHTML swap.
+ */
+const wipe = (container: FakeNode): Block => {
+  container.children = []
+  return addBlock(container)
 }
 
 const reply = (answer: string, note = 'ok', citations: ChatReply['citations'] = []): ChatReply => ({
@@ -97,13 +137,15 @@ const reply = (answer: string, note = 'ok', citations: ChatReply['citations'] = 
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
-test('a text submit posts the typed message, then paints both turns and the budget note', async () => {
+test('a text submit posts the typed message, then paints both turns; a clean answer leaves the status calm', async () => {
   const calls: { message: string; pinId?: string; history: ChatTurn[] }[] = []
   const session = new InputSession({
     submit: async (input) => {
       calls.push({ message: input.message, ...(input.pinId !== undefined ? { pinId: input.pinId } : {}), history: input.history })
       return reply('the answer', '~3 useful turns left')
     },
+    // the clean production case: the screen frame was captured fine, so there is no skip to disclose.
+    captureScreen: async () => ({ ok: true, frame: { contentType: 'image/jpeg', data: 'aGk=' } }),
   })
   const { container, textarea, submit } = buildContainer()
   session.install(container)
@@ -117,7 +159,8 @@ test('a text submit posts the typed message, then paints both turns and the budg
   const log = container.querySelector('.in-log')!.innerHTML
   assert.match(log, /You<\/span><span class="in-msg">what is the topic\?/)
   assert.match(log, /openinfo<\/span><span class="in-msg">the answer/)
-  assert.match(container.querySelector('.in-status')!.innerHTML, /in-note ok">~3 useful turns left/)
+  // hud-voice: a clean answer is its own feedback — the strip stays quiet (no raw budget/source dump).
+  assert.equal(container.querySelector('.in-status')!.innerHTML, '')
 })
 
 test('a FAILED submit paints the reason as visible text (never a silent no-op)', async () => {
@@ -329,9 +372,12 @@ test('Ask face: EVERY send captures one frame and ships it; a refused capture is
   second.container.dispatch('click', second.submit)
   await flush()
   assert.equal(sent[1]!.screenshot, undefined, 'no frame shipped')
-  const status = second.container.querySelector('.in-status')!
-  assert.match(status.innerHTML, /Omitted: screen \(empty\)/, 'the engine note still paints')
-  assert.match(status.innerHTML, /Screen skipped: screen capture is off/, 'the client-side WHY rides along')
+  const status = second.container.querySelector('.in-status')!.innerHTML
+  // hud-voice: the VISIBLE line is a calm human sentence about the user's world…
+  assert.match(status, /Answered without your screen/, 'the degraded turn is named in human words')
+  assert.match(status, /screen capture is off/, 'the client-side WHY rides along, in the visible line')
+  // …and the raw machine disclosure ("Omitted: screen (empty)") moves behind inspection (a hover title).
+  assert.match(status, /title="[^"]*Omitted: screen \(empty\)/, 'the machine note is reachable but not shown as slop')
 })
 
 test('Ask face: an EMPTY send with a frame becomes the default-ask DOCUMENT question (explain my screen)', async () => {
@@ -418,4 +464,201 @@ test('Ask face: seedHistory renders the rehydrated thread once, discloses a trun
   // A second (late) seed against a non-empty session is a no-op — a live conversation is never clobbered.
   session.seedHistory({ turns: [{ role: 'user', content: 'CLOBBER' }], total: 1, truncated: false })
   assert.ok(!log.innerHTML.includes('CLOBBER'))
+})
+
+// ── #222 chat-focus repair ──────────────────────────────────────────────────────────────────────────
+
+test('#222: keyboard focus + caret survive a destructive live re-render (never "typing into nothing")', () => {
+  // The rig bug: while typing, the ~1/s live refresh replaces the whole panel via renderInto, destroying the
+  // focused textarea. Before the fix, repaint restored the DRAFT but not focus/caret — the user "typed into
+  // nothing." This drives the REAL rerenderInto seam dev-entry now uses, over the SAME container the wipe
+  // preserves. Without the captureFocus + focus/caret restore, the final three assertions fail.
+  const session = new InputSession({ submit: async () => reply('x') })
+  const { container } = buildContainer()
+  session.install(container)
+  const before = container.querySelector('.in-text')!
+  container.dispatch('focusin', before) // the user is focused in the input
+  before.value = 'hello world'
+  container.dispatch('input', before) // typing captured into the draft
+  before.selectionStart = 5
+  before.selectionEnd = 5 // caret sits right after "hello"
+
+  let after: FakeNode | undefined
+  session.rerenderInto(container, () => {
+    after = wipe(container).textarea // renderInto swaps in a brand-new, empty, unfocused textarea
+  })
+
+  assert.notEqual(after, before, 'the textarea node really was replaced (a true destructive re-render)')
+  assert.equal(after!.value, 'hello world', 'the in-progress draft is restored')
+  assert.equal(after!.focused, true, 'keyboard focus is restored to the fresh input — the refresh did not steal it')
+  assert.equal(after!.selectionStart, 5, 'the caret position is restored')
+  assert.equal(after!.selectionEnd, 5)
+})
+
+test('#222: a re-render when the input is NOT focused leaves focus alone (no focus stealing either way)', () => {
+  const session = new InputSession({ submit: async () => reply('x') })
+  const { container } = buildContainer()
+  session.install(container)
+  // never focused — a background refresh must not yank focus INTO the input.
+  let after: FakeNode | undefined
+  session.rerenderInto(container, () => {
+    after = wipe(container).textarea
+  })
+  assert.equal(after!.focused, false, 'an unfocused input stays unfocused across a refresh')
+})
+
+test('#222: a destructive re-render is DEFERRED during IME composition, then flushed on compositionend', () => {
+  // Replacing the textarea mid-composition would drop the IME buffer — so the wipe must not run while a
+  // composition is in flight. The deferred refresh is flushed once composition ends.
+  let renders = 0
+  const session = new InputSession({ submit: async () => reply('x'), requestRender: () => { renders += 1 } })
+  const { container } = buildContainer()
+  const textarea = container.querySelector('.in-text')!
+  session.install(container)
+  container.dispatch('focusin', textarea)
+  container.dispatch('compositionstart', textarea)
+  assert.equal(session.isComposing(), true)
+
+  let wiped = false
+  session.rerenderInto(container, () => { wiped = true })
+  assert.equal(wiped, false, 'the wipe was deferred — the composing node was NOT destroyed')
+  assert.equal(renders, 0, 'no flush yet — composition is still in flight')
+
+  container.dispatch('compositionend', textarea)
+  assert.equal(session.isComposing(), false)
+  assert.equal(renders, 1, 'compositionend flushed exactly the one deferred refresh')
+})
+
+test('#222: repaint does not overwrite the textarea value while a composition is in flight', () => {
+  // A non-destructive repaint (e.g. a streamed chat delta) must not write .value mid-composition — that
+  // would disrupt the live IME buffer. Once composition ends, the draft restore resumes normally.
+  const session = new InputSession({ submit: async () => reply('x') })
+  const { container } = buildContainer()
+  const textarea = container.querySelector('.in-text')!
+  session.install(container)
+  textarea.value = 'earlier draft'
+  container.dispatch('input', textarea) // draft = 'earlier draft'
+  container.dispatch('compositionstart', textarea)
+  textarea.value = 'mid-composition-buffer' // the IME owns the value now
+  session.repaint(container)
+  assert.equal(textarea.value, 'mid-composition-buffer', 'repaint left the composing value untouched')
+  container.dispatch('compositionend', textarea)
+})
+
+test('#222: Enter submits, Shift+Enter inserts a newline, and Enter mid-composition never submits', async () => {
+  const posted: string[] = []
+  const session = new InputSession({ submit: async (input) => { posted.push(input.message); return reply('ok') } })
+  const { container, textarea } = buildContainer()
+  session.install(container)
+
+  // Shift+Enter is a newline — no submit, and the default (newline insertion) is NOT prevented.
+  textarea.value = 'line one'
+  container.dispatch('input', textarea)
+  const shiftPrevented = container.dispatch('keydown', textarea, { key: 'Enter', shiftKey: true })
+  await flush()
+  assert.equal(posted.length, 0, 'Shift+Enter does not submit')
+  assert.equal(shiftPrevented, false, 'Shift+Enter keeps the default newline')
+
+  // Enter WHILE composing confirms the IME candidate — it must not submit.
+  container.dispatch('compositionstart', textarea)
+  const composingPrevented = container.dispatch('keydown', textarea, { key: 'Enter', isComposing: true })
+  await flush()
+  assert.equal(posted.length, 0, 'Enter during composition confirms the candidate, never submits')
+  assert.equal(composingPrevented, false, 'the composition Enter is left to the IME')
+  container.dispatch('compositionend', textarea)
+
+  // A plain Enter submits and prevents the newline.
+  const enterPrevented = container.dispatch('keydown', textarea, { key: 'Enter' })
+  await flush()
+  assert.equal(enterPrevented, true, 'Enter prevents the textarea newline')
+  assert.deepEqual(posted, ['line one'], 'Enter submits the typed message')
+})
+
+test('#222: Enter is scoped to the input — a keydown elsewhere is never captured', async () => {
+  const posted: string[] = []
+  const session = new InputSession({ submit: async (input) => { posted.push(input.message); return reply('ok') } })
+  const { container, textarea, submit } = buildContainer()
+  session.install(container)
+  textarea.value = 'typed'
+  container.dispatch('input', textarea)
+  // Enter dispatched toward a NON-input element (e.g. a button) must not submit — no global key capture.
+  container.dispatch('keydown', submit, { key: 'Enter' })
+  await flush()
+  assert.equal(posted.length, 0, 'Enter outside the chat input is ignored')
+})
+
+test('#222: calmChatStatus keeps the default calm and moves the machine note behind inspection', () => {
+  // A clean answer → nothing visible (the answer is the feedback); the raw note is still available as detail.
+  const clean = calmChatStatus(reply('a', 'Context: transcript(3 of 12, capped), screen(1). Omitted: pins (empty).'))
+  assert.equal(clean.text, '', 'a clean answer shows no status text')
+  assert.match(clean.detail, /Context: transcript/, 'the full machine disclosure is preserved for inspection')
+
+  // A trimmed-context turn is named in human words, no source dump.
+  const trimmed = calmChatStatus({ ...reply('a', 'Context: transcript(3 of 40, capped).'), budget: { ...reply('a').budget, truncated: true, note: 'Context: transcript(3 of 40, capped).' } })
+  assert.match(trimmed.text, /trimmed view of the conversation/)
+  assert.doesNotMatch(trimmed.text, /transcript|Context:|capped/, 'no machine-speak in the visible line')
+
+  // A skipped screen is disclosed in human words; the machine note rides detail.
+  const skipped = calmChatStatus(reply('a', 'Context: none.'), 'screen capture is off')
+  assert.match(skipped.text, /Answered without your screen — screen capture is off/)
+  assert.match(skipped.detail, /Screen skipped: screen capture is off/)
+})
+
+test('#222: a blur without compositionend ends the composition (never a permanently frozen panel)', () => {
+  // Some IMEs end a composition on blur WITHOUT emitting compositionend/compositioncancel. If `composing`
+  // stuck true, every later rerenderInto would defer forever — a frozen panel. A blur must clear it + flush.
+  let renders = 0
+  const session = new InputSession({ submit: async () => reply('x'), requestRender: () => { renders += 1 } })
+  const { container } = buildContainer()
+  const textarea = container.querySelector('.in-text')!
+  session.install(container)
+  container.dispatch('focusin', textarea)
+  container.dispatch('compositionstart', textarea)
+  assert.equal(session.isComposing(), true)
+
+  let wiped = false
+  session.rerenderInto(container, () => { wiped = true })
+  assert.equal(wiped, false, 'the refresh was deferred while composing')
+
+  // the input blurs with NO compositionend — composition must not stick, and the deferred render flushes.
+  container.dispatch('focusout', textarea)
+  assert.equal(session.isComposing(), false, 'a blur clears a stuck composition')
+  assert.equal(renders, 1, 'the deferred render was flushed on blur')
+
+  // the NEXT refresh renders normally — the panel is not frozen in permanent deferral.
+  let wipedAgain = false
+  session.rerenderInto(container, () => { wipedAgain = true })
+  assert.equal(wipedAgain, true, 'rerenderInto is no longer deferred')
+})
+
+test('#222: compositioncancel ends the composition exactly like compositionend', () => {
+  let renders = 0
+  const session = new InputSession({ submit: async () => reply('x'), requestRender: () => { renders += 1 } })
+  const { container } = buildContainer()
+  const textarea = container.querySelector('.in-text')!
+  session.install(container)
+  container.dispatch('compositionstart', textarea)
+  session.rerenderInto(container, () => {}) // deferred
+  container.dispatch('compositioncancel', textarea)
+  assert.equal(session.isComposing(), false, 'compositioncancel terminates the composition')
+  assert.equal(renders, 1, 'and flushes the deferred render')
+})
+
+test('#222: a throwing render still consumes the one-shot focus snapshot (no phantom focus later)', () => {
+  const session = new InputSession({ submit: async () => reply('x') })
+  const { container } = buildContainer()
+  const first = container.querySelector('.in-text')!
+  session.install(container)
+  container.dispatch('focusin', first)
+  first.value = 'x'
+  container.dispatch('input', first)
+
+  // a render that throws must not leak the focus snapshot captured before it.
+  assert.throws(() => session.rerenderInto(container, () => { throw new Error('render boom') }), /render boom/)
+
+  // a later, unrelated repaint on a fresh (unfocused) textarea must NOT be re-focused by a leaked snapshot.
+  const fresh = wipe(container).textarea
+  fresh.focused = false
+  session.repaint(container)
+  assert.equal(fresh.focused, false, 'no leaked snapshot phantom-focuses a later repaint')
 })

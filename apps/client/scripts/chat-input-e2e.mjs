@@ -11,6 +11,10 @@
  *   3) focuses the `.in-text` textarea and sends REAL character key events (webContents.sendInputEvent) — the
  *      exact path that NSBeeps into the void when the window is `focusable:false`. It asserts the characters
  *      LAND in the input. This is impossible unless the chat's per-surface `focusable` override took effect.
+ *   4) (#222) broadcasts a REAL `transcript.updated` WS event mid-type — the live refresh that re-renders the
+ *      whole panel (renderInto wipes innerHTML, destroying the focused textarea) — and asserts keyboard focus,
+ *      the caret, and the in-progress text all SURVIVE, so typing keeps landing. This is the rig "typing into
+ *      nothing" defect proven in a real window; the deterministic DOM-level coverage lives in input-submit.test.
  *
  * The window is built from surfaceWindowSpec('surf-openinfo-chat', …) — the SAME resolver the shell factory
  * uses — so the test drives the real shipped window config (chrome + width + focusability), not a hand-rolled
@@ -91,6 +95,12 @@ const fail = (msg) => {
 const delay = (ms) => new Promise((r) => setTimeout(r, ms))
 const near = (a, b, tol = 8) => Math.abs(a - b) <= tol
 
+/** Broadcast a WS event frame ({name,payload}) to the connected client — the real live-refresh trigger. */
+const broadcast = (name, payload) => {
+  const frame = wsFrame(JSON.stringify({ name, payload }))
+  for (const s of sockets) s.write(frame)
+}
+
 let win
 const drive = (expr) => win.webContents.executeJavaScript(expr)
 
@@ -136,14 +146,28 @@ const run = async () => {
   await delay(80)
   const focused = await drive('document.activeElement === document.querySelector(".in-text")')
   if (focused !== true) return fail('the .in-text input never became the active element (window cannot take focus?)')
-  const phrase = 'hello openinfo'
-  await typeText(phrase)
+  await typeText('hello ')
+  await delay(120)
+
+  // 4) #222 focus-across-refresh (the critical rig defect): a live transcript/distillate event re-renders the
+  //    whole panel — renderInto wipes innerHTML, destroying the very textarea being typed into. Keyboard focus,
+  //    the caret, and the in-progress text MUST survive; the rig bug was "typing into nothing" as the ~1/s
+  //    refresh stole focus. Fire the REAL WS event the client listens for, then prove focus is retained AND
+  //    live (typing continues to land in the same, now re-rendered, input).
+  broadcast('transcript.updated', { source: 'mic', text: 'a distilled line arriving mid-type', capturedAtRange: { end: new Date().toISOString() } })
+  await delay(250)
+  const stillFocused = await drive('document.activeElement === document.querySelector(".in-text")')
+  if (stillFocused !== true) return fail('the live refresh STOLE focus from the chat input (the #222 "typing into nothing" bug)')
+  const afterRefresh = await drive('document.querySelector(".in-text").value')
+  if (afterRefresh !== 'hello ') return fail(`the in-progress text was lost across the refresh: ${JSON.stringify(afterRefresh)} ≠ "hello "`)
+
+  await typeText('openinfo')
   await delay(120)
   const value = await drive('document.querySelector(".in-text").value')
-  console.log(`[e2e] typed=${JSON.stringify(phrase)}  input.value=${JSON.stringify(value)}`)
-  if (value !== phrase) return fail(`keystrokes did not land: input.value=${JSON.stringify(value)} ≠ ${JSON.stringify(phrase)} (focusable override not applied?)`)
+  console.log(`[e2e] typed across a live refresh  input.value=${JSON.stringify(value)}`)
+  if (value !== 'hello openinfo') return fail(`keystrokes did not land across the refresh: input.value=${JSON.stringify(value)} ≠ "hello openinfo"`)
 
-  console.log('\n[e2e] PASS — chat window accepts real keystrokes and obeys its panel extents (one height authority)')
+  console.log('\n[e2e] PASS — chat keeps keyboard focus + caret + text across a live refresh and obeys its panel extents')
   app.exit(0)
 }
 
