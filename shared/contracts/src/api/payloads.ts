@@ -474,6 +474,12 @@ export const QueryResult = Type.Object(
           'how many rows a user DISMISSED were excluded from these results (#66). Present only when > 0, so a block that emptied purely via suppression can disclose it in its empty-state — explainable, not mysterious.',
       }),
     ),
+    noCurrentSession: Type.Optional(
+      Type.Boolean({
+        description:
+          'true ⇒ this query asked for `session: "current"` but NO session is live this process (#210/#215), so a session-scoped source read honest-empty rather than the previous session\'s rows. Present only when true. Lets a block distinguish its "no session running" empty state (start a session) from a "session live but nothing captured yet" empty — the two truths hud-voice requires be told apart. Absent ⇒ not that state (a live session, or a workspace-level source that carries no session dimension).',
+      }),
+    ),
   },
   { $id: 'QueryResult', additionalProperties: false },
 )

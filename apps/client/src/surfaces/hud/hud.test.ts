@@ -40,7 +40,12 @@ class FakeTransport implements HudTransport {
     this.queryCalls += 1
     this.lastQuerySurfaceId = surfaceId
     const items = query.source === 'moments' ? this.moments : query.source === 'live-senses' ? this.liveSenses : []
-    return Promise.resolve({ source: query.source, items, truncated: false })
+    // Mirror the engine's honest empty-scope resolution (#210/#215): a `session: 'current'` read of a
+    // session-scoped source with NO live session returns empty AND discloses `noCurrentSession`, so the
+    // block can word its "no session running" empty state. Present only when true (additive).
+    const sessionScoped = new Set(['relevant-now', 'moments', 'todos', 'drafts', 'distillates', 'fields'])
+    const noCurrentSession = query.params?.['session'] === 'current' && this.live.length === 0 && sessionScoped.has(query.source)
+    return Promise.resolve({ source: query.source, items, truncated: false, ...(noCurrentSession ? { noCurrentSession: true } : {}) })
   }
   sessions(): Promise<Session[]> {
     return Promise.resolve(this.live)
@@ -111,6 +116,12 @@ test('the HUD loads a surface, renders once, and re-queries on live WS events', 
   assert.match(html, /class="livedot off"/)
   assert.doesNotMatch(html, /nowline/)
   assert.doesNotMatch(html, /class="mo"/) // no moment rows — honest empty, not stale content
+  // #215: the empty session-scoped blocks are honest, not BARE. With no session live, they say WHY the
+  // stream is empty and what to do (start a session) — distinguishing "no session running" from the
+  // "live but nothing captured yet" state, per hud-voice. The moments + relevant-now blocks both say so.
+  assert.match(html, /No session running/) // the no-live-session empty why-line renders (not a bare header)
+  assert.match(html, /moments appear here once you start a session/) // per-block, human, no raw enums
+  assert.match(html, /people and topics surface here once you start a session/) // relevant-now's own copy
 
   // a session starts and a commitment is extracted; the engine emits WS events → HUD re-queries
   transport.live = [session()]

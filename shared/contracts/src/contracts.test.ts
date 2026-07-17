@@ -157,6 +157,23 @@ test('sense-lanes is a closed surface block over the live-senses query source', 
   )
 })
 
+test('QueryResult carries the additive no-current-session scope disclosure (#215), present only when true', () => {
+  // The honest empty-scope flag rides the QueryResult so a session-scoped block distinguishes "no session
+  // running" from "live but nothing captured yet". Additive/optional: a result WITHOUT it is still valid
+  // (existing consumers unaffected), a result WITH it true validates, and it is boolean-typed (no enum leak).
+  const base = { source: 'moments', items: [], truncated: false }
+  assert.deepEqual([...Value.Errors(AllSchemas.QueryResult, base)], [], 'disclosure is optional — absent is valid')
+  assert.deepEqual(
+    [...Value.Errors(AllSchemas.QueryResult, { ...base, noCurrentSession: true })],
+    [],
+    'disclosure validates when present and true',
+  )
+  assert.ok(
+    [...Value.Errors(AllSchemas.QueryResult, { ...base, noCurrentSession: 'yes' })].length > 0,
+    'disclosure is boolean-typed — a string is rejected (contract stays closed)',
+  )
+})
+
 test('SenseLaneSnapshot/Set are atomic, metadata-only, and pin the canonical three-lane tuple', () => {
   const mic = senseLane('mic')
   const valid = {

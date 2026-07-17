@@ -39,7 +39,12 @@ const streamRow = (distillate: Distillate, actions: Actions): VNode =>
     h('span', { class: 'go' }, ...actionButtons(actions, distillate.text)),
   )
 
-const emptyRow = (): VNode =>
+/**
+ * The empty state, EXPLAINABLE not silent — and honest about WHY (#215/hud-voice). With no session live
+ * this process (`noCurrentSession`, #210) the stream is empty because nothing is being captured, so it says
+ * so and what to do; with a session live it reflects the stream filling as capture is distilled. Distinct.
+ */
+const emptyRow = (noSession: boolean): VNode =>
   h(
     'div',
     { class: 'rel' },
@@ -47,8 +52,12 @@ const emptyRow = (): VNode =>
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, 'No distilled windows yet'),
-      h('span', { class: 'why' }, 'the distillate stream fills as capture is distilled this session'),
+      h('span', { class: 'ttl' }, noSession ? 'No session running' : 'No distilled windows yet'),
+      h(
+        'span',
+        { class: 'why' },
+        noSession ? 'summaries appear here once you start a session' : 'the distillate stream fills as capture is distilled this session',
+      ),
     ),
   )
 
@@ -57,6 +66,6 @@ export const renderDistillates: BlockRenderer = ({ block, result }) => {
   const actions = block.actions ?? []
   const all = (result?.items ?? []) as Distillate[]
   const windows = block.top !== undefined ? all.slice(0, block.top) : all
-  const rows: VNode[] = windows.length > 0 ? windows.map((d) => streamRow(d, actions)) : [emptyRow()]
+  const rows: VNode[] = windows.length > 0 ? windows.map((d) => streamRow(d, actions)) : [emptyRow(result?.noCurrentSession === true)]
   return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), ...rows)
 }

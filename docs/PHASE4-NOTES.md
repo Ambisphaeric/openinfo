@@ -5978,3 +5978,59 @@ summaries incorporating later related sessions with prior versions kept), the ra
 derivation-path proof, and the default human-UI emphasis (five-minute + session surfaced, sentence-level
 distillates demoted to Diagnostics). The contract already carries the episode/project levels, so slice 2 is
 production wiring, not a re-model.
+
+## #215 — honest empty-state why-lines for session-scoped blocks when no session is live
+
+**The gap left by #210.** #210 made a `session:'current'` read with no live session HONEST — the
+session-scoped blocks (`moments`, `todos`, `drafts`, `distillates`, `fields`, `relevant-now`) read empty
+instead of the previous session's rows. But the resulting empty was BARE: a static header over an empty
+stream, no why-line. It read as "nothing here" without distinguishing the two truths a reader must tell
+apart — **no session is running** (nothing will appear until one starts) vs **a session is live but has
+captured nothing yet** (the live sibling `live-transcript` already says "listening…"). That ambiguity is
+exactly what the hud-voice honest-state rules exist to remove. Filed from the #214 fresh-eyes retro.
+
+**The enabling mechanism — a per-QueryResult scope disclosure (additive contract).** The client can not
+reliably infer the state from the HUD's Now line: a block may target a DIFFERENT `params.workspace` than the
+surface (the Now line reflects the surface workspace's session, surface-global), so the truth is
+per-block-query, not per-surface. So the honest empty-scope flag rides the exact result whose scope was
+resolved: `QueryResult` gains an OPTIONAL `noCurrentSession: boolean` (`shared/contracts`), present ONLY
+when true, additive — the schema regen shows the single new field (not added to `required`), existing
+consumers unaffected, pinned by a `contracts.test.ts` test (optional-absent valid, present-true valid,
+non-boolean rejected). `compileQuery`'s existing #210 session-scoped short-circuit
+(`apps/engine/src/surfaces/query.ts`) now sets it — `cap([], 0, true)` — so a session-scoped source that
+read empty ONLY because no session is live SAYS so; a live session, a workspace-level source, and an
+all-history block all carry NO disclosure (unchanged shape).
+
+**The client — each block words two distinct empty states off the flag.** Every session-scoped block
+renderer (`apps/client/src/surfaces/blocks/{moments,relevant-now,todos,drafts,distillates,fields}.ts`) now
+branches its empty state on `result?.noCurrentSession === true`, NOT on the Now line — the disclosure is the
+single source of truth. `moments` and `relevant-now` previously had NO empty state (bare header); both now
+render an explainable empty row (reusing the sibling `.rel` `.ttl`/`.why` markup so styling is inherited).
+The four blocks that already had a live-but-empty line keep it verbatim (absent flag ⇒ unchanged copy, so
+the notetaker/pill layout tests are untouched) and gain the no-session branch. Copy is per-block, human, no
+raw enums:
+
+- no-session (all six): `.ttl` "No session running" (the stable glance truth), `.why` per block — moments
+  "moments appear here once you start a session", relevant-now "people and topics surface here once you
+  start a session", todos "follow-ups collect here once you start a session", drafts "start a session — a
+  draft is prepared when it ends", distillates "summaries appear here once you start a session", fields
+  "start a session and fields fill as prompts run". "Start a session" is the product's canonical phrasing
+  (transcript-inspector, capture-status).
+- live-but-empty (kin to "listening…"): the four existing lines unchanged; moments "Nothing captured yet /
+  moments appear here as the conversation unfolds", relevant-now "Nothing relevant yet / people and topics
+  surface here as you talk".
+
+**Acceptance criteria (file evidence).** (1) Each session-scoped block renders an explicit human why-line in
+the no-live-session empty state — no bare header, no literal `undefined`: the six block renderers' empty
+branches, pinned by `block-renderer/renderer.test.ts` ("#215 … two DISTINCT empty states", asserts all six
+say "No session running" and their per-block why-lines). (2) The no-session and live-but-empty empties are
+visibly distinct: same test renders BOTH states and asserts `notEqual` end-to-end + that "No session
+running" never appears in the live-but-empty render. (3) A driven boot test asserts the no-live-session copy
+for representative blocks: `hud/hud.test.ts` boot assertion extended — the FakeTransport faithfully mirrors
+the engine's disclosure, and the initial render (no live session) asserts "No session running" + the
+moments/relevant-now why-lines. (4) The disclosure is additive with a contract test: `contracts.test.ts` as
+above; schema drift green. (5) hud-voice review: says what is true + what to do, no dead affordances, no raw
+enums. Gates: contracts 110 (+1), fixtures 15, client 571 (+1), engine 1028 (the #210 no-live-session test
+extended to assert the disclosure, no new count).
+
+**FIRST in the merge wave.** The #177 slice-2 sibling (summaries/packets modules) rebases over this.

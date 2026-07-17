@@ -48,7 +48,12 @@ const draftRow = (draft: Draft, actions: Actions): VNode =>
     h('span', { class: 'go' }, ...actionButtons(actions, draft.body)),
   )
 
-const emptyRow = (): VNode =>
+/**
+ * The empty state, EXPLAINABLE not silent — and honest about WHY (#215/hud-voice). With no session live
+ * this process (`noCurrentSession`, #210) nothing can be prepared yet, so it says so and what to do; with a
+ * session live it reflects that a draft is prepared when the session ends. The two are visibly distinct.
+ */
+const emptyRow = (noSession: boolean): VNode =>
   h(
     'div',
     { class: 'rel' },
@@ -56,8 +61,12 @@ const emptyRow = (): VNode =>
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, 'No drafts prepared yet'),
-      h('span', { class: 'why' }, 'a follow-up draft is prepared when a session ends'),
+      h('span', { class: 'ttl' }, noSession ? 'No session running' : 'No drafts prepared yet'),
+      h(
+        'span',
+        { class: 'why' },
+        noSession ? 'start a session — a draft is prepared when it ends' : 'a follow-up draft is prepared when a session ends',
+      ),
     ),
   )
 
@@ -66,6 +75,6 @@ export const renderDrafts: BlockRenderer = ({ block, result }) => {
   const actions = block.actions ?? []
   const all = (result?.items ?? []) as Draft[]
   const drafts = block.top !== undefined ? all.slice(0, block.top) : all
-  const rows: VNode[] = drafts.length > 0 ? drafts.map((draft) => draftRow(draft, actions)) : [emptyRow()]
+  const rows: VNode[] = drafts.length > 0 ? drafts.map((draft) => draftRow(draft, actions)) : [emptyRow(result?.noCurrentSession === true)]
   return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), ...rows)
 }

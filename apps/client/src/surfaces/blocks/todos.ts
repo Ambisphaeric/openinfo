@@ -56,15 +56,19 @@ const todoRow = (item: TodoItem, actions: Actions, vocab: StateVocab, dismissBas
 }
 
 /**
- * The empty state, EXPLAINABLE not silent. When the list emptied purely because the user dismissed its
- * items, disclose that ("N dismissed") rather than implying task-extract found nothing (#66) — a block
- * never mysteriously disappears.
+ * The empty state, EXPLAINABLE not silent. Three honest truths, told apart (#215/hud-voice):
+ *  - NO session running (`noCurrentSession`, #210): the list is empty because nothing is capturing yet —
+ *    say so and what to do (start a session), NOT "found nothing this session" which would imply one is live.
+ *  - emptied by DISMISSAL (#66): disclose "N dismissed" rather than implying task-extract found nothing.
+ *  - a live session that has genuinely produced no follow-ups yet: the original "nothing this session" line.
+ * A block never mysteriously disappears, and never fakes a running session.
  */
-const emptyRow = (suppressed: number): VNode => {
-  const why =
-    suppressed > 0
-      ? `${suppressed} follow-up${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`
-      : 'task-extract has found no follow-ups this session'
+const emptyRow = (suppressed: number, noSession: boolean): VNode => {
+  const [title, why] = noSession
+    ? ['No session running', 'follow-ups collect here once you start a session']
+    : suppressed > 0
+      ? ['No follow-ups shown', `${suppressed} follow-up${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`]
+      : ['No follow-ups yet', 'task-extract has found no follow-ups this session']
   return h(
     'div',
     { class: 'rel' },
@@ -72,7 +76,7 @@ const emptyRow = (suppressed: number): VNode => {
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, suppressed > 0 ? 'No follow-ups shown' : 'No follow-ups yet'),
+      h('span', { class: 'ttl' }, title),
       h('span', { class: 'why' }, why),
     ),
   )
@@ -89,6 +93,6 @@ export const renderTodos: BlockRenderer = ({ block, result }) => {
   const all = (result?.items ?? []) as TodoItem[]
   const items = block.top !== undefined ? all.slice(0, block.top) : all
   const rows: VNode[] =
-    items.length > 0 ? items.map((item) => todoRow(item, actions, vocab, dismissBase)) : [emptyRow(result?.suppressed ?? 0)]
+    items.length > 0 ? items.map((item) => todoRow(item, actions, vocab, dismissBase)) : [emptyRow(result?.suppressed ?? 0, result?.noCurrentSession === true)]
   return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), ...rows)
 }

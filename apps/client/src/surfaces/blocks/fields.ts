@@ -55,17 +55,19 @@ const fieldRow = (value: FieldValue, actions: Actions, vocab: StateVocab): VNode
     ),
   )
 
-const emptyRow = (suppressed: number): VNode => {
-  // Honest, not silent: point at the fix rather than an opaque "nothing here". Fast fields only exist
-  // when the fields feature (the distill.fields flag) is ON (it defaults OFF), so an empty panel most
-  // often means it is off — the message points at the Settings toggle either way (it is still accurate
-  // when the feature is on but no session/material has produced a field yet). The renderer is pure and
-  // cannot read the runtime flag, so it names the enablement path in every non-suppressed empty rather
-  // than falsely asserting off vs on. HUMAN copy (#118): the toggle's home, never the raw flag key.
-  const why =
-    suppressed > 0
-      ? `${suppressed} field${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`
-      : 'turn on Fields in Settings → Features; fields fill as prompts run this session'
+const emptyRow = (suppressed: number, noSession: boolean): VNode => {
+  // Honest, not silent: point at the fix rather than an opaque "nothing here". Three truths, told apart
+  // (#215/hud-voice): NO session live this process (`noCurrentSession`, #210) — fields fill as prompts run,
+  // which needs a session, so say so and what to do; emptied by DISMISSAL (#66) — disclose the count; else
+  // a live/idle empty where the dominant cause is the fields feature being OFF (the distill.fields flag
+  // defaults OFF), so point at the Settings toggle (still accurate when it is on but nothing has produced a
+  // field yet). The renderer is pure and cannot read the runtime flag, so it names the enablement path
+  // rather than falsely asserting off vs on. HUMAN copy (#118): the toggle's home, never the raw flag key.
+  const [title, why] = noSession
+    ? ['No session running', 'start a session and fields fill as prompts run']
+    : suppressed > 0
+      ? ['No fields shown', `${suppressed} field${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`]
+      : ['No fields yet', 'turn on Fields in Settings → Features; fields fill as prompts run this session']
   return h(
     'div',
     { class: 'rel' },
@@ -73,7 +75,7 @@ const emptyRow = (suppressed: number): VNode => {
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, suppressed > 0 ? 'No fields shown' : 'No fields yet'),
+      h('span', { class: 'ttl' }, title),
       h('span', { class: 'why' }, why),
     ),
   )
@@ -85,6 +87,6 @@ export const renderFields: BlockRenderer = ({ block, result }) => {
   const vocab = resolveStateVocab(block.states)
   const all = (result?.items ?? []) as FieldValue[]
   const values = block.top !== undefined ? all.slice(0, block.top) : all
-  const rows: VNode[] = values.length > 0 ? values.map((v) => fieldRow(v, actions, vocab)) : [emptyRow(result?.suppressed ?? 0)]
+  const rows: VNode[] = values.length > 0 ? values.map((v) => fieldRow(v, actions, vocab)) : [emptyRow(result?.suppressed ?? 0, result?.noCurrentSession === true)]
   return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), ...rows)
 }
