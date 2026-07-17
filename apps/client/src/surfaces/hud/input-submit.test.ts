@@ -176,7 +176,10 @@ test('a FAILED submit paints the reason as visible text (never a silent no-op)',
   await flush()
 
   const status = container.querySelector('.in-status')!.innerHTML
-  assert.match(status, /in-note error">no llm endpoint answered/)
+  // hud-voice §2 (#242): the strip shows ONE calm human line, never the raw exception verbatim…
+  assert.match(status, /class="in-note error"[^>]*>Couldn’t answer — the engine returned an error\./)
+  // …and the raw machine reason stays REACHABLE behind inspection (the hover title), never painted as slop.
+  assert.match(status, /title="[^"]*no llm endpoint answered \(fabric llm slot is empty\)[^"]*"/)
   // the user turn is still shown; the assistant turn is NOT fabricated
   const log = container.querySelector('.in-log')!.innerHTML
   assert.match(log, /You<\/span><span class="in-msg">hello/)
@@ -224,6 +227,27 @@ test('a dropped file ingests via the injected upload, shows the attachment, and 
   await flush()
   assert.equal(pinSent, 'pin-1') // the attached pin id rode the turn
   assert.match(container.querySelector('.in-log')!.innerHTML, /cited p\.2/)
+})
+
+test('a PAGELESS citation is named by its human title, never a raw chunk ordinal (#242)', async () => {
+  const session = new InputSession({
+    // Two chunks from the same pageless source: the machine ordinal (#0/#1) must NOT render; the human
+    // title stands in, deduped so it appears once.
+    submit: async () =>
+      reply('answered', 'cited', [
+        { pinId: 'pin-9', pinTitle: 'onboarding notes', ordinal: 0, excerpt: 'a' },
+        { pinId: 'pin-9', pinTitle: 'onboarding notes', ordinal: 1, excerpt: 'b' },
+      ]),
+  })
+  const { container, textarea, submit } = buildContainer()
+  session.install(container)
+  textarea.value = 'what did we agree?'
+  container.dispatch('click', submit)
+  await flush()
+  const log = container.querySelector('.in-log')!.innerHTML
+  assert.match(log, /cited onboarding notes/) // the human source name
+  assert.doesNotMatch(log, /#0|#1/) // never the raw chunk ordinal
+  assert.doesNotMatch(log, /onboarding notes · onboarding notes/) // deduped, not stuttered
 })
 
 test('the local path is resolved via the preload webUtils bridge (Electron 32+ removed File.path)', async () => {

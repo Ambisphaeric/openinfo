@@ -103,9 +103,9 @@ test('the SHIPPED fields-app document renders the fast-fields canon through the 
   assert.match(html, /data-copy="Q3 renewal pricing"/)
 
   // the distillate/transcript stream block renders beneath the fields with its own human why-line
-  assert.match(html, /Transcript · distillate stream/)
+  assert.match(html, /class="glbl">Transcript</)
   assert.match(html, /Dana to review the security doc/)
-  assert.match(html, /distilled from capture/)
+  assert.match(html, /from what was captured/)
 })
 
 test('the shipped fields-app document is honest when the fields feature is OFF: points at the fix, never blank', async () => {
@@ -114,7 +114,7 @@ test('the shipped fields-app document is honest when the fields feature is OFF: 
   assert.equal(fieldsBlock?.show, 'always', 'the app must not vanish when empty (unlike the HUD ride-along)')
 
   const html = renderToHtml(renderSurface({ surface, now, results: results([]) }, defaultBlockRegistry))
-  assert.match(html, /Fields · fast/) // the card is present…
+  assert.match(html, /class="glbl">Fields</) // the card is present…
   assert.match(html, /No fields yet/) // …and explains itself…
   assert.match(html, /turn on Fields in Settings → Features/) // …pointing at the toggle in human terms
   assert.doesNotMatch(html, /distill\.fields/) // …never the raw flag key (#118)

@@ -80,7 +80,7 @@ const retentionRow = (ringLimit: number): VNode =>
       'span',
       { class: 'body' },
       h('span', { class: 'ttl' }, `live feed · last ${ringLimit}, this session, not persisted`),
-      h('span', { class: 'why' }, 'transcript chunks are the ephemeral fast-path (#58); the durable stream is the distillate block'),
+      h('span', { class: 'why' }, 'transcript chunks are the ephemeral fast-path; the durable stream lives in the Transcript block'),
     ),
   )
 

@@ -245,7 +245,7 @@ test('#175 headless: a real screen mirror crosses EngineLink + seeded Surface + 
     assert.equal(loadedSurface?.id, 'surf-openinfo-fields', 'the engine served the actual seeded Surface')
     assert.ok(loadedSurface?.stack.some((block) => block.block === 'distillates' && block.query?.source === 'distillates'))
     assert.equal(mounted, true)
-    assert.match(headlessTarget.innerHTML, /Transcript · distillate stream/)
+    assert.match(headlessTarget.innerHTML, /class="glbl">Transcript</)
     assert.ok(headlessTarget.innerHTML.includes(OCR_TEXT), 'model-only text reached serialized block HTML through the persisted mirror')
     assert.equal(
       (headlessTarget.innerHTML.match(new RegExp(`<span class="ttl">${OCR_TEXT}</span>`, 'g')) ?? []).length,

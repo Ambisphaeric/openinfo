@@ -50,6 +50,10 @@ test('HONEST degraded: a summary with no model prose renders a calm unavailable 
   assert.match(html, /Summary unavailable — no summary model connected/) // calm human degraded copy (hud-voice §3)
   assert.match(html, /nothing invented/) // the why reassures: no fabrication
   assert.match(html, /title="no summarizer endpoint"/) // the machine reason stays reachable on inspection, not in glance
+  // #242: a degraded row has no value to copy — the copy affordance is SUPPRESSED, never a live button that
+  // would put an empty string on the clipboard.
+  assert.doesNotMatch(html, /data-copy=""/)
+  assert.doesNotMatch(html, /data-verb="copy"/)
 })
 
 test('empty is EXPLAINABLE, and an on-match empty summaries block stays hidden', () => {

@@ -11,5 +11,5 @@ export const renderAsk: BlockRenderer = () =>
     'div',
     { class: 'hgroup' },
     h('div', { class: 'glbl' }, 'Ask'),
-    h('div', { class: 'rel' }, h('span', { class: 'mk p' }, '·'), h('span', { class: 'body' }, h('span', { class: 'why' }, 'ask this context — recall path P3'))),
+    h('div', { class: 'rel' }, h('span', { class: 'mk p' }, '·'), h('span', { class: 'body' }, h('span', { class: 'why' }, 'ask about what is here'))),
   )

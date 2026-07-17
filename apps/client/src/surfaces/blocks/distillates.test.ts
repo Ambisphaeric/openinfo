@@ -38,10 +38,10 @@ test('the distillates block renders STORE-DERIVED windows: distilled text, a tim
     renderSurface({ surface, now, results: [undefined, result(items)] }, defaultBlockRegistry),
   )
 
-  assert.match(html, /Transcript · distillate stream/) // the block's group label
+  assert.match(html, /class="glbl">Transcript</) // the block's group label
   assert.match(html, /agreed to ship Thursday/) // store-derived window text (only via result.items)
   assert.match(html, /class="mk t">2:30p/) // each line carries its timestamp (clockLabel of windowEnd)
-  assert.match(html, /class="why">distilled from capture</) // HUMAN why (#117/#118), clock already leads the row
+  assert.match(html, /class="why">from what was captured</) // HUMAN why (#117/#118), clock already leads the row
   // #118 REGRESSION: no endpoint id, no `via …` machine phrasing at this tier — the recorded trail
   // stays on the distillate's provenance, reachable on diagnostics surfaces + the ledger, not here.
   assert.doesNotMatch(html, /llm\.fast/)
@@ -54,7 +54,7 @@ test('empty is EXPLAINABLE, not silent: an always-visible distillates block rend
   const html = renderToHtml(
     renderSurface({ surface, now, results: [undefined, result([])] }, defaultBlockRegistry),
   )
-  assert.match(html, /Transcript · distillate stream/) // the block still renders its label
+  assert.match(html, /class="glbl">Transcript</) // the block still renders its label
   assert.match(html, /No transcript yet/)
   // #227: the live-empty why NAMES the Settings → Features toggle in human words (a pure renderer can't read
   // the runtime flag, so it names the enablement path unconditionally — the fields.ts pattern).
@@ -84,5 +84,5 @@ test('top caps the rendered rows, and an on-match empty distillates block stays 
     stack: [{ block: 'now' }, { block: 'distillates', show: 'on-match', query: { source: 'distillates', params: {} } }],
   }
   const hidden = renderToHtml(renderSurface({ surface: onMatch, now, results: [undefined, result([])] }, defaultBlockRegistry))
-  assert.doesNotMatch(hidden, /Transcript · distillate stream/)
+  assert.doesNotMatch(hidden, /class="glbl">Transcript</)
 })

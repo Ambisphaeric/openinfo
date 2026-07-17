@@ -17,6 +17,6 @@ export const renderCustom: BlockRenderer = ({ block }) =>
       'div',
       { class: 'rel' },
       h('span', { class: 'mk p' }, '·'),
-      h('span', { class: 'body' }, h('span', { class: 'why' }, block.block === 'custom' ? 'sandboxed custom block — P6' : 'no renderer for this block type in this client build')),
+      h('span', { class: 'body' }, h('span', { class: 'why' }, block.block === 'custom' ? 'a self-contained custom block' : 'no renderer for this block type in this client build')),
     ),
   )

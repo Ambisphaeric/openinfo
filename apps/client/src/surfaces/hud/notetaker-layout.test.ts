@@ -227,5 +227,5 @@ test('the note-taker zones are honest when empty (always-on blocks explain thems
   assert.match(right, /No transcript yet/)
   assert.match(right, /turn on “Distill what is captured” in Settings → Features/)
   // the on-match fields block simply stays hidden when it has produced nothing (no fabricated card)
-  assert.doesNotMatch(right, /Fields · fast/)
+  assert.doesNotMatch(right, /class="glbl">Fields</)
 })

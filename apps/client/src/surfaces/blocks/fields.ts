@@ -7,7 +7,8 @@ import { rowAffordances } from './actions.js'
 
 type Actions = NonNullable<Block['actions']>
 
-const LABEL = 'Fields · fast'
+// hud-voice §2: "fast" is the internal lane/tier name (fast vs judged) — not the user's world; drop it (#242).
+const LABEL = 'Fields'
 
 /**
  * The `fields` block — the fan-out substrate's surface (#61). It reads the hydrated `fields` query

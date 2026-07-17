@@ -40,8 +40,9 @@ test('the drafts block renders STORE-DERIVED drafts: the prepared body + a prove
   // WHY-line built from the draft's own provenance: act kind + human source counts. #118: NO machine trail
   // (endpoint/model/template id) at this human tier, nor the old `via <endpoint>` phrasing — it stays
   // recorded on provenance and reachable on diagnostics + the ledger, just not rendered here.
-  assert.match(html, /class="why">follow-up draft · from 2 distillates \+ 1 moment</)
+  assert.match(html, /class="why">follow-up draft · from 2 summaries \+ 1 moment</)
   assert.doesNotMatch(html, /via llm\.fast|class="why">[^<]*via /)
+  assert.doesNotMatch(html, /distillate/) // hud-voice §2: the banned word never reaches the render (#242)
   // the copy affordance carries the body (the app prepares; the human executes — verbs never send)
   assert.match(html, /data-copy="Hi Dana, thanks for the time today/)
 })
