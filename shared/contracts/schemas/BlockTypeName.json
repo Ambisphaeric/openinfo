@@ -46,6 +46,10 @@
       "type": "string"
     },
     {
+      "const": "summaries",
+      "type": "string"
+    },
+    {
       "const": "fields",
       "type": "string"
     },

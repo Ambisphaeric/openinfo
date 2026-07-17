@@ -6034,3 +6034,59 @@ enums. Gates: contracts 110 (+1), fixtures 15, client 571 (+1), engine 1028 (the
 extended to assert the disclosure, no new count).
 
 **FIRST in the merge wave.** The #177 slice-2 sibling (summaries/packets modules) rebases over this.
+
+## Slice: episode + project production, raw-media-expiry proof, human-UI emphasis, per-scope config  *(#177 slice 2, 2026-07-16)*
+
+The closing slice of #177 — it lands the remaining acceptance criteria on the slice-1 substrate with NO
+re-model (the contract already typed all five levels and made `sessionId` optional).
+
+**Episode + project PRODUCTION.** Episode is a mid-window rollup over the rolling summaries (a "coherent
+stretch", `windowMs` 180s, session-scoped) — it costs almost nothing because the assembler is fully generic;
+it is just a seeded template plus inclusion in the drain/session-end level lists. Project is the real work:
+it spans sessions, so it gathers its children (every session's SESSION summary) across the WHOLE workspace and
+carries NO `sessionId`. The producer grew `isCrossSession`/`CROSS_SESSION_SUMMARY_LEVELS`; the pure assembler
+now threads an OPTIONAL `sessionId` (content/id omit it when absent) and — the subtle fix — a **singleton
+`latestOverall` head-match for whole-scope levels**. A project's window SPAN grows as sessions accumulate, so
+the slice-1 window-keyed supersession would have read each grown revision as a NEW window and forked parallel
+heads; keying the whole-scope head by scope (highest live revision) instead lets a later session correctly
+SUPERSEDE the prior project revision. Append-only holds: `store.listSummaries(level:'project',
+includeSuperseded:true)` keeps every prior revision queryable — later sessions incorporated without losing
+prior versions (proven in `index/summaries-project.test.ts` across two sessions).
+
+**Raw-media-expiry proof.** A summary references only durable derived records; those name the RAW capture
+chunks they came from, and raw capture is transient (never persisted — "expires once distilled/understood").
+`index/summaries-trace.ts::walkSummaryTrace` walks the path down to that raw layer, cycle-guarded through
+summary→summary, and marks each gone source an honest `expired` leaf (raw capture chunk, or a dangling durable
+ref) rather than throwing or fabricating. Served at GET `/summaries/trace?id=` (404 only for an unknown
+summary; an expired source is a valid 200 — the whole point is expiry does not break the walk). The route/UI
+answer for a missing source is thus the honest "not retained" class the criterion asks for.
+
+**Per-workflow/app template scoping.** `SummaryBinding` gained optional `scope`(workspace|workflow|app) +
+`targetId`; `resolveSummaryTemplate` (distill/documents.ts) picks the most-specific matching binding
+(precedence app > workflow > workspace — the voice-binding precedent), and the winning scope is stamped on
+`provenance.templateScope` (the which-scope-won audit). The producers resolve each level for the ACTIVE
+WORKFLOW (`summaryTemplate(level,{workflowId: workflow.active().id})`, read fresh). No scoped bindings ship,
+so a default install resolves exactly as before; `distill/summary-scope.test.ts` proves two scopes each
+resolve their own.
+
+**Default human-UI emphasis + the default-OFF decision.** A `summaries` query source (session-scoped, or
+workspace-wide for `project`) + a client `summaries` block (human timescale labels, a "draft you can correct"
+why-line, an honest "Summary unavailable — no summary model connected" degraded state, NO endpoint/id/score in
+glance — hud-voice) now lead the default HUD with the five-minute VIEW and the session result; the
+sentence-level distillate stream moved to the Diagnostics surface (it "remains available in Diagnostics" but
+is no longer the human headline). **Decision: summaries.enabled stays default OFF.** Flipping it ON was
+considered now that the loop is proven, but (a) every engine-processing behavior in the flag family
+(distill.*, act, route, screen) ships OFF, and a lone ON summaries flag would be an inconsistent surprise; (b)
+it is INERT without distill.enabled (also OFF) — no distillates ⇒ nothing to summarize — so ON would produce
+empty summaries, not value. The HUD summaries cards are `on-match`, so a fresh install shows no empty card and
+the five-minute view becomes the top card the instant a user enables distillation + summaries — honest,
+consistent, and sane by the fresh-install gate. Proven served through the real entry point in
+`api/summaries-surface-e2e.test.ts` (POST /query source:summaries) + the client renderer in
+`apps/client/.../blocks/summaries.test.ts`.
+
+**Contained/privacy discipline unchanged.** Every new invoke path is the SAME `createFabricSummarizer`
+(workspace+mode egress + #63 guard); the egress-seam suite was extended to hold egress at the SESSION level
+too. Determinism/no-duplicates still proven over the #32 fixture; the whole-scope singleton fix keeps project
+replay byte-stable.
+
+Issue #177 is closure-ready after this slice: all acceptance criteria are met across slices 1 + 2.

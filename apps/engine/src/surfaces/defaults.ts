@@ -26,6 +26,24 @@ export const defaultHudSurface: Surface = {
   version: 1,
   stack: [
     { block: 'now' },
+    // #177 slice 2 — the memory HEADLINE. The default human surface leads with the concise five-minute VIEW
+    // and the durable session result, NOT the sentence-level distillate stream (which now lives on the
+    // Fields/Diagnostics support surfaces). `on-match` so the cards appear only once a summary exists (the
+    // fields-block precedent) — summaries.enabled ships OFF like every engine-processing behavior, so a fresh
+    // install shows no empty card; the instant the loop runs, the five-minute view is the top card. Each
+    // summary is a model PROPOSAL with an honest degraded state and a why-line — no machine-speak (hud-voice).
+    {
+      block: 'summaries',
+      show: 'on-match',
+      top: 1,
+      query: { source: 'summaries', params: { session: 'current', level: 'five-minute' }, top: 1 },
+    },
+    {
+      block: 'summaries',
+      show: 'on-match',
+      top: 1,
+      query: { source: 'summaries', params: { session: 'current', level: 'session' }, top: 1 },
+    },
     {
       block: 'relevant-now',
       top: 4,
@@ -149,6 +167,10 @@ export const defaultDiagnosticsSurface: Surface = {
     { block: 'transcript-inspector', show: 'always', top: 12, query: { source: 'transcript', params: {}, top: 1 } },
     { block: 'sense-gates', show: 'always', query: { source: 'senses', params: {}, top: 3 } },
     { block: 'queue', show: 'always', query: { source: 'queue', params: {}, top: 1 } },
+    // Sentence-level processing REMAINS available here (#177): the distillate stream — the per-window
+    // distilled text the summaries roll up from — stays on this diagnostics surface for inspection, so it is
+    // no longer the human headline (that is the summaries cards on the HUD) yet is never hidden from a debugger.
+    { block: 'distillates', show: 'always', top: 12, query: { source: 'distillates', params: { session: 'current' }, top: 12 } },
   ],
 }
 

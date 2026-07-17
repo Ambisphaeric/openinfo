@@ -54,6 +54,10 @@
           "type": "string"
         },
         {
+          "const": "summaries",
+          "type": "string"
+        },
+        {
           "const": "fields",
           "type": "string"
         },
@@ -137,6 +141,10 @@
             },
             {
               "const": "distillates",
+              "type": "string"
+            },
+            {
+              "const": "summaries",
               "type": "string"
             },
             {

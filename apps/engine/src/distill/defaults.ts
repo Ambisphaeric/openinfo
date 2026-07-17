@@ -323,11 +323,57 @@ export const defaultSessionSummaryTemplate: PromptTemplate = {
     'Corroborating moments:\n{{evidence}}\n\nSession summary:',
 }
 
-/** The shipped summary prompt bundle, finest→coarsest (the live-loop levels slice 1 produces). */
+/**
+ * The EPISODE level (#177 slice 2): a coherent mid-window stretch of activity, coarser than a single
+ * rolling window but finer than the five-minute view (the enum's finest→coarsest order). It consumes the
+ * same rolling summaries the five-minute view does — a parallel rollup, not a link in the mandatory chain —
+ * over a wider window, so a surface can lead with "what this stretch was about" without waiting for the
+ * five-minute cadence. Produced at the drain cadence and flushed at session end, session-scoped, bounded.
+ */
+export const defaultEpisodeSummaryTemplate: PromptTemplate = {
+  id: 'tpl-summary-episode',
+  name: 'summary-episode',
+  kind: 'summary',
+  slot: 'llm',
+  builtin: true,
+  description: 'hierarchical summary (#177): a coherent stretch of activity — a wider window over the rolling summaries',
+  summary: { level: 'episode', windowMs: 180_000, childLevel: 'rolling', maxChildren: 8, maxEvidence: 3, cadenceMs: 180_000 },
+  body:
+    'You are naming a coherent stretch of a work session from the rolling summaries below — what this ' +
+    'episode was about. Summarize only what they support; invent nothing. One or two tight sentences.\n\n' +
+    'Rolling summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
+    'Corroborating moments:\n{{evidence}}\n\nEpisode summary:',
+}
+
+/**
+ * The PROJECT level (#177 slice 2): durable CROSS-SESSION continuity. Unlike every other level it spans
+ * sessions — it consumes each session's SESSION summary across the whole workspace and carries NO sessionId.
+ * Produced at session end (append-only): when a new session's session summary lands, the project's child set
+ * changes, so a NEW project revision supersedes the prior one (prior revisions stay queryable) — later
+ * sessions are incorporated WITHOUT losing prior versions. `windowMs` is ignored (a whole-scope level).
+ */
+export const defaultProjectSummaryTemplate: PromptTemplate = {
+  id: 'tpl-summary-project',
+  name: 'summary-project',
+  kind: 'summary',
+  slot: 'llm',
+  builtin: true,
+  description: 'hierarchical summary (#177): durable cross-session project continuity, over every session\'s session summary — a new session supersedes the prior revision, never overwriting it',
+  summary: { level: 'project', windowMs: 300_000, childLevel: 'session', maxChildren: 20, maxEvidence: 0 },
+  body:
+    'You are writing the durable, continuing summary of a PROJECT from its per-session summaries below — ' +
+    'the through-line across sessions. Summarize only what they support; invent nothing. Lead with where ' +
+    'the project stands now, then the durable threads.\n\n' +
+    'Session summaries ({{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nProject summary:',
+}
+
+/** The shipped summary prompt bundle, finest→coarsest (all five #177 levels — episode/project land in slice 2). */
 export const defaultSummaryTemplates: readonly PromptTemplate[] = [
   defaultRollingSummaryTemplate,
+  defaultEpisodeSummaryTemplate,
   defaultFiveMinuteSummaryTemplate,
   defaultSessionSummaryTemplate,
+  defaultProjectSummaryTemplate,
 ]
 
 /**

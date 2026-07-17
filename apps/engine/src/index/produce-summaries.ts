@@ -43,7 +43,8 @@ export type LlmInvoke = (messages: LlmMessage[], opts: InvokeOptions) => Promise
 /** The request the producer hands the summarizer for ONE window — the bounded prose inputs + prompt document. */
 export interface SummarizeRequest {
   workspaceId: string
-  sessionId: string
+  /** the session this level is scoped to; ABSENT for a cross-session `project` summary (no mode layer to read). */
+  sessionId?: string
   level: SummaryLevel
   template: PromptTemplate
   windowStart: string
@@ -60,8 +61,16 @@ export type Summarizer = (req: SummarizeRequest) => Promise<SummaryProse>
 /** The canonical finest→coarsest order — a call producing several levels always runs a child before its parent. */
 export const SUMMARY_LEVEL_ORDER: readonly SummaryLevel[] = ['rolling', 'episode', 'five-minute', 'session', 'project']
 
-/** The live-loop levels slice 1 produces (episode/project are slice-2 production). */
-export const LIVE_SUMMARY_LEVELS: readonly SummaryLevel[] = ['rolling', 'five-minute', 'session']
+/**
+ * The session-scoped levels the live loop produces (rolling/episode/five-minute at the drain cadence,
+ * session flushed at session end). `project` is DELIBERATELY absent: it is a CROSS-SESSION level (no single
+ * sessionId) produced explicitly at session end so a new session's result is folded into a superseding
+ * project revision without losing the prior ones — see materializeLevel's cross-session branch.
+ */
+export const LIVE_SUMMARY_LEVELS: readonly SummaryLevel[] = ['rolling', 'episode', 'five-minute', 'session']
+
+/** The cross-session levels — a `project` summary spans every session's session summary and carries no sessionId. */
+export const CROSS_SESSION_SUMMARY_LEVELS: ReadonlySet<SummaryLevel> = new Set<SummaryLevel>(['project'])
 
 /** What triggered a build attempt — the drain cadence, session end, or the on-demand route. */
 export type SummaryBuildTrigger = 'drain' | 'session-end' | 'on-demand'
@@ -133,7 +142,11 @@ export interface MaterializeSummariesOutcome {
   error?: string
 }
 
-/** The level's config resolved from its summary prompt document's binding — never hardcoded. */
+/** True ⇒ this level spans sessions (`project`): it gathers workspace-wide and its summary carries no sessionId. */
+const isCrossSession = (level: SummaryLevel): boolean => CROSS_SESSION_SUMMARY_LEVELS.has(level)
+
+/** The level's config resolved from its summary prompt document's binding — never hardcoded. `templateScope` is
+ *  the which-scope-won audit (#177 slice 2): the binding's declared scope, absent ⇒ workspace-global. */
 const levelConfig = (template: PromptTemplate): SummaryLevelConfig => {
   const binding = template.summary!
   return {
@@ -143,10 +156,16 @@ const levelConfig = (template: PromptTemplate): SummaryLevelConfig => {
     maxChildren: binding.maxChildren,
     maxEvidence: binding.maxEvidence ?? 0,
     templateId: template.id,
+    ...(binding.scope !== undefined ? { templateScope: binding.scope } : {}),
   }
 }
 
-/** Gather a level's role:'child' inputs: distillates for the base level, else the lower level's live summary heads. */
+/**
+ * Gather a level's role:'child' inputs: distillates for the base level, else the lower level's live summary
+ * heads. A CROSS-SESSION level (`project`) gathers its child summaries across the WHOLE workspace (every
+ * session's session summary), so a new session's result becomes a child of the next project revision; a
+ * session-scoped level reads only its own session's inputs.
+ */
 const gatherChildren = (store: WorkspaceRegistry, workspaceId: string, sessionId: string, config: SummaryLevelConfig): SummaryInput[] => {
   if (config.childLevel === undefined) {
     return store.listDistillates(workspaceId, sessionId).map((d) => ({
@@ -157,7 +176,10 @@ const gatherChildren = (store: WorkspaceRegistry, workspaceId: string, sessionId
     }))
   }
   const childLevel = config.childLevel
-  return store.listSummaries(workspaceId, { sessionId, level: childLevel }).map((s) => ({
+  const heads = isCrossSession(config.level)
+    ? store.listSummaries(workspaceId, { level: childLevel })
+    : store.listSummaries(workspaceId, { sessionId, level: childLevel })
+  return heads.map((s) => ({
     ref: { record: 'summary', id: s.id, at: s.windowStart, role: 'child', level: childLevel } satisfies SummaryChild,
     windowStart: s.windowStart,
     windowEnd: s.windowEnd,
@@ -175,7 +197,8 @@ const gatherEvidence = (store: WorkspaceRegistry, workspaceId: string, sessionId
       windowEnd: p.windowEnd,
     }))
   }
-  return store.listMoments(workspaceId, sessionId).map((m) => ({
+  const moments = isCrossSession(config.level) ? store.listMoments(workspaceId) : store.listMoments(workspaceId, sessionId)
+  return moments.map((m) => ({
     ref: { record: 'moment', id: m.id, at: m.at, role: 'evidence' } satisfies SummaryChild,
     windowStart: m.at,
     windowEnd: m.at,
@@ -193,21 +216,26 @@ const materializeLevel = async (
   const config = levelConfig(template)
   const created: Summary[] = []
   let degraded = 0
+  // CROSS-SESSION (`project`): gathered workspace-wide and the summary carries NO sessionId; every other
+  // level is scoped to the ending session. levelSessionId threads that distinction through assemble/build.
+  const crossSession = isCrossSession(config.level)
+  const levelSessionId = crossSession ? undefined : scope.sessionId
+  const sessionScope = levelSessionId !== undefined ? { sessionId: levelSessionId } : {}
   try {
     const children = gatherChildren(deps.store, scope.workspaceId, scope.sessionId, config)
     const evidence = gatherEvidence(deps.store, scope.workspaceId, scope.sessionId, config)
-    const existing = deps.store.listSummaries(scope.workspaceId, { sessionId: scope.sessionId, level: config.level, includeSuperseded: true })
-    const { plan, unchanged } = assembleSummaries({ workspaceId: scope.workspaceId, sessionId: scope.sessionId, config, children, evidence, existing })
+    const existing = deps.store.listSummaries(scope.workspaceId, { ...sessionScope, level: config.level, includeSuperseded: true })
+    const { plan, unchanged } = assembleSummaries({ workspaceId: scope.workspaceId, ...sessionScope, config, children, evidence, existing })
 
     // NEW / CHANGED windows: summarize the bounded inputs and append. A window with no summarizable text
     // (its lower-level children are all degraded) is degraded honestly rather than fed an empty prompt.
     for (const item of plan) {
       const prose = await summarizeOrDegrade(deps.summarize, {
-        workspaceId: scope.workspaceId, sessionId: scope.sessionId, level: config.level, template,
+        workspaceId: scope.workspaceId, ...sessionScope, level: config.level, template,
         windowStart: item.windowStart, windowEnd: item.windowEnd, childTexts: item.childTexts, evidenceTexts: item.evidenceTexts,
       })
       const createdAt = now().toISOString()
-      const summary = buildSummary(item, { workspaceId: scope.workspaceId, sessionId: scope.sessionId, level: config.level }, prose, createdAt)
+      const summary = buildSummary(item, { workspaceId: scope.workspaceId, ...sessionScope, level: config.level }, prose, createdAt)
       deps.store.saveSummary(summary)
       if ('degraded' in prose) degraded++
       created.push(summary)
@@ -218,13 +246,13 @@ const materializeLevel = async (
     for (const { head, childTexts, evidenceTexts } of unchanged) {
       if (head.text !== undefined || head.degraded === undefined) continue
       const prose = await summarizeOrDegrade(deps.summarize, {
-        workspaceId: scope.workspaceId, sessionId: scope.sessionId, level: config.level, template,
+        workspaceId: scope.workspaceId, ...sessionScope, level: config.level, template,
         windowStart: head.windowStart, windowEnd: head.windowEnd, childTexts, evidenceTexts,
       })
       if ('degraded' in prose) continue // still no model — leave the honest degraded head untouched (idempotent)
       const upgraded = buildSummary(
-        { id: head.id, windowStart: head.windowStart, windowEnd: head.windowEnd, refs: head.children, bound: head.bound, confidence: head.confidence, revision: head.revision, supersedes: head.supersedes, windowMs: head.provenance.windowMs, childLevel: head.provenance.childLevel, templateId: head.provenance.templateId, childTexts, evidenceTexts },
-        { workspaceId: scope.workspaceId, sessionId: scope.sessionId, level: config.level },
+        { id: head.id, windowStart: head.windowStart, windowEnd: head.windowEnd, refs: head.children, bound: head.bound, confidence: head.confidence, revision: head.revision, supersedes: head.supersedes, windowMs: head.provenance.windowMs, childLevel: head.provenance.childLevel, templateId: head.provenance.templateId, templateScope: head.provenance.templateScope, childTexts, evidenceTexts },
+        { workspaceId: scope.workspaceId, ...sessionScope, level: config.level },
         prose,
         head.createdAt,
       )
@@ -341,7 +369,7 @@ export const createFabricSummarizer = (deps: FabricSummarizerDeps): Summarizer =
     // #64 LAYER 3 (mode): read the session's mode egress deny exactly as the distiller does
     // (store.getSession → record.modeId → docs.mode), so a mode that denies egress for distillation
     // equally denies summary-prose egress. No session/mode resolver ⇒ the layer is simply absent.
-    const session = deps.store.getSession(req.workspaceId, req.sessionId)
+    const session = req.sessionId !== undefined ? deps.store.getSession(req.workspaceId, req.sessionId) : undefined
     const mode = session !== undefined && deps.mode !== undefined ? deps.mode(session.modeId) : undefined
     const egress = resolveEgress({
       contentClass: 'transcript',

@@ -78,6 +78,11 @@ export const SummaryProvenance = Type.Object(
     windowMs: Type.Integer({ minimum: 0, description: 'the interval bucket size this level assembled with (0 for whole-session bucketing)' }),
     childLevel: Type.Optional(SummaryLevel),
     templateId: Id,
+    templateScope: Type.Optional(
+      Type.Union(['workspace', 'workflow', 'app'].map((s) => Type.Literal(s)), {
+        description: 'which config scope resolved this level’s template (#177 slice 2 per-workflow/app scoping) — the which-scope-won audit; absent ⇒ workspace-global',
+      }),
+    ),
     slot: Type.Optional(SlotName),
     endpoint: Type.Optional(Type.String({ minLength: 1, description: 'fabric endpoint name that produced the prose' })),
     model: Type.Optional(Type.String()),

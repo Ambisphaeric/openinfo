@@ -9,7 +9,7 @@ import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, GuardHeldError, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
-import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog, materializeSummaries, createFabricSummarizer, SummaryBuildLog, type Summarizer } from '../index/index.js'
+import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog, materializeSummaries, createFabricSummarizer, SummaryBuildLog, walkSummaryTrace, type Summarizer } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
@@ -485,7 +485,11 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     // /summaries/build route share this one summarizer instance).
     mode: (id) => distillDocs.mode(id),
   })
-  const summaryTemplate = (level: Parameters<typeof summarize>[0]['level']) => distillDocs.summaryTemplate(level)
+  // #177 slice 2: resolve each level's template for the ACTIVE WORKFLOW scope (read fresh per pass, like the
+  // flags/surfaces hot-edit pattern), so a workflow-scoped summary binding overrides the workspace-global one.
+  // No scoped bindings ship by default ⇒ the workspace-global template resolves exactly as before.
+  const summaryTemplate = (level: Parameters<typeof summarize>[0]['level']) =>
+    distillDocs.summaryTemplate(level, { workflowId: workflow.active().id })
   // Produce a session's summaries at a cadence point (drain or session end), finest→coarsest so a parent level
   // reads the child heads this same pass produced. Idempotent (a stable child set is a no-op) and contained
   // (never throws), so re-running on every drain is safe and a build failure never sinks the drain.
@@ -510,7 +514,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       const key = `${chunk.workspaceId} ${chunk.sessionId}`
       if (seen.has(key)) continue
       seen.add(key)
-      await produceSessionSummaries(chunk.workspaceId, chunk.sessionId, 'drain', ['rolling', 'five-minute'])
+      await produceSessionSummaries(chunk.workspaceId, chunk.sessionId, 'drain', ['rolling', 'episode', 'five-minute'])
     }
   }
 
@@ -828,9 +832,12 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       else if (outcome.created.length > 0) log(`context packets: session-end appended ${outcome.created.length} for session ${session.id}`)
       // #177 DURABLE SESSION SUMMARY: with the whole session now drained + summarized at the finer levels, flush
       // the coarser levels — a final rolling/five-minute pass (idempotent) then the durable SESSION summary over
-      // the five-minute heads. Same contained discipline as packets: materializeSummaries never throws, degrades
-      // honestly when the model is unavailable, and a build failure is recorded, never fatal to session end.
-      await produceSessionSummaries(session.workspaceId, session.id, 'session-end', ['rolling', 'five-minute', 'session'])
+      // the five-minute heads, the durable SESSION summary, and finally the cross-session PROJECT summary that
+      // folds this session's result into a superseding project revision (prior revisions stay queryable — later
+      // sessions are incorporated WITHOUT losing prior versions). Same contained discipline as packets:
+      // materializeSummaries never throws, degrades honestly when the model is unavailable, and a build failure
+      // is recorded, never fatal to session end.
+      await produceSessionSummaries(session.workspaceId, session.id, 'session-end', ['rolling', 'episode', 'five-minute', 'session', 'project'])
     })().catch((error: unknown) =>
       log(`follow-up draft failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`),
     )
@@ -1180,6 +1187,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/context/packets') return send(res, 200, readContextPackets(ctx.store, url))
   if (req.method === 'POST' && url.pathname === '/context/packets/build') return buildPackets(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/summaries') return send(res, 200, readSummaries(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/summaries/trace') return readSummaryTrace(res, ctx.store, url)
   if (req.method === 'POST' && url.pathname === '/summaries/build') return buildSummaries(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/todos') return send(res, 200, ctx.todos.list())
   const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
@@ -2017,6 +2025,22 @@ function readSummaries(store: WorkspaceRegistry, url: URL): Summary[] {
 }
 
 /**
+ * Walk a summary's DERIVATION PATH (#177 slice 2) — the honest answer to "where did this come from?" even
+ * after raw media has expired. Resolves the summary's children down to their durable records and the raw
+ * capture layer; a source that is gone (raw capture, or a pruned durable record) is reported as an `expired`
+ * node with a human class, NEVER a crash or fabricated content. Unknown summary id ⇒ 404; an expired source is
+ * a valid 200 answer, not an error — the whole point is that expiry does not break the walk. Read over store/.
+ */
+function readSummaryTrace(res: ServerResponse, store: WorkspaceRegistry, url: URL): void {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const id = url.searchParams.get('id')
+  if (id === null || id === '') return send(res, 400, { error: 'summary trace needs an ?id=' })
+  const summary = store.listSummaries(workspaceId, { includeSuperseded: true }).find((s) => s.id === id)
+  if (summary === undefined) return send(res, 404, { error: `no summary ${id} in workspace ${workspaceId}` })
+  send(res, 200, walkSummaryTrace(store, workspaceId, summary))
+}
+
+/**
  * Run the hierarchical-summary producer (#177) over one session's stored inputs and persist what it appends.
  * The response is the APPENDED/UPGRADED summaries only — an empty array is the honest idempotent no-op (a
  * stable child set produces nothing). Route decides (404s), the SHARED producer moves — the SAME seam the
@@ -2033,7 +2057,7 @@ async function buildSummaries(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const session = ctx.store.getSession(workspaceId, sessionId)
   if (!session) return send(res, 404, { error: `no session ${sessionId} in workspace ${workspaceId}` })
   const outcome = await materializeSummaries(
-    { store: ctx.store, summaryTemplate: (l) => ctx.distill.summaryTemplate(l), summarize: ctx.summarize, log: ctx.summaryBuildLog, logLine: ctx.log },
+    { store: ctx.store, summaryTemplate: (l) => ctx.distill.summaryTemplate(l, { workflowId: ctx.workflow.active().id }), summarize: ctx.summarize, log: ctx.summaryBuildLog, logLine: ctx.log },
     { workspaceId, sessionId, trigger: 'on-demand', ...(level !== undefined ? { levels: [level] } : {}) },
   )
   if (outcome.error !== undefined) return send(res, 500, { error: `summary build failed: ${outcome.error}` })

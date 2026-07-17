@@ -91,7 +91,20 @@ export type FastFieldBinding = Static<typeof FastFieldBinding>
  *   absent ⇒ no evidence is pulled.
  * - `cadenceMs` (optional) is the minimum re-summarize interval for the active window; absent ⇒ every
  *   produce pass reconsiders (idempotent — a stable child set is a no-op).
+ * - `scope`/`targetId` (optional, #177 slice 2) make a level's cadence/template CONFIGURABLE PER
+ *   WORKFLOW/APP, not just workspace-global. ABSENT ⇒ `workspace` (the global default every install ships).
+ *   A binding scoped `workflow`/`app` with a matching `targetId` WINS over the workspace-global one for that
+ *   level in that context (resolution precedence app > workflow > workspace — the voice-binding precedent),
+ *   so one workflow can summarize on a different cadence/prompt than another without editing the global
+ *   document. The winning scope is recorded on the produced summary's provenance (`templateScope`) — the
+ *   which-scope-won audit, so every displayed summary resolves to the exact config that shaped it.
  */
+export const SummaryScope = Type.Union(
+  ['workspace', 'workflow', 'app'].map((s) => Type.Literal(s)),
+  { $id: 'SummaryScope', description: 'the config scope a summary template binds to — workspace-global (default), or a specific workflow/app' },
+)
+export type SummaryScope = Static<typeof SummaryScope>
+
 export const SummaryBinding = Type.Object(
   {
     level: SummaryLevel,
@@ -100,6 +113,8 @@ export const SummaryBinding = Type.Object(
     maxChildren: Type.Integer({ minimum: 1, description: 'HARD BOUND on lower-level inputs fed to the summarizer (newest kept)' }),
     maxEvidence: Type.Optional(Type.Integer({ minimum: 0, description: 'bound on selectively-retrieved evidence records; absent ⇒ none' })),
     cadenceMs: Type.Optional(Type.Integer({ minimum: 0, description: 'minimum re-summarize interval for the active window; absent ⇒ every pass' })),
+    scope: Type.Optional(SummaryScope),
+    targetId: Type.Optional(Type.String({ minLength: 1, description: 'the workflow/app id this binding is scoped to; absent ⇒ workspace-global' })),
   },
   { $id: 'SummaryBinding', additionalProperties: false },
 )

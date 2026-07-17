@@ -10,6 +10,7 @@ import { renderTodos } from './todos.js'
 import { renderDrafts } from './drafts.js'
 import { renderTeach } from './teach.js'
 import { renderDistillates } from './distillates.js'
+import { renderSummaries } from './summaries.js'
 import { renderFields } from './fields.js'
 import { renderQueue } from './queue.js'
 import { renderTranscriptInspector } from './transcript-inspector.js'
@@ -39,6 +40,7 @@ export const defaultBlockRegistry: BlockRegistry = {
   drafts: renderDrafts,
   teach: renderTeach,
   distillates: renderDistillates,
+  summaries: renderSummaries,
   fields: renderFields,
   queue: renderQueue,
   'transcript-inspector': renderTranscriptInspector,

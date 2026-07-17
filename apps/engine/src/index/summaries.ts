@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { Summary, SummaryChild, SummaryInputBound, SummaryLevel } from '@openinfo/contracts'
+import type { Summary, SummaryChild, SummaryInputBound, SummaryLevel, SummaryScope } from '@openinfo/contracts'
 import { SUMMARY_SCHEMA_VERSION } from '@openinfo/contracts'
 
 /**
@@ -39,6 +39,8 @@ export interface SummaryLevelConfig {
   maxEvidence: number
   /** the summary prompt document id shaping the prose — stamped into provenance. */
   templateId: string
+  /** which config scope resolved this level's template (#177 slice 2) — the which-scope-won audit; absent ⇒ workspace-global. */
+  templateScope?: SummaryScope
 }
 
 /** The deterministic skeleton of one window that needs (re)summarizing — everything but the model prose. */
@@ -56,6 +58,7 @@ export interface SummaryPlanItem {
   windowMs: number
   childLevel: SummaryLevel | undefined
   templateId: string
+  templateScope: SummaryScope | undefined
   /** bounded child texts (chronological) the summarizer prompt reads. */
   childTexts: string[]
   /** bounded evidence texts (chronological) the summarizer prompt reads. */
@@ -64,7 +67,8 @@ export interface SummaryPlanItem {
 
 export interface AssembleSummariesInput {
   workspaceId: string
-  sessionId: string
+  /** the session this level is scoped to; ABSENT for a cross-session `project` level (its summary carries no sessionId). */
+  sessionId?: string
   config: SummaryLevelConfig
   /** the role:'child' inputs (lower-level summaries or distillates), already scoped to this session/level. */
   children: readonly SummaryInput[]
@@ -136,10 +140,27 @@ const latestByWindow = (existing: readonly Summary[]): Map<string, Summary> => {
   return latest
 }
 
+/**
+ * The single live head of a WHOLE-scope level (`session`/`project`) — its highest-revision non-superseded
+ * summary, regardless of window bounds. A whole level is a singleton chain within its scope (one session, or
+ * one workspace for the cross-session project), and its window SPAN grows as more children arrive — so
+ * window-keyed matching would wrongly read a grown revision as a NEW window. Keying the head by scope instead
+ * lets a later child set correctly SUPERSEDE the prior revision rather than fork a parallel head.
+ */
+const latestOverall = (existing: readonly Summary[]): Summary | undefined => {
+  const superseded = new Set(existing.map((s) => s.supersedes).filter((id): id is string => id !== undefined))
+  let head: Summary | undefined
+  for (const summary of existing) {
+    if (superseded.has(summary.id)) continue
+    if (head === undefined || summary.revision > head.revision) head = summary
+  }
+  return head
+}
+
 /** The deterministic content of one window (id + idempotence hash over it), prose EXCLUDED. */
 interface WindowContent {
   workspaceId: string
-  sessionId: string
+  sessionId?: string
   level: SummaryLevel
   windowStart: string
   windowEnd: string
@@ -161,7 +182,7 @@ const summaryId = (content: WindowContent, revision: number, supersedes: string 
 /** The deterministic content an existing head presents for the idempotence comparison (prose/provenance-model excluded). */
 const headContent = (head: Summary): WindowContent => ({
   workspaceId: head.workspaceId,
-  sessionId: head.sessionId!,
+  ...(head.sessionId !== undefined ? { sessionId: head.sessionId } : {}),
   level: head.level,
   windowStart: head.windowStart,
   windowEnd: head.windowEnd,
@@ -194,6 +215,9 @@ export const assembleSummaries = (input: AssembleSummariesInput): AssembleSummar
   }
 
   const latest = latestByWindow(input.existing)
+  // A whole-scope level is a singleton chain: match the head by scope (highest revision), not by window key,
+  // since its span grows with each new child set. A windowed level keeps per-window matching.
+  const wholeHead = whole ? latestOverall(input.existing) : undefined
   const plan: SummaryPlanItem[] = []
   const unchanged: UnchangedSummary[] = []
 
@@ -232,7 +256,7 @@ export const assembleSummaries = (input: AssembleSummariesInput): AssembleSummar
 
     const content: WindowContent = {
       workspaceId: input.workspaceId,
-      sessionId: input.sessionId,
+      ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
       level: config.level,
       windowStart,
       windowEnd,
@@ -251,7 +275,7 @@ export const assembleSummaries = (input: AssembleSummariesInput): AssembleSummar
     // 4) Idempotence / append-only supersession against the window's existing head. A byte-identical head is
     //    an idempotent no-op (kept untouched — the producer may still upgrade a degraded head in place, which
     //    is why the bounded texts ride along); a changed child set appends a NEW revision superseding the prior.
-    const head = latest.get(`${windowStart}|${windowEnd}`)
+    const head = whole ? wholeHead : latest.get(`${windowStart}|${windowEnd}`)
     if (head !== undefined && canonicalJson(headContent(head)) === canonicalJson(content)) {
       unchanged.push({ head, childTexts, evidenceTexts })
       continue
@@ -270,6 +294,7 @@ export const assembleSummaries = (input: AssembleSummariesInput): AssembleSummar
       windowMs: content.windowMs,
       childLevel: config.childLevel,
       templateId: config.templateId,
+      templateScope: config.templateScope,
       childTexts,
       evidenceTexts,
     })
@@ -291,7 +316,7 @@ export type SummaryProse =
  */
 export const buildSummary = (
   item: SummaryPlanItem,
-  scope: { workspaceId: string; sessionId: string; level: SummaryLevel },
+  scope: { workspaceId: string; sessionId?: string; level: SummaryLevel },
   prose: SummaryProse,
   createdAt: string,
 ): Summary => {
@@ -300,6 +325,7 @@ export const buildSummary = (
     windowMs: item.windowMs,
     ...(item.childLevel !== undefined ? { childLevel: item.childLevel } : {}),
     templateId: item.templateId,
+    ...(item.templateScope !== undefined ? { templateScope: item.templateScope } : {}),
     ...('text' in prose
       ? {
           slot: prose.slot as NonNullable<Summary['provenance']['slot']>,
@@ -314,7 +340,7 @@ export const buildSummary = (
   return {
     id: item.id,
     workspaceId: scope.workspaceId,
-    sessionId: scope.sessionId,
+    ...(scope.sessionId !== undefined ? { sessionId: scope.sessionId } : {}),
     level: scope.level,
     windowStart: item.windowStart,
     windowEnd: item.windowEnd,

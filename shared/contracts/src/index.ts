@@ -62,7 +62,7 @@ import { Summary, SummaryLevel, SummaryChild, SummaryInputBound, SummaryProvenan
 import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './config/voice.js'
 import { Surface, Block, BlockQuery, Action, BlockTypeName, AttachedPanel } from './config/surface.js'
 import { Mode } from './config/mode.js'
-import { PromptTemplate, FastFieldBinding, SummaryBinding } from './config/promptTemplate.js'
+import { PromptTemplate, FastFieldBinding, SummaryBinding, SummaryScope } from './config/promptTemplate.js'
 import { EgressReach, EgressDestination, EgressLayer, ContentClass, EgressPolicy, EgressDecision } from './config/egress.js'
 import { GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold } from './config/guard.js'
 import { Fabric, Endpoint, LocalRuntime, FabricProfile } from './config/fabric.js'
@@ -85,7 +85,7 @@ export const AllSchemas = {
   Summary, SummaryLevel, SummaryChild, SummaryInputBound, SummaryProvenance,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName, AttachedPanel,
-  Mode, PromptTemplate, FastFieldBinding, SummaryBinding, EgressReach, EgressDestination, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
+  Mode, PromptTemplate, FastFieldBinding, SummaryBinding, SummaryScope, EgressReach, EgressDestination, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
   CapabilitySlot, ProbeList, CapabilityMap, DiscoverResult, ScanRequest, ScanResult, StarterModel, StarterModels, Flag, AttributionPattern, WorkspaceHints,
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind,

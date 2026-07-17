@@ -103,11 +103,12 @@ const saveFabric = (rig: Rig, over: Partial<Fabric['slots']>): void => {
   rig.fabric.save({ slots: { ...defaultFabric().slots, ...over } })
 }
 
-const runRolling = (rig: Rig, extra: Partial<Parameters<typeof createFabricSummarizer>[0]> = {}) =>
+const runLevels = (rig: Rig, levels: readonly ('rolling' | 'episode' | 'five-minute' | 'session' | 'project')[], extra: Partial<Parameters<typeof createFabricSummarizer>[0]> = {}) =>
   materializeSummaries(
     { store: rig.store, summaryTemplate: (l) => rig.docs.summaryTemplate(l), summarize: createFabricSummarizer({ store: rig.store, fabric: rig.fabric, mode: (id) => rig.docs.mode(id), ...extra }), now: () => new Date('2026-07-16T13:02:00.000Z') },
-    { workspaceId: 'default', sessionId: 'ses-eg', trigger: 'session-end', levels: ['rolling'] },
+    { workspaceId: 'default', sessionId: 'ses-eg', trigger: 'session-end', levels },
   )
+const runRolling = (rig: Rig, extra: Partial<Parameters<typeof createFabricSummarizer>[0]> = {}) => runLevels(rig, ['rolling'], extra)
 
 test('#177 seam: a DENYING mode holds summary-prose egress (layer 3) — the egress endpoint is never contacted, the summary is DEGRADED', async () => {
   const rig = await setup()
@@ -127,6 +128,32 @@ test('#177 seam: a DENYING mode holds summary-prose egress (layer 3) — the egr
     assert.equal(stored[0]!.text, undefined, 'no fabricated prose when the mode denies the only (egress) endpoint')
     assert.ok(stored[0]!.degraded?.reason && stored[0]!.degraded.reason.length > 0, 'an honest machine-visible reason is recorded')
     assert.equal(stored[0]!.children.length, 1, 'the deterministic derivation path is intact even when degraded')
+  } finally {
+    await stopChat(egress)
+    restore()
+    await teardown(rig)
+  }
+})
+
+test('#177 seam (slice 2): the DENYING mode holds egress at the coarser SESSION level too — every level degrades, nothing leaves', async () => {
+  const rig = await setup()
+  const restore = installEgressRewrite()
+  const egress = await startChat(() => 'they agreed to ship Thursday.')
+  try {
+    // Extend the layer-3 proof up the hierarchy: the whole rolling→five-minute→session chain runs under a
+    // mode that denies egress, and the ONLY llm endpoint is egress-classified. Not one hop may leave — every
+    // level is persisted degraded, at EVERY timescale, not just the base level.
+    rig.docs.saveMode({ ...rig.docs.mode(), egress: { deny: true } })
+    saveFabric(rig, { llm: [{ kind: 'http', name: 'llm.hosted', url: `http://llm.egress.test:${egress.port}`, api: 'openai-compat' }] })
+
+    const outcome = await runLevels(rig, ['rolling', 'five-minute', 'session'])
+    assert.equal(egress.hits(), 0, 'the egress endpoint was never contacted at any level')
+    assert.ok(outcome.degraded >= 3, 'every level (rolling, five-minute, session) degraded honestly')
+    const session = rig.store.listSummaries('default', { sessionId: 'ses-eg', level: 'session' })
+    assert.equal(session.length, 1, 'the durable session summary still materialized (structure intact)')
+    assert.equal(session[0]!.text, undefined, 'no fabricated session prose when the mode denies the only (egress) endpoint')
+    assert.ok(session[0]!.degraded?.reason, 'the session summary carries an honest machine-visible reason')
+    assert.ok(session[0]!.children.length >= 1, 'the deterministic derivation path is intact even when degraded')
   } finally {
     await stopChat(egress)
     restore()

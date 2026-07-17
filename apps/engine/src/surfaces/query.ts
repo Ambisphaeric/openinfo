@@ -1,4 +1,4 @@
-import type { BlockQuery, QueryResult, QueueStatus, SenseLaneSnapshot, TranscriptInspector } from '@openinfo/contracts'
+import type { BlockQuery, QueryResult, QueueStatus, SenseLaneSnapshot, Summary, TranscriptInspector } from '@openinfo/contracts'
 import type { SenseGateChain } from './settings/sense-gates.js'
 import { relevantNow } from '../index/index.js'
 import { FieldValueStore } from '../distill/index.js'
@@ -95,7 +95,7 @@ export const resolveQueryScope = (
  * the scope is `noCurrentSession` (#210) these read empty; the workspace-level sources (sessions, entities,
  * pins, teach) carry no session dimension and were never the stale-content defect, so they are unaffected.
  */
-const SESSION_SCOPED_SOURCES = new Set<BlockQuery['source']>(['relevant-now', 'moments', 'todos', 'drafts', 'distillates', 'fields'])
+const SESSION_SCOPED_SOURCES = new Set<BlockQuery['source']>(['relevant-now', 'moments', 'todos', 'drafts', 'distillates', 'summaries', 'fields'])
 
 /**
  * Compile a BlockQuery to store calls — the Phase-0 decision (surface.ts): the declarative JSON
@@ -225,6 +225,26 @@ export const compileQuery = (
       // Distillate — window text + timestamp + endpoint provenance — rendered client-side.
       const distillates = known ? store.listDistillates(workspaceId, sessionId) : []
       return capSuppressed([...distillates].reverse(), (d) => d.id)
+    }
+    case 'summaries': {
+      // The hierarchical-summary timeline (#177): the human headline the default HUD leads with. A block
+      // asks for one `level` (five-minute / session / episode / rolling / project) via params.level; absent
+      // ⇒ every level. Session-scoped like the record sources (`known`-gated, scoped to the block's session)
+      // EXCEPT the cross-session `project` level, which spans sessions and carries no sessionId — a project
+      // block omits the session param and reads workspace-wide. Each row is a Summary carrying the model-
+      // PROPOSAL prose (or an honest `degraded` reason when the summarizer was unavailable — never fabricated),
+      // its children refs, and full provenance, so the block renders human prose with a why-line and the
+      // degraded state resolves to its recorded reason. listSummaries returns LIVE heads only (superseded
+      // revisions stay retrievable over GET /summaries?superseded=true); newest window first for the stream.
+      const levelParam = typeof query.params['level'] === 'string' ? (query.params['level'] as Summary['level']) : undefined
+      const crossSession = levelParam === 'project'
+      const summaries = known
+        ? store.listSummaries(workspaceId, {
+            ...(!crossSession && sessionId !== undefined ? { sessionId } : {}),
+            ...(levelParam !== undefined ? { level: levelParam } : {}),
+          })
+        : []
+      return capSuppressed([...summaries].sort((a, b) => b.windowStart.localeCompare(a.windowStart)), (s) => s.id)
     }
     case 'teach': {
       // SUGGESTED attribution-hint candidates (teach loop, P4D): the review half of the flywheel. The
