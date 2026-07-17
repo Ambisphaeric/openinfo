@@ -50,15 +50,34 @@ export interface FileListLike {
   item(index: number): UploadFile | null
 }
 
+/** The DOM event subset the controller reads — a real DOM Event satisfies it structurally. */
+export interface InputDomEvent {
+  target: InputDomNode | null
+  /** keydown only: the key name (e.g. `'Enter'`) + modifier, used for the Enter-submits / Shift+Enter-newline convention. */
+  key?: string
+  shiftKey?: boolean
+  /** true while the keystroke is part of an IME composition — Enter then confirms the candidate, never submits. */
+  isComposing?: boolean
+  preventDefault?(): void
+}
+
+/** The events the controller delegates on its container. All bubble, so ONE listener each covers the re-rendered subtree. */
+export type InputDomEventType = 'click' | 'change' | 'input' | 'keydown' | 'focusin' | 'focusout' | 'compositionstart' | 'compositionend'
+
 /** The DOM subset the controller touches — real elements satisfy it without a cast. */
 export interface InputDomNode {
   querySelector(selector: string): InputDomNode | null
   closest(selector: string): InputDomNode | null
   getAttribute(name: string): string | null
-  addEventListener(type: 'click' | 'change' | 'input', handler: (event: { target: InputDomNode | null }) => void): void
+  addEventListener(type: InputDomEventType, handler: (event: InputDomEvent) => void): void
   value: string
   innerHTML: string
   files: FileListLike | null
+  /** Present on the textarea (HTMLTextAreaElement) — used to restore focus + caret across a destructive re-render. */
+  focus?(): void
+  selectionStart?: number | null
+  selectionEnd?: number | null
+  setSelectionRange?(start: number, end: number): void
 }
 
 /** An ingested attachment the chat can cite — the pin id its chunks live under, plus a human summary. */
@@ -97,6 +116,9 @@ export interface InputDeps {
   /** Resolve the Ask face's DEFAULT question (the tpl-ask-default document body over GET /templates/:id)
    * — what an EMPTY send with a captured frame asks. Absent ⇒ an empty send is a visible no-op. */
   defaultAsk?(): Promise<string>
+  /** Ask the host to re-render the surface. Used ONLY to FLUSH a re-render that was deferred while an IME
+   * composition was in flight (see rerenderInto). Absent ⇒ the next live event catches the display up. */
+  requestRender?(): void
 }
 
 /**
@@ -122,6 +144,24 @@ const citationsHtml = (reply: ChatReply): string => {
 interface Status {
   kind: 'ok' | 'error' | 'info'
   text: string
+  /** the full machine disclosure, moved behind inspection (a hover title) rather than shown as slop. */
+  detail?: string
+}
+
+/**
+ * Translate a resolved chat reply into a CALM, human status line (hud-voice) plus the full machine
+ * disclosure for inspection. The DEFAULT — a clean answer — shows NOTHING: the answer itself is the
+ * feedback, and the raw context-assembly note (source kinds/counts, "Context:"/"Omitted:", capped/empty)
+ * is exactly the machine-speak the chat strip must not render. A DEGRADED turn says so in plain words:
+ * the screen could not be included, or the conversation was trimmed to fit. The raw note is never the
+ * visible text — it rides `detail` (a hover title) and lives in full on the Diagnostics surface.
+ */
+export const calmChatStatus = (reply: ChatReply, captureNote?: string): { text: string; detail: string } => {
+  const parts: string[] = []
+  if (captureNote) parts.push(`Answered without your screen — ${captureNote}.`)
+  else if (reply.budget.truncated) parts.push('Answered from a trimmed view of the conversation.')
+  const detail = captureNote ? `${reply.budget.note} Screen skipped: ${captureNote}.` : reply.budget.note
+  return { text: parts.join(' '), detail }
 }
 
 /**
@@ -146,6 +186,15 @@ export class InputSession {
   private streaming: { turnId: string; buffer: string; lastSeq: number } | undefined
   // The honest cap disclosure when the rehydrated thread is a truncated tail (seedHistory).
   private historyNote: string | undefined
+  // Interaction state the live refresh must not trample (the #222 focus repair). `focused` tracks whether
+  // the chat input currently holds keyboard focus (via bubbling focusin/focusout); `composing` is true while
+  // an IME composition is in flight (a destructive re-render is DEFERRED then, so the node is never replaced
+  // mid-composition); `focusSnapshot` is the focus + caret captured just before a wipe, restored by the paired
+  // repaint; `renderDeferred` remembers that a refresh was skipped during composition so compositionend flushes it.
+  private focused = false
+  private composing = false
+  private renderDeferred = false
+  private focusSnapshot: { start: number; end: number } | undefined
 
   constructor(deps: InputDeps) {
     this.deps = deps
@@ -172,6 +221,77 @@ export class InputSession {
       const el = event.target?.closest('.in-text')
       if (el) this.draft = el.value
     })
+    // Enter submits, Shift+Enter inserts a newline (the standard chat convention). This is delegated and
+    // GATED on the chat input — NOT a global key capture: keydown only fires on the focused element, and we
+    // act only when that element is `.in-text`. Enter DURING an IME composition confirms the candidate and
+    // must never submit — both our own `composing` flag and the event's `isComposing` guard that.
+    container.addEventListener('keydown', (event) => {
+      const el = event.target?.closest('.in-text')
+      if (!el) return
+      if (event.key !== 'Enter' || event.shiftKey === true) return
+      if (this.composing || event.isComposing === true) return
+      event.preventDefault?.() // stop the newline the textarea would otherwise insert
+      const block = el.closest('.input-block')
+      if (block) void this.onSubmit(block)
+    })
+    // Focus tracking so a destructive re-render can restore focus to the fresh textarea (focusin/focusout
+    // BUBBLE to the container; focus/blur do not, which is why the delegated listener uses these).
+    container.addEventListener('focusin', (event) => {
+      if (event.target?.closest('.in-text')) this.focused = true
+    })
+    container.addEventListener('focusout', (event) => {
+      if (event.target?.closest('.in-text')) this.focused = false
+    })
+    // IME composition: while a candidate is being composed the textarea node must NOT be replaced (that drops
+    // the composition buffer), so rerenderInto defers the wipe; compositionend flushes any deferred refresh.
+    container.addEventListener('compositionstart', (event) => {
+      if (event.target?.closest('.in-text')) this.composing = true
+    })
+    container.addEventListener('compositionend', (event) => {
+      if (!event.target?.closest('.in-text')) return
+      this.composing = false
+      if (this.renderDeferred) {
+        this.renderDeferred = false
+        this.deps.requestRender?.()
+      }
+    })
+  }
+
+  /** True while an IME composition is in flight — the host must defer a destructive re-render (see rerenderInto). */
+  isComposing(): boolean {
+    return this.composing
+  }
+
+  /**
+   * Run a destructive panel re-render (renderInto wipes innerHTML, replacing the `.in-text` node) while
+   * PRESERVING the chat input's interaction state — the #222 fix for "typing into nothing" on the live
+   * refresh. The draft text was already held here (repaint restores it); this adds focus, caret, and IME:
+   *  - mid-IME-composition: the render is DEFERRED (the live node survives, the composition continues) and
+   *    flushed on compositionend, so a refresh can never replace the node the user is composing into.
+   *  - otherwise: focus + caret are snapshotted BEFORE the wipe and restored by the paired repaint AFTER it
+   *    (one synchronous turn, so the user never sees the input lose focus), so a refresh never moves keyboard
+   *    focus away from an input being typed in.
+   */
+  rerenderInto(container: InputDomNode, doRender: () => void): void {
+    if (this.composing) {
+      this.renderDeferred = true
+      return
+    }
+    this.captureFocus(container)
+    doRender()
+    this.repaint(container)
+  }
+
+  /** Snapshot whether the chat input holds focus and where its caret sits, before a wipe destroys the node. */
+  private captureFocus(container: InputDomNode): void {
+    this.focusSnapshot = undefined
+    if (!this.focused) return
+    const textarea = container.querySelector('.in-text')
+    if (!textarea) return
+    const caretEnd = textarea.value.length
+    const start = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : caretEnd
+    const end = typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : caretEnd
+    this.focusSnapshot = { start, end }
   }
 
   private async onSubmit(block: InputDomNode): Promise<void> {
@@ -241,7 +361,10 @@ export class InputSession {
       // The authoritative answer replaces the streamed provisional paint (query-fed truth).
       this.turns.push({ role: 'assistant', content: reply.answer })
       this.lastReply = reply
-      this.status = { kind: 'ok', text: captureNote ? `${reply.budget.note} Screen skipped: ${captureNote}.` : reply.budget.note }
+      // Calm, human status (hud-voice): a clean answer says nothing (the answer IS the feedback); a degraded
+      // turn says so plainly; the raw machine disclosure moves to the hover title, never the visible strip.
+      const calm = calmChatStatus(reply, captureNote)
+      this.status = calm.text === '' ? undefined : { kind: 'ok', text: calm.text, detail: calm.detail }
     } catch (error) {
       // VISIBLE FAILURE — the reason is painted as text, never swallowed.
       this.status = { kind: 'error', text: error instanceof Error ? error.message : String(error) }
@@ -352,9 +475,25 @@ export class InputSession {
     const context = block.querySelector('.in-context')
     if (context) context.innerHTML = this.attached ? `<div class="in-attached">📎 ${escapeHtml(this.attached.title)} — ${escapeHtml(this.attached.summary)}</div>` : ''
     const status = block.querySelector('.in-status')
-    if (status) status.innerHTML = this.status ? `<div class="in-note ${this.status.kind}">${escapeHtml(this.status.text)}</div>` : ''
-    // Restore the in-progress draft the re-render wiped from the (fresh) textarea.
+    if (status) {
+      const titleAttr = this.status?.detail ? ` title="${escapeHtml(this.status.detail)}"` : ''
+      status.innerHTML = this.status ? `<div class="in-note ${this.status.kind}"${titleAttr}>${escapeHtml(this.status.text)}</div>` : ''
+    }
+    // Restore the in-progress draft the re-render wiped from the (fresh) textarea — but NOT mid-composition
+    // (writing .value would disrupt the live IME buffer; the 'input' events keep the draft current meanwhile).
     const textarea = block.querySelector('.in-text')
-    if (textarea && this.draft !== '' && textarea.value !== this.draft) textarea.value = this.draft
+    if (textarea && !this.composing && this.draft !== '' && textarea.value !== this.draft) textarea.value = this.draft
+    // Restore keyboard focus + caret when this repaint follows a wipe that destroyed a FOCUSED input (the
+    // snapshot is set only by captureFocus and consumed once here), so the live refresh never steals focus.
+    if (textarea && this.focusSnapshot) {
+      const { start, end } = this.focusSnapshot
+      this.focusSnapshot = undefined
+      textarea.focus?.()
+      if (textarea.setSelectionRange) textarea.setSelectionRange(start, end)
+      else {
+        textarea.selectionStart = start
+        textarea.selectionEnd = end
+      }
+    }
   }
 }

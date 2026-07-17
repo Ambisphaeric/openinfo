@@ -580,6 +580,9 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     upload: uploadAndIngest(baseUrl, workspace, engineFetch),
     captureScreen: captureScreenViaBridge,
     defaultAsk: fetchDefaultAsk(baseUrl, engineFetch),
+    // #222: flush a re-render that was deferred while the user was mid-IME-composition (the composition
+    // must never be interrupted by a wipe). Invoked only at compositionend, after `hud` is constructed below.
+    requestRender: () => hud.rerender(),
   })
   // Ask-history: rehydrate the workspace's persisted thread so the chat window opens mid-conversation
   // (seedHistory never clobbers a live session; the paint lands with the next render). A failed read is
@@ -687,12 +690,19 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
         // survive innerHTML replacement, exactly like wireActions' click delegation).
         inputSession.install(panel as unknown as Parameters<InputSession['install']>[0])
         mounted = true
+        // #134: re-inject the input block's conversation/attachment/status after the initial mount (the
+        // pure renderer leaves those regions empty) — the compose-after-render discipline the live strip uses.
+        inputSession.repaint(panel as unknown as Parameters<InputSession['repaint']>[0])
       } else {
-        renderInto(panel, node)
+        // #222 chat-focus repair: a focus/caret/IME-preserving re-render. renderInto still wipes innerHTML
+        // (destroying the textarea), but rerenderInto snapshots focus + caret before the wipe and restores
+        // them in its own paired repaint after — so the ~1/s live refresh no longer steals focus mid-type —
+        // and DEFERS the wipe entirely while an IME composition is in flight (flushed on compositionend).
+        inputSession.rerenderInto(
+          panel as unknown as Parameters<InputSession['rerenderInto']>[0],
+          () => renderInto(panel, node),
+        )
       }
-      // #134: re-inject the input block's conversation/attachment/status after EVERY render (the pure
-      // renderer leaves those regions empty) — the compose-after-render discipline the live strip uses.
-      inputSession.repaint(panel as unknown as Parameters<InputSession['repaint']>[0])
     },
     onError: (error) => onHudError(error),
   })
