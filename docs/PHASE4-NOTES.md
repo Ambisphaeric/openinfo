@@ -5766,3 +5766,54 @@ renders membership/exclusions/timing/confidence** ✓ slice 2 (`sections/packets
 senses degrade with an explicit reason ✓ slice 1 (rendered honestly in slice 2). The live producer
 answers the issue's slice-2 comment ("a live drain/session-end seam so packets materialize during normal
 capture, not only when the route is called"). Closure is the retro's call, not this PR's.
+
+## #210 — honest display-scope resolution (`session:'current'` never falls back to whole-workspace)
+
+**The defect.** Record blocks query `session:'current'`, which `resolveQueryScope`
+(`apps/engine/src/surfaces/query.ts`) resolved to `store.liveSession(workspaceId)` — the persisted
+most-recent-UNENDED session. Engine sessions outlive the client, so on app open the record blocks hydrated
+the PREVIOUS session's records; and when no session was unended at all, the resolver dropped the session
+filter entirely and returned whole-workspace history newest-first, rendering stale content as if it were
+current. The live paths were already hardened against exactly this — the sense-lane tracker
+(`senses/live.ts`) keys off a process-local runtime current session (`currentByWorkspace`, set on
+`session.started`, cleared on `session.ended`) and the client transcript strip resets on session
+boundaries — but the record path was not. **The asymmetry was the defect.**
+
+**The fix — one runtime authority for "current", shared by both display surfaces.** The sense-lane
+tracker already IS the honest runtime authority (it deliberately starts empty each process and never adopts
+`store.liveSession`, so a stale unended session cannot turn a fresh launch into "live"). This PR exposes it
+as `SenseLaneTracker.currentSessionId(workspaceId)` (`!ended`-guarded) and binds BOTH record queries and
+the HUD's live-session listing to it:
+
+- `resolveQueryScope` takes an optional `currentSessionId` resolver and, for `session:'current'`, returns
+  the runtime-current session's id when one is live, else `{ workspaceId, noCurrentSession: true }` — it
+  NEVER silently widens to whole-workspace. `compileQuery` short-circuits the SESSION-SCOPED sources
+  (`relevant-now`, `moments`, `todos`, `drafts`, `distillates`, `fields`) to an empty result under
+  `noCurrentSession`; workspace-level sources (`sessions`, `entities`, `pins`, `teach`) are untouched (they
+  carry no session dimension and were never the stale-content defect), and a block with NO session param
+  still reads all workspace history (the fix narrows ONLY the "current" ask). The /query route
+  (`api/http.ts`) passes `(wsId) => ctx.senseLanes.currentSessionId(wsId)` — the same authority the
+  `live-senses` source already used.
+- `readSessions` (GET `/sessions?live=true`, the HUD's Now line) is runtime-gated the same way: the
+  persisted-unended list is filtered to the runtime-current id, so a fresh launch with a stale unended
+  session on disk reports `[]` (launch-stopped posture) rather than adopting it for display. The unfiltered
+  list (no `?live`) is unchanged — history stays history. `store.liveSession` itself is intentionally NOT
+  changed: its other callers (chat context scoping, the drain's newest-first idle gate, the Settings status
+  line, start-while-live auto-end idempotency) legitimately mean "the persisted unended session" and are
+  out of scope for #210.
+
+Because the engine is the single authority, the client needs no code change — it faithfully reflects the
+engine's honest responses (dead Now line, empty record blocks) with no independent stale-session adoption
+logic to fix.
+
+**Acceptance criteria (file evidence).** (1) `session:'current'` with no live session → explicit empty,
+never whole-workspace: `resolveQueryScope` `noCurrentSession` branch + `compileQuery` session-scoped
+short-circuit (`surfaces/query.ts`), pinned by `surfaces/query.test.ts` ("honest display scope …"). (2) On
+app open with a stale unended engine session, record blocks don't present it as current: driven
+`api/http.test.ts` #210 e2e — a stale session is saved to the store, then GET `/sessions?live` returns
+`[]` and a `session:'current'` moments query returns `[]` (while the no-session-param query still returns
+the history), then a session started THIS process resolves `current` to its own moment, then ending it
+returns both surfaces to honest-empty. (3) Deterministic `resolveQueryScope` test: `query.test.ts` pins a
+live session → its own scope, and no live session → the empty/history state, not workspace-wide. Client
+half locked in `surfaces/hud/hud.test.ts` (boot with no live session → livedot off, no nowline, no moment
+rows). Gates: contracts 103 / fixtures 15 / client 567 / engine 987 (+2), no contract change.

@@ -7,7 +7,7 @@ import type { Distillate, Draft, Moment, Pin, QueueStatus, RelevantEntity, Sense
 import { WorkspaceRegistry } from '../store/index.js'
 import { TodoDocuments } from '../act/index.js'
 import { TeachStore, type HintCandidate } from '../teach/index.js'
-import { compileQuery } from './query.js'
+import { compileQuery, resolveQueryScope } from './query.js'
 import type { SenseGateChain } from './settings/sense-gates.js'
 
 const moment = (id: string, sessionId: string, at: string, refs: string[] = []): Moment => ({
@@ -58,7 +58,7 @@ test('compileQuery hydrates each backed source, respects top, and reports trunca
   }
 })
 
-test('compileQuery binds session "current" to the workspace live session', async () => {
+test('compileQuery binds session "current" to the RUNTIME-current session, not persisted history (#210)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-cur-'))
   const store = new WorkspaceRegistry(dir)
   try {
@@ -70,13 +70,59 @@ test('compileQuery binds session "current" to the workspace live session', async
     store.saveMoment(moment('m-live', 'ses-live', '2026-07-07T14:10:00Z'))
     store.saveMoment(moment('m-other', 'ses-old', '2026-07-07T13:00:00Z'))
 
-    // "current" resolves to the live session id → only its moments
-    const cur = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q', session: 'current' } })
+    // A resolver that names the live session (the sense-lane authority the route passes in production) →
+    // "current" scopes to it, returning ONLY its moments — never the older session's.
+    const live1 = () => 'ses-live'
+    const cur = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q', session: 'current' } }, undefined, {}, undefined, live1)
     assert.deepEqual((cur.items as Moment[]).map((m) => m.id), ['m-live'])
 
-    // sessions source lists them all
+    // sessions source lists them all (workspace-level, session-independent)
     const sessions = compileQuery(store, { source: 'sessions', params: { workspace: 'ws-q' } })
     assert.deepEqual((sessions.items as Session[]).map((s) => s.id), ['ses-live'])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('honest display scope: "current" with NO live session reads empty, never whole-workspace history (#210)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-nolive-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // The workspace holds records from PRIOR (ended) sessions — the "lingering records" the owner feels.
+    store.saveSession({
+      id: 'ses-old', workspaceId: 'ws-q', modeId: 'mode-meeting', startedAt: '2026-07-07T13:00:00Z', endedAt: '2026-07-07T13:30:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'x', weight: 1 }], confidence: 1 },
+    })
+    store.saveMoment(moment('m-old-1', 'ses-old', '2026-07-07T13:10:00Z'))
+    store.saveMoment(moment('m-old-2', 'ses-old', '2026-07-07T13:20:00Z'))
+
+    // resolveQueryScope: no resolver / no live session ⇒ noCurrentSession, NO sessionId, never workspace-wide.
+    const scopeNone = resolveQueryScope(store, { workspace: 'ws-q', session: 'current' })
+    assert.equal(scopeNone.workspaceId, 'ws-q')
+    assert.equal(scopeNone.sessionId, undefined)
+    assert.equal(scopeNone.noCurrentSession, true)
+    // A resolver that reports no runtime session (fresh process, stale unended session on disk) is the same.
+    const scopeStale = resolveQueryScope(store, { workspace: 'ws-q', session: 'current' }, undefined, () => undefined)
+    assert.equal(scopeStale.noCurrentSession, true)
+    assert.equal(scopeStale.sessionId, undefined)
+
+    // Every session-scoped record source reads EMPTY under "current" with no live session — the previous
+    // session's moments are NOT rendered as current (moments carries prior data; the rest are trivially empty).
+    const noLive = () => undefined
+    for (const source of ['moments', 'distillates', 'relevant-now', 'todos', 'drafts', 'fields'] as const) {
+      const r = compileQuery(store, { source, params: { workspace: 'ws-q', session: 'current' } }, undefined, {}, undefined, noLive)
+      assert.deepEqual(r.items, [], `${source} must be empty with no live session`)
+    }
+
+    // Guard the asymmetry: an all-history block (NO session param) still reads the workspace history — the
+    // fix narrows ONLY the "current" ask, never a block that legitimately requested everything.
+    const history = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q' } }, undefined, {}, undefined, noLive)
+    assert.deepEqual((history.items as Moment[]).map((m) => m.id), ['m-old-2', 'm-old-1'])
+
+    // And the sessions source (workspace-level) still lists history regardless of the "current" flag.
+    const sessions = compileQuery(store, { source: 'sessions', params: { workspace: 'ws-q', session: 'current' } }, undefined, {}, undefined, noLive)
+    assert.deepEqual((sessions.items as Session[]).map((s) => s.id), ['ses-old'])
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })
