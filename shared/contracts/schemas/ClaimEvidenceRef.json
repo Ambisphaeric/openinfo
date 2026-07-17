@@ -1,0 +1,39 @@
+{
+  "$id": "ClaimEvidenceRef",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "record",
+    "id",
+    "at"
+  ],
+  "properties": {
+    "record": {
+      "description": "which record table the id names — the closed set of claim evidence sources",
+      "anyOf": [
+        {
+          "const": "context-packet",
+          "type": "string"
+        },
+        {
+          "const": "moment",
+          "type": "string"
+        },
+        {
+          "const": "distillate",
+          "type": "string"
+        }
+      ]
+    },
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "at": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "id": "clm-1a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "workspaceId": "workspace-synthetic",
+  "subject": "ent-ada",
+  "object": "ent-pidev",
+  "relation": "co-occurs-with",
+  "evidence": [
+    { "record": "context-packet", "id": "cp-9c1f4a2b7d3e5f60718293a4b5c6d7e8", "at": "2026-07-12T13:00:00.000Z" },
+    { "record": "moment", "id": "moment-0001", "at": "2026-07-12T13:00:04.000Z" }
+  ],
+  "confidence": 0.6,
+  "source": "derived",
+  "state": "provisional",
+  "provenance": { "builder": "deterministic-cooccurrence", "evidenceCount": 2 },
+  "sessionId": "session-synthetic",
+  "firstObserved": "2026-07-12T13:00:00.000Z",
+  "lastObserved": "2026-07-12T13:00:04.000Z",
+  "revision": 1,
+  "schemaVersion": 1,
+  "createdAt": "2026-07-12T13:00:05.000Z"
+}

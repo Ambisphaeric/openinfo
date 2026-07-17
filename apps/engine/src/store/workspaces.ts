@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { ChatTurn, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, SessionTitling, Sighting, SttSegment, Summary, SummaryLevel, TodoList, Workspace } from '@openinfo/contracts'
-import { ChatTurn as ChatTurnSchema, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema, Summary as SummarySchema } from '@openinfo/contracts'
+import type { ChatTurn, Claim, ClaimRelation, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, RelatedEntity, Session, SessionAnnotation, SessionTitling, Sighting, SttSegment, Summary, SummaryLevel, TodoList, Workspace } from '@openinfo/contracts'
+import { ChatTurn as ChatTurnSchema, Claim as ClaimSchema, CLAIM_SCHEMA_VERSION, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema, Summary as SummarySchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
 import { DEFAULT_GAZETTEER, GAZETTEER_KEY, GAZETTEER_KIND, gazetteerRivals, type GazetteerDocument } from '../index/gazetteer.js'
@@ -387,6 +387,194 @@ export class WorkspaceRegistry {
     if (opts.from !== undefined) summaries = summaries.filter((s) => s.windowEnd > opts.from!)
     if (opts.to !== undefined) summaries = summaries.filter((s) => s.windowStart < opts.to!)
     return summaries
+  }
+
+  /**
+   * Append one Claim (#178) to its workspace's OWN sqlite file. Claims are APPEND-ONLY derived assertions:
+   * a revision never mutates or deletes its predecessor — it is a new row whose `supersedes` links the
+   * chain, and a sovereign user correction is a new `source:'user'` row that OUTRANKS (never overwrites)
+   * the derived claim it `corrects`. `insert or replace` keyed on the (content-derived) id makes a replayed
+   * build byte-stable (same content ⇒ same id ⇒ replace-in-place), mirroring saveContextPacket. Contract-
+   * validated before write (the last-line-of-defense idiom) — so the "a claim with no evidence is
+   * unrepresentable" invariant holds at the store boundary too. Only this path writes claims.
+   */
+  saveClaim(claim: Claim): Claim {
+    this.ensureWorkspace({ id: claim.workspaceId, name: claim.workspaceId })
+    const db = this.openWorkspace(claim.workspaceId)
+    const { subject, relation, object } = claim
+    if (!Value.Check(ClaimSchema, claim)) {
+      throw new Error(`claim failed contract validation: ${subject} ${relation} ${object}`)
+    }
+    db.prepare(
+      'insert or replace into claims (id, session_id, subject, object, relation, source, first_observed, created_at, body) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(claim.id, claim.sessionId ?? null, claim.subject, claim.object, claim.relation, claim.source, claim.firstObserved, claim.createdAt, JSON.stringify(claim))
+    return claim
+  }
+
+  /**
+   * Resolve a claim set to its LIVE heads (#178) — supersession AND sovereignty, in one pure pass, so a
+   * reader never sees a superseded revision or a user-overruled pair as live:
+   *   1. DERIVED SUPERSESSION: a derived revision named by another's `supersedes` is dropped.
+   *   2. USER SOVEREIGNTY: for each (subject, object, relation) pair a user has ruled on, the LATEST user
+   *      correction wins (a `reject` asserts the pair is NOT a relationship, so it drops out of the live
+   *      view entirely; a `confirm`/`correct` becomes the live head). A DERIVED claim on a pair the user
+   *      ruled on is dropped — so RE-DERIVING a corrected pair can never defeat the correction (the builder
+   *      keeps appending derived revisions, but they stay behind the sovereign head at read time).
+   * The original inference and its evidence are never deleted — `includeSuperseded` returns the whole
+   * append-only history (revisions + overruled derived claims + reject markers) for audit. Pure over the
+   * list; the source of truth is the append-only table.
+   */
+  static resolveClaimHeads(claims: readonly Claim[], includeSuperseded = false): Claim[] {
+    if (includeSuperseded) return [...claims]
+    const pk = (c: Claim): string => `${c.subject}\u0000${c.object}\u0000${c.relation}`
+    const byId = new Map(claims.map((c) => [c.id, c]))
+    const superseded = new Set(claims.map((c) => c.supersedes).filter((id): id is string => id !== undefined))
+    // The pair each user correction ruled on is the pair of the claim it CORRECTS (a `correct` may assert a
+    // different relation/object than the target, so the target's pair is the one being overruled).
+    const rulingPairKey = (u: Claim): string => {
+      const target = u.corrects !== undefined ? byId.get(u.corrects) : undefined
+      return target !== undefined ? pk(target) : pk(u)
+    }
+    const latestUser = new Map<string, Claim>()
+    for (const u of claims) {
+      if (u.source !== 'user') continue
+      const key = rulingPairKey(u)
+      const prior = latestUser.get(key)
+      if (prior === undefined || u.createdAt > prior.createdAt || (u.createdAt === prior.createdAt && u.id > prior.id)) latestUser.set(key, u)
+    }
+    const live: Claim[] = []
+    for (const c of claims) {
+      if (c.source !== 'derived' || superseded.has(c.id)) continue
+      if (latestUser.has(pk(c))) continue // a sovereign correction sits over this pair
+      live.push(c)
+    }
+    for (const u of latestUser.values()) {
+      if (u.correction?.verdict === 'reject') continue // a rejected pair is NOT a live relationship
+      live.push(u)
+    }
+    return live.sort((a, b) => (a.firstObserved < b.firstObserved ? -1 : a.firstObserved > b.firstObserved ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+  }
+
+  /**
+   * Query a workspace's Claims (#178) — the axes the issue names: workspace (the DB), session, related
+   * entity (subject OR object), relation kind, source, and time window (`from`/`to` keep claims whose
+   * observed span INTERSECTS the range). SUPERSESSION AND SOVEREIGNTY ARE RESOLVED FIRST (resolveClaimHeads)
+   * so a filtered read can never present a superseded revision or a user-overruled pair as live merely
+   * because its successor/correction fell outside the filter. `includeSuperseded` returns the whole
+   * append-only history. Unknown workspace reads as [] (mirrors listContextPackets) — asking is never an error.
+   */
+  listClaims(
+    workspaceId: string,
+    opts: {
+      sessionId?: string
+      subject?: string
+      object?: string
+      entityId?: string
+      relation?: ClaimRelation
+      source?: Claim['source']
+      from?: string
+      to?: string
+      includeSuperseded?: boolean
+    } = {},
+  ): Claim[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const rows = opts.sessionId
+      ? (db.prepare('select body from claims where session_id = ? order by first_observed, created_at, id').all(opts.sessionId) as { body: string }[])
+      : (db.prepare('select body from claims order by first_observed, created_at, id').all() as { body: string }[])
+    let claims = WorkspaceRegistry.resolveClaimHeads(rows.map((row) => JSON.parse(row.body) as Claim), opts.includeSuperseded)
+    if (opts.source !== undefined) claims = claims.filter((c) => c.source === opts.source)
+    if (opts.relation !== undefined) claims = claims.filter((c) => c.relation === opts.relation)
+    if (opts.subject !== undefined) claims = claims.filter((c) => c.subject === opts.subject)
+    if (opts.object !== undefined) claims = claims.filter((c) => c.object === opts.object)
+    if (opts.entityId !== undefined) claims = claims.filter((c) => c.subject === opts.entityId || c.object === opts.entityId)
+    if (opts.from !== undefined) claims = claims.filter((c) => c.lastObserved > opts.from!)
+    if (opts.to !== undefined) claims = claims.filter((c) => c.firstObserved < opts.to!)
+    return claims
+  }
+
+  /**
+   * The depth-1 relationship walk (#178): entity → its live claims → the counterpart entity at the other
+   * end of each. Answers "what does this entity relate to?" — the shape #181's typeahead and the recall
+   * surfaces consume. Each counterpart carries the deduped relation kinds, the strongest backing
+   * confidence, and the `claimIds` so a consumer can always retrieve the supporting evidence + scope (the
+   * #178 invariant: a walk result always resolves to its supporting claims). A read-time PROJECTION over the
+   * resolved claim heads — never a second truth store. A counterpart with no entity record is skipped (a
+   * dangling id has nothing to name — never fabricated). Sorted strongest-first, then by id (deterministic).
+   */
+  relatedEntities(workspaceId: string, entityId: string): RelatedEntity[] {
+    const claims = this.listClaims(workspaceId, { entityId })
+    const entities = new Map(this.listEntities(workspaceId).map((e) => [e.id, e]))
+    const byCounterpart = new Map<string, { relations: Set<ClaimRelation>; confidence: number; claimIds: string[] }>()
+    for (const c of claims) {
+      const counterpart = c.subject === entityId ? c.object : c.subject
+      if (counterpart === entityId) continue // a self-loop has no counterpart to walk to
+      const entry = byCounterpart.get(counterpart) ?? { relations: new Set<ClaimRelation>(), confidence: 0, claimIds: [] }
+      entry.relations.add(c.relation)
+      entry.confidence = Math.max(entry.confidence, c.confidence)
+      entry.claimIds.push(c.id)
+      byCounterpart.set(counterpart, entry)
+    }
+    const out: RelatedEntity[] = []
+    for (const [id, entry] of byCounterpart) {
+      const entity = entities.get(id)
+      if (entity === undefined) continue
+      out.push({ entityId: id, name: entity.name, relations: [...entry.relations].sort(), confidence: entry.confidence, claimIds: [...entry.claimIds].sort() })
+    }
+    return out.sort((a, b) => b.confidence - a.confidence || (a.entityId < b.entityId ? -1 : a.entityId > b.entityId ? 1 : 0))
+  }
+
+  /**
+   * Record a SOVEREIGN user correction on a derived claim (#178) — the durable, append-only assertion that
+   * OUTRANKS the derived claim without deleting it or its evidence (the roadmap invariant; the titling-
+   * sovereignty pattern). It mints a `source:'user'` Claim that `corrects` the target: a `confirm` affirms
+   * it (state `confirmed`), a `reject` denies the relationship (state `rejected` — the pair drops out of the
+   * live view), a `correct` asserts a different relation/object (state `corrected`). The correction CARRIES
+   * THE TARGET'S EVIDENCE REFS, so it stays traceable to the same source observations it reinterprets (the
+   * evidence-is-mandatory invariant holds). The id is content-derived over (target, verdict, relation,
+   * object, note) EXCLUDING the timestamp, so re-issuing the same correction is idempotent (insert-or-
+   * replace, no duplicate). Contract-validated on write via saveClaim. Throws only for an unknown claim id.
+   */
+  recordClaimCorrection(input: {
+    workspaceId: string
+    claimId: string
+    verdict: 'confirm' | 'reject' | 'correct'
+    relation?: ClaimRelation
+    object?: string
+    by?: string
+    note?: string
+  }): Claim {
+    const target = this.listClaims(input.workspaceId, { includeSuperseded: true }).find((c) => c.id === input.claimId)
+    if (target === undefined) throw new Error(`no claim ${input.claimId} in workspace ${input.workspaceId}`)
+    // confirm/reject inherit the target's relation/object; only a `correct` may assert a different one.
+    const relation: ClaimRelation = input.verdict === 'correct' && input.relation !== undefined ? input.relation : target.relation
+    const object = input.verdict === 'correct' && input.object !== undefined ? input.object : target.object
+    const state: Claim['state'] = input.verdict === 'confirm' ? 'confirmed' : input.verdict === 'reject' ? 'rejected' : 'corrected'
+    const at = new Date().toISOString()
+    const id = `clm-user-${createHash('sha256')
+      .update(`${target.id}\u0000${input.verdict}\u0000${relation}\u0000${object}\u0000${input.note ?? ''}`)
+      .digest('hex')
+      .slice(0, 24)}`
+    const claim: Claim = {
+      id,
+      workspaceId: input.workspaceId,
+      subject: target.subject,
+      object,
+      relation,
+      evidence: target.evidence, // carry the target's evidence → traceable to the same observations
+      confidence: 1, // a sovereign human decision, not a proposal
+      source: 'user',
+      state,
+      correction: { verdict: input.verdict, at, ...(input.by !== undefined ? { by: input.by } : {}), ...(input.note !== undefined ? { note: input.note } : {}) },
+      corrects: target.id,
+      ...(target.sessionId !== undefined ? { sessionId: target.sessionId } : {}),
+      firstObserved: target.firstObserved,
+      lastObserved: target.lastObserved,
+      revision: 1,
+      schemaVersion: CLAIM_SCHEMA_VERSION,
+      createdAt: at,
+    }
+    return this.saveClaim(claim)
   }
 
   /** List a workspace's OcrResults (default all), oldest first; `sessionId` narrows to one session. */
@@ -887,8 +1075,8 @@ export class WorkspaceRegistry {
    * This is the ONLY module that opens DB handles, so route/ asks store to move a session (dep rule 2).
    *
    * WHAT MOVES: the session record (with the authoritative manual correction appended atomically), its
-   * distillates, moments, drafts, OcrResults, SttSegments, and ContextPackets (the whole append-only
-   * chain, superseded revisions included), plus
+   * distillates, moments, drafts, OcrResults, SttSegments, ContextPackets, Summaries, and Claims (the whole
+   * append-only chains, superseded revisions and sovereign user corrections included), plus
    * the session-scoped document state in _meta.db: complete FieldValue and SessionAnnotation histories,
    * GuardHolds, and the current TodoList. ENTITIES are workspace-level aggregates, not session-keyed,
    * so they are re-aggregated (see below), never blindly copied.
@@ -941,6 +1129,9 @@ export class WorkspaceRegistry {
     const contextPackets = this.listContextPackets(fromWorkspaceId, { sessionId, includeSuperseded: true })
     // #177: the WHOLE append-only summary chain moves too (includeSuperseded), for the same reason as packets.
     const summaries = this.listSummaries(fromWorkspaceId, { sessionId, includeSuperseded: true })
+    // #178: the WHOLE append-only claim history moves (includeSuperseded) — derived revisions AND sovereign
+    // user corrections — so a rerouted session keeps its relationship graph and its human corrections intact.
+    const claims = this.listClaims(fromWorkspaceId, { sessionId, includeSuperseded: true })
     const movedDistillateIds = new Set(distillates.map((d) => d.id))
     const movedMomentIds = new Set(moments.map((m) => m.id))
 
@@ -1024,6 +1215,12 @@ export class WorkspaceRegistry {
         const moved: Summary = { ...summary, workspaceId: toWorkspaceId }
         toDb.prepare('insert or replace into summaries (id, session_id, level, window_start, window_end, created_at, body) values (?, ?, ?, ?, ?, ?, ?)').run(moved.id, moved.sessionId ?? null, moved.level, moved.windowStart, moved.windowEnd, moved.createdAt, JSON.stringify(moved))
       }
+      for (const claim of claims) {
+        // The id stays stable across the move (opaque once minted); only the workspace scope is rewritten, so a
+        // destination rebuild converges on the moved chain instead of forking a new one (as packets/summaries do).
+        const moved: Claim = { ...claim, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into claims (id, session_id, subject, object, relation, source, first_observed, created_at, body) values (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(moved.id, moved.sessionId ?? null, moved.subject, moved.object, moved.relation, moved.source, moved.firstObserved, moved.createdAt, JSON.stringify(moved))
+      }
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
@@ -1047,6 +1244,7 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from context_packets where session_id = ?').run(sessionId)
       fromDb.prepare('delete from session_titlings where session_id = ?').run(sessionId)
       fromDb.prepare('delete from summaries where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from claims where session_id = ?').run(sessionId)
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
@@ -1579,6 +1777,13 @@ export class WorkspaceRegistry {
     // not exists` in the per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
     db.prepare(
       'create table if not exists summaries (id text primary key, session_id text, level text not null, window_start text not null, window_end text not null, created_at text not null, body text not null)',
+    ).run()
+    // #178: evidence-backed relationship claims — subject-relation-object assertions grounded in refs to the
+    // converged evidence above (context packets / moments), append-only with derived-supersession + sovereign
+    // user corrections. `session_id` is the derivation scope (nullable, mirroring summaries). Additive `create
+    // table if not exists` in the per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
+    db.prepare(
+      'create table if not exists claims (id text primary key, session_id text, subject text not null, object text not null, relation text not null, source text not null, first_observed text not null, created_at text not null, body text not null)',
     ).run()
     // The Ask face's persistent app-scoped chat thread — one thread per workspace (owner canon 2026-07-11;
     // upstream glass left ask-history vestigial). `seq` (autoincrement) is the stable turn order: turns in
