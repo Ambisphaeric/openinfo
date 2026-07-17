@@ -1094,7 +1094,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   // is a 400, clearing it (presetId null) is allowed. `?workspace=<id>` scopes it (absent ⇒ 'default').
   if (req.method === 'GET' && url.pathname === '/active-preset') return getActivePreset(res, ctx, url)
   if (req.method === 'PUT' && url.pathname === '/active-preset') return putActivePreset(req, res, ctx, url)
-  if (req.method === 'GET' && url.pathname === '/sessions') return send(res, 200, readSessions(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/sessions') return send(res, 200, readSessions(ctx.store, ctx.senseLanes, url))
   if (req.method === 'POST' && url.pathname === '/sessions') return startSession(req, res, ctx)
   const sessionEnd = url.pathname.match(/^\/sessions\/([^/]+)\/end$/)
   if (req.method === 'POST' && sessionEnd?.[1]) return endSession(res, ctx, decodeURIComponent(sessionEnd[1]))
@@ -1697,11 +1697,21 @@ function sendContract(url: URL, res: ServerResponse): void {
  * List a workspace's sessions (default `default`), most recently started first. `?live=true`
  * narrows to the (at most one) unended session — the HUD's Now line keys off it. Mirrors
  * readMoments: unknown workspace is an empty list, not an error.
+ *
+ * HONEST DISPLAY SCOPE (#210): `?live=true` reports the RUNTIME-current session (the sense-lane authority,
+ * SenseLaneTracker.currentSessionId), NOT store.liveSession's persisted most-recent-unended session. Engine
+ * sessions outlive the client, so on a fresh launch a stale unended session from a prior process must not be
+ * adopted as the HUD's Now line (the always-launch-stopped posture). The persisted unended list is filtered
+ * to the runtime-current id, so a store/runtime disagreement resolves to the honest empty, never a guess.
+ * The unfiltered list (no `?live`) is unchanged — history is history.
  */
-function readSessions(store: WorkspaceRegistry, url: URL): Session[] {
+function readSessions(store: WorkspaceRegistry, senseLanes: SenseLaneTracker, url: URL): Session[] {
   const workspaceId = url.searchParams.get('workspace') ?? 'default'
   const live = url.searchParams.get('live') === 'true'
-  return store.listSessions(workspaceId, live ? { live: true } : {})
+  if (!live) return store.listSessions(workspaceId)
+  const currentId = senseLanes.currentSessionId(workspaceId)
+  if (currentId === undefined) return []
+  return store.listSessions(workspaceId, { live: true }).filter((s) => s.id === currentId)
 }
 
 /**
@@ -2305,7 +2315,9 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
   // by the route and handed to compileQuery for exactly the source that needs them. status() and the ring
   // are cheap, but async status() is awaited only when needed. Every other source reads through store/.
   const sources = await buildQuerySources(query, ctx, boundWorkspace)
-  send(res, 200, compileQuery(ctx.store, query, new Date(), sources, boundWorkspace))
+  // #210: `session: 'current'` binds to the runtime-current session (the sense-lane authority), not the
+  // persisted most-recent-unended one — so a stale session from a prior process reads honest-empty here too.
+  send(res, 200, compileQuery(ctx.store, query, new Date(), sources, boundWorkspace, (wsId) => ctx.senseLanes.currentSessionId(wsId)))
 }
 
 /**

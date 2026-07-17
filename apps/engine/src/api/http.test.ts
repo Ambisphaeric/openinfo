@@ -226,6 +226,64 @@ test('session lifecycle: start/list/live/end over the routes, with bus events', 
   }
 })
 
+test('honest display scope (#210): a stale unended session on disk is NOT adopted as current — Now line empty, record blocks empty; a session started this process resolves current', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+    const query = async (body: unknown): Promise<QueryResult> =>
+      (await (await fetch(`${base}/query`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })).json()) as QueryResult
+
+    // A prior process left an UNENDED session with records on disk — but THIS process never observed its
+    // start, so the sense-lane tracker (the runtime authority) does not consider it current. This is exactly
+    // "engine sessions outlive the client": the persisted session is stale relative to the live runtime.
+    app.store.saveSession({
+      id: 'ses-stale', workspaceId: 'default', modeId: 'mode-meeting', startedAt: '2026-07-07T09:00:00Z',
+      attribution: { evidence: [{ kind: 'manual', detail: 'prior run', weight: 1 }], confidence: 1 },
+    })
+    app.store.saveMoment({
+      id: 'mom-stale', sessionId: 'ses-stale', workspaceId: 'default', at: '2026-07-07T09:05:00Z',
+      kind: 'decision', text: 'previous session content', refs: [], source: 'mic', confidence: 0.8,
+    })
+
+    // store.liveSession still SEES the stale unended session (the persisted truth is intact)...
+    assert.deepEqual((await (await fetch(`${base}/sessions?workspace=default`)).json() as Session[]).map((s) => s.id), ['ses-stale'])
+    // ...but GET /sessions?live (the HUD's Now line) does NOT adopt it — launch-stopped, honest empty.
+    assert.deepEqual(await (await fetch(`${base}/sessions?workspace=default&live=true`)).json(), [])
+    // And a `session: 'current'` record block reads EMPTY, not the previous session's moment.
+    assert.deepEqual((await query({ source: 'moments', params: { session: 'current' } })).items, [])
+    // An all-history block (no session param) still reads the workspace history — only "current" is narrowed.
+    assert.deepEqual((await query({ source: 'moments', params: {} })).items.length, 1)
+
+    // Start a session THIS process (the tracker observes session.started) → it becomes the runtime-current one.
+    const live = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting', title: 'live now' }),
+    })).json()) as Session
+    app.store.saveMoment({
+      id: 'mom-live', sessionId: live.id, workspaceId: 'default', at: '2026-07-07T14:05:00Z',
+      kind: 'decision', text: 'current session content', refs: [], source: 'mic', confidence: 0.8,
+    })
+
+    // GET /sessions?live now reports the newly-started session, and "current" scopes to ITS moment only.
+    assert.deepEqual((await (await fetch(`${base}/sessions?workspace=default&live=true`)).json() as Session[]).map((s) => s.id), [live.id])
+    assert.deepEqual((await query({ source: 'moments', params: { session: 'current' } })).items.map((m) => (m as Moment).id), ['mom-live'])
+
+    // End it → the Now line and "current" record blocks go honestly empty again (no fallback to history).
+    assert.equal((await fetch(`${base}/sessions/${encodeURIComponent(live.id)}/end`, { method: 'POST' })).status, 200)
+    assert.deepEqual(await (await fetch(`${base}/sessions?workspace=default&live=true`)).json(), [])
+    assert.deepEqual((await query({ source: 'moments', params: { session: 'current' } })).items, [])
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('surface routes: seeded HUD is served, edits round-trip with a bumped version', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
   const app = createEngineApp({ dataRoot: dir, log: () => undefined })

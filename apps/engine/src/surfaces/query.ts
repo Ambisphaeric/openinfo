@@ -39,11 +39,32 @@ export interface QuerySources {
   liveSenses?: SenseLaneSnapshot[]
 }
 
+/** The resolved scope of a query: its workspace, an optional session filter, and the honest #210 flag. */
+export interface QueryScope {
+  workspaceId: string
+  sessionId?: string
+  /**
+   * True ⇒ the block asked for `session: 'current'` but NO session is live this process (#210). The scope
+   * deliberately carries NO sessionId AND this flag rather than silently widening to the whole workspace:
+   * a session-scoped source must read honest-empty ("nothing captured yet"), never the previous session's
+   * records rendered as current. Distinct from an ABSENT session param (a block that legitimately reads all
+   * workspace history), which sets neither field — so an all-history block is unchanged.
+   */
+  noCurrentSession?: boolean
+}
+
 /**
  * Resolve the workspace + session a query runs against from its `params`. A block layout is context-
  * agnostic — it says `session: "current"` (design/renderings/hud-v2.html) and the engine binds that
- * to the workspace's live session at query time, so the SAME document works across sessions. An
- * explicit session id passes through; no session param ⇒ the whole workspace.
+ * to the live session at query time, so the SAME document works across sessions. An explicit session id
+ * passes through; no session param ⇒ the whole workspace.
+ *
+ * HONEST DISPLAY SCOPE (#210): `current` binds to the RUNTIME-current session resolved by `currentSessionId`
+ * — the SAME authority the live sense lanes use (SenseLaneTracker.currentSessionId), NOT store.liveSession's
+ * persisted most-recent-unended session. Engine sessions outlive the client, so a stale unended session from
+ * a prior process must not hydrate as current. When there is no live session (or, for a unit caller, no
+ * resolver was supplied) the scope is flagged `noCurrentSession` and carries no sessionId — it NEVER silently
+ * falls back to whole-workspace history, which is the daily-felt "lingering records from a previous session".
  *
  * WORKSPACE RESOLUTION (#99): an explicit per-block `params.workspace` ALWAYS wins. Absent, the workspace
  * falls back to `defaultWorkspaceId` — the binding of the app INSTANCE this query runs under (the surface's
@@ -56,16 +77,25 @@ export const resolveQueryScope = (
   store: WorkspaceRegistry,
   params: BlockQuery['params'],
   defaultWorkspaceId?: string,
-): { workspaceId: string; sessionId?: string } => {
+  currentSessionId?: (workspaceId: string) => string | undefined,
+): QueryScope => {
   const workspaceId = typeof params['workspace'] === 'string' ? params['workspace'] : (defaultWorkspaceId ?? 'default')
   const sessionParam = params['session']
   if (sessionParam === 'current') {
-    const live = store.liveSession(workspaceId)
-    return live ? { workspaceId, sessionId: live.id } : { workspaceId }
+    const live = currentSessionId?.(workspaceId)
+    return live !== undefined ? { workspaceId, sessionId: live } : { workspaceId, noCurrentSession: true }
   }
   if (typeof sessionParam === 'string' && sessionParam.length > 0) return { workspaceId, sessionId: sessionParam }
   return { workspaceId }
 }
+
+/**
+ * The sources whose rows are SESSION-SCOPED — they pass `sessionId` to the store and so are the ones that
+ * would leak a previous session's content if `session: 'current'` silently widened to whole-workspace. When
+ * the scope is `noCurrentSession` (#210) these read empty; the workspace-level sources (sessions, entities,
+ * pins, teach) carry no session dimension and were never the stale-content defect, so they are unaffected.
+ */
+const SESSION_SCOPED_SOURCES = new Set<BlockQuery['source']>(['relevant-now', 'moments', 'todos', 'drafts', 'distillates', 'fields'])
 
 /**
  * Compile a BlockQuery to store calls — the Phase-0 decision (surface.ts): the declarative JSON
@@ -84,8 +114,9 @@ export const compileQuery = (
   now: Date = new Date(),
   sources: QuerySources = {},
   defaultWorkspaceId?: string,
+  currentSessionId?: (workspaceId: string) => string | undefined,
 ): QueryResult => {
-  const { workspaceId, sessionId } = resolveQueryScope(store, query.params, defaultWorkspaceId)
+  const { workspaceId, sessionId, noCurrentSession } = resolveQueryScope(store, query.params, defaultWorkspaceId, currentSessionId)
   const known = store.all().some((ws) => ws.id === workspaceId)
   const top = query.top
 
@@ -121,6 +152,12 @@ export const compileQuery = (
     })
     return cap(kept, suppressed)
   }
+
+  // Honest display scope (#210): a `session: 'current'` read with no live session must never widen to the
+  // whole workspace. A session-scoped source reads empty ("nothing captured yet") instead of the previous
+  // session's records — the SAME posture the live sense lanes already take on a fresh process. Placed before
+  // the switch so it uniformly covers every session-scoped arm without threading the flag into each store call.
+  if (noCurrentSession && SESSION_SCOPED_SOURCES.has(query.source)) return cap([])
 
   switch (query.source) {
     case 'relevant-now':

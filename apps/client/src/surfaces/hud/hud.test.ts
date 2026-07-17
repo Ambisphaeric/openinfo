@@ -102,11 +102,15 @@ test('the HUD loads a surface, renders once, and re-queries on live WS events', 
   const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme', now: () => new Date('2026-07-07T14:47:00Z') })
 
   await hud.start()
-  // initial render: no live session → dead heartbeat, no moments, no Now line
+  // initial render: no live session → dead heartbeat, no moments, no Now line. With the engine's honest
+  // display scope (#210) this is exactly the fresh-launch/stale-session state: GET /sessions?live returns []
+  // and the `session: 'current'` moments query returns [], so the HUD shows no Now line and zero moment rows
+  // — never a previous session's content rendered as current.
   assert.ok(panel)
   let html = renderToHtml(panel)
   assert.match(html, /class="livedot off"/)
   assert.doesNotMatch(html, /nowline/)
+  assert.doesNotMatch(html, /class="mo"/) // no moment rows — honest empty, not stale content
 
   // a session starts and a commitment is extracted; the engine emits WS events → HUD re-queries
   transport.live = [session()]

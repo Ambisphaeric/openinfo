@@ -370,6 +370,22 @@ export class SenseLaneTracker {
     return rows
   }
 
+  /**
+   * The RUNTIME-current session id for a workspace (#210), or undefined when no session is live this
+   * process. This is the SAME authority that scopes the live sense lanes (`currentByWorkspace`, set on
+   * session.started and cleared on session.ended) — deliberately NOT store.liveSession's persisted most-
+   * recent-unended session. Engine sessions outlive the client, so on a fresh process a stale unended
+   * session from a prior run must NOT read as current: exposing this lets the record-query resolver and the
+   * HUD's live-session listing bind `session: 'current'` to the same honest truth the lanes already use, so
+   * record blocks read empty rather than a previous session's content. A defensive `!ended` guard keeps a
+   * late/ended state from ever being reported current even if its key lingered.
+   */
+  currentSessionId(workspaceId: string): string | undefined {
+    const key = this.currentByWorkspace.get(workspaceId)
+    const state = key ? this.sessions.get(key) : undefined
+    return state && !state.ended ? state.sessionId : undefined
+  }
+
   /** Hydration snapshot: exactly mic, system-audio, screen, in that order. */
   snapshotSet(workspaceId: string, sessionId?: string): SenseLaneSnapshotSet {
     const key = sessionId ? keyFor(workspaceId, sessionId) : this.currentByWorkspace.get(workspaceId)
