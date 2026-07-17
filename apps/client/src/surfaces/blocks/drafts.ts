@@ -26,11 +26,13 @@ const ACT_LABEL: Record<Draft['actKind'], string> = {
   nudge: 'nudge',
 }
 
-const plural = (n: number, one: string): string => `${n} ${one}${n === 1 ? '' : 's'}`
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`
 
 const whyLine = (draft: Draft): string => {
   const kind = ACT_LABEL[draft.actKind] ?? draft.actKind
-  const sources = `${plural(draft.provenance.sourceDistillates.length, 'distillate')} + ${plural(draft.provenance.sourceMoments.length, 'moment')}`
+  // hud-voice §2: "distillate" is banned end-user vocabulary → the human word for a distilled capture
+  // window is "summary" (#242). Explicit plural form ("summaries") since the naive +s is wrong here.
+  const sources = `${plural(draft.provenance.sourceDistillates.length, 'summary', 'summaries')} + ${plural(draft.provenance.sourceMoments.length, 'moment', 'moments')}`
   return `${kind} · from ${sources}`
 }
 
