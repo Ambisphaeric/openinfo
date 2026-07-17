@@ -11,7 +11,7 @@ import { systemFaceDataUrl, type SystemFaceModel } from './system-face.js'
 import { configForSurface, HUD_MIN_HEIGHT } from './window-options.js'
 import { constructSurfaceWindow, HUD_HTML, type SurfaceWindowMeta, type SurfaceWindowOpts } from './surface-window.js'
 import { resolveHudHeight } from './hud-height.js'
-import { buildTrayMenu, trayTooltip, type TrayState, type TrayMenuItem } from './tray-menu.js'
+import { buildTrayMenu, trayTooltip, sessionControlReadiness, type TrayState, type TrayMenuItem } from './tray-menu.js'
 import { SHORTCUTS, type ShellCommand } from './shortcuts.js'
 import { WindowRegistry } from './app-registry.js'
 import { readAppState, writeAppState, toggleInList, type AppState } from './app-store.js'
@@ -283,7 +283,19 @@ const toMenuItem = (item: TrayMenuItem): MenuItemConstructorOptions => {
   return spec
 }
 
+// #136: push the on-surface session control's readiness to every renderer that carries it (the note-taker
+// Record button / the session-control block read it through the openinfoSession bridge). Derived from the
+// SAME TrayState the menu reads, so the in-window control can never disagree with the tray. Sent on every
+// tray refresh — connect, session boundary, mic/capture transition — so the control stays honest live.
+const pushSessionState = (): void => {
+  const readiness = sessionControlReadiness(trayState())
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send('hud:session-state', readiness)
+  }
+}
+
 const refreshTray = (): void => {
+  pushSessionState()
   if (!tray) return
   tray.setContextMenu(Menu.buildFromTemplate(buildTrayMenu(trayState()).map(toMenuItem)))
   tray.setToolTip(trayTooltip(trayState()))
@@ -1524,6 +1536,12 @@ app.whenReady().then(async () => {
   ipcMain.on('hud:open-settings', () => {
     void openEngineSettings('pill')
   })
+  // #136: the on-surface session control (the note-taker Record button, the session-control block) dispatches
+  // through the SAME command path the tray's Start/End Session item uses — one session lifecycle, capture
+  // consent granted/revoked in the single place (dispatch below). A renderer cannot start a session itself
+  // (consent + capture are main-only); it sends a coordinate-free signal, exactly like drag/capture/settings.
+  ipcMain.on('hud:session-start', () => dispatch('start-session'))
+  ipcMain.on('hud:session-stop', () => dispatch('end-session'))
   // Load the Apps-folder state (favorites + open set + per-app positions) before creating windows so a
   // reopened app restores its saved position (#19/#20/#98). Best-effort — a missing file reads as empty.
   appState = readAppState(app.getPath('userData'))

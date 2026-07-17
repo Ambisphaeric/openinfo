@@ -25,11 +25,29 @@ export interface ClarifyRenderContext {
   expanded?: string
 }
 
+/**
+ * The #136 session-control readiness — the honest can-this-act signal the shell feeds down from the SAME
+ * engine/capture state the tray reads. Threaded to every block renderer (the `session-control` block + the
+ * note-taker's canvas-header control consult it). Optional so a surface without a session control ignores it;
+ * absent ⇒ no shell bridge (browser dev / served frame), which the control renders as a disabled, disclosed
+ * state. Shape mirrored in blocks/session-control.ts (SessionReadiness) — the pure renderer that consumes it.
+ */
+export interface SessionReadiness {
+  /** Can a start/stop dispatch actually succeed right now? false ⇒ the control renders disabled with `reason`. */
+  ready: boolean
+  /** When !ready, the true human reason (hud-voice) — the disabled title AND the inline note. */
+  reason?: string
+  /** An honest capture sub-state shown WHILE live only (never disables — the session/text path still works). */
+  capture?: { tone: 'rec' | 'warn'; note: string }
+}
+
 export interface BlockRenderArgs {
   block: Block
   result?: QueryResult
   now: NowContext
   clarify?: ClarifyRenderContext
+  /** #136: the session-control readiness, threaded from the surface render input (see SurfaceRenderInput). */
+  session?: SessionReadiness
 }
 
 /** A block renderer: pure `(config + hydrated data) → VNode(s)`. Returns null to render nothing. */
@@ -45,6 +63,8 @@ export interface SurfaceRenderInput {
   results: readonly (QueryResult | undefined)[]
   /** #75 clarify session context, threaded to every block renderer (entity blocks consult it). */
   clarify?: ClarifyRenderContext
+  /** #136 session-control readiness, threaded to the session-control block + the note-taker canvas control. */
+  session?: SessionReadiness
 }
 
 /**
@@ -64,7 +84,7 @@ export const renderSurface = (input: SurfaceRenderInput, registry: BlockRegistry
     if (show === 'on-match' && (!result || result.items.length === 0)) return
     const renderer = registry[block.block] ?? registry.custom
     if (!renderer) return
-    const node = renderer({ block, now: input.now, ...(result !== undefined ? { result } : {}), ...(input.clarify !== undefined ? { clarify: input.clarify } : {}) })
+    const node = renderer({ block, now: input.now, ...(result !== undefined ? { result } : {}), ...(input.clarify !== undefined ? { clarify: input.clarify } : {}), ...(input.session !== undefined ? { session: input.session } : {}) })
     if (Array.isArray(node)) children.push(...node)
     else if (node) children.push(node)
   })

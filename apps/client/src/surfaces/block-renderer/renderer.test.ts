@@ -258,6 +258,16 @@ test('#215 session-scoped blocks word two DISTINCT empty states: no session runn
   assert.notEqual(noSession, liveEmpty) // visibly distinct end-to-end
 })
 
+test('renderSurface routes a session-control block through the registry, threading the session readiness (#136)', () => {
+  const surface: Surface = { id: 'surf-x', name: 'X', context: 'any', version: 1, stack: [{ block: 'session-control', id: 'sc' }] }
+  // ready + stopped → the block renders the LIVE start control (proves the registry entry + `session` thread)
+  const ready = renderToHtml(renderSurface({ surface, now: { live: false }, results: [undefined], session: { ready: true } }, defaultBlockRegistry))
+  assert.match(ready, /data-verb="session-start"/)
+  // no readiness threaded → the block renders honestly disabled (never routed to the custom fallback)
+  const disabled = renderToHtml(renderSurface({ surface, now: { live: false }, results: [undefined] }, defaultBlockRegistry))
+  assert.match(disabled, /class="session-record pending"[^>]*disabled/)
+})
+
 test('clockLabel renders in the viewer timezone: one instant, two explicit zones, two clocks (#55)', () => {
   const iso = '2026-07-07T14:44:00Z'
   // Same instant, different wall-clocks — the seam that lets a human read local time, not UTC.

@@ -66,3 +66,26 @@ contextBridge.exposeInMainWorld('openinfoScreen', {
 contextBridge.exposeInMainWorld('openinfoShell', {
   openSettings: (): void => ipcRenderer.send('hud:open-settings'),
 })
+
+/**
+ * The #136 SESSION bridge — the on-surface session control's reach to the shell. Starting/ending a session
+ * grants/revokes capture CONSENT and drives capture, both main-only (the #41 boundary), so — like
+ * drag/capture/settings — the renderer sends a coordinate-free signal main honors on the SAME command path
+ * the tray's Start/End Session item uses (shell.ts `dispatch('start-session')` / `end-session`): one session
+ * lifecycle, one consent gate. `state()` returns the latest READINESS main pushed over `hud:session-state`
+ * (engine reachable? skew-refused? capture health?), which the control renders as its honest live/disabled
+ * state. Cached here so the renderer reads it synchronously each paint; before the first push it is the
+ * honest "not ready yet" default. A build without the main handlers leaves start/stop inert (honest no-op).
+ */
+let sessionState: { ready: boolean; reason?: string; capture?: { tone: 'rec' | 'warn'; note: string } } = {
+  ready: false,
+  reason: 'Connecting to the engine…',
+}
+ipcRenderer.on('hud:session-state', (_event, snapshot: typeof sessionState) => {
+  if (snapshot && typeof snapshot.ready === 'boolean') sessionState = snapshot
+})
+contextBridge.exposeInMainWorld('openinfoSession', {
+  start: (): void => ipcRenderer.send('hud:session-start'),
+  stop: (): void => ipcRenderer.send('hud:session-stop'),
+  state: (): typeof sessionState => sessionState,
+})

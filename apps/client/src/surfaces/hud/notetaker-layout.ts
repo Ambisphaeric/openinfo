@@ -1,5 +1,6 @@
 import type { Block } from '@openinfo/contracts'
 import { h, renderSurface, type BlockRegistry, type SurfaceRenderInput, type VElement, type VNode } from '../block-renderer/index.js'
+import { renderSessionControl } from '../blocks/session-control.js'
 
 /**
  * The meeting note-taker three-zone layout (#133) — the minimal, DOCUMENT-DRIVEN column extension.
@@ -65,6 +66,7 @@ const renderZonePanel = (input: SurfaceRenderInput, zone: ZoneInput, registry: B
       now: input.now,
       results: zone.results,
       ...(input.clarify !== undefined ? { clarify: input.clarify } : {}),
+      ...(input.session !== undefined ? { session: input.session } : {}),
     },
     registry,
   )
@@ -102,33 +104,20 @@ const leftRailChrome = (): VNode =>
 
 /**
  * The center canvas header — carries the RECORD affordance (#133 relocated it here; the original placement
- * was disliked). Capture start/stop is the tray's session control today (consent boundary #41); an in-window
- * button needs the #136 session-control-verb block dispatched through the shell tray start-session path so
- * capture CONSENT flows — that is NOT built. Rather than a button that LOOKS live but does nothing (the only
- * disclosure was a hover tooltip — the exact silent-dead-affordance the interaction-honesty policy forbids),
- * the button is rendered `disabled` with an INLINE, always-visible note (`.nt-record-note`, not a tooltip)
- * that says where recording is actually controlled. Placement is flagged for the owner's review.
+ * was disliked). #136 makes it a LIVE in-window session control: `renderSessionControl` renders the start/stop
+ * button that dispatches through the SAME shell session path the tray uses (verb `session-start`/`session-stop`
+ * → the mount layer → the openinfoSession bridge → shell `dispatch`), so there is ONE session lifecycle and
+ * the #41 consent boundary is untouched (a session never auto-starts; capture ON is the explicit click). It
+ * is honest about when it can act: with no shell bridge / an unreachable or skew-refused engine it renders
+ * DISABLED with the true reason inline (the same disabled-with-disclosure shape the placeholder used, no more
+ * a tooltip-only fake). `live` is the engine truth (NowContext.live); `readiness` is the shell's signal.
  */
-const canvasHeaderChrome = (): VNode =>
+const canvasHeaderChrome = (state: { live: boolean; readiness?: SurfaceRenderInput['session'] }): VNode =>
   h(
     'div',
     { class: 'nt-canvas-head' },
     h('span', { class: 'nt-canvas-title' }, 'Notes'),
-    h(
-      'div',
-      { class: 'nt-record-group' },
-      h(
-        'button',
-        { class: 'nt-record pending', 'data-nt': 'record', disabled: true },
-        h('span', { class: 'nt-record-dot' }),
-        'Record',
-      ),
-      h(
-        'span',
-        { class: 'nt-record-note' },
-        'Recording is controlled from the menu bar for now',
-      ),
-    ),
+    renderSessionControl({ live: state.live, ...(state.readiness !== undefined ? { readiness: state.readiness } : {}) }),
   )
 
 const rightHeaderChrome = (): VNode => h('div', { class: 'nt-side-head' }, 'Enrichments')
@@ -143,7 +132,7 @@ export const renderNotetaker = (input: SurfaceRenderInput, registry: BlockRegist
     'div',
     { class: 'nt-app' },
     h('div', { class: 'nt-left' }, leftRailChrome(), renderZonePanel(input, zones.left, registry)),
-    h('div', { class: 'nt-center' }, canvasHeaderChrome(), renderZonePanel(input, zones.center, registry)),
+    h('div', { class: 'nt-center' }, canvasHeaderChrome({ live: input.now.live, ...(input.session !== undefined ? { readiness: input.session } : {}) }), renderZonePanel(input, zones.center, registry)),
     h('div', { class: 'nt-right' }, rightHeaderChrome(), renderZonePanel(input, zones.right, registry)),
   )
 }

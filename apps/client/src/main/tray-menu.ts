@@ -1,6 +1,7 @@
 import type { ShellCommand } from './shortcuts.js'
 import type { SenseStatus, SenseLevel } from './capture-status.js'
 import { appsSubmenuItems, type AppsFolderState } from './app-catalog.js'
+import type { SessionReadiness } from '../surfaces/block-renderer/registry.js'
 
 /**
  * The tray (menu-bar) state machine, pure so the whole thing — label flips, enabled state, the
@@ -129,6 +130,33 @@ export interface TrayMenuItem {
 export const recSourcesLabel = (state: TrayState): string => {
   if (!state.systemCapturing) return 'mic only'
   return state.systemSilent ? 'mic; system silent' : 'mic + system'
+}
+
+/**
+ * The #136 on-surface session control's readiness — DERIVED from the SAME TrayState the menu reads, so the
+ * in-window Record/Stop button is honest about exactly what the tray is (no second source of truth). The
+ * control can ACT (ready) only when the engine is connected AND not skew-refused; otherwise it renders
+ * disabled with the true reason (hud-voice), mirroring the tray's own leading state. Mic-blocked / a capture
+ * fault do NOT block start/stop — the session + text path still works (the tray keeps Start enabled too) — so
+ * they ride as a `capture` NOTE the control shows WHILE live, matching the tray's `● rec` / `mic blocked` line.
+ * Pushed to the renderers over `hud:session-state` on every tray refresh; a pure function so it is testable
+ * headless from a TrayState.
+ */
+export const sessionControlReadiness = (state: TrayState): SessionReadiness => {
+  if (state.engineSkewRefused) return { ready: false, reason: 'Engine refused — version mismatch' }
+  if (!state.connected) {
+    return { ready: false, reason: state.engineTried ? 'Engine unreachable — reconnecting' : 'Connecting to the engine…' }
+  }
+  const capture: SessionReadiness['capture'] = state.captureFault
+    ? { tone: 'warn', note: `Capture failed — ${state.captureFault}` }
+    : state.micBlocked
+      ? { tone: 'warn', note: 'Mic blocked — audio off, notes still capture' }
+      : state.capturing
+        ? { tone: 'rec', note: `Recording · ${recSourcesLabel(state)}` }
+        : state.micStarting
+          ? { tone: 'rec', note: 'Mic warming up…' }
+          : undefined
+  return { ready: true, ...(capture !== undefined ? { capture } : {}) }
 }
 
 /**

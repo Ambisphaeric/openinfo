@@ -42,11 +42,12 @@ import type { Surface } from '@openinfo/contracts'
  * composed onto every surface this controller renders, so the note-taker inherits the ~1-2s transcript
  * feed for free (the layout parks it as a full-width ticker across the bottom of the frame).
  *
- * Record affordance: capture start/stop is the tray's session control today (consent boundary, #41 — a
- * window launches STOPPED, never auto-resuming). An IN-WINDOW record button needs the #136 session-control
- * block, which is NOT built; the layout ships a DISABLED Record button in the center canvas header with an
- * inline note disclosing that recording is controlled from the tray (S3 — an honest affordance, not a
- * fake-live button whose only disclosure is a tooltip). Mirrors templates/openinfo-notetaker/surface.json.
+ * Record affordance: #136 makes the center canvas-header Record button a LIVE in-window session control (the
+ * client notetaker layout renders it — not a stack block, so this document is unchanged). It dispatches
+ * through the SAME shell path the tray's Start/End Session uses, so the consent boundary (#41) is untouched:
+ * a window still launches STOPPED, capture ON is the explicit click, one session lifecycle. When the shell
+ * can't act (no bridge / engine unreachable / skew-refused) the button renders disabled with the true reason
+ * inline — honest, never a fake-live button. Mirrors templates/openinfo-notetaker/surface.json.
  */
 /**
  * The exact v1 note-taker body shipped before the #177/#211 summary+sessions rewire. SurfaceDocuments uses

@@ -3,7 +3,7 @@ import { Id } from '../common.js'
 
 /** Append-only. Adding a name here is step 1 of the CONTRIBUTING "add a block type" recipe. */
 export const BlockTypeName = Type.Union(
-  ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes'].map((b) => Type.Literal(b)),
+  ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes', 'session-control'].map((b) => Type.Literal(b)),
   { $id: 'BlockTypeName' },
 )
 export type BlockTypeName = Static<typeof BlockTypeName>
@@ -30,7 +30,7 @@ export const Action = Type.Object(
     id: Id,
     label: Type.String({ minLength: 1, maxLength: 24 }),
     verb: Type.Union(
-      ['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate', 'accept', 'pin', 'mark-for-follow-up'].map((v) => Type.Literal(v)),
+      ['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate', 'accept', 'pin', 'mark-for-follow-up', 'session-start', 'session-stop'].map((v) => Type.Literal(v)),
     ),
     params: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
   },

@@ -6374,3 +6374,64 @@ metadata + tests only, no contract change.
 
 **FIRST in this polish wave** — siblings N1 (surface docs + sessions block + leftRailChrome) and N3 (#136
 session-control) rebase over this.
+## Slice: in-window session control — start/stop on the surface, one lifecycle, consent untouched  *(#136 slice N3, 2026-07-17)*
+
+The owner's rig complaint: the note-taker's Record button was a DISABLED placeholder disclosing "Controlled
+from the tray · in-window start/stop needs the #136 session-control block." Moving call-to-call meant a
+menu-bar round-trip. This slice makes the on-surface control LIVE — the start/stop affordance the owner asked
+for — WITHOUT opening a second session lifecycle or weakening the #41 consent boundary.
+
+**The seam (same path as the tray, one lifecycle).** A session start grants capture CONSENT and drives
+capture — both main-process only (#41). So the renderer never starts a session itself; it dispatches through
+a bridge, exactly like drag/capture/settings. New verbs `session-start`/`session-stop` (append-only
+`Action.verb`) → `mount.ts` `wireActions` (added to `WIRED_VERBS`, dispatched like the client-local pill
+toggles — no `paintFeedback`, because the outcome is the STATE flip on the next render, mirroring the tray's
+label flip) → injected `ActionHandlers.sessionStart`/`sessionStop` → dev-entry's `window.openinfoSession`
+bridge → preload `hud:session-start`/`hud:session-stop` → shell `dispatch('start-session'|'end-session')` —
+the EXACT command the tray's Start/End Session item runs. Consent is granted/revoked in that ONE place; the
+client still boots STOPPED (the control renders from `NowContext.live`, which starts false), and capture ON is
+the explicit click each time. No `POST /sessions` from the renderer — that would be the forbidden second
+lifecycle that bypasses consent.
+
+**Honest states (never clickable when it can't succeed).** `tray-menu.ts` `sessionControlReadiness(TrayState)`
+is the pure derivation, from the SAME state the tray reads: `ready` iff connected AND not skew-refused;
+otherwise DISABLED with the true reason inline (`Connecting to the engine…` / `Engine unreachable —
+reconnecting` / `Engine refused — version mismatch`). A plain browser / served frame has no bridge at all →
+disabled with `Recording is controlled from the desktop app`. Mic-blocked / a capture fault do NOT disable
+start/stop — the session + text path still works (the tray keeps Start enabled too), so they ride as an honest
+capture NOTE the control shows WHILE live (`Mic blocked — audio off, notes still capture`, `Capture failed —
+…`, `Recording · mic + system`), matching the tray's `● rec` / `mic blocked` status line. The shell pushes the
+readiness over `hud:session-state` on every `refreshTray()`; `Hud.sessionReadiness` reads it fresh each render
+(a pure state read, no fetch — the pill-state precedent) and threads it as `SurfaceRenderInput.session` →
+`BlockRenderArgs.session`.
+
+**One control, two render sites.** The pure `blocks/session-control.ts` `renderSessionControl({live, readiness})`
+renders Record (stopped) / Stop (live) or the disabled-with-reason form — never a fake-live button (a disabled
+control carries NO `data-verb`, so it can never reach a dispatch branch). The note-taker canvas header calls it
+directly (replacing sibling N2's interim disabled-button copy — the live control supersedes the inert note);
+the `session-control` BLOCK type (append-only `BlockTypeName`, layout-only, in `defaultBlockRegistry`) renders
+the same control on any surface, shipped LEADING the default HUD stack (`surfaces/defaults.ts` +
+templates/openinfo-hud/surface.json) so #136's "rendered on HUD + note-taker app" holds.
+
+**Proof (driven, CI-green).** Start AND stop AND honest-disabled are driven through the REAL renderer + REAL
+mount dispatch, headless: `notetaker-layout.test.ts` renders the shipped note-taker frame and asserts the live
+`session-start`/`session-stop` buttons + each disabled reason inline; `hud-interaction-lint.test.ts` proves
+the frame is silent-dead-button-free in BOTH the disabled and the live-verb states; `action-verbs.test.ts`
+clicks the rendered control through `wireActions` and asserts start fires, stop fires, and a disabled control
+(no verb) / a no-bridge build never dispatch; `session-control.test.ts` pins the full honest-state matrix on
+the pure renderer + the block adapter; `renderer.test.ts` proves registry routing threads the readiness;
+`tray-menu.test.ts` pins `sessionControlReadiness` against each `TrayState`. RIG-VERIFY REMAINDER: the full
+bridge→main→consent-grant→capture round-trip (tray parity on real hardware) is only provable in a GUI Electron
+scene (the pill-e2e.mjs pattern); headless CI proves everything up to the bridge send.
+
+**Scope named (not gold-plated).** #136 also scopes call-to-call SWITCH SUGGESTIONS (route/ auto-switch on
+orientation/taxonomy triggers, a one-tap on-surface suggestion) and PARTICIPANT HAND-OFF (carry the entity
+lock-in ask into the suggested new session). Those are a separate concern from the on-surface start/stop
+control and are DEFERRED — this slice delivers the session control complete; the suggestion + hand-off remain
+for a follow-up (retro decides #136 closure).
+
+**Gates.** contracts 111 (110 + the `surface.session-control.json` example) · fixtures 15 · client 598 (587 +
+11 added across session-control/interaction-lint/action-verbs/renderer/notetaker tests) · engine 1035
+(assertions updated for the new HUD-stack lead block + the block-type enumeration; one parallel-load flake,
+`api/summaries-surface-e2e.test.ts`, green on isolated rerun) — all green under Node 22. Schemas regenerated
+zero-drift (`Action`/`Block`/`BlockTypeName`/`Surface`).

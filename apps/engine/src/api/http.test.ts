@@ -296,7 +296,7 @@ test('surface routes: seeded HUD is served, edits round-trip with a bumped versi
     // the seeded openinfo HUD surface is served through the block-renderer's single source of truth
     const hud = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
     assert.equal(hud.name, 'openinfo HUD')
-    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'summaries', 'summaries', 'relevant-now', 'moments', 'fields'])
+    assert.deepEqual(hud.stack.map((b) => b.block), ['session-control', 'now', 'summaries', 'summaries', 'relevant-now', 'moments', 'fields'])
     assert.equal(hud.version, 1)
 
     // unknown surface ⇒ 404
@@ -310,7 +310,7 @@ test('surface routes: seeded HUD is served, edits round-trip with a bumped versi
     assert.equal(putRes.status, 200)
     assert.equal(((await putRes.json()) as Surface).version, 2)
     const reloaded = (await (await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`)).json()) as Surface
-    assert.deepEqual(reloaded.stack.map((b) => b.block), ['now', 'summaries', 'summaries', 'relevant-now', 'fields'])
+    assert.deepEqual(reloaded.stack.map((b) => b.block), ['session-control', 'now', 'summaries', 'summaries', 'relevant-now', 'fields'])
 
     // id mismatch and invalid body are rejected
     assert.equal((await fetch(`${base}/layouts/surfaces/surf-openinfo-hud`, {

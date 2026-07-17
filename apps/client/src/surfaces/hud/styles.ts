@@ -200,14 +200,22 @@ body{margin:0;background:var(--page-bg);
 .nt-canvas-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:13px 18px 11px;border-bottom:1px solid var(--s-line-soft)}
 .nt-canvas-title{font-size:14px;font-weight:650;letter-spacing:-.01em;color:var(--s-ink)}
-.nt-record{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:8px;
+/* #136 on-surface session control — the note-taker canvas-header Record/Stop button + the session-control
+   block (shared markup). .session-control is the group; the button flips label/state with the live session. */
+.session-control{display:inline-flex;align-items:center;gap:10px}
+.session-record{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:8px;
   font-size:11.5px;font-weight:650;cursor:pointer;border:1px solid var(--accent);color:var(--accent);
   background:rgba(224,106,60,.12)}
-.nt-record-dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
-/* pending = the in-window control isn't wired (needs #136); render it visibly-inert, never fake-live. */
-.nt-record.pending{border-style:dashed;border-color:var(--s-line);color:var(--s-muted);
+.session-record-dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+/* live = a session is recording; the same control now STOPS it (data-verb session-stop). A steady lit dot. */
+.session-record.recording{border-color:var(--accent);color:var(--accent);background:rgba(224,106,60,.2)}
+/* pending = the control cannot act here (no shell bridge / engine unreachable / skew-refused): visibly-inert
+   with the true reason inline, never a fake-live button (the interaction-honesty policy). */
+.session-record.pending{border-style:dashed;border-color:var(--s-line);color:var(--s-muted);
   background:transparent;cursor:default}
-.nt-record.pending .nt-record-dot{background:var(--s-faint)}
+.session-record.pending .session-record-dot{background:var(--s-faint)}
+.session-record-note{font-size:10px;color:var(--s-muted)}
+.session-record-note.warn{color:var(--accent)}
 
 /* Right sidebar header */
 .nt-side-head{padding:13px 18px 9px;border-bottom:1px solid var(--s-line-soft);

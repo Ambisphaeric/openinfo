@@ -1,5 +1,5 @@
 import type { AttributionPattern, BlockQuery, Bundle, ChatReply, ChatScreenshot, ChatTurn, Pin, PromptTemplate, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
-import { mountSurface, renderInto, type MountTarget } from '../block-renderer/index.js'
+import { mountSurface, renderInto, type MountTarget, type SessionReadiness } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import { backoffMs, createBootController } from './boot.js'
 import type { HudTransport } from './transport.js'
@@ -232,6 +232,16 @@ interface DevGlobal {
   /** The pill's settings-on-hover bridge (preload.cts) — opens the EXISTING settings path in the shell. */
   openinfoShell?: {
     openSettings(): void
+  }
+  /**
+   * The #136 session bridge (preload.cts) — the on-surface session control's reach to the shell. `start`/
+   * `stop` dispatch through the SAME tray session path (consent granted/revoked in main); `state()` returns
+   * the latest readiness main pushed. Absent in a plain browser / served frame ⇒ the control renders disabled.
+   */
+  openinfoSession?: {
+    start(): void
+    stop(): void
+    state(): SessionReadiness
   }
 }
 
@@ -606,6 +616,10 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     // Ask face: streamed-reply deltas ride the Hud's ONE event socket, payload-fed (see hud.ts) — the
     // InputSession appends each to its in-flight turn and re-paints, no query.
     onChatDelta: (payload) => inputSession.ingestDelta(payload),
+    // #136: the on-surface session control's readiness — read FRESH from the shell bridge each render (a
+    // pure state read, no fetch). Absent (a plain browser / served frame) ⇒ undefined, so the control
+    // renders its honest disabled state. Main pushes fresh snapshots over hud:session-state on every change.
+    sessionReadiness: () => g.openinfoSession?.state(),
     // #134: size the window to the declared attached panel (collapsed/expanded along its edge) and, for a
     // reveal:'event' panel, subscribe to the trigger to open it as a dismissible suggestion. Electron-only
     // (needs the panel bridge); a plain browser page simply scrolls. Created once — hot-reloads keep it.
@@ -685,6 +699,11 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
           pillFace: (face) => pill?.setFace(face),
           pillToggle: () => pill?.toggle(),
           pillSettings: () => g.openinfoShell?.openSettings(),
+          // #136: the on-surface session control — start/stop dispatch to the shell over the session bridge,
+          // which runs the SAME tray command path (consent granted/revoked in main). A browser without the
+          // bridge leaves the control disabled, so these never fire there (an honest no-op regardless).
+          sessionStart: () => g.openinfoSession?.start(),
+          sessionStop: () => g.openinfoSession?.stop(),
         })
         // #134: install the input block's delegated submit/file listeners ONCE on the container (they
         // survive innerHTML replacement, exactly like wireActions' click delegation).

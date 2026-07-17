@@ -98,10 +98,20 @@ test('the served note-taker frame is honest end-to-end: Record + rail chrome car
   // the chrome renders regardless of data, and the block affordances are covered by the renderer test above.
   const now: NowContext = { live: true, workspace: 'acme', title: 'Renewal — security review' }
   const surface: Surface = { id: 'surf-openinfo-notetaker', name: 'Note-taker', context: 'meeting', version: 1, stack: [] }
-  const html = renderToHtml(renderNotetaker({ surface, now, results: [] }, defaultBlockRegistry))
 
-  assert.match(html, /class="nt-record pending"[^>]*disabled/) // the Record button is honestly disabled
-  assert.deepEqual(silentDeadButtons(html), []) // …and no chrome button invites a dead click
+  // No shell readiness (a plain served frame): the #136 control is honestly DISABLED, not a fake-live button.
+  const disabled = renderToHtml(renderNotetaker({ surface, now, results: [] }, defaultBlockRegistry))
+  assert.match(disabled, /class="session-record pending"[^>]*disabled/) // the Record button is honestly disabled
+  assert.deepEqual(silentDeadButtons(disabled), []) // …and no chrome button invites a dead click
+
+  // Shell READY: the control is a LIVE button carrying the wired session-start/stop verb — still honest (its
+  // verb is in the mount layer's dispatch set), proving the honest side of the predicate is reachable here too.
+  const liveStart = renderToHtml(renderNotetaker({ surface, now: { ...now, live: false }, results: [], session: { ready: true } }, defaultBlockRegistry))
+  assert.match(liveStart, /class="session-record"[^>]*data-verb="session-start"/)
+  assert.deepEqual(silentDeadButtons(liveStart), []) // a wired verb → no silent dead button
+  const liveStop = renderToHtml(renderNotetaker({ surface, now: { ...now, live: true }, results: [], session: { ready: true } }, defaultBlockRegistry))
+  assert.match(liveStop, /data-verb="session-stop"/)
+  assert.deepEqual(silentDeadButtons(liveStop), [])
 })
 
 test('the served pill frame is honest end-to-end: header + face bodies carry no silent dead button', () => {

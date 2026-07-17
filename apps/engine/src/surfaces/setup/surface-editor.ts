@@ -60,6 +60,9 @@ export const defaultBlockFor = (type: string): Block => {
       return { block: 'sense-lanes', show: 'always', top: 3, query: { source: 'live-senses', params: { session: 'current' }, top: 3 } }
     case 'ask':
       return { block: 'ask' }
+    case 'session-control':
+      // #136: layout-only (no query) — reads live state from the `now` context + the shell readiness signal.
+      return { block: 'session-control' }
     case 'custom':
       return { block: 'custom', show: 'manual', custom: { htmlEndpoint: '/custom/example.html' } }
     default:
