@@ -50,6 +50,15 @@ export {
   type PacketBuildInput,
   type PacketBuildResult,
 } from './packets.js'
+export {
+  materializeContextPackets,
+  PacketBuildLog,
+  type PacketBuildAttempt,
+  type PacketBuildTrigger,
+  type MaterializeScope,
+  type MaterializeDeps,
+  type MaterializeOutcome,
+} from './produce-packets.js'
 export { mergeCanon, type CanonGroup, type CanonResult } from './canon.js'
 export { relevantNow, type RelevantNowOptions } from './relevant.js'
 export * from './ingest/index.js'

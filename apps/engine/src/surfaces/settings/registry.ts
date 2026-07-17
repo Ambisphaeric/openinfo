@@ -3,6 +3,7 @@ import { renderBenchmarks } from './sections/benchmarks.js'
 import { renderFeatures } from './sections/features.js'
 import { renderLedger } from './sections/ledger.js'
 import { renderPrivacy } from './sections/privacy.js'
+import { renderContextPackets } from './sections/packets.js'
 import { renderStatus } from './sections/status.js'
 import { renderTrace } from './sections/trace.js'
 
@@ -125,6 +126,10 @@ export const SECTIONS: readonly SettingsSection[] = [
   // #116: follow ONE input (utterance/capture) through every engine step to its output — the ledger's
   // per-input counterpart. Assembled by the route only when active (the ledger's read discipline).
   { id: 'trace', group: 'diagnostics', label: 'Trace', render: renderTrace, liveDot: (d) => ({ on: (d.trace?.inputs.length ?? 0) > 0 }) },
+  // #176: the converged-slice view — each session-minute's packet membership, exclusions, timing, and
+  // confidence, with the append-only supersession chain. Assembled by the route only when active (the
+  // ledger/trace read discipline); packets materialize on their own at session end (the live producer).
+  { id: 'context-packets', group: 'diagnostics', label: 'Context packets', render: renderContextPackets, liveDot: (d) => ({ on: (d.contextPackets?.packets.length ?? 0) > 0 }) },
   { id: 'benchmarks', group: 'diagnostics', label: 'Benchmarks', render: renderBenchmarks },
   { id: 'try-it', group: 'bottom', label: 'Try it', render: tryItBody },
   { id: 'privacy', group: 'bottom', label: 'Privacy', render: renderPrivacy },

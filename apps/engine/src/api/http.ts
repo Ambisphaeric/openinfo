@@ -8,7 +8,7 @@ import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, GuardHeldError, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
-import { relevantNow, ingestPin, defaultFetchers, buildContextPackets } from '../index/index.js'
+import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
@@ -17,7 +17,7 @@ import { WorkspaceRegistry, resolveSecretsPath } from '../store/index.js'
 import { WorkflowDocuments, WorkflowExecutor, type ScreenRunner } from '../workflow/index.js'
 import { BundleDocuments, DEFAULT_BUNDLE_ID } from '../bundles/index.js'
 import { PresetDocuments } from '../presets/index.js'
-import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, requiredScreenSenseSlots, buildLedger, buildTrace, buildTraceInputs, type TraceData, type SetupData, type QuerySources } from '../surfaces/index.js'
+import { SurfaceDocuments, compileQuery, resolveQueryScope, ItemSignalStore, renderSettingsPage, sectionById, defaultSectionId, renderSurfaceEditorPage, defaultHudSurface, evaluateSenseGates, requiredScreenSenseSlots, buildLedger, buildTrace, buildTraceInputs, type TraceData, type ContextPacketsData, type SetupData, type QuerySources } from '../surfaces/index.js'
 import type { EndpointHealth } from '../fabric/health.js'
 import { handleScreen, getScreenProcessor, latchScreenRecognitionOwner, screenRecognitionOwner } from '../screen/index.js'
 import { SenseLaneTracker, senseLaneGateState } from '../senses/index.js'
@@ -108,6 +108,8 @@ interface HandlerContext {
   senseLanes: SenseLaneTracker
   /** In-memory ring of recent ephemeral transcript updates (#101) — the diagnostics inspector's honest v0 source. */
   transcripts: TranscriptRing
+  /** The live ContextPacket producer's build log (#176) — the diagnostics "last update" signal (process-scoped). */
+  packetBuildLog: PacketBuildLog
   /** The durable per-field latest values (#61) — read by the Audit ledger + Trace sections (#116). */
   fieldValues: FieldValueStore
   store: WorkspaceRegistry
@@ -723,6 +725,10 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     log,
   })
 
+  // #176 live ContextPacket producer: the in-memory build log the session-end seam and the on-demand route
+  // both record to, and the Context-packets diagnostics reads for its honest "last update" line (process-scoped).
+  const packetBuildLog = new PacketBuildLog()
+
   bus.subscribe('session.ended', (session) => {
     void (async () => {
       // workflow.enabled ON → the executor's session-end seam (drain-first flush incl. the cadence tail
@@ -746,6 +752,16 @@ export function createEngineApp(options: EngineOptions): EngineApp {
         await drainBoth()
         await flushDistill()
       }
+      // #176 LIVE PRODUCER: with the whole session now drained and durable, converge its observations into
+      // ContextPackets so they materialize during normal capture — no on-demand route call needed. Runs ONCE
+      // per session end over the session (batched, never per observation), scoped to the session's OWN
+      // workspace, and idempotent (a converged rebuild appends nothing). It is CONTAINED: materialize never
+      // throws — a build failure is recorded on the log (visible in the Context-packets diagnostics as
+      // "last update didn’t finish"), never fatal to this handler and never able to corrupt the durable
+      // observations it derives from. A session with nothing stored is a safe no-op (no windows, no packets).
+      const outcome = materializeContextPackets({ store, log: packetBuildLog }, { workspaceId: session.workspaceId, sessionId: session.id, trigger: 'session-end' })
+      if (outcome.error !== undefined) log(`context packets: session-end build failed for ${session.id}: ${outcome.error}`)
+      else if (outcome.created.length > 0) log(`context packets: session-end appended ${outcome.created.length} for session ${session.id}`)
     })().catch((error: unknown) =>
       log(`follow-up draft failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`),
     )
@@ -828,7 +844,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   void refreshSenseLaneGates()
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, fieldValues, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, packetBuildLog, fieldValues, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handleControlRequest(req, res, ctx).catch((error: unknown) => {
       if (res.headersSent) return void res.destroy(error instanceof Error ? error : undefined)
@@ -1269,6 +1285,24 @@ async function getSettings(res: ServerResponse, ctx: HandlerContext, url: URL, h
       data.trace = trace
     } catch (error) {
       data.trace = { inputs: [], problem: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  // The Context packets section (#176) — same read discipline as Trace/ledger. Reads the default workspace's
+  // packets (INCLUDING superseded revisions, so the chain renders) plus the source records the view resolves
+  // ref text against at render time (refs, never persisted content). An assembly failure lands as `problem`
+  // so the page shows the true reason as text; the live producer's last build outcome is the "last update" line.
+  if (active.id === 'context-packets') {
+    try {
+      const lastBuild = ctx.packetBuildLog.recentForWorkspace('default')[0]
+      data.contextPackets = {
+        packets: ctx.store.listContextPackets('default', { includeSuperseded: true }),
+        ocrResults: ctx.store.listOcrResults('default'),
+        moments: ctx.store.listMoments('default'),
+        ...(lastBuild !== undefined ? { lastBuild } : {}),
+      }
+    } catch (error) {
+      data.contextPackets = { packets: [], ocrResults: [], moments: [], problem: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -1826,21 +1860,16 @@ async function buildPackets(req: IncomingMessage, res: ServerResponse, ctx: Hand
   if (!ctx.store.all().some((ws) => ws.id === workspaceId)) return send(res, 404, { error: `no such workspace: ${workspaceId}` })
   const session = ctx.store.getSession(workspaceId, sessionId)
   if (!session) return send(res, 404, { error: `no session ${sessionId} in workspace ${workspaceId}` })
-  const result = buildContextPackets({
-    workspaceId,
-    sessionId,
-    session,
-    sttSegments: ctx.store.listSttSegments(workspaceId, sessionId),
-    ocrResults: ctx.store.listOcrResults(workspaceId, sessionId),
-    moments: ctx.store.listMoments(workspaceId, sessionId),
-    entities: ctx.store.listEntities(workspaceId),
-    existing: ctx.store.listContextPackets(workspaceId, { sessionId, includeSuperseded: true }),
-  })
-  for (const packet of result.created) ctx.store.saveContextPacket(packet)
-  if (result.created.length > 0) {
-    ctx.log(`context packets: appended ${result.created.length} for session ${sessionId} (${result.unchanged.length} unchanged)`)
+  // Route decides (the 404s above), the shared producer moves: the SAME materialize seam the live session-end
+  // producer uses — so both paths build identically, persist only appends, and record the attempt on the
+  // build log the Context-packets diagnostics reads. A contained build failure returns as `error` (500 here),
+  // never a silent empty success.
+  const outcome = materializeContextPackets({ store: ctx.store, log: ctx.packetBuildLog }, { workspaceId, sessionId, trigger: 'on-demand' })
+  if (outcome.error !== undefined) return send(res, 500, { error: `context packet build failed: ${outcome.error}` })
+  if (outcome.created.length > 0) {
+    ctx.log(`context packets: appended ${outcome.created.length} for session ${sessionId} (${outcome.unchanged.length} unchanged)`)
   }
-  send(res, 200, result.created)
+  send(res, 200, outcome.created)
 }
 
 /**

@@ -99,6 +99,13 @@ export interface SetupData {
    * the true reason as text, never a blank. Absent ⇒ the section renders its unavailable state.
    */
   trace?: import('../settings/sections/trace.js').TraceData
+  /**
+   * The Context packets section's data (#176) — the default workspace's packets (with supersession chains),
+   * their source records for render-time text resolution, and the live producer's last build outcome.
+   * Assembled by the settings route ONLY when that section is active (the ledger/trace read discipline);
+   * an assembly failure lands here as `problem` so the page shows the true reason as text, never a blank.
+   */
+  contextPackets?: import('../settings/sections/packets.js').ContextPacketsData
 }
 
 /** Escape for safe interpolation into HTML text or a (single- or double-quoted) attribute. */
