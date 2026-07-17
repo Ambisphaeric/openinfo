@@ -125,13 +125,17 @@ export const compileQuery = (
   // is a document store over _meta.db, so it is constructed ad-hoc here exactly as the teach arm does.
   const dismissed = new ItemSignalStore(store).dismissedKeys(workspaceId)
 
-  const cap = <T>(rows: T[], suppressed = 0): QueryResult => ({
+  const cap = <T>(rows: T[], suppressed = 0, noSession = false): QueryResult => ({
     source: query.source,
     items: top !== undefined ? rows.slice(0, top) : rows,
     ...(top !== undefined ? { top } : {}),
     truncated: top !== undefined && rows.length > top,
     // Disclosed, not mysterious: a block emptied purely by suppression can say "N dismissed" (#66).
     ...(suppressed > 0 ? { suppressed } : {}),
+    // Honest empty-scope disclosure (#215): a session-scoped source that read empty ONLY because no session
+    // is live this process (#210) says so, so the block distinguishes "no session running" from "live but
+    // nothing captured yet". Present only when true, additive — existing consumers are unaffected.
+    ...(noSession ? { noCurrentSession: true } : {}),
   })
 
   /**
@@ -157,7 +161,7 @@ export const compileQuery = (
   // whole workspace. A session-scoped source reads empty ("nothing captured yet") instead of the previous
   // session's records — the SAME posture the live sense lanes already take on a fresh process. Placed before
   // the switch so it uniformly covers every session-scoped arm without threading the flag into each store call.
-  if (noCurrentSession && SESSION_SCOPED_SOURCES.has(query.source)) return cap([])
+  if (noCurrentSession && SESSION_SCOPED_SOURCES.has(query.source)) return cap([], 0, true)
 
   switch (query.source) {
     case 'relevant-now':

@@ -127,6 +127,30 @@ const renderRow = (
   )
 }
 
+/**
+ * The empty state, EXPLAINABLE not silent (#215/hud-voice): an always-visible join with no card left a
+ * bare header. With no session live this process (`noCurrentSession`, #210) nothing is being captured to
+ * rank — say so and what to do; with a session live it is the quiet "nothing relevant yet" state, kin to
+ * the live-transcript strip's "listening…". Visibly distinct. (An `on-match` block never reaches here —
+ * renderSurface drops it before this runs when it has no items.)
+ */
+const emptyRow = (noSession: boolean): VNode =>
+  h(
+    'div',
+    { class: 'rel' },
+    h('span', { class: 'mk a' }, '—'),
+    h(
+      'span',
+      { class: 'body' },
+      h('span', { class: 'ttl' }, noSession ? 'No session running' : 'Nothing relevant yet'),
+      h(
+        'span',
+        { class: 'why' },
+        noSession ? 'people and topics surface here once you start a session' : 'people and topics surface here as you talk',
+      ),
+    ),
+  )
+
 export const renderRelevantNow: BlockRenderer = ({ block, result, clarify }) => {
   if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, 'Relevant now'))
   const source = block.query?.source ?? 'relevant-now'
@@ -143,6 +167,6 @@ export const renderRelevantNow: BlockRenderer = ({ block, result, clarify }) => 
     'div',
     { class: 'hgroup' },
     h('div', { class: 'glbl' }, 'Relevant now'),
-    ...cards,
+    ...(cards.length > 0 ? cards : [emptyRow(result?.noCurrentSession === true)]),
   )
 }

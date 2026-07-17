@@ -31,10 +31,36 @@ const renderRow = (moment: Moment): VNode => {
   )
 }
 
+/**
+ * The empty state, EXPLAINABLE not silent (#215/hud-voice): the bare header-over-empty-stream left the
+ * reader guessing why nothing is here. With no session live this process (`noCurrentSession`, #210) the
+ * stream is empty because nothing is being captured — say so and what to do; with a session live it is the
+ * quiet "nothing captured yet" state, kin to the live-transcript strip's "listening…". Visibly distinct.
+ */
+const emptyRow = (noSession: boolean): VNode =>
+  h(
+    'div',
+    { class: 'rel' },
+    h('span', { class: 'mk c' }, '—'),
+    h(
+      'span',
+      { class: 'body' },
+      h('span', { class: 'ttl' }, noSession ? 'No session running' : 'Nothing captured yet'),
+      h(
+        'span',
+        { class: 'why' },
+        noSession ? 'moments appear here once you start a session' : 'moments appear here as the conversation unfolds',
+      ),
+    ),
+  )
+
 export const renderMoments: BlockRenderer = ({ block, result }) => {
   if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL))
   const all = (result?.items ?? []) as Moment[]
   const rows = block.top !== undefined ? all.slice(0, block.top) : all
+  if (rows.length === 0) {
+    return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), emptyRow(result?.noCurrentSession === true))
+  }
   return [
     h('div', { class: 'hgroup', style: 'padding-bottom:0' }, h('div', { class: 'glbl' }, LABEL)),
     h('div', { class: 'streamwrap' }, h('div', { class: 'stream' }, h('div', { class: 'rows' }, ...rows.map(renderRow)))),

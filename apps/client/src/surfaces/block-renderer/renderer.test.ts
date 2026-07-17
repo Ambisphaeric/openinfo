@@ -214,6 +214,48 @@ test('an unknown/future block type degrades via the custom fallback instead of b
   assert.match(html, /soc2/) // empty pins store → pinned-doc falls back to its configured reference
 })
 
+test('#215 session-scoped blocks word two DISTINCT empty states: no session running vs live-but-empty', () => {
+  // The honest empty-scope disclosure (`noCurrentSession`, #210) rides the QueryResult; each session-scoped
+  // block reads it and speaks the RIGHT empty state — "no session running, start one" vs "nothing captured
+  // yet" — so a reader never guesses which truth they are in. All six blocks are exercised through the real
+  // renderSurface entry point, in BOTH states, and the two must be visibly distinct (hud-voice honest-state).
+  const stack: Surface['stack'] = [
+    { block: 'relevant-now', show: 'always', query: { source: 'relevant-now', params: { session: 'current' } } },
+    { block: 'moments', query: { source: 'moments', params: { session: 'current' } } },
+    { block: 'todos', show: 'always', query: { source: 'todos', params: { session: 'current' } } },
+    { block: 'drafts', show: 'always', query: { source: 'drafts', params: { session: 'current' } } },
+    { block: 'distillates', show: 'always', query: { source: 'distillates', params: { session: 'current' } } },
+    { block: 'fields', show: 'always', query: { source: 'fields', params: { session: 'current' } } },
+  ]
+  const surface: Surface = { id: 's', name: 's', context: 'meeting', version: 1, stack }
+  const sources = ['relevant-now', 'moments', 'todos', 'drafts', 'distillates', 'fields'] as const
+  const empties = (over: (s: (typeof sources)[number]) => Partial<QueryResult>): (QueryResult | undefined)[] =>
+    sources.map((s) => ({ source: s, items: [], truncated: false, ...over(s) }))
+
+  // NO session running: every block says so, names starting a session, and surfaces NO raw enum / id.
+  const noSession = renderToHtml(
+    renderSurface({ surface, now: { live: false }, results: empties(() => ({ noCurrentSession: true })) }, defaultBlockRegistry),
+  )
+  assert.equal((noSession.match(/No session running/g) ?? []).length, 6) // all six blocks say it
+  assert.match(noSession, /moments appear here once you start a session/)
+  assert.match(noSession, /people and topics surface here once you start a session/)
+  assert.match(noSession, /follow-ups collect here once you start a session/)
+  assert.match(noSession, /a draft is prepared when it ends/)
+  assert.match(noSession, /summaries appear here once you start a session/)
+  assert.match(noSession, /fields fill as prompts run/)
+  assert.doesNotMatch(noSession, /noCurrentSession|session: 'current'|undefined/) // no machine-speak leak
+
+  // LIVE session, nothing captured yet: the disclosure is ABSENT ⇒ each block words its distinct empty.
+  const liveEmpty = renderToHtml(
+    renderSurface({ surface, now: { live: true }, results: empties(() => ({})) }, defaultBlockRegistry),
+  )
+  assert.doesNotMatch(liveEmpty, /No session running/) // the two states never collapse into one line
+  assert.match(liveEmpty, /Nothing captured yet/) // moments' live-but-empty state
+  assert.match(liveEmpty, /Nothing relevant yet/) // relevant-now's live-but-empty state
+  assert.match(liveEmpty, /No distilled windows yet/) // distillates' existing live-but-empty copy, unchanged
+  assert.notEqual(noSession, liveEmpty) // visibly distinct end-to-end
+})
+
 test('clockLabel renders in the viewer timezone: one instant, two explicit zones, two clocks (#55)', () => {
   const iso = '2026-07-07T14:44:00Z'
   // Same instant, different wall-clocks — the seam that lets a human read local time, not UTC.

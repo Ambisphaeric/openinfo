@@ -113,16 +113,28 @@ test('honest display scope: "current" with NO live session reads empty, never wh
     for (const source of ['moments', 'distillates', 'relevant-now', 'todos', 'drafts', 'fields'] as const) {
       const r = compileQuery(store, { source, params: { workspace: 'ws-q', session: 'current' } }, undefined, {}, undefined, noLive)
       assert.deepEqual(r.items, [], `${source} must be empty with no live session`)
+      // The honest empty-scope disclosure rides the QueryResult (#215): each session-scoped source that
+      // read empty ONLY because no session is live SAYS so, so the block distinguishes "no session running"
+      // from "live but nothing captured yet". Additive — present only when true.
+      assert.equal(r.noCurrentSession, true, `${source} must disclose noCurrentSession with no live session`)
     }
 
     // Guard the asymmetry: an all-history block (NO session param) still reads the workspace history — the
     // fix narrows ONLY the "current" ask, never a block that legitimately requested everything.
     const history = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q' } }, undefined, {}, undefined, noLive)
     assert.deepEqual((history.items as Moment[]).map((m) => m.id), ['m-old-2', 'm-old-1'])
+    assert.equal(history.noCurrentSession, undefined) // NOT a "current" ask ⇒ no disclosure, unchanged shape
 
-    // And the sessions source (workspace-level) still lists history regardless of the "current" flag.
+    // And the sessions source (workspace-level) still lists history regardless of the "current" flag — and
+    // carries NO disclosure: it has no session dimension, so it was never the stale-content defect (#210).
     const sessions = compileQuery(store, { source: 'sessions', params: { workspace: 'ws-q', session: 'current' } }, undefined, {}, undefined, noLive)
     assert.deepEqual((sessions.items as Session[]).map((s) => s.id), ['ses-old'])
+    assert.equal(sessions.noCurrentSession, undefined)
+
+    // And a session-scoped source WITH a live session reads that session, carrying NO disclosure — the flag
+    // is strictly the no-live-session state, never a live-but-empty one (which the block words differently).
+    const withLive = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q', session: 'current' } }, undefined, {}, undefined, () => 'ses-old')
+    assert.equal(withLive.noCurrentSession, undefined)
   } finally {
     store.close()
     await rm(dir, { recursive: true, force: true })
