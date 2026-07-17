@@ -603,3 +603,62 @@ test('#222: calmChatStatus keeps the default calm and moves the machine note beh
   assert.match(skipped.text, /Answered without your screen — screen capture is off/)
   assert.match(skipped.detail, /Screen skipped: screen capture is off/)
 })
+
+test('#222: a blur without compositionend ends the composition (never a permanently frozen panel)', () => {
+  // Some IMEs end a composition on blur WITHOUT emitting compositionend/compositioncancel. If `composing`
+  // stuck true, every later rerenderInto would defer forever — a frozen panel. A blur must clear it + flush.
+  let renders = 0
+  const session = new InputSession({ submit: async () => reply('x'), requestRender: () => { renders += 1 } })
+  const { container } = buildContainer()
+  const textarea = container.querySelector('.in-text')!
+  session.install(container)
+  container.dispatch('focusin', textarea)
+  container.dispatch('compositionstart', textarea)
+  assert.equal(session.isComposing(), true)
+
+  let wiped = false
+  session.rerenderInto(container, () => { wiped = true })
+  assert.equal(wiped, false, 'the refresh was deferred while composing')
+
+  // the input blurs with NO compositionend — composition must not stick, and the deferred render flushes.
+  container.dispatch('focusout', textarea)
+  assert.equal(session.isComposing(), false, 'a blur clears a stuck composition')
+  assert.equal(renders, 1, 'the deferred render was flushed on blur')
+
+  // the NEXT refresh renders normally — the panel is not frozen in permanent deferral.
+  let wipedAgain = false
+  session.rerenderInto(container, () => { wipedAgain = true })
+  assert.equal(wipedAgain, true, 'rerenderInto is no longer deferred')
+})
+
+test('#222: compositioncancel ends the composition exactly like compositionend', () => {
+  let renders = 0
+  const session = new InputSession({ submit: async () => reply('x'), requestRender: () => { renders += 1 } })
+  const { container } = buildContainer()
+  const textarea = container.querySelector('.in-text')!
+  session.install(container)
+  container.dispatch('compositionstart', textarea)
+  session.rerenderInto(container, () => {}) // deferred
+  container.dispatch('compositioncancel', textarea)
+  assert.equal(session.isComposing(), false, 'compositioncancel terminates the composition')
+  assert.equal(renders, 1, 'and flushes the deferred render')
+})
+
+test('#222: a throwing render still consumes the one-shot focus snapshot (no phantom focus later)', () => {
+  const session = new InputSession({ submit: async () => reply('x') })
+  const { container } = buildContainer()
+  const first = container.querySelector('.in-text')!
+  session.install(container)
+  container.dispatch('focusin', first)
+  first.value = 'x'
+  container.dispatch('input', first)
+
+  // a render that throws must not leak the focus snapshot captured before it.
+  assert.throws(() => session.rerenderInto(container, () => { throw new Error('render boom') }), /render boom/)
+
+  // a later, unrelated repaint on a fresh (unfocused) textarea must NOT be re-focused by a leaked snapshot.
+  const fresh = wipe(container).textarea
+  fresh.focused = false
+  session.repaint(container)
+  assert.equal(fresh.focused, false, 'no leaked snapshot phantom-focuses a later repaint')
+})

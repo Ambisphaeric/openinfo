@@ -62,7 +62,7 @@ export interface InputDomEvent {
 }
 
 /** The events the controller delegates on its container. All bubble, so ONE listener each covers the re-rendered subtree. */
-export type InputDomEventType = 'click' | 'change' | 'input' | 'keydown' | 'focusin' | 'focusout' | 'compositionstart' | 'compositionend'
+export type InputDomEventType = 'click' | 'change' | 'input' | 'keydown' | 'focusin' | 'focusout' | 'compositionstart' | 'compositionend' | 'compositioncancel'
 
 /** The DOM subset the controller touches — real elements satisfy it without a cast. */
 export interface InputDomNode {
@@ -240,26 +240,42 @@ export class InputSession {
       if (event.target?.closest('.in-text')) this.focused = true
     })
     container.addEventListener('focusout', (event) => {
-      if (event.target?.closest('.in-text')) this.focused = false
+      if (!event.target?.closest('.in-text')) return
+      this.focused = false
+      // A blur can end an IME composition WITHOUT emitting compositionend/compositioncancel (not spec-guaranteed
+      // across IMEs). If `composing` stuck true, EVERY later rerenderInto would defer forever — a permanently
+      // frozen panel (no transcript updates, no draft restore). So a blur while composing conservatively ends it.
+      if (this.composing) this.endComposition()
     })
     // IME composition: while a candidate is being composed the textarea node must NOT be replaced (that drops
-    // the composition buffer), so rerenderInto defers the wipe; compositionend flushes any deferred refresh.
+    // the composition buffer), so rerenderInto defers the wipe; ending the composition flushes any deferred
+    // refresh. compositioncancel is handled identically to compositionend (both terminate the composition).
     container.addEventListener('compositionstart', (event) => {
       if (event.target?.closest('.in-text')) this.composing = true
     })
-    container.addEventListener('compositionend', (event) => {
-      if (!event.target?.closest('.in-text')) return
-      this.composing = false
-      if (this.renderDeferred) {
-        this.renderDeferred = false
-        this.deps.requestRender?.()
-      }
-    })
+    const onCompositionDone = (event: InputDomEvent): void => {
+      if (event.target?.closest('.in-text')) this.endComposition()
+    }
+    container.addEventListener('compositionend', onCompositionDone)
+    container.addEventListener('compositioncancel', onCompositionDone)
   }
 
   /** True while an IME composition is in flight — the host must defer a destructive re-render (see rerenderInto). */
   isComposing(): boolean {
     return this.composing
+  }
+
+  /**
+   * End the current IME composition and flush a re-render that was deferred while it was in flight. Called on
+   * compositionend/compositioncancel AND defensively on blur (some IMEs end a composition on blur emitting no
+   * composition event), so `composing` can never stick true and freeze the panel in permanent deferral.
+   */
+  private endComposition(): void {
+    this.composing = false
+    if (this.renderDeferred) {
+      this.renderDeferred = false
+      this.deps.requestRender?.()
+    }
   }
 
   /**
@@ -278,8 +294,14 @@ export class InputSession {
       return
     }
     this.captureFocus(container)
-    doRender()
-    this.repaint(container)
+    // repaint runs in `finally` so a throwing render still CONSUMES the one-shot focus snapshot (a leaked
+    // snapshot would phantom-focus a later, unrelated repaint) and still re-injects the conversation; the
+    // render's error then propagates to the host's onError as before.
+    try {
+      doRender()
+    } finally {
+      this.repaint(container)
+    }
   }
 
   /** Snapshot whether the chat input holds focus and where its caret sits, before a wipe destroys the node. */
