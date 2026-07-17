@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type Bundle, type CaptureChunk, type ContextPacket, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type SetSessionTitleRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type SessionTitling, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type BuildSummariesRequest, type Bundle, type CaptureChunk, type ContextPacket, type Summary, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type SetSessionTitleRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type SessionTitling, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { SESSION_TITLING_SCHEMA_VERSION } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, GuardHeldError, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
-import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog } from '../index/index.js'
+import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog, materializeSummaries, createFabricSummarizer, SummaryBuildLog, type Summarizer } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
@@ -111,6 +111,10 @@ interface HandlerContext {
   transcripts: TranscriptRing
   /** The live ContextPacket producer's build log (#176) — the diagnostics "last update" signal (process-scoped). */
   packetBuildLog: PacketBuildLog
+  /** The live hierarchical-summary producer's build log (#177) — per (session, level) last-update signal (process-scoped). */
+  summaryBuildLog: SummaryBuildLog
+  /** The fabric-backed summarizer the on-demand /summaries/build route + the live seams share (#177). */
+  summarize: Summarizer
   /** The durable per-field latest values (#61) — read by the Audit ledger + Trace sections (#116). */
   fieldValues: FieldValueStore
   store: WorkspaceRegistry
@@ -462,6 +466,54 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   // shrink. DistillCadence accumulates each drain's transcribed text per session and only releases it to
   // the distiller when the buffered span reaches the threshold (default 15s) — or on session end (flush
   // below). Carry-over is in-memory: a mid-crash loses only the undistilled tail (chunks stay durable).
+  // #177 live hierarchical-summary producer. One build log (per session+level) shared by the drain seam, the
+  // session-end seam, and the on-demand route; one fabric-backed summarizer that runs the model prose through
+  // the SAME #64 egress consent + #63 guard the distiller enforces. A summary is derived, best-effort work, so
+  // — like packets — a build failure is CONTAINED (recorded, never fatal) and an unavailable model degrades
+  // honestly (explicit reason, no fabricated prose). Gated by summaries.enabled (default OFF).
+  const summaryBuildLog = new SummaryBuildLog()
+  const summarize = createFabricSummarizer({
+    store,
+    fabric,
+    resolveKey,
+    runtimeManager: runtime,
+    guardDocs,
+    guardHolds,
+    guardEnabled: () => isFlagEnabled(store, 'guard.egress'),
+    // #64 layer 3: give the summarizer the SAME mode resolver the distiller uses, so a mode's egress.deny
+    // holds summary prose exactly as it holds distillation (both the session-end seam and the on-demand
+    // /summaries/build route share this one summarizer instance).
+    mode: (id) => distillDocs.mode(id),
+  })
+  const summaryTemplate = (level: Parameters<typeof summarize>[0]['level']) => distillDocs.summaryTemplate(level)
+  // Produce a session's summaries at a cadence point (drain or session end), finest→coarsest so a parent level
+  // reads the child heads this same pass produced. Idempotent (a stable child set is a no-op) and contained
+  // (never throws), so re-running on every drain is safe and a build failure never sinks the drain.
+  const produceSessionSummaries = async (
+    workspaceId: string,
+    sessionId: string,
+    trigger: 'drain' | 'session-end',
+    levels: readonly ('rolling' | 'episode' | 'five-minute' | 'session' | 'project')[],
+  ): Promise<void> => {
+    if (!isFlagEnabled(store, 'summaries.enabled')) return
+    const outcome = await materializeSummaries(
+      { store, summaryTemplate, summarize, log: summaryBuildLog, logLine: log },
+      { workspaceId, sessionId, trigger, levels },
+    )
+    if (outcome.created.length > 0) log(`summaries: ${trigger} appended ${outcome.created.length} (${outcome.degraded} degraded) for session ${sessionId}`)
+  }
+  /** Roll the drain batch's rolling + five-minute summaries per distinct session it touched (gated + contained). */
+  const produceDrainSummaries = async (batch: readonly CaptureChunk[]): Promise<void> => {
+    if (batch.length === 0 || !isFlagEnabled(store, 'summaries.enabled')) return
+    const seen = new Set<string>()
+    for (const chunk of batch) {
+      const key = `${chunk.workspaceId} ${chunk.sessionId}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      await produceSessionSummaries(chunk.workspaceId, chunk.sessionId, 'drain', ['rolling', 'five-minute'])
+    }
+  }
+
   const cadence = new DistillCadence()
   const currentDistillOpts = (): DistillOptions => ({
     extractMoments: isFlagEnabled(store, 'distill.moments'),
@@ -512,6 +564,8 @@ export function createEngineApp(options: EngineOptions): EngineApp {
         await distiller.distillChunks(chunks, opts)
         await runFastFields(chunks)
         await runJudgePass(chunks, true)
+        // #177: roll the just-distilled tail up into rolling + five-minute summaries (gated + contained).
+        await produceDrainSummaries(chunks)
       }
       return
     }
@@ -520,6 +574,9 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       await distiller.distillChunks(due, opts)
       await runFastFields(due)
       await runJudgePass(due)
+      // #177: the released distill batch now has fresh distillates — summarize each touched session's rolling
+      // + five-minute windows over them. Idempotent supersession: an active window updates as material lands.
+      await produceDrainSummaries(due)
     }
   }
   // Session-end flush: distill the accumulated sub-threshold tail so the record — and any follow-up draft —
@@ -545,6 +602,9 @@ export function createEngineApp(options: EngineOptions): EngineApp {
         await runFastFields(remainder)
         await runJudgePass(remainder, true)
       }
+      // #177: the flushed tail's distillates are now durable — summarize the touched sessions once more so a
+      // short (sub-cadence) session still gets its rolling + five-minute summaries (both paths share this).
+      await produceDrainSummaries(remainder)
     } finally {
       flushing = false
     }
@@ -766,6 +826,11 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       const outcome = materializeContextPackets({ store, log: packetBuildLog }, { workspaceId: session.workspaceId, sessionId: session.id, trigger: 'session-end' })
       if (outcome.error !== undefined) log(`context packets: session-end build failed for ${session.id}: ${outcome.error}`)
       else if (outcome.created.length > 0) log(`context packets: session-end appended ${outcome.created.length} for session ${session.id}`)
+      // #177 DURABLE SESSION SUMMARY: with the whole session now drained + summarized at the finer levels, flush
+      // the coarser levels — a final rolling/five-minute pass (idempotent) then the durable SESSION summary over
+      // the five-minute heads. Same contained discipline as packets: materializeSummaries never throws, degrades
+      // honestly when the model is unavailable, and a build failure is recorded, never fatal to session end.
+      await produceSessionSummaries(session.workspaceId, session.id, 'session-end', ['rolling', 'five-minute', 'session'])
     })().catch((error: unknown) =>
       log(`follow-up draft failed for session ${session.id}: ${error instanceof Error ? error.message : String(error)}`),
     )
@@ -850,7 +915,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   void refreshSenseLaneGates()
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, packetBuildLog, fieldValues, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, packetBuildLog, summaryBuildLog, summarize, fieldValues, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handleControlRequest(req, res, ctx).catch((error: unknown) => {
       if (res.headersSent) return void res.destroy(error instanceof Error ? error : undefined)
@@ -1114,6 +1179,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/drafts') return send(res, 200, readDrafts(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/context/packets') return send(res, 200, readContextPackets(ctx.store, url))
   if (req.method === 'POST' && url.pathname === '/context/packets/build') return buildPackets(req, res, ctx)
+  if (req.method === 'GET' && url.pathname === '/summaries') return send(res, 200, readSummaries(ctx.store, url))
+  if (req.method === 'POST' && url.pathname === '/summaries/build') return buildSummaries(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/todos') return send(res, 200, ctx.todos.list())
   const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
   if (req.method === 'GET' && todo?.[1]) return getTodo(res, ctx, decodeURIComponent(todo[1]))
@@ -1924,6 +1991,54 @@ async function buildPackets(req: IncomingMessage, res: ServerResponse, ctx: Hand
   if (outcome.error !== undefined) return send(res, 500, { error: `context packet build failed: ${outcome.error}` })
   if (outcome.created.length > 0) {
     ctx.log(`context packets: appended ${outcome.created.length} for session ${sessionId} (${outcome.unchanged.length} unchanged)`)
+  }
+  send(res, 200, outcome.created)
+}
+
+/**
+ * Serve hierarchical Summaries (#177) — queryable by workspace (default `default`), session, level, and
+ * time window (`from`/`to`, window-intersection), consistent with GET /context/packets. Default reads
+ * return each interval's live chain head only; `superseded=true` includes the whole append-only revision
+ * history. A read over store/ (the only DB-handle holder); an unknown workspace is an empty list, not an error.
+ */
+function readSummaries(store: WorkspaceRegistry, url: URL): Summary[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const sessionId = url.searchParams.get('session')
+  const level = url.searchParams.get('level')
+  const from = url.searchParams.get('from')
+  const to = url.searchParams.get('to')
+  return store.listSummaries(workspaceId, {
+    ...(sessionId !== null ? { sessionId } : {}),
+    ...(level !== null ? { level: level as Summary['level'] } : {}),
+    ...(from !== null ? { from } : {}),
+    ...(to !== null ? { to } : {}),
+    ...(url.searchParams.get('superseded') === 'true' ? { includeSuperseded: true } : {}),
+  })
+}
+
+/**
+ * Run the hierarchical-summary producer (#177) over one session's stored inputs and persist what it appends.
+ * The response is the APPENDED/UPGRADED summaries only — an empty array is the honest idempotent no-op (a
+ * stable child set produces nothing). Route decides (404s), the SHARED producer moves — the SAME seam the
+ * live drain/session-end producers use, so all paths build identically and record on the same build log. A
+ * contained build failure returns as `error` (500); an unavailable model is NOT an error — its summaries are
+ * persisted degraded (present in the 200 body with `degraded`, no fabricated prose).
+ */
+async function buildSummaries(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('BuildSummariesRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid BuildSummariesRequest', details: errors })
+  const { workspaceId, sessionId, level } = body as BuildSummariesRequest
+  if (!ctx.store.all().some((ws) => ws.id === workspaceId)) return send(res, 404, { error: `no such workspace: ${workspaceId}` })
+  const session = ctx.store.getSession(workspaceId, sessionId)
+  if (!session) return send(res, 404, { error: `no session ${sessionId} in workspace ${workspaceId}` })
+  const outcome = await materializeSummaries(
+    { store: ctx.store, summaryTemplate: (l) => ctx.distill.summaryTemplate(l), summarize: ctx.summarize, log: ctx.summaryBuildLog, logLine: ctx.log },
+    { workspaceId, sessionId, trigger: 'on-demand', ...(level !== undefined ? { levels: [level] } : {}) },
+  )
+  if (outcome.error !== undefined) return send(res, 500, { error: `summary build failed: ${outcome.error}` })
+  if (outcome.created.length > 0) {
+    ctx.log(`summaries: on-demand appended ${outcome.created.length} for session ${sessionId} (${outcome.degraded} degraded, ${outcome.unchanged} unchanged)`)
   }
   send(res, 200, outcome.created)
 }

@@ -1,0 +1,26 @@
+{
+  "$id": "SummaryLevel",
+  "description": "the summary timescale, finest (rolling) to coarsest (project)",
+  "anyOf": [
+    {
+      "const": "rolling",
+      "type": "string"
+    },
+    {
+      "const": "episode",
+      "type": "string"
+    },
+    {
+      "const": "five-minute",
+      "type": "string"
+    },
+    {
+      "const": "session",
+      "type": "string"
+    },
+    {
+      "const": "project",
+      "type": "string"
+    }
+  ]
+}

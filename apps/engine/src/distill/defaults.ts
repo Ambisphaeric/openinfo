@@ -267,6 +267,70 @@ export const defaultOrientationTemplate: PromptTemplate = {
 }
 
 /**
+ * The shipped hierarchical-summary prompt documents (#177) — one per live-loop level, each a `summary`-kind
+ * PromptTemplate whose `summary` binding declares the level, the interval it buckets over, the lower level it
+ * consumes, and — the non-negotiable — the EXPLICIT input bounds. Cadence, prompt, and retention are thereby
+ * CONFIGURATION: they seed like the distill trio and edit over the SAME GET/PUT /templates routes, so
+ * changing `windowMs`/`maxChildren`/the body changes the produced summaries with no rebuild (read-fresh).
+ * The bodies are NEUTRAL (#130): factual, invent-nothing, no baked voice; the prose they yield is a MODEL
+ * PROPOSAL (#189). Every level summarizes its BOUNDED lower inputs, never unbounded raw history.
+ *
+ * The finest level (`rolling`) has NO childLevel: it consumes the existing distillates directly and pulls a
+ * few ContextPackets as corroborating evidence. `five-minute` consumes rolling summaries; `session` consumes
+ * five-minute summaries at session end. Both pull a bounded selection of moments as evidence.
+ */
+export const defaultRollingSummaryTemplate: PromptTemplate = {
+  id: 'tpl-summary-rolling',
+  name: 'summary-rolling',
+  kind: 'summary',
+  slot: 'llm',
+  builtin: true,
+  description: 'hierarchical summary (#177): a rolling window over the existing distillates (+ packets as evidence)',
+  summary: { level: 'rolling', windowMs: 60_000, maxChildren: 6, maxEvidence: 3, cadenceMs: 60_000 },
+  body:
+    'You are writing a short rolling summary of a work session from the window summaries below. ' +
+    'Summarize only what they support; invent nothing. One or two tight sentences.\n\n' +
+    'Window summaries ({{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nRolling summary:',
+}
+
+export const defaultFiveMinuteSummaryTemplate: PromptTemplate = {
+  id: 'tpl-summary-five-minute',
+  name: 'summary-five-minute',
+  kind: 'summary',
+  slot: 'llm',
+  builtin: true,
+  description: 'hierarchical summary (#177): the concise five-minute view, over the window\'s rolling summaries plus a bounded selection of moments',
+  summary: { level: 'five-minute', windowMs: 300_000, childLevel: 'rolling', maxChildren: 5, maxEvidence: 5, cadenceMs: 300_000 },
+  body:
+    'You are writing a concise five-minute view of a work session from the lower-level summaries below. ' +
+    'Summarize only what they support; invent nothing. Keep it tight.\n\n' +
+    'Lower-level summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
+    'Corroborating moments:\n{{evidence}}\n\nFive-minute summary:',
+}
+
+export const defaultSessionSummaryTemplate: PromptTemplate = {
+  id: 'tpl-summary-session',
+  name: 'summary-session',
+  kind: 'summary',
+  slot: 'llm',
+  builtin: true,
+  description: 'hierarchical summary (#177): the durable end-of-session result, over the session\'s five-minute summaries plus a bounded selection of moments',
+  summary: { level: 'session', windowMs: 300_000, childLevel: 'five-minute', maxChildren: 12, maxEvidence: 8 },
+  body:
+    'You are writing the durable result of a whole work session from the five-minute summaries below. ' +
+    'Summarize only what they support; invent nothing. Lead with the outcome, then the key points.\n\n' +
+    'Five-minute summaries (session {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
+    'Corroborating moments:\n{{evidence}}\n\nSession summary:',
+}
+
+/** The shipped summary prompt bundle, finest→coarsest (the live-loop levels slice 1 produces). */
+export const defaultSummaryTemplates: readonly PromptTemplate[] = [
+  defaultRollingSummaryTemplate,
+  defaultFiveMinuteSummaryTemplate,
+  defaultSessionSummaryTemplate,
+]
+
+/**
  * The default meeting mode — window config lives here (mode document owns merge windows, per
  * ARCHITECTURE §7). Mirrors shared/contracts/examples/mode.meeting.json; the distiller reads only
  * distill.mergeWindow + distill.tokenBudget from it in this slice.

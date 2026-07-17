@@ -1,0 +1,31 @@
+{
+  "id": "sum-4f3e2d1c0b9a8f7e6d5c4b3a29180706",
+  "workspaceId": "default",
+  "sessionId": "session-demo",
+  "level": "five-minute",
+  "windowStart": "2026-07-16T13:00:00.000Z",
+  "windowEnd": "2026-07-16T13:05:00.000Z",
+  "children": [
+    { "record": "summary", "id": "sum-rolling-0001", "at": "2026-07-16T13:00:00.000Z", "role": "child", "level": "rolling" },
+    { "record": "summary", "id": "sum-rolling-0002", "at": "2026-07-16T13:01:00.000Z", "role": "child", "level": "rolling" },
+    { "record": "moment", "id": "mom-0007", "at": "2026-07-16T13:02:30.000Z", "role": "evidence" }
+  ],
+  "bound": { "childrenAvailable": 5, "childrenConsumed": 2, "evidenceAvailable": 3, "evidenceConsumed": 1 },
+  "text": "The team confirmed the release cut and assigned follow-up on the migration script.",
+  "proposal": true,
+  "confidence": 0.7,
+  "provenance": {
+    "builder": "bounded-hierarchical-summary",
+    "windowMs": 300000,
+    "childLevel": "rolling",
+    "templateId": "tpl-summary-five-minute",
+    "slot": "llm",
+    "endpoint": "llm.fast",
+    "model": "qwen2.5-3b",
+    "usage": { "estimated": false, "promptTokens": 320, "completionTokens": 48, "totalTokens": 368 },
+    "egress": { "reach": "local", "allowed": false, "decidedBy": "content-class", "reason": "device-local summarizer" }
+  },
+  "revision": 1,
+  "schemaVersion": 1,
+  "createdAt": "2026-07-16T13:05:02.000Z"
+}

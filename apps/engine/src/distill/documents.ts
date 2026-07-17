@@ -1,8 +1,8 @@
-import type { Mode, PromptTemplate } from '@openinfo/contracts'
+import type { Mode, PromptTemplate, SummaryLevel } from '@openinfo/contracts'
 import { Mode as ModeSchema, PromptTemplate as PromptTemplateSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
-import { PREVIOUS_BUILTIN_BODIES, defaultAskTemplate, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode, defaultOrientationTemplate } from './defaults.js'
+import { PREVIOUS_BUILTIN_BODIES, defaultAskTemplate, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultFieldTemplates, defaultJudgeTemplate, defaultMeetingMode, defaultOrientationTemplate, defaultSummaryTemplates } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 const MODE_KIND = 'mode'
@@ -10,8 +10,9 @@ const MODE_KIND = 'mode'
 /** The shipped prompt templates, by seed order — the code fallback GET /templates/:id resolves against an
  * unseeded store, mirroring WorkflowDocuments' loadDefaultWorkflow fallback for `workflow-default`. The
  * three fast-field prompt documents (#61) are seeded alongside the distill/extract trio — they are the
- * SAME `prompt-template` kind, discriminated by `kind: 'field'` + a `field` binding. */
-const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate, ...defaultFieldTemplates, defaultJudgeTemplate, defaultOrientationTemplate, defaultAskTemplate]
+ * SAME `prompt-template` kind, discriminated by `kind: 'field'` + a `field` binding. The summary prompt
+ * documents (#177) join the same list — `kind: 'summary'` + a `summary` binding. */
+const DEFAULT_TEMPLATES: readonly PromptTemplate[] = [defaultDistillTemplate, defaultExtractTemplate, defaultEntitiesTemplate, ...defaultFieldTemplates, defaultJudgeTemplate, defaultOrientationTemplate, defaultAskTemplate, ...defaultSummaryTemplates]
 
 /**
  * Store-backed distill config docs (prompt templates + modes), consistent with FabricDocuments
@@ -50,6 +51,14 @@ export class DistillDocuments {
     // over PUT /templates/:id is never clobbered, and the read is fresh per send (no restart).
     if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultAskTemplate.id)) {
       this.store.layouts.put(TEMPLATE_KIND, defaultAskTemplate.id, defaultAskTemplate)
+    }
+    // The hierarchical-summary prompt documents (#177) — one per live-loop level. Seed-if-absent like the
+    // fast/judge documents; each edits over the same GET/PUT /templates routes and is read fresh per pass, so
+    // a user's edit to a level's cadence/bound/body takes effect with no restart and is never clobbered.
+    for (const summaryTemplate of defaultSummaryTemplates) {
+      if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, summaryTemplate.id)) {
+        this.store.layouts.put(TEMPLATE_KIND, summaryTemplate.id, summaryTemplate)
+      }
     }
     if (!this.store.layouts.getLatest<Mode>(MODE_KIND, defaultMeetingMode.id)) {
       this.store.layouts.put(MODE_KIND, defaultMeetingMode.id, defaultMeetingMode)
@@ -136,6 +145,21 @@ export class DistillDocuments {
    */
   judgeTemplates(): PromptTemplate[] {
     return this.templates().filter((t) => t.field?.tier === 'judge')
+  }
+
+  /**
+   * Every hierarchical-summary prompt document (#177): the templates carrying a `summary` binding — the
+   * summary producer's per-level config + prompt. Derived from templates() (the SAME store list GET
+   * /templates reads), so a user who authors or edits a summary document over PUT /templates/:id changes
+   * that level's cadence/bound/prose with no restart (the read-fresh seam). Empty ⇒ no summary levels run.
+   */
+  summaryTemplates(): PromptTemplate[] {
+    return this.templates().filter((t) => t.summary !== undefined)
+  }
+
+  /** The summary prompt document for one level (latest stored, else the shipped default), or undefined. */
+  summaryTemplate(level: SummaryLevel): PromptTemplate | undefined {
+    return this.summaryTemplates().find((t) => t.summary!.level === level)
   }
 
   /**

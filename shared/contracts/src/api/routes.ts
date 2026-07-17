@@ -84,4 +84,6 @@ export const Routes: readonly RouteDef[] = [
   { method: 'GET', path: '/screen/status', response: 'ScreenStatus', phase: 4 },
   { method: 'GET', path: '/context/packets', response: 'ContextPacket[]', phase: 4 },
   { method: 'POST', path: '/context/packets/build', request: 'BuildContextPacketsRequest', response: 'ContextPacket[]', phase: 4 },
+  { method: 'GET', path: '/summaries', response: 'Summary[]', phase: 4 },
+  { method: 'POST', path: '/summaries/build', request: 'BuildSummariesRequest', response: 'Summary[]', phase: 4 },
 ] as const

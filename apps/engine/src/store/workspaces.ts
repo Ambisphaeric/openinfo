@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { ChatTurn, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, SessionTitling, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
-import { ChatTurn as ChatTurnSchema, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
+import type { ChatTurn, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, SessionTitling, Sighting, SttSegment, Summary, SummaryLevel, TodoList, Workspace } from '@openinfo/contracts'
+import { ChatTurn as ChatTurnSchema, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema, Summary as SummarySchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
 import { DEFAULT_GAZETTEER, GAZETTEER_KEY, GAZETTEER_KIND, gazetteerRivals, type GazetteerDocument } from '../index/gazetteer.js'
@@ -340,6 +340,53 @@ export class WorkspaceRegistry {
     if (opts.to !== undefined) packets = packets.filter((p) => p.windowStart < opts.to!)
     if (opts.entityId !== undefined) packets = packets.filter((p) => p.candidates.some((c) => c.entityId === opts.entityId))
     return packets
+  }
+
+  /**
+   * Append one hierarchical Summary (#177) to its workspace's OWN sqlite file. Summaries are APPEND-ONLY
+   * derived records: a revision never mutates its predecessor — it is a new row whose `supersedes` links the
+   * chain. `insert or replace` keyed on the (prose-excluding) content-derived id makes a degraded→prose
+   * upgrade over the SAME children replace in place, and a changed child set append a new revision. Contract-
+   * validated before write (the saveContextPacket idiom). Only this path writes summaries.
+   */
+  saveSummary(summary: Summary): Summary {
+    this.ensureWorkspace({ id: summary.workspaceId, name: summary.workspaceId })
+    const db = this.openWorkspace(summary.workspaceId)
+    const { level, windowStart } = summary
+    if (!Value.Check(SummarySchema, summary)) {
+      throw new Error(`summary failed contract validation: ${level} ${windowStart}`)
+    }
+    db.prepare(
+      'insert or replace into summaries (id, session_id, level, window_start, window_end, created_at, body) values (?, ?, ?, ?, ?, ?, ?)',
+    ).run(summary.id, summary.sessionId ?? null, summary.level, summary.windowStart, summary.windowEnd, summary.createdAt, JSON.stringify(summary))
+    return summary
+  }
+
+  /**
+   * Query a workspace's Summaries (#177) — the axes the issue names: workspace (the DB), session, level, and
+   * time window (`from`/`to` keep summaries whose window INTERSECTS the range). Default reads return each
+   * interval's LIVE chain head only; superseded revisions stay retrievable with `includeSuperseded`.
+   * Supersession is resolved over the whole workspace/level scope BEFORE the time filter, so a filtered read
+   * can never present a superseded summary as live. Unknown workspace reads as [] (mirrors listContextPackets).
+   */
+  listSummaries(
+    workspaceId: string,
+    opts: { sessionId?: string; level?: SummaryLevel; from?: string; to?: string; includeSuperseded?: boolean } = {},
+  ): Summary[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const rows = opts.sessionId
+      ? (db.prepare('select body from summaries where session_id = ? order by window_start, created_at, id').all(opts.sessionId) as { body: string }[])
+      : (db.prepare('select body from summaries order by window_start, created_at, id').all() as { body: string }[])
+    let summaries = rows.map((row) => JSON.parse(row.body) as Summary)
+    if (opts.level !== undefined) summaries = summaries.filter((s) => s.level === opts.level)
+    if (!opts.includeSuperseded) {
+      const superseded = new Set(summaries.map((s) => s.supersedes).filter((id): id is string => id !== undefined))
+      summaries = summaries.filter((s) => !superseded.has(s.id))
+    }
+    if (opts.from !== undefined) summaries = summaries.filter((s) => s.windowEnd > opts.from!)
+    if (opts.to !== undefined) summaries = summaries.filter((s) => s.windowStart < opts.to!)
+    return summaries
   }
 
   /** List a workspace's OcrResults (default all), oldest first; `sessionId` narrows to one session. */
@@ -870,6 +917,8 @@ export class WorkspaceRegistry {
     // #176: the WHOLE append-only packet chain moves (includeSuperseded) — dropping superseded revisions
     // would silently rewrite history the chain promises to keep.
     const contextPackets = this.listContextPackets(fromWorkspaceId, { sessionId, includeSuperseded: true })
+    // #177: the WHOLE append-only summary chain moves too (includeSuperseded), for the same reason as packets.
+    const summaries = this.listSummaries(fromWorkspaceId, { sessionId, includeSuperseded: true })
     const movedDistillateIds = new Set(distillates.map((d) => d.id))
     const movedMomentIds = new Set(moments.map((m) => m.id))
 
@@ -947,6 +996,12 @@ export class WorkspaceRegistry {
         const moved: SessionTitling = { ...titling, workspaceId: toWorkspaceId }
         toDb.prepare('insert or replace into session_titlings (id, session_id, created_at, source, body) values (?, ?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, moved.source, JSON.stringify(moved))
       }
+      for (const summary of summaries) {
+        // The id stays stable across the move (opaque once minted); only the workspace scope is rewritten, so
+        // a destination rebuild converges on the moved chain instead of forking a new one (as packets do).
+        const moved: Summary = { ...summary, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into summaries (id, session_id, level, window_start, window_end, created_at, body) values (?, ?, ?, ?, ?, ?, ?)').run(moved.id, moved.sessionId ?? null, moved.level, moved.windowStart, moved.windowEnd, moved.createdAt, JSON.stringify(moved))
+      }
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
@@ -969,6 +1024,7 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from stt_segments where session_id = ?').run(sessionId)
       fromDb.prepare('delete from context_packets where session_id = ?').run(sessionId)
       fromDb.prepare('delete from session_titlings where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from summaries where session_id = ?').run(sessionId)
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
@@ -1494,6 +1550,13 @@ export class WorkspaceRegistry {
     // per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
     db.prepare(
       'create table if not exists context_packets (id text primary key, session_id text not null, window_start text not null, window_end text not null, created_at text not null, body text not null)',
+    ).run()
+    // #177: the multi-timescale summary hierarchy — level+window-keyed, append-only derived records over the
+    // distillates/packets/lower summaries (refs only, no copied content). `session_id` is nullable so a
+    // cross-session project summary (slice-2 production) can be stored without one. Additive `create table if
+    // not exists` in the per-workspace open path ⇒ existing DBs gain it on next open (no migration step).
+    db.prepare(
+      'create table if not exists summaries (id text primary key, session_id text, level text not null, window_start text not null, window_end text not null, created_at text not null, body text not null)',
     ).run()
     // The Ask face's persistent app-scoped chat thread — one thread per workspace (owner canon 2026-07-11;
     // upstream glass left ask-history vestigial). `seq` (autoincrement) is the stable turn order: turns in

@@ -1,5 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox'
 import { Id, SlotName } from '../common.js'
+import { SummaryLevel } from '../records/summary.js'
 
 /**
  * A fast-field binding (#61) — the append-only extension that turns a prompt template into a
@@ -71,6 +72,40 @@ export const FastFieldBinding = Type.Object(
 export type FastFieldBinding = Static<typeof FastFieldBinding>
 
 /**
+ * A summary binding (#177) — the append-only extension that makes a prompt template a SUMMARY prompt
+ * document: it declares which hierarchy `level` the template summarizes, the interval it buckets over, the
+ * lower level it consumes, and — the non-negotiable — the EXPLICIT bounds on its inputs. Cadence, prompt,
+ * and retention are thereby CONFIGURATION (a document editable over the same GET/PUT /templates routes),
+ * never hardcoded behavior: change `windowMs`/`maxChildren`/the body and the produced summaries change with
+ * no rebuild (the read-fresh seam). This mirrors the `field` binding exactly — a template without a binding
+ * is an unchanged classic prompt.
+ *
+ * - `level` is which summary level this document produces (rolling/five-minute/session/…).
+ * - `windowMs` is the interval this level buckets over — e.g. 300000 for five-minute. Ignored for a
+ *   whole-session level (`session`/`project`), which buckets by session rather than a fixed window.
+ * - `childLevel` is the lower summary level consumed as this level's children; ABSENT ⇒ the level consumes
+ *   distillates directly (the base of the hierarchy — `rolling`).
+ * - `maxChildren` is the HARD BOUND on lower-level inputs fed to the summarizer: an over-long window keeps
+ *   only the newest `maxChildren` (the input is bounded, never unbounded raw history).
+ * - `maxEvidence` (optional) is the bound on selectively-retrieved corroborating evidence (e.g. moments);
+ *   absent ⇒ no evidence is pulled.
+ * - `cadenceMs` (optional) is the minimum re-summarize interval for the active window; absent ⇒ every
+ *   produce pass reconsiders (idempotent — a stable child set is a no-op).
+ */
+export const SummaryBinding = Type.Object(
+  {
+    level: SummaryLevel,
+    windowMs: Type.Integer({ minimum: 1, description: 'the interval this level buckets over (ignored for whole-session levels)' }),
+    childLevel: Type.Optional(SummaryLevel),
+    maxChildren: Type.Integer({ minimum: 1, description: 'HARD BOUND on lower-level inputs fed to the summarizer (newest kept)' }),
+    maxEvidence: Type.Optional(Type.Integer({ minimum: 0, description: 'bound on selectively-retrieved evidence records; absent ⇒ none' })),
+    cadenceMs: Type.Optional(Type.Integer({ minimum: 0, description: 'minimum re-summarize interval for the active window; absent ⇒ every pass' })),
+  },
+  { $id: 'SummaryBinding', additionalProperties: false },
+)
+export type SummaryBinding = Static<typeof SummaryBinding>
+
+/**
  * A prompt template document. Every Distill/Act prompt is a versioned, cloneable record — no
  * hardcoded prompt presets (a glass mistake we deliberately left behind). The template body is
  * interpolated before the local model runs: it receives the raw resolved dial numbers
@@ -85,15 +120,16 @@ export const PromptTemplate = Type.Object(
   {
     id: Id,
     name: Type.String({ minLength: 1 }),
-    kind: Type.Union(['distill', 'extract', 'act', 'field', 'preset', 'ask'].map((k) => Type.Literal(k)), {
+    kind: Type.Union(['distill', 'extract', 'act', 'field', 'preset', 'ask', 'summary'].map((k) => Type.Literal(k)), {
       description:
-        'which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61; preset = a workspace-selectable CONTEXT preset overlay prepended to the distill pass, editable over the same /templates routes — the glass "five prompts" made an actual document, pill P2; ask = the Ask face default question an empty send with a captured screen asks — a shipped document, not a hardcoded string, editable over the same /templates routes)',
+        'which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61; preset = a workspace-selectable CONTEXT preset overlay prepended to the distill pass, editable over the same /templates routes — the glass "five prompts" made an actual document, pill P2; ask = the Ask face default question an empty send with a captured screen asks — a shipped document, not a hardcoded string, editable over the same /templates routes; summary = a hierarchical-summary prompt bound to a timescale level via `summary`, #177)',
     }),
     slot: Type.Optional(SlotName),
     body: Type.String({ minLength: 1, description: 'template with {{var}} placeholders' }),
     description: Type.Optional(Type.String()),
     builtin: Type.Optional(Type.Boolean()),
     field: Type.Optional(FastFieldBinding),
+    summary: Type.Optional(SummaryBinding),
     // Layer 2 of the egress-consent policy (#64): a prompt document may declare it NEVER uses
     // egress-capable endpoints — its content stays local regardless of mode/workspace posture. Append-only/
     // optional: absent ⇒ the prompt does not deny (it defers to the other layers).

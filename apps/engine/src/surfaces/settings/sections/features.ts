@@ -83,6 +83,12 @@ const FEATURE_META: Record<string, FeatureMeta> = {
     depends: ['distill.enabled'],
     note: 'Extracts entities and ranks them by recency × frequency. Linking moments to entities also needs "Extract typed moments".',
   },
+  'summaries.enabled': {
+    label: 'Build a summary timeline',
+    stage: 'Distill',
+    depends: ['distill.enabled'],
+    note: 'Rolls the distillates up into a rolling and five-minute view during the session, and a durable session summary at the end. Each summary points back to its sources; the prose is a proposal, and if the summarizing model is unavailable the entry says so rather than inventing one.',
+  },
   'act.enabled': {
     label: 'Prepare a follow-up draft',
     stage: 'Act',

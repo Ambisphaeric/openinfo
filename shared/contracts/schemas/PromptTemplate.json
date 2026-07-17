@@ -19,7 +19,7 @@
       "type": "string"
     },
     "kind": {
-      "description": "which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61; preset = a workspace-selectable CONTEXT preset overlay prepended to the distill pass, editable over the same /templates routes — the glass \"five prompts\" made an actual document, pill P2; ask = the Ask face default question an empty send with a captured screen asks — a shipped document, not a hardcoded string, editable over the same /templates routes)",
+      "description": "which pipeline stage this template feeds (extract = the extraction stage: typed moments AND entities, distinguished by template id; field = a fast-field prompt bound to a surface field, #61; preset = a workspace-selectable CONTEXT preset overlay prepended to the distill pass, editable over the same /templates routes — the glass \"five prompts\" made an actual document, pill P2; ask = the Ask face default question an empty send with a captured screen asks — a shipped document, not a hardcoded string, editable over the same /templates routes; summary = a hierarchical-summary prompt bound to a timescale level via `summary`, #177)",
       "anyOf": [
         {
           "const": "distill",
@@ -43,6 +43,10 @@
         },
         {
           "const": "ask",
+          "type": "string"
+        },
+        {
+          "const": "summary",
           "type": "string"
         }
       ]
@@ -174,6 +178,90 @@
               "type": "string"
             }
           ]
+        }
+      }
+    },
+    "summary": {
+      "$id": "SummaryBinding",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "level",
+        "windowMs",
+        "maxChildren"
+      ],
+      "properties": {
+        "level": {
+          "$id": "SummaryLevel",
+          "description": "the summary timescale, finest (rolling) to coarsest (project)",
+          "anyOf": [
+            {
+              "const": "rolling",
+              "type": "string"
+            },
+            {
+              "const": "episode",
+              "type": "string"
+            },
+            {
+              "const": "five-minute",
+              "type": "string"
+            },
+            {
+              "const": "session",
+              "type": "string"
+            },
+            {
+              "const": "project",
+              "type": "string"
+            }
+          ]
+        },
+        "windowMs": {
+          "minimum": 1,
+          "description": "the interval this level buckets over (ignored for whole-session levels)",
+          "type": "integer"
+        },
+        "childLevel": {
+          "$id": "SummaryLevel",
+          "description": "the summary timescale, finest (rolling) to coarsest (project)",
+          "anyOf": [
+            {
+              "const": "rolling",
+              "type": "string"
+            },
+            {
+              "const": "episode",
+              "type": "string"
+            },
+            {
+              "const": "five-minute",
+              "type": "string"
+            },
+            {
+              "const": "session",
+              "type": "string"
+            },
+            {
+              "const": "project",
+              "type": "string"
+            }
+          ]
+        },
+        "maxChildren": {
+          "minimum": 1,
+          "description": "HARD BOUND on lower-level inputs fed to the summarizer (newest kept)",
+          "type": "integer"
+        },
+        "maxEvidence": {
+          "minimum": 0,
+          "description": "bound on selectively-retrieved evidence records; absent ⇒ none",
+          "type": "integer"
+        },
+        "cadenceMs": {
+          "minimum": 0,
+          "description": "minimum re-summarize interval for the active window; absent ⇒ every pass",
+          "type": "integer"
         }
       }
     },
