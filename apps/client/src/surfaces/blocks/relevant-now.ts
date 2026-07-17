@@ -82,11 +82,11 @@ const heuristicWhy = (row: RelevantEntity): string => {
  * Prefer the recorded provenance trail; fall back to the heuristic. Returns undefined only when NEITHER
  * can produce a sentence (display rule #1: such a row must not render a card).
  */
-const whyLine = (row: RelevantEntity): { why: VNode; text: string } | undefined => {
+const whyLine = (row: RelevantEntity): { why: VNode } | undefined => {
   const recorded = recordedProvenance(row)
   const text = recorded ? provenanceWhy(row, recorded) : heuristicWhy(row)
   if (!text) return undefined
-  return { why: text, text }
+  return { why: text }
 }
 
 type DismissBase = { workspaceId: string; source: string }
@@ -101,7 +101,7 @@ const renderRow = (
   const line = whyLine(row)
   if (!line) return undefined // no why sentence → no card (display rule #1)
   const mark = entityGlyph(row.entity.kind)
-  const { why, text } = line
+  const { why } = line
   const ext = `${row.entity.kind}${(row.entity.mentions ?? 0) > 0 ? ` · ${row.entity.mentions}×` : ''}`
   // dismiss (#66): suppress this entity from the join — addressable by its stable id + source + workspace,
   // so the glyph is live wherever the block configures a `dismiss` action (pin / mark-for-follow-up stay
@@ -123,7 +123,9 @@ const renderRow = (
     { class: 'rel' },
     h('span', { class: `mk ${mark.cls}` }, mark.glyph),
     h('span', { class: 'body' }, ...body),
-    h('span', { class: 'go' }, ...(glyph ? [glyph] : []), ...rowAffordances(actions, `${row.entity.name} — ${text}`, { dismiss })),
+    // copy payload = the entity VALUE ONLY (`row.entity.name`). The why line is display context (already
+    // rendered on the row) — provenance/recency never rides into the clipboard (#118 / copy-value-only).
+    h('span', { class: 'go' }, ...(glyph ? [glyph] : []), ...rowAffordances(actions, row.entity.name, { dismiss })),
   )
 }
 

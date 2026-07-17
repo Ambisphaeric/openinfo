@@ -32,7 +32,10 @@ const pinRow = (pin: Pin, actions: Actions): VNode =>
       h('span', { class: 'ttl' }, pin.title, ' ', h('span', { class: 'ext' }, pin.kind)),
       h('span', { class: 'why' }, ingestWhy(pin)),
     ),
-    h('span', { class: 'go' }, ...actionButtons(actions, `${pin.title} — ${pin.uri}`)),
+    // copy payload = the document VALUE ONLY (`pin.uri`) — the pasteable reference, matching the fallback
+    // row below. The title is display context (already on the row's `.ttl`) and never rides into the
+    // clipboard; provenance/ingest state stays on the row (#118 / copy-value-only).
+    h('span', { class: 'go' }, ...actionButtons(actions, pin.uri)),
   )
 
 const fallbackRow = (block: Block, actions: Actions): VNode => {
