@@ -6536,3 +6536,85 @@ ask-packets e2e + the assembler packets/disclosure unit test; two existing tests
 client 606 (unchanged — the disclosure reason rides the existing `budget.note` into the hover, no client
 change) — all green under Node 22, each suite on an isolated run (the known `client seam.test` /
 `engine summaries-surface-e2e` parallel-load flakes pass isolated). Schemas regenerated zero-drift.
+## Slice: phantom mic-echo twins under loud playback — anti-bleed capture constraints + EchoDedupe garble tier  *(#236, 2026-07-17)*
+
+With the #142 system-audio tap live, loud speaker playback of the far side bleeds onto the physical mic and
+transcribes as phantom `mic · me` rows. #151 killed the CLEAN echoes; this closes the two seams that let the
+GARBLED loud-bleed twins through. Two disjoint fixes, capture-side and engine-side.
+
+**Diagnosis, verified against code (file:line at branch base `5f0925a`).**
+- Capture: `apps/client/src/capture/capture-renderer.ts:169` — the mic constraints were `{ echoCancellation: true,
+  noiseSuppression: true, channelCount: 1 }`. `autoGainControl` was UNSET, so Chromium's default (AGC **ON**)
+  AMPLIFIED quiet room bleed toward speech level; `voiceIsolation` was never requested. The system-audio device
+  branch (`:170`) already sets AGC off (it wants the faithful far end). PHASE2's "built-in EC is enough" was never
+  hardware-validated.
+- Dedupe: `apps/engine/src/distill/echo-dedupe.ts` — `ECHO_DEDUPE_SIMILARITY = 0.8` (`:35`), `ECHO_DEDUPE_WINDOW_MS
+  = 2000` (`:33`), match rule Jaccard≥0.8 OR full mic⊆system containment (`isNearDuplicate`, `:57`). Garbled bleed
+  (substituted/split/dropped words) drops the twin's Jaccard below 0.8 → missed. The forward-only cross-drain note
+  (`:71`) is real but PHYSICS-ALIGNED (bleed lags playback, buffer persists 30s across drains), so it is not the
+  reported miss.
+
+**Capture fix (the honest one-liners).** New PURE module `capture/audio-constraints.ts` holds the mic constraint
+CHOICE (the renderer is not in the CI unit set, so the decision is unit-tested there): `echoCancellation:true`
+(KEEP — AEC subtracts the known far-end), `noiseSuppression:true`, `autoGainControl:false` (pinned — the amplifier
+of bleed), `channelCount:1`, and `voiceIsolation:true` **only when `navigator.mediaDevices.getSupportedConstraints()`
+advertises it**. `voiceIsolation` is non-baseline and ADVISORY: never `{exact}`, feature-detected, so an older
+Chromium/Electron or an OS without low-level voice isolation degrades to plain capture instead of an over-constrained
+`getUserMedia`. The renderer reads `getSupportedConstraints?.()` (guarded), passes it through `constraintsFor`, and
+after the grant logs the mic track's `getSettings()` — DISCLOSING what actually landed (Chromium may not honour every
+advisory constraint; voice isolation only engages where the platform supports it), so a rig run is honest without
+expanding the typed capture-status contract. Disclosure is best-effort: no `getSettings`, or a throw, is a silent
+no-op — it never wedges capture.
+
+**Constraint support matrix (Electron 38 = Chromium ~140).** `echoCancellation` / `noiseSuppression` /
+`autoGainControl` / `channelCount` — baseline, always honoured, always set. `voiceIsolation` — the constraint and
+`getSupportedConstraints().voiceIsolation` are exposed in modern Chromium, but the filter only TAKES EFFECT on
+platforms with low-level voice-isolation support (shipped for ChromeOS first, expanding to macOS/Windows via the OS
+mic mode); elsewhere it is advertised-but-inert, hence advisory + feature-detect + disclose. We therefore never
+assume it engaged — the `getSettings()` log is the ground truth.
+
+**Dedupe fix (garble tier).** Added a SECOND match tier in `isNearDuplicate`, gated on the capture time delta:
+`ECHO_DEDUPE_TIGHT_WINDOW_MS = 750` (near-simultaneous), `ECHO_DEDUPE_TIGHT_COVERAGE = 0.5` (DIRECTIONAL
+mic-coverage = fraction of mic tokens present in the system fragment — full containment is coverage 1.0, this relaxes
+the ceiling to catch the garbled minority of tokens), `ECHO_DEDUPE_TIGHT_MIN_MIC_TOKENS = 5` (a higher floor than the
+3-token backchannel guard). It is a strict SUPERSET catch: it only fires on pairs the confident tier already
+rejected, so no confident verdict changes. Why it is safe: the confident tier's 2s window stays as-is; the relaxed
+OVERLAP is only allowed inside the much tighter 750ms window — two people do not utter half-the-same content words
+within 3/4s of each other by coincidence, so near-simultaneity IS the bleed signature. Directionality + the 5-token
+floor protect genuine speech: a long mic utterance merely CONTAINING a short far-side phrase, or a short coincidental
+overlap, stay below the bar. Eating real mic speech is worse than a phantom row, so the false-positive floor set the
+knobs. Cross-drain backward repair (buffering + delaying mic output to cover order-inversion) was EVALUATED and
+deliberately NOT added — bleed lags playback, so forward-only is aligned with the physics; the residual is documented
+in the module header.
+
+**Fixtures — deterministic, red-then-green.** New corpus `apps/engine/src/distill/echo-bleed-fixtures.ts` (pure typed
+table) + `echo-bleed-fixtures.test.ts` drives every case through EchoDedupe. Three GARBLED-twin positives
+(substituted/split words, singular/plural drift, dropped/fused words) and five genuine-speech negatives (topical
+overlap, backchannel agreement, heavy-overlap-but-late confirmation, short-fragment-under-floor, long-utterance
+containing a bled phrase). **Before/after miss + false-positive table** (corpus run against the module):
+
+| corpus half | main `5f0925a` | after #236 |
+| --- | --- | --- |
+| garbled-twin positives caught | 0 / 3 (all MISSED) | 3 / 3 |
+| genuine-speech false positives | 0 / 5 | 0 / 5 |
+
+The three positives were captured RED against the unmodified module first (proving the miss), then green after the
+tier landed; the negatives are green throughout (main is conservative — it only ever drops high-overlap, so it had
+no false positives to begin with; the tier keeps that floor). Four matching unit cases added to `echo-dedupe.test.ts`.
+
+**RIG-VERIFY REMAINDER (cannot run in CI).** Real loud-speaker bleed cancellation is an acoustic property of the
+physical room + mic + speaker + the OS AEC/voice-isolation stack — no headless test can exercise it. Owner recipe:
+on the packaged, TCC-granted build (an unsigned dev electron stalls the tap, per #142), start a session with system
+audio live, and PLAY far-side speech OUT LOUD through the speakers (a talk/podcast clip works — continuous speech,
+not music) at a volume where the mic clearly picks it up. Watch the live transcript stream: (a) confirm the far-side
+content appears as `system audio` rows and does NOT also appear as `mic · me` phantom twins; (b) read the capture
+window devtools log line `[capture-renderer] mic granted audio settings — …` and confirm `autoGainControl=false`
+actually landed and whether `voiceIsolation` engaged on this OS. If phantom twins persist even with AGC off + voice
+isolation on, that is the signal the AEC3 far-end spike (`spikes/aec-loopback`) is warranted — OUT OF SCOPE here
+until these measurements demand it.
+
+**Gates (Node 22).** `pnpm -r build && pnpm -r test` green: contracts 111 · fixtures 15 · client **613** (606 + 7:
+4 in `audio-constraints.test.ts`, 3 in `capture-renderer.test.ts` for the anti-bleed constraints + disclosure) ·
+engine **1082** (1069 after #234 + 13: 9 in `echo-bleed-fixtures.test.ts`, 4 garble-tier cases in `echo-dedupe.test.ts`). One
+known parallel-load flake `api/summaries-surface-e2e.test.ts` (unrelated to this slice) failed under the parallel run
+and passed 1/1 on isolated rerun. No schema changes (no contracts touched). System-only; no PII.
