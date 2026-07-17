@@ -5817,3 +5817,33 @@ returns both surfaces to honest-empty. (3) Deterministic `resolveQueryScope` tes
 live session → its own scope, and no live session → the empty/history state, not workspace-wide. Client
 half locked in `surfaces/hud/hud.test.ts` (boot with no live session → livedot off, no nowline, no moment
 rows). Gates: contracts 103 / fixtures 15 / client 567 / engine 987 (+2), no contract change.
+
+## Slice: a screen frame driven through the production path to the served Trace page  *(#207, 2026-07-16)*
+
+The #116 Trace walk for a screen input was unit-proven over synthetic fixture records
+(`sections/trace.test.ts`, "a screen input follows its shared-span mirror through summary, moment, field,
+judge, and hold"), and the served e2e (`api/trace-e2e.test.ts`) drove only the microphone path. Nothing
+drove a real screen frame through the real capture route, the real screen processor's OcrResult +
+shared-span mirror pair, and the served Trace page — the exact gap the Save-button incident warns about
+(a served surface shipping broken behind green route/unit tests). This is a TEST-ONLY slice; no production
+source changed.
+
+`api/screen-trace-e2e.test.ts` is the SCREEN sibling of the mic trace e2e, same discipline. A real engine
+server (secure test control plane), `wireScreenOcr(app)` exactly as `main.ts` wires it with NO injected
+`invoke` — so the REAL `ScreenOcrProcessor` runs and recognizes each frame through the fabric `ocr` slot,
+which points at a fake loopback paddle-serving endpoint (the deterministic stand-in for a live PaddleOCR
+runtime, the same pattern as the mic e2e's fake stt/llm/judge servers). Real `/capture/screen` POSTs carry
+a recognized frame, its companion ScreenFrameMeta chunk, and a blank frame; the fake paddle answers each
+one deterministically by decoding the posted image and keying on a marker. No synthetic record is injected
+past the capture seam — every OcrResult and mirror Distillate is built by the real processor.
+
+The trace is then read as a browser would: GET `/settings/trace`, follow the input link the page itself
+serves, assert the hop chain off the HTML. The recognized frame renders its `seen` OCR hop (with the
+recorded `device-local` egress decision, the honest "not applicable · device-local" guard absence, and the
+`paddle · pp-ocrv4 · Nms` meta line whose timing comes from the invoke's recorded usage) followed by the
+shared-span mirror hop "Published to the summary stream · … no second model call". The blank frame — which
+the real processor persists as a checkpoint OcrResult with NO mirror Distillate — renders its recognition
+hop with no downstream summary hop, the honest "capture with no downstream hops" state, never a blank page,
+and never leaking the other frame's text. `GET /screen/status` confirms the driven path (processed 1 /
+blank 1 / skipped 1 the meta chunk / failed 0). Gates: contracts 103 / fixtures 15 / client 567 /
+engine 988 (+1), no contract change.
