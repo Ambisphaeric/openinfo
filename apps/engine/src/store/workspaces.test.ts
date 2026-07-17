@@ -861,3 +861,155 @@ test('#176: moveSession carries the whole append-only packet chain with the sess
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+// ── #178 evidence-backed claims ──────────────────────────────────────────────────────────────────────
+import type { Claim } from '@openinfo/contracts'
+
+const derivedClaim = (o: Partial<Claim> & { subject: string; object: string }): Claim => ({
+  id: o.id ?? `clm-${o.subject}-${o.object}-r${o.revision ?? 1}`,
+  workspaceId: o.workspaceId ?? 'default',
+  subject: o.subject,
+  object: o.object,
+  relation: o.relation ?? 'co-occurs-with',
+  evidence: o.evidence ?? [{ record: 'moment', id: 'm1', at: '2026-07-12T13:00:00.000Z' }],
+  confidence: o.confidence ?? 0.4,
+  source: 'derived',
+  state: 'provisional',
+  provenance: { builder: 'deterministic-cooccurrence', evidenceCount: o.evidence?.length ?? 1 },
+  sessionId: o.sessionId ?? 'ses-1',
+  firstObserved: o.firstObserved ?? '2026-07-12T13:00:00.000Z',
+  lastObserved: o.lastObserved ?? '2026-07-12T13:00:00.000Z',
+  revision: o.revision ?? 1,
+  ...(o.supersedes !== undefined ? { supersedes: o.supersedes } : {}),
+  schemaVersion: 1,
+  createdAt: o.createdAt ?? '2026-07-12T13:00:05.000Z',
+})
+
+test('#178 listClaims resolves supersession + user sovereignty BEFORE the filters', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-claims-store-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const r1 = derivedClaim({ subject: 'ent-a', object: 'ent-b', id: 'clm-r1', revision: 1 })
+    const r2 = derivedClaim({ subject: 'ent-a', object: 'ent-b', id: 'clm-r2', revision: 2, supersedes: 'clm-r1', confidence: 0.6 })
+    registry.saveClaim(r1)
+    registry.saveClaim(r2)
+
+    // Default read: only the live head; the superseded revision is hidden even under an entity filter.
+    assert.deepEqual(registry.listClaims('default', { entityId: 'ent-a' }).map((c) => c.id), ['clm-r2'], 'live head only')
+    assert.deepEqual(
+      registry.listClaims('default', { includeSuperseded: true }).map((c) => c.id).sort(),
+      ['clm-r1', 'clm-r2'],
+      'the whole append-only chain is retrievable',
+    )
+    // Relation / source filters compose over the resolved heads.
+    assert.equal(registry.listClaims('default', { relation: 'works-on' }).length, 0)
+    assert.equal(registry.listClaims('default', { source: 'derived' }).length, 1)
+    assert.equal(registry.listClaims('unknown-ws').length, 0, 'unknown workspace reads as []')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#178 a user CONFIRM outranks the derived claim as the live head, without deleting it', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-claims-confirm-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const derived = derivedClaim({ subject: 'ent-a', object: 'ent-b', id: 'clm-d' })
+    registry.saveClaim(derived)
+    const correction = registry.recordClaimCorrection({ workspaceId: 'default', claimId: 'clm-d', verdict: 'confirm', by: 'the user' })
+    assert.equal(correction.source, 'user')
+    assert.equal(correction.state, 'confirmed')
+    assert.equal(correction.confidence, 1)
+    assert.deepEqual(correction.evidence, derived.evidence, 'the correction carries the target evidence (stays traceable)')
+
+    const live = registry.listClaims('default')
+    assert.deepEqual(live.map((c) => c.id), [correction.id], 'the sovereign confirmation is the live head; the derived claim is dropped')
+    assert.equal(registry.listClaims('default', { includeSuperseded: true }).length, 2, 'the original inference is never deleted')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#178 a user REJECT removes the pair from the live view AND survives re-derivation (sovereignty)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-claims-reject-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.saveClaim(derivedClaim({ subject: 'ent-a', object: 'ent-b', id: 'clm-d1', revision: 1 }))
+    registry.recordClaimCorrection({ workspaceId: 'default', claimId: 'clm-d1', verdict: 'reject', note: 'coincidence' })
+    assert.equal(registry.listClaims('default').length, 0, 'a rejected pair is NOT a live relationship')
+
+    // The builder later RE-DERIVES the pair with more evidence (a new revision) — sovereignty must hold.
+    registry.saveClaim(derivedClaim({ subject: 'ent-a', object: 'ent-b', id: 'clm-d2', revision: 2, supersedes: 'clm-d1', confidence: 0.6 }))
+    assert.equal(registry.listClaims('default').length, 0, 're-deriving a rejected pair does not resurrect it')
+    assert.ok(registry.listClaims('default', { includeSuperseded: true }).length >= 3, 'the derived revisions + the reject are retained as history')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#178 a user CORRECT asserts a different relationship that becomes the live head', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-claims-correct-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.saveClaim(derivedClaim({ subject: 'ent-a', object: 'ent-b', id: 'clm-d' }))
+    const corrected = registry.recordClaimCorrection({ workspaceId: 'default', claimId: 'clm-d', verdict: 'correct', relation: 'works-on', note: 'Ada maintains it' })
+    assert.equal(corrected.state, 'corrected')
+    assert.equal(corrected.relation, 'works-on')
+
+    const live = registry.listClaims('default')
+    assert.deepEqual(live.map((c) => `${c.relation}:${c.source}`), ['works-on:user'], 'the corrected relationship replaces the derived co-occurrence')
+
+    // A re-issued identical correction is idempotent (content-derived id ⇒ insert-or-replace, no duplicate).
+    registry.recordClaimCorrection({ workspaceId: 'default', claimId: 'clm-d', verdict: 'correct', relation: 'works-on', note: 'Ada maintains it' })
+    assert.equal(registry.listClaims('default').length, 1, 're-issuing the same correction does not duplicate it')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#178 relatedEntities walks depth-1 and always returns the backing claim ids', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-claims-walk-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    const a = registry.upsertEntity({ workspaceId: 'default', kind: 'person', name: 'Ada', seenAt: '2026-07-12T13:00:00.000Z' })
+    const b = registry.upsertEntity({ workspaceId: 'default', kind: 'artifact', name: 'pi.dev', seenAt: '2026-07-12T13:00:00.000Z' })
+    const c = registry.upsertEntity({ workspaceId: 'default', kind: 'person', name: 'Cyd', seenAt: '2026-07-12T13:00:00.000Z' })
+    registry.saveClaim(derivedClaim({ subject: a.id, object: b.id, id: 'clm-ab', confidence: 0.6 }))
+    registry.saveClaim(derivedClaim({ subject: c.id, object: a.id, id: 'clm-ca', confidence: 0.4 }))
+
+    const related = registry.relatedEntities('default', a.id)
+    assert.deepEqual(related.map((r) => r.name), ['pi.dev', 'Cyd'], 'both counterparts, strongest confidence first')
+    const pidev = related.find((r) => r.entityId === b.id)!
+    assert.deepEqual(pidev.relations, ['co-occurs-with'])
+    assert.deepEqual(pidev.claimIds, ['clm-ab'], 'the walk names the backing claim so evidence is retrievable')
+    assert.equal(pidev.confidence, 0.6)
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('#178 moveSession carries a session\'s claims (derived + corrections) to the destination workspace', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-claims-move-'))
+  try {
+    const registry = new WorkspaceRegistry(dir)
+    registry.ensureWorkspace({ id: 'src', name: 'Src' })
+    registry.ensureWorkspace({ id: 'dst', name: 'Dst' })
+    registry.saveSession({ id: 'ses-m', workspaceId: 'src', modeId: 'mode-x', startedAt: '2026-07-12T13:00:00.000Z', attribution: { evidence: [], confidence: 1 } })
+    registry.saveClaim(derivedClaim({ subject: 'ent-a', object: 'ent-b', workspaceId: 'src', sessionId: 'ses-m', id: 'clm-move' }))
+    registry.recordClaimCorrection({ workspaceId: 'src', claimId: 'clm-move', verdict: 'confirm' })
+
+    registry.moveSession('ses-m', 'src', 'dst')
+    assert.equal(registry.listClaims('src', { includeSuperseded: true }).length, 0, 'source no longer holds the session claims')
+    const moved = registry.listClaims('dst', { includeSuperseded: true })
+    assert.equal(moved.length, 2, 'both the derived claim and the sovereign correction moved')
+    assert.ok(moved.every((c) => c.workspaceId === 'dst'), 'workspace scope rewritten on the moved rows')
+    registry.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

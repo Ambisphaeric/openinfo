@@ -1,0 +1,20 @@
+{
+  "$id": "ClaimProvenance",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "builder",
+    "evidenceCount"
+  ],
+  "properties": {
+    "builder": {
+      "const": "deterministic-cooccurrence",
+      "type": "string"
+    },
+    "evidenceCount": {
+      "minimum": 1,
+      "description": "distinct evidence refs backing this claim — the recorded derivation behind confidence",
+      "type": "integer"
+    }
+  }
+}

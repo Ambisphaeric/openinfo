@@ -1,0 +1,79 @@
+{
+  "$id": "CorrectClaimRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "claimId",
+    "verdict"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "claimId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "verdict": {
+      "anyOf": [
+        {
+          "const": "confirm",
+          "type": "string"
+        },
+        {
+          "const": "reject",
+          "type": "string"
+        },
+        {
+          "const": "correct",
+          "type": "string"
+        }
+      ]
+    },
+    "relation": {
+      "$id": "ClaimRelation",
+      "description": "the relationship kind: co-occurs-with (symmetric; the only kind the slice-1 deterministic builder emits) · works-on/belongs-to/authored/member-of (directional semantic kinds — judge-enrichment slice + user corrections) · relates-to (generic fallback)",
+      "anyOf": [
+        {
+          "const": "co-occurs-with",
+          "type": "string"
+        },
+        {
+          "const": "works-on",
+          "type": "string"
+        },
+        {
+          "const": "belongs-to",
+          "type": "string"
+        },
+        {
+          "const": "authored",
+          "type": "string"
+        },
+        {
+          "const": "member-of",
+          "type": "string"
+        },
+        {
+          "const": "relates-to",
+          "type": "string"
+        }
+      ]
+    },
+    "object": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "by": {
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,260 @@
+{
+  "$id": "Claim",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "id",
+    "workspaceId",
+    "subject",
+    "object",
+    "relation",
+    "evidence",
+    "confidence",
+    "source",
+    "state",
+    "firstObserved",
+    "lastObserved",
+    "revision",
+    "schemaVersion",
+    "createdAt"
+  ],
+  "properties": {
+    "id": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "subject": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "object": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "relation": {
+      "$id": "ClaimRelation",
+      "description": "the relationship kind: co-occurs-with (symmetric; the only kind the slice-1 deterministic builder emits) · works-on/belongs-to/authored/member-of (directional semantic kinds — judge-enrichment slice + user corrections) · relates-to (generic fallback)",
+      "anyOf": [
+        {
+          "const": "co-occurs-with",
+          "type": "string"
+        },
+        {
+          "const": "works-on",
+          "type": "string"
+        },
+        {
+          "const": "belongs-to",
+          "type": "string"
+        },
+        {
+          "const": "authored",
+          "type": "string"
+        },
+        {
+          "const": "member-of",
+          "type": "string"
+        },
+        {
+          "const": "relates-to",
+          "type": "string"
+        }
+      ]
+    },
+    "evidence": {
+      "minItems": 1,
+      "description": "refs to the evidence records backing this claim — a claim with no evidence is unrepresentable",
+      "type": "array",
+      "items": {
+        "$id": "ClaimEvidenceRef",
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "record",
+          "id",
+          "at"
+        ],
+        "properties": {
+          "record": {
+            "description": "which record table the id names — the closed set of claim evidence sources",
+            "anyOf": [
+              {
+                "const": "context-packet",
+                "type": "string"
+              },
+              {
+                "const": "moment",
+                "type": "string"
+              },
+              {
+                "const": "distillate",
+                "type": "string"
+              }
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "description": "opaque identifier",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "confidence": {
+      "minimum": 0,
+      "maximum": 1,
+      "type": "number"
+    },
+    "source": {
+      "description": "derived (deterministic builder proposal) · user (sovereign human correction, outranks derived)",
+      "anyOf": [
+        {
+          "const": "derived",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "type": "string"
+        }
+      ]
+    },
+    "state": {
+      "description": "provisional (derived proposal) · confirmed/corrected/rejected (user verdicts) · superseded (an older revision a newer one replaced)",
+      "anyOf": [
+        {
+          "const": "provisional",
+          "type": "string"
+        },
+        {
+          "const": "confirmed",
+          "type": "string"
+        },
+        {
+          "const": "corrected",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "type": "string"
+        },
+        {
+          "const": "superseded",
+          "type": "string"
+        }
+      ]
+    },
+    "provenance": {
+      "$id": "ClaimProvenance",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "builder",
+        "evidenceCount"
+      ],
+      "properties": {
+        "builder": {
+          "const": "deterministic-cooccurrence",
+          "type": "string"
+        },
+        "evidenceCount": {
+          "minimum": 1,
+          "description": "distinct evidence refs backing this claim — the recorded derivation behind confidence",
+          "type": "integer"
+        }
+      }
+    },
+    "correction": {
+      "$id": "ClaimCorrection",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "verdict",
+        "at"
+      ],
+      "properties": {
+        "verdict": {
+          "description": "the human judgment: confirm (real) · reject (not a relationship) · correct (a different relationship)",
+          "anyOf": [
+            {
+              "const": "confirm",
+              "type": "string"
+            },
+            {
+              "const": "reject",
+              "type": "string"
+            },
+            {
+              "const": "correct",
+              "type": "string"
+            }
+          ]
+        },
+        "at": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "by": {
+          "description": "who made the correction — the user",
+          "type": "string"
+        },
+        "note": {
+          "description": "the correction's rationale (never a secret value)",
+          "type": "string"
+        }
+      }
+    },
+    "corrects": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "sessionId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "firstObserved": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "lastObserved": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "revision": {
+      "minimum": 1,
+      "description": "position in this relationship’s append-only supersession chain",
+      "type": "integer"
+    },
+    "supersedes": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "schemaVersion": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "createdAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}

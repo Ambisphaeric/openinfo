@@ -17,7 +17,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   ocrInvokeParams: 'OcrInvokeParams', vlmInvokeParams: 'VlmInvokeParams',
   captureChunk: 'CaptureChunk', captureReceipt: 'CaptureReceipt', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', transcriptUpdate: 'TranscriptUpdate', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', ocrResult: 'OcrResult', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity', fieldValue: 'FieldValue',
-  sessionAnnotation: 'SessionAnnotation', sessionTitling: 'SessionTitling', sttSegment: 'SttSegment', contextPacket: 'ContextPacket', summary: 'Summary',
+  sessionAnnotation: 'SessionAnnotation', sessionTitling: 'SessionTitling', sttSegment: 'SttSegment', contextPacket: 'ContextPacket', summary: 'Summary', claim: 'Claim',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', setSessionTitleRequest: 'SetSessionTitleRequest', queryResult: 'QueryResult',
   pin: 'Pin', pinChunk: 'PinChunk', teachSignal: 'TeachSignal', entityCorrection: 'EntityCorrection',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
@@ -92,6 +92,33 @@ test('Summary is refs-only, marks prose as a model proposal, and stays honest wh
     assert.deepEqual([...Value.Errors(AllSchemas.SummaryLevel, level)], [], `${level} is a typed level`)
   }
   assert.ok([...Value.Errors(AllSchemas.SummaryLevel, 'decade')].length > 0, 'an invented level is rejected')
+})
+
+test('Claim is refs-only, evidence is mandatory, and the relation union stays closed (#178)', () => {
+  const claim = JSON.parse(readFileSync(join(examplesDir, 'claim.coOccurrence.json'), 'utf8'))
+  assert.deepEqual([...Value.Errors(AllSchemas.Claim, claim)], [], 'a refs-only derived claim validates')
+
+  // EVIDENCE IS MANDATORY: a claim with no evidence refs is UNREPRESENTABLE (minItems:1) — the #178
+  // "every claim must be traceable to source observations" invariant, enforced by the schema itself.
+  assert.ok([...Value.Errors(AllSchemas.Claim, { ...claim, evidence: [] })].length > 0, 'a claim with no evidence is rejected')
+
+  // Refs-only: an evidence ref cannot smuggle copied observation content alongside its id.
+  const smuggling = { ...claim, evidence: [{ record: 'context-packet', id: 'cp-x', at: claim.firstObserved, text: 'copied content' }] }
+  assert.ok([...Value.Errors(AllSchemas.Claim, smuggling)].length > 0, 'an evidence ref carrying content is rejected')
+
+  // The relation union is CLOSED — all six kinds are typed even though slice 1 produces only co-occurs-with.
+  for (const relation of ['co-occurs-with', 'works-on', 'belongs-to', 'authored', 'member-of', 'relates-to']) {
+    assert.deepEqual([...Value.Errors(AllSchemas.ClaimRelation, relation)], [], `${relation} is a typed relation`)
+  }
+  assert.ok([...Value.Errors(AllSchemas.ClaimRelation, 'is-friends-with')].length > 0, 'an invented relation is rejected')
+
+  // The evidence-source set is closed: a distillate/moment/context-packet is allowed, an entity is not
+  // (a claim rests on converged evidence, never directly on another derived aggregate).
+  assert.ok([...Value.Errors(AllSchemas.ClaimEvidenceRef, { record: 'entity', id: 'ent-x', at: claim.firstObserved })].length > 0, 'entity is not an evidence source')
+
+  // A SOVEREIGN user correction validates: source 'user' + a correction stamp + the target link, no builder.
+  const correction = JSON.parse(readFileSync(join(examplesDir, 'claim.userConfirm.json'), 'utf8'))
+  assert.deepEqual([...Value.Errors(AllSchemas.Claim, correction)], [], 'a user correction validates')
 })
 
 test('CaptureReceipt is metadata-only and rejects raw or derived content fields', () => {

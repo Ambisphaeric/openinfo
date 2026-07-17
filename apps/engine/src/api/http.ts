@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type BuildSummariesRequest, type Bundle, type CaptureChunk, type ContextPacket, type Summary, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type SetSessionTitleRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type SessionTitling, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type BuildSummariesRequest, type BuildClaimsRequest, type CorrectClaimRequest, type Claim, type RelatedEntity, type Bundle, type CaptureChunk, type ContextPacket, type Summary, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type SetSessionTitleRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type SessionTitling, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { SESSION_TITLING_SCHEMA_VERSION } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, FloorTitleScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, GuardHeldError, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
-import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog, materializeSummaries, createFabricSummarizer, SummaryBuildLog, walkSummaryTrace, type Summarizer } from '../index/index.js'
+import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog, materializeSummaries, createFabricSummarizer, SummaryBuildLog, walkSummaryTrace, materializeClaims, ClaimBuildLog, type Summarizer } from '../index/index.js'
 import { TeachStore, deriveHintCandidates, captureEntityCorrection, type HintCandidate } from '../teach/index.js'
 import { Attributor, HintsDocuments, extractFocusSignals, rerouteSession } from '../route/index.js'
 import { isFlagEnabled } from '../flags/read.js'
@@ -113,6 +113,8 @@ interface HandlerContext {
   packetBuildLog: PacketBuildLog
   /** The live hierarchical-summary producer's build log (#177) — per (session, level) last-update signal (process-scoped). */
   summaryBuildLog: SummaryBuildLog
+  /** The live Claim producer's build log (#178) — the diagnostics "last update" signal (process-scoped). */
+  claimBuildLog: ClaimBuildLog
   /** The fabric-backed summarizer the on-demand /summaries/build route + the live seams share (#177). */
   summarize: Summarizer
   /** The durable per-field latest values (#61) — read by the Audit ledger + Trace sections (#116). */
@@ -822,6 +824,9 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   // #176 live ContextPacket producer: the in-memory build log the session-end seam and the on-demand route
   // both record to, and the Context-packets diagnostics reads for its honest "last update" line (process-scoped).
   const packetBuildLog = new PacketBuildLog()
+  // #178 live Claim producer: the in-memory build log the session-end seam and the on-demand route both
+  // record to (process-scoped), mirroring packetBuildLog.
+  const claimBuildLog = new ClaimBuildLog()
 
   bus.subscribe('session.ended', (session) => {
     void (async () => {
@@ -856,6 +861,16 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       const outcome = materializeContextPackets({ store, log: packetBuildLog }, { workspaceId: session.workspaceId, sessionId: session.id, trigger: 'session-end' })
       if (outcome.error !== undefined) log(`context packets: session-end build failed for ${session.id}: ${outcome.error}`)
       else if (outcome.created.length > 0) log(`context packets: session-end appended ${outcome.created.length} for session ${session.id}`)
+      // #178 LIVE PRODUCER: with the packets now materialized, derive co-occurrence Claims from the session's
+      // converged evidence (its packets + moments) so relationships materialize during normal capture — no
+      // on-demand route call needed. Runs AFTER packets (so the packet-candidate co-occurrence evidence is
+      // fresh), ONCE per session end, scoped to the session's OWN workspace, and idempotent (a converged
+      // rebuild appends nothing). Same contained discipline as packets: materializeClaims never throws — a
+      // build failure is recorded on the log (visible in diagnostics), never fatal to this handler and never
+      // able to corrupt the durable evidence it derives from. No evidence ⇒ no claims (never fabricated).
+      const claimOutcome = materializeClaims({ store, log: claimBuildLog }, { workspaceId: session.workspaceId, sessionId: session.id, trigger: 'session-end' })
+      if (claimOutcome.error !== undefined) log(`claims: session-end build failed for ${session.id}: ${claimOutcome.error}`)
+      else if (claimOutcome.created.length > 0) log(`claims: session-end appended ${claimOutcome.created.length} for session ${session.id}`)
       // #177 DURABLE SESSION SUMMARY: with the whole session now drained + summarized at the finer levels, flush
       // the coarser levels — a final rolling/five-minute pass (idempotent) then the durable SESSION summary over
       // the five-minute heads, the durable SESSION summary, and finally the cross-session PROJECT summary that
@@ -948,7 +963,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   void refreshSenseLaneGates()
 
   const server = createServer((req, res) => {
-    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, packetBuildLog, summaryBuildLog, summarize, fieldValues, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
+    const ctx: HandlerContext = { bus, fabric, discovery, secrets, voice, surfaces, distill: distillDocs, guardDocs, guardHolds, todos: todoDocs, workflow, bundles, presets, hints: hintsDocs, queue, textQueue, senseLanes, transcripts, packetBuildLog, summaryBuildLog, claimBuildLog, summarize, fieldValues, store, runtime, models, controlPlane: options.controlPlane, browserAuth, log }
     if (options.onCapture !== undefined) ctx.onCapture = options.onCapture
     void handleControlRequest(req, res, ctx).catch((error: unknown) => {
       if (res.headersSent) return void res.destroy(error instanceof Error ? error : undefined)
@@ -1215,6 +1230,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/summaries') return send(res, 200, readSummaries(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/summaries/trace') return readSummaryTrace(res, ctx.store, url)
   if (req.method === 'POST' && url.pathname === '/summaries/build') return buildSummaries(req, res, ctx)
+  if (req.method === 'GET' && url.pathname === '/claims') return send(res, 200, readClaims(ctx.store, url))
+  if (req.method === 'GET' && url.pathname === '/claims/related') return readRelatedEntities(res, ctx.store, url)
+  if (req.method === 'POST' && url.pathname === '/claims/build') return buildClaims(req, res, ctx)
+  if (req.method === 'POST' && url.pathname === '/claims/correct') return correctClaim(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/todos') return send(res, 200, ctx.todos.list())
   const todo = url.pathname.match(/^\/todos\/([^/]+)$/)
   if (req.method === 'GET' && todo?.[1]) return getTodo(res, ctx, decodeURIComponent(todo[1]))
@@ -2091,6 +2110,100 @@ async function buildSummaries(req: IncomingMessage, res: ServerResponse, ctx: Ha
     ctx.log(`summaries: on-demand appended ${outcome.created.length} for session ${sessionId} (${outcome.degraded} degraded, ${outcome.unchanged} unchanged)`)
   }
   send(res, 200, outcome.created)
+}
+
+/**
+ * Serve evidence-backed Claims (#178) — queryable by workspace (default `default`), session, related entity
+ * (`entity` matches subject OR object — the depth-1 walk data), relation kind, source, and time window
+ * (`from`/`to`, observed-span intersection), consistent with GET /context/packets. Default reads return the
+ * LIVE heads only — supersession AND sovereign user corrections are resolved in the store BEFORE the filters,
+ * so a filtered read never shows a superseded revision or a user-overruled pair as live. `superseded=true`
+ * returns the whole append-only history. A read over store/; an unknown workspace is an empty list, not an error.
+ */
+function readClaims(store: WorkspaceRegistry, url: URL): Claim[] {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const sessionId = url.searchParams.get('session')
+  const entityId = url.searchParams.get('entity')
+  const relation = url.searchParams.get('relation')
+  const source = url.searchParams.get('source')
+  const from = url.searchParams.get('from')
+  const to = url.searchParams.get('to')
+  return store.listClaims(workspaceId, {
+    ...(sessionId !== null ? { sessionId } : {}),
+    ...(entityId !== null ? { entityId } : {}),
+    ...(relation !== null ? { relation: relation as Claim['relation'] } : {}),
+    ...(source !== null ? { source: source as Claim['source'] } : {}),
+    ...(from !== null ? { from } : {}),
+    ...(to !== null ? { to } : {}),
+    ...(url.searchParams.get('superseded') === 'true' ? { includeSuperseded: true } : {}),
+  })
+}
+
+/**
+ * Walk one entity's depth-1 relationships (#178): `GET /claims/related?entity=` answers "what does this
+ * entity relate to?" — the counterpart entities at the other end of its live claims, each with the deduped
+ * relation kinds, strongest backing confidence, and the claim ids that back the link (so the caller can
+ * always retrieve the supporting evidence + scope). The shape #181's typeahead consumes. `?entity=` is
+ * required (a walk needs a root); an unknown workspace/entity is an honest empty list, not an error.
+ */
+function readRelatedEntities(res: ServerResponse, store: WorkspaceRegistry, url: URL): void {
+  const workspaceId = url.searchParams.get('workspace') ?? 'default'
+  const entityId = url.searchParams.get('entity')
+  if (entityId === null || entityId === '') return send(res, 400, { error: 'related-entities walk needs an ?entity=' })
+  send(res, 200, store.relatedEntities(workspaceId, entityId) satisfies RelatedEntity[])
+}
+
+/**
+ * Run the deterministic co-occurrence Claim builder (#178) over one session's stored evidence and persist
+ * what it appends. The response is the APPENDED claims only — an empty array is the honest idempotent no-op
+ * (same evidence ⇒ same claims ⇒ nothing written; no evidence ⇒ no claims). Route decides (404s), the SHARED
+ * producer moves — the SAME materialize seam the live session-end producer uses, so both paths build
+ * identically and record on the build log. A contained build failure returns as `error` (500), never a
+ * silent empty success.
+ */
+async function buildClaims(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('BuildClaimsRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid BuildClaimsRequest', details: errors })
+  const { workspaceId, sessionId } = body as BuildClaimsRequest
+  if (!ctx.store.all().some((ws) => ws.id === workspaceId)) return send(res, 404, { error: `no such workspace: ${workspaceId}` })
+  const session = ctx.store.getSession(workspaceId, sessionId)
+  if (!session) return send(res, 404, { error: `no session ${sessionId} in workspace ${workspaceId}` })
+  const outcome = materializeClaims({ store: ctx.store, log: ctx.claimBuildLog }, { workspaceId, sessionId, trigger: 'on-demand' })
+  if (outcome.error !== undefined) return send(res, 500, { error: `claim build failed: ${outcome.error}` })
+  if (outcome.created.length > 0) {
+    ctx.log(`claims: appended ${outcome.created.length} for session ${sessionId} (${outcome.unchanged.length} unchanged)`)
+  }
+  send(res, 200, outcome.created)
+}
+
+/**
+ * Record a SOVEREIGN user correction on a derived claim (#178) — append-only, outranks the derived claim,
+ * never deletes it or its evidence. Route decides (404 for an unknown claim), the store mints the
+ * `source:'user'` correction (carrying the target's evidence, so it stays traceable). Returns the persisted
+ * correction. A `correct` verdict may assert a different relation/object; confirm/reject inherit the target's.
+ */
+async function correctClaim(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('CorrectClaimRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid CorrectClaimRequest', details: errors })
+  const { workspaceId, claimId, verdict, relation, object, by, note } = body as CorrectClaimRequest
+  if (!ctx.store.all().some((ws) => ws.id === workspaceId)) return send(res, 404, { error: `no such workspace: ${workspaceId}` })
+  try {
+    const claim = ctx.store.recordClaimCorrection({
+      workspaceId,
+      claimId,
+      verdict: verdict as 'confirm' | 'reject' | 'correct',
+      ...(relation !== undefined ? { relation: relation as Claim['relation'] } : {}),
+      ...(object !== undefined ? { object } : {}),
+      ...(by !== undefined ? { by } : {}),
+      ...(note !== undefined ? { note } : {}),
+    })
+    ctx.log(`claims: recorded ${verdict} correction on ${claimId} in workspace ${workspaceId}`)
+    send(res, 200, claim satisfies Claim)
+  } catch (error) {
+    send(res, 404, { error: error instanceof Error ? error.message : String(error) })
+  }
 }
 
 /**

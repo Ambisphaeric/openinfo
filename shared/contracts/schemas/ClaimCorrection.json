@@ -1,0 +1,41 @@
+{
+  "$id": "ClaimCorrection",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "verdict",
+    "at"
+  ],
+  "properties": {
+    "verdict": {
+      "description": "the human judgment: confirm (real) · reject (not a relationship) · correct (a different relationship)",
+      "anyOf": [
+        {
+          "const": "confirm",
+          "type": "string"
+        },
+        {
+          "const": "reject",
+          "type": "string"
+        },
+        {
+          "const": "correct",
+          "type": "string"
+        }
+      ]
+    },
+    "at": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "by": {
+      "description": "who made the correction — the user",
+      "type": "string"
+    },
+    "note": {
+      "description": "the correction's rationale (never a secret value)",
+      "type": "string"
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { Type, type Static } from '@sinclair/typebox'
-import { Id, IsoTime } from '../common.js'
+import { Id, IsoTime, Confidence } from '../common.js'
+import { ClaimRelation } from '../records/claim.js'
 import { Entity } from '../records/entity.js'
 import { Moment } from '../records/moment.js'
 import { StarterModel } from '../config/local.js'
@@ -570,6 +571,65 @@ export const BuildSummariesRequest = Type.Object(
   { $id: 'BuildSummariesRequest', additionalProperties: false },
 )
 export type BuildSummariesRequest = Static<typeof BuildSummariesRequest>
+
+/**
+ * The body of `POST /claims/build` (#178) — run the deterministic co-occurrence Claim builder over ONE
+ * session's stored evidence (its ContextPackets and moments). The caller names only the scope; every claim
+ * field (ids, endpoints, evidence refs, confidence, revisions) is engine-derived from the stored records,
+ * mirroring BuildContextPacketsRequest — the caller invents no relationship. The response is the claims this
+ * run APPENDED (an empty array is the honest idempotent no-op: same evidence ⇒ same claims ⇒ nothing written).
+ */
+export const BuildClaimsRequest = Type.Object(
+  {
+    workspaceId: Id,
+    sessionId: Id,
+  },
+  { $id: 'BuildClaimsRequest', additionalProperties: false },
+)
+export type BuildClaimsRequest = Static<typeof BuildClaimsRequest>
+
+/**
+ * The body of `POST /claims/correct` (#178) — record a SOVEREIGN, append-only user correction on a derived
+ * claim. The correction OUTRANKS the derived claim without deleting it or its evidence (the roadmap
+ * invariant; the titling-sovereignty pattern). `claimId` names the derived claim being judged; `verdict` is
+ * the human decision (confirm · reject · correct). A `correct` verdict may assert a different `relation`
+ * and/or `object` (e.g. "actually a works-on b, not a mere co-occurrence"); confirm/reject leave them absent
+ * (the correction inherits the target's subject/object/relation). `by`/`note` stamp the human provenance.
+ */
+export const CorrectClaimRequest = Type.Object(
+  {
+    workspaceId: Id,
+    claimId: Id,
+    verdict: Type.Union(['confirm', 'reject', 'correct'].map((v) => Type.Literal(v))),
+    relation: Type.Optional(ClaimRelation),
+    object: Type.Optional(Id),
+    by: Type.Optional(Type.String()),
+    note: Type.Optional(Type.String()),
+  },
+  { $id: 'CorrectClaimRequest', additionalProperties: false },
+)
+export type CorrectClaimRequest = Static<typeof CorrectClaimRequest>
+
+/**
+ * One counterpart in the depth-1 relationship walk (#178): `GET /claims/related?entity=` answers "what does
+ * this entity relate to?" by walking entity → its live claims → the counterpart entity at the other end of
+ * each. `entityId`/`name` name the counterpart; `relations` is the deduped set of relation kinds linking the
+ * pair; `confidence` is the strongest backing claim's confidence; `claimIds` names the live claims that back
+ * the link so a consumer can always retrieve the supporting evidence + scope (the #178 invariant: a walk
+ * result always resolves to its supporting claims). This is the shape #181's typeahead and the recall
+ * surfaces consume; it is a read-time PROJECTION over the claim store, never a second truth store.
+ */
+export const RelatedEntity = Type.Object(
+  {
+    entityId: Id,
+    name: Type.String({ minLength: 1 }),
+    relations: Type.Array(ClaimRelation, { minItems: 1 }),
+    confidence: Confidence,
+    claimIds: Type.Array(Id, { minItems: 1, description: 'live claims backing this link — each traceable to its evidence + scope' }),
+  },
+  { $id: 'RelatedEntity', additionalProperties: false },
+)
+export type RelatedEntity = Static<typeof RelatedEntity>
 
 /**
  * The body of `POST /fabric/profiles/:id/clone` — the new profile's id (+ optional name). Cloning is

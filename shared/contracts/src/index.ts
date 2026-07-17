@@ -19,6 +19,7 @@ export * from './records/sessionTitling.js'
 export * from './records/sttSegment.js'
 export * from './records/contextPacket.js'
 export * from './records/summary.js'
+export * from './records/claim.js'
 export * from './config/voice.js'
 export * from './config/surface.js'
 export * from './config/mode.js'
@@ -59,6 +60,7 @@ import { SessionTitling, TitlingProvenance, FloorTitlingProvenance } from './rec
 import { SttSegment } from './records/sttSegment.js'
 import { ContextPacket, ContextPacketRef, ContextPacketGap, ContextPacketCandidate, ContextPacketProvenance } from './records/contextPacket.js'
 import { Summary, SummaryLevel, SummaryChild, SummaryInputBound, SummaryProvenance } from './records/summary.js'
+import { Claim, ClaimRelation, ClaimEvidenceRef, ClaimProvenance, ClaimCorrection } from './records/claim.js'
 import { Dials, Register, VoiceBinding, DriftChainStep, DriftConfig } from './config/voice.js'
 import { Surface, Block, BlockQuery, Action, BlockTypeName, AttachedPanel } from './config/surface.js'
 import { Mode } from './config/mode.js'
@@ -74,7 +76,7 @@ import { WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate } from './config
 import { Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind } from './config/bundle.js'
 import { OcrInvokeParams, VlmInvokeParams } from './config/invoke.js'
 import { TodoList, TodoItem, TodoProvenance } from './config/todo.js'
-import { Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, SetSessionTitleRequest, BuildContextPacketsRequest, BuildSummariesRequest, CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest, ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory } from './api/payloads.js'
+import { Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, SetSessionTitleRequest, BuildContextPacketsRequest, BuildSummariesRequest, BuildClaimsRequest, CorrectClaimRequest, RelatedEntity, CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest, ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory } from './api/payloads.js'
 import { PhysicalSenseSource, SenseLaneDisposition, SenseLaneHealth, SenseLaneReason, SenseLaneLagBasis, SenseLaneCapture, ScreenCaptureObservation, ScreenLaneObservation, ScreenProcessingOutcome, SenseLaneProcessing, SenseLaneSnapshot, SenseLaneSnapshotSet } from './api/senses.js'
 
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
@@ -83,6 +85,7 @@ export const AllSchemas = {
   Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, EntityCorrectionSignal, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview, SessionAnnotation, OrientationProvenance, SessionTitling, TitlingProvenance, FloorTitlingProvenance, SttSegment,
   ContextPacket, ContextPacketRef, ContextPacketGap, ContextPacketCandidate, ContextPacketProvenance,
   Summary, SummaryLevel, SummaryChild, SummaryInputBound, SummaryProvenance,
+  Claim, ClaimRelation, ClaimEvidenceRef, ClaimProvenance, ClaimCorrection,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,
   Surface, Block, BlockQuery, Action, BlockTypeName, AttachedPanel,
   Mode, PromptTemplate, FastFieldBinding, SummaryBinding, SummaryScope, EgressReach, EgressDestination, EgressLayer, ContentClass, EgressPolicy, EgressDecision, GuardBehavior, GuardSpan, GuardVerdict, GuardPolicy, GuardHoldStatus, GuardHold, Fabric, Endpoint, LocalRuntime, FabricProfile,
@@ -90,7 +93,7 @@ export const AllSchemas = {
   WorkflowSpec, WorkflowStep, WorkflowStepKind, StepGate, OcrInvokeParams, VlmInvokeParams,
   Bundle, BundleFace, BundleFaceKind, ChatContextAssembly, ChatContextSource, ChatContextSourceKind,
   TodoList, TodoItem, TodoProvenance,
-  Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, SetSessionTitleRequest, BuildContextPacketsRequest, BuildSummariesRequest,
+  Health, JsonSchema, CaptureSource, CaptureChunk, CaptureReceipt, FocusSignal, CalendarSignal, Ack, TranscriptUpdate, SttSlotEndpoint, TranscriptInspector, QueueStatus, QueueFailure, QueueKind, QueueKindDepth, BacklogEta, BacklogLag, OverflowState, ScreenStatus, RelevantEntity, HintCandidate, QueryResult, StartSessionRequest, RerouteRequest, SetSessionTitleRequest, BuildContextPacketsRequest, BuildSummariesRequest, BuildClaimsRequest, CorrectClaimRequest, RelatedEntity,
   CloneProfileRequest, EntityCorrection, SecretRef, SecretValue, EndpointProbe, GenerateProbe, LocalModelStatus, LocalDownloadRequest,
   ChatTurn, ChatRequest, ChatCitation, ChatBudget, ChatReply, ChatScreenshot, ChatDelta, ChatHistory,
   PhysicalSenseSource, SenseLaneDisposition, SenseLaneHealth, SenseLaneReason, SenseLaneLagBasis, SenseLaneCapture, ScreenCaptureObservation, ScreenLaneObservation, ScreenProcessingOutcome, SenseLaneProcessing, SenseLaneSnapshot, SenseLaneSnapshotSet,

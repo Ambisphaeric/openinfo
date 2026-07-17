@@ -93,6 +93,22 @@ export {
   type TraceRef,
   type TraceSourceStatus,
 } from './summaries-trace.js'
+export {
+  buildClaims,
+  DEFAULT_CLAIM_BUILDER_CONFIG,
+  type ClaimBuilderConfig,
+  type ClaimBuildInput,
+  type ClaimBuildResult,
+} from './claims.js'
+export {
+  materializeClaims,
+  ClaimBuildLog,
+  type ClaimBuildAttempt,
+  type ClaimBuildTrigger,
+  type MaterializeClaimsScope,
+  type MaterializeClaimsDeps,
+  type MaterializeClaimsOutcome,
+} from './produce-claims.js'
 export { mergeCanon, type CanonGroup, type CanonResult } from './canon.js'
 export { relevantNow, type RelevantNowOptions } from './relevant.js'
 export * from './ingest/index.js'

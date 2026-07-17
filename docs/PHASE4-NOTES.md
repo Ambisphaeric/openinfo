@@ -6618,3 +6618,80 @@ until these measurements demand it.
 engine **1082** (1069 after #234 + 13: 9 in `echo-bleed-fixtures.test.ts`, 4 garble-tier cases in `echo-dedupe.test.ts`). One
 known parallel-load flake `api/summaries-surface-e2e.test.ts` (unrelated to this slice) failed under the parallel run
 and passed 1/1 on isolated rerun. No schema changes (no contracts touched). System-only; no PII.
+## Slice: evidence-backed claims + relationship graph — substrate only  *(#178 slice 1, 2026-07-17)*
+
+The durable representation for LEARNED RELATIONSHIPS the system lacked — a person works on a repo, a repo
+belongs to an app, an entity relates to an earlier author. Slice 1 is SUBSTRATE ONLY: contract + deterministic
+builder + store/queries + honest correction path. No surface, no model-enriched semantic claims, no #181
+typeahead, no cross-workspace — all named OUT below.
+
+**Contract (append-only, schemas regenerated zero-drift).** New `records/claim.ts`: a typed, versioned,
+append-only `Claim` — `subject → relation → object`, grounded ONLY in `evidence` refs (`ClaimEvidenceRef` over
+the closed set context-packet/moment/distillate) with `minItems:1`, so **a claim with no evidence is
+UNREPRESENTABLE** — every claim traces to source observations at the schema boundary. Framed as proposal-
+not-truth: `source:'derived'|'user'`, `state` provisional/confirmed/corrected/rejected/superseded, `confidence`
+deterministic (never a model score), `ClaimProvenance`(builder + `evidenceCount` = the recorded derivation
+behind confidence) on derived rows, `ClaimCorrection`(verdict/by/note) + `corrects` on sovereign user rows,
+append-only `revision`/`supersedes`, and `firstObserved`/`lastObserved` = the honest valid-time span derived
+from the evidence. Sub-schemas ClaimRelation/ClaimEvidenceRef/ClaimProvenance/ClaimCorrection registered in
+AllSchemas; `BuildClaimsRequest`/`CorrectClaimRequest`/`RelatedEntity` in api/payloads; routes in api/routes.ts.
+
+**The relation-kind decision (the load-bearing choice).** `ClaimRelation` is a CLOSED starter union
+[co-occurs-with · works-on · belongs-to · authored · member-of · relates-to], not an open string. Rationale:
+relation is a QUERY axis (and later a UI/semantic axis), so an open string invites un-queryable drift — a
+typo'd/free-text kind nothing can index (the recurring un-sane-default failure). A closed union keeps every
+kind inspectable and routable; `relates-to` is the deliberate generic escape-valve so the union never forces a
+wrong-fit kind; extending beyond these is a reviewed contract change (new literal + `CLAIM_SCHEMA_VERSION` bump
++ regen) — deliberate, not accidental (the MomentKind/EntityKind/SummaryLevel precedent). The enum is COMPLETE
+now even though **slice 1's deterministic builder emits ONLY `co-occurs-with`** — the sole relation that is
+TRUE BY CONSTRUCTION from co-occurrence evidence with no model in the loop. The semantic kinds are reserved for
+a LATER judge-enrichment slice (their output is a proposal, #189) and for sovereign user corrections.
+
+**Deterministic builder (no model this slice).** `index/claims.ts` `buildClaims` — a PURE function (no
+DB/model/clock beyond an injectable `now`, like every index/ module). Co-occurrence = two entities NAMED
+TOGETHER in one ContextPacket's candidates (reusing #176's converged correlation) or one moment's refs;
+evidence = a ref to that packet/moment. Symmetric endpoints canonically ordered by id (so (A,B)/(B,A) collapse
+to one claim); dangling refs (no entity record) are never claimed; **NO evidence ⇒ NO claim** (honest
+degradation, never fabricated). Confidence = a fixed evidence-count map capped &lt;1.0 (a derived claim is a
+proposal; 1.0 is reserved for a user confirmation), and **repeated evidence strengthens a claim only through a
+NEW revision** that records the higher `evidenceCount` — never a silent mutation. Idempotence + append-only
+supersession are decided against the existing derived chain head per (subject,object,relation) by
+canonical-content equality; content-derived ids (sha-256 over canonical JSON + chain position) make replay
+byte-stable — proven store-backed in `index/claims-replay.test.ts` (same evidence into two fresh stores ⇒
+byte-identical claims; rebuild appends nothing).
+
+**Wired at the session-end seam.** `index/produce-claims.ts` `materializeClaims` + `ClaimBuildLog` — the
+store-touching live producer, wired in `api/http.ts` at the `session.ended` seam AFTER packets materialize (so
+the packet-candidate co-occurrence evidence is fresh), with the SAME contained-failure discipline as packets:
+it NEVER throws (a read/build/write failure is caught, recorded on the log, returned), is idempotent, batched
+ONCE per session, and workspace-isolated.
+
+**Store + relationship queries.** `store/workspaces.ts`: a workspace-isolated `claims` table; `saveClaim`
+(contract-validated last-line-of-defense); `listClaims` queryable by workspace/session/entity(subject∨object)/
+relation/source/time, with **`resolveClaimHeads` resolving derived-supersession AND user-sovereignty BEFORE the
+filters** (so a filtered read can never present a superseded revision or a user-overruled pair as live);
+`relatedEntities` = the depth-1 walk (entity → its live claims → the counterpart entities, each carrying the
+deduped relations, strongest confidence, and the backing `claimIds` so a walk result always resolves to its
+supporting evidence + scope — #181's typeahead substrate); threaded through `moveSession` so a rerouted session
+keeps its relationship graph + corrections. Routes GET `/claims`·`/claims/related`, POST `/claims/build`·
+`/claims/correct`.
+
+**Honest degradation + sovereign corrections.** No evidence ⇒ no claims (above). `recordClaimCorrection` mints
+an append-only `source:'user'` correction that OUTRANKS the derived claim without deleting it or its evidence
+(the #211/#232 titling-sovereignty pattern): confirm (state confirmed, becomes the live head), reject (the pair
+drops from the live view and **survives re-derivation** — resolution is by pair key, so the builder re-deriving
+a rejected pair can never resurrect it), correct (asserts a different relation/object). The correction carries
+the target's evidence (stays traceable) and a content-derived id (idempotent re-issue). The original inference
++ evidence are always retrievable via `includeSuperseded`.
+
+**OUT (named, not gold-plated) — later slices.** Any UI/surface (a Claims diagnostics view is a later slice,
+the #176/#177 slice-2 precedent); MODEL-ENRICHED semantic claims (the judge-enrichment pass that promotes
+co-occurrence into works-on/belongs-to/… — a proposal per #189); #181 local entity candidate search/typeahead
+(this slice ships the `relatedEntities` walk it will consume); cross-workspace / app-scoped memory grants
+(depends on #182 AppRuntime — the `appId` scope field is deliberately NOT added as a dead field).
+
+**Gates.** contracts 114 (111 + a Claim refs-only/closed-union test + claim.coOccurrence/claim.userConfirm
+example-validate tests) · fixtures 15 · client 606 · engine 1077 (1056 + 21: claims builder 10, replay 1,
+produce-claims seam 4, store 6 — but counted as claims-e2e 1 folded in the engine total). Schemas regenerated
+zero-drift (Claim/ClaimRelation/ClaimEvidenceRef/ClaimProvenance/ClaimCorrection/BuildClaimsRequest/
+CorrectClaimRequest/RelatedEntity). All green under Node 22.

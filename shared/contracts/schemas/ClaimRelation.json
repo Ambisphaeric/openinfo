@@ -1,0 +1,30 @@
+{
+  "$id": "ClaimRelation",
+  "description": "the relationship kind: co-occurs-with (symmetric; the only kind the slice-1 deterministic builder emits) · works-on/belongs-to/authored/member-of (directional semantic kinds — judge-enrichment slice + user corrections) · relates-to (generic fallback)",
+  "anyOf": [
+    {
+      "const": "co-occurs-with",
+      "type": "string"
+    },
+    {
+      "const": "works-on",
+      "type": "string"
+    },
+    {
+      "const": "belongs-to",
+      "type": "string"
+    },
+    {
+      "const": "authored",
+      "type": "string"
+    },
+    {
+      "const": "member-of",
+      "type": "string"
+    },
+    {
+      "const": "relates-to",
+      "type": "string"
+    }
+  ]
+}
