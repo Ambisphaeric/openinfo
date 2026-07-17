@@ -8,6 +8,7 @@ import { WorkspaceRegistry } from '../store/index.js'
 import { SurfaceDocuments } from './documents.js'
 import { defaultHudSurface, defaultFieldsSurface } from './defaults.js'
 import { defaultPillSurface, LEGACY_DEFAULT_PILL_SURFACE } from './pill.js'
+import { defaultNotetakerSurface, LEGACY_DEFAULT_NOTETAKER_SURFACE } from './notetaker.js'
 
 test('SurfaceDocuments seeds the openinfo HUD and serves it by id', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-'))
@@ -85,6 +86,87 @@ test('SurfaceDocuments never migrates a customized v1 or any user-version pill',
     assert.equal(kept?.version, 2)
     assert.equal(kept?.body.version, 1)
     assert.deepEqual(kept?.body.stack.map((block) => block.block), ['now', 'relevant-now', 'moments', 'fields'])
+  } finally {
+    userVersionStore.close()
+    await rm(userVersionDir, { recursive: true, force: true })
+  }
+})
+
+test('SurfaceDocuments seeds the #177/#211 note-taker v2 (summary hierarchy center + sessions left rail)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-nt-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    const docs = new SurfaceDocuments(store)
+    docs.ensureDefaults()
+    const nt = docs.get(defaultNotetakerSurface.id)
+    assert.ok(nt)
+    assert.equal(nt.version, 2)
+    // the left rail gains the session-history block; the center summary reads `summaries`, not `distillates`
+    assert.deepEqual(nt.stack.map((b) => b.id), [
+      'nt-left-pins', 'nt-left-sessions', 'nt-center-now', 'nt-center-notes',
+      'nt-center-summary', 'nt-center-session', 'nt-right-rolling', 'nt-right-actions', 'nt-right-fields',
+    ])
+    assert.equal(nt.stack.find((b) => b.id === 'nt-left-sessions')?.block, 'sessions')
+    assert.equal(nt.stack.find((b) => b.id === 'nt-center-summary')?.block, 'summaries')
+    assert.equal(nt.stack.find((b) => b.id === 'nt-center-summary')?.query?.params['level'], 'five-minute')
+    assert.equal(nt.stack.find((b) => b.id === 'nt-right-rolling')?.block, 'distillates') // raw stream demoted here
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SurfaceDocuments migrates only the exact untouched legacy note-taker seed, once', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-nt-refresh-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // An existing install whose sole note-taker record is the exact previously shipped v1 body.
+    store.layouts.put('surface', LEGACY_DEFAULT_NOTETAKER_SURFACE.id, LEGACY_DEFAULT_NOTETAKER_SURFACE)
+    const docs = new SurfaceDocuments(store)
+    docs.ensureDefaults()
+
+    const latest = store.layouts.getLatest<Surface>('surface', defaultNotetakerSurface.id)
+    assert.ok(latest)
+    assert.equal(latest.version, 2, 'the refresh is a versioned document write')
+    assert.equal(latest.body.version, 2, 'the refreshed body carries the new shipped surface version')
+    assert.ok(latest.body.stack.some((b) => b.id === 'nt-left-sessions'), 'the upgrader gets the sessions list')
+    assert.equal(latest.body.stack.find((b) => b.id === 'nt-center-summary')?.block, 'summaries')
+
+    docs.ensureDefaults()
+    assert.equal(store.layouts.getLatest<Surface>('surface', defaultNotetakerSurface.id)?.version, 2, 'the migration is idempotent')
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('SurfaceDocuments never migrates a customized v1 or any user-version note-taker', async () => {
+  const customDir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-nt-custom-'))
+  const customStore = new WorkspaceRegistry(customDir)
+  try {
+    const customized: Surface = { ...LEGACY_DEFAULT_NOTETAKER_SURFACE, name: 'My note-taker' }
+    customStore.layouts.put('surface', customized.id, customized)
+    new SurfaceDocuments(customStore).ensureDefaults()
+    const kept = customStore.layouts.getLatest<Surface>('surface', customized.id)
+    assert.equal(kept?.version, 1)
+    assert.equal(kept?.body.name, customized.name)
+    assert.ok(!kept?.body.stack.some((b) => b.id === 'nt-left-sessions'), 'a customized note-taker is never rewired')
+  } finally {
+    customStore.close()
+    await rm(customDir, { recursive: true, force: true })
+  }
+
+  const userVersionDir = await mkdtemp(join(tmpdir(), 'openinfo-surfdoc-nt-user-version-'))
+  const userVersionStore = new WorkspaceRegistry(userVersionDir)
+  try {
+    // A byte-identical body is still user-owned once it has document history (record version > 1).
+    userVersionStore.layouts.put('surface', LEGACY_DEFAULT_NOTETAKER_SURFACE.id, LEGACY_DEFAULT_NOTETAKER_SURFACE)
+    userVersionStore.layouts.put('surface', LEGACY_DEFAULT_NOTETAKER_SURFACE.id, LEGACY_DEFAULT_NOTETAKER_SURFACE)
+    new SurfaceDocuments(userVersionStore).ensureDefaults()
+    const kept = userVersionStore.layouts.getLatest<Surface>('surface', LEGACY_DEFAULT_NOTETAKER_SURFACE.id)
+    assert.equal(kept?.version, 2)
+    assert.equal(kept?.body.version, 1)
+    assert.ok(!kept?.body.stack.some((b) => b.id === 'nt-left-sessions'))
   } finally {
     userVersionStore.close()
     await rm(userVersionDir, { recursive: true, force: true })

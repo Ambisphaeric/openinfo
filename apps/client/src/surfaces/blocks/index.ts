@@ -5,6 +5,7 @@ import { renderMoments } from './moments.js'
 import { renderLedger } from './ledger.js'
 import { renderHint } from './hint.js'
 import { renderPinnedDoc } from './pinned-doc.js'
+import { renderSessions } from './sessions.js'
 import { renderAsk } from './ask.js'
 import { renderTodos } from './todos.js'
 import { renderDrafts } from './drafts.js'
@@ -35,6 +36,7 @@ export const defaultBlockRegistry: BlockRegistry = {
   ledger: renderLedger,
   hint: renderHint,
   'pinned-doc': renderPinnedDoc,
+  sessions: renderSessions,
   ask: renderAsk,
   todos: renderTodos,
   drafts: renderDrafts,

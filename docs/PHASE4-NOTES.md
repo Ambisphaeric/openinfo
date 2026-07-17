@@ -4552,6 +4552,77 @@ instantiates per-repo with a bound workspace via the existing #99 `POST …/inst
 - The zone prefix is a client convention today (like the #20 per-surface window config), not a contract
   field; promoting it onto the `Block`/`Surface` document is a later, deliberate choice.
 - Suites at the PR: contracts 81 / client 366 / engine 693.
+## Slice: note-taker polish N1 — a real summary hierarchy + the session-history list  *(#177/#211, branch feat/notetaker-summaries-sessions)*
+
+The note-taker's CENTER summary was the raw `distillates` sentence stream and its LEFT rail's
+Meetings/Archives folders were dead placeholders over a `sessions` source no client block rendered. This
+slice makes the center read a real SUMMARY hierarchy and gives the history a rendering — all document edits
++ one new client renderer, no contract change (`sessions`/`summaries` were already valid block types/sources).
+
+### Summary rewire (document edit, version 2)
+`nt-center-summary` now reads `source:'summaries'` `level:'five-minute'` (the #177 memory headline, the SAME
+shape the HUD leads with at `defaults.ts`), and a new `nt-center-session` card reads the `session` level.
+- **`show` decision — five-minute is `always`, session is `on-match`.** The HUD uses `on-match` for both
+  (a glance tier must not carry an empty card). But the note-taker is a DEDICATED notes surface where the
+  summary is the point of the center canvas: a block that vanished when empty would read as broken (the same
+  reasoning the #100 Fields app states for its always-on `fields` block). So five-minute is `always` and
+  leans on the `summaries` block's honest explainable empty ("No summary yet — a summary appears as the
+  session builds up", the #215 why-line style). The session-level card stays `on-match` — it only exists once
+  the loop has rolled a session up, and an empty second card beneath the five-minute one would be noise.
+- The raw distillate stream is KEPT but DEMOTED to the right column's `nt-right-rolling` block — so the
+  center reads SUMMARY and the right reads the raw stream + enrichments. Pure ordering/wiring, no copy change
+  to the shared `distillates` block (owned elsewhere this parallel round).
+
+### Sessions block (the folders, realized)
+New `surfaces/blocks/sessions.ts` (`renderSessions`, registered in `blocks/index.ts`) — the FIRST renderer
+for the pre-existing `sessions` block type (it previously fell through to `custom`). Reads the `sessions`
+query (whole-workspace, newest-started first) and renders one read-only row per session: the resolved
+title (latest user → latest derived → an honest start-time fallback, #211 — `session.title` is the cached
+resolution, never a raw id), the start time, and a calm status (a whole-minute duration once ended, else
+"in progress"). Bounded to a recent window with an honest "N more … in history" line (the query fetches a
+small superset so the overflow is exact; an `N+` floor when the fetch itself hit the cap).
+- **Read-only this slice, so PLAIN rows — never buttons.** There is no session-detail view to navigate to
+  yet, so a clickable row would be a silent dead affordance (the interaction lint would — and should — fail
+  it). Click-through is a disclosed follow-up.
+
+### Left rail — the folders removed, not "lit"
+The old Meetings/Archives placeholder folders + "session-list block pending" note are GONE from
+`leftRailChrome`. Two reasons this is the honest realization rather than lighting two folder labels: (1) the
+frame renders `leftRailChrome()` ABOVE the WHOLE left zone panel, so a folder header in chrome could never
+sit adjacent to its list — the section header has to come from the block itself (self-labeling "Sessions",
+exactly as the sibling Pinned block self-labels); (2) the `sessions` source is one ordered history with no
+data-backed archive/meeting distinction, so two folders would be a fiction — one bounded list with an honest
+"N more" is the truth (the issue's explicit "merge into one honest list if two would lie" path). Orphaned
+`.nt-folder*` CSS removed with it.
+
+### Upgrader path (what EXISTING installs see)
+Seeded surfaces are seed-if-absent, so a bump alone would never reach an existing install. This slice uses
+the #174 pill precedent: `LEGACY_DEFAULT_NOTETAKER_SURFACE` + serialized `PREVIOUS_DEFAULT_NOTETAKER_BODY`
+are the migration fingerprint, and `documents.ts` `ensureDefaults` runs ONE conservative refresh — a stored
+note-taker advances to v2 ONLY when its LayoutStore record is version 1 AND byte-identical to the shipped v1
+body. So: a FRESH install seeds v2 directly; an install that never touched the note-taker is refreshed to v2
+(summary-hierarchy center + sessions rail); ANY user save (record-version bump) or edit (body change) is
+recognized as the user's and left untouched. The refresh is itself idempotent (becomes record v2 / body v2).
+
+### Tests (driven)
+- `surfaces/blocks/sessions.test.ts` (new, 6): populated / live-vs-ended / fallback-title / empty / bounded
+  "N more" / at-cap `N+` — plus the no-machine-speak + no-buttons guarantees.
+- `hud/notetaker-layout.test.ts` (updated): the v2 stack order, center reads `summaries` (not distillates),
+  the sessions list hydrates in the left rail, the placeholder folders are gone, and the honest empty states.
+- `surfaces/documents.test.ts` (new engine tests, 3): the seeded v2 shape + the migration (untouched-v1 → v2,
+  idempotent; a customized or user-versioned record is never rewired).
+- `api/notetaker-surface-e2e.test.ts` (new): the SERVED proof — a real engine, GET /layouts/surfaces for the
+  actual seeded document, a driven+ended session, then the document's OWN `nt-center-summary` and
+  `nt-left-sessions` queries POSTed to /query hydrate the model-proposal summary and the session history.
+- Suites at the PR: contracts 110 / fixtures 15 / client 593 (+6) / engine 1039 (+4). A pre-existing
+  `summaries-surface-e2e` timing test flakes under full-suite parallel load; green in isolation and in a
+  standalone engine run — unrelated to this slice.
+
+### Disclosed follow-ups
+- **Session click-through**: rows are read-only; a session-detail view is a follow-up.
+- **Session summary presence per row**: not shown — it needs a `summaries` join the `sessions` source can't
+  cheaply carry; deliberately not claimed.
+- **User-facing search over the corpus** (the disabled Search tab): filed as a separate deferred issue.
 ## #134 — input blocks + attached expansion panels (the two missing surface primitives)
 
 ### What / where
