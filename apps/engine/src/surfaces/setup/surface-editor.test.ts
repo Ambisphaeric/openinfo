@@ -27,7 +27,7 @@ const blob = (html: string, id: string): unknown => {
 }
 
 test('blockTypeNames enumerates the append-only BlockTypeName union', () => {
-  assert.deepEqual(blockTypeNames(), ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes', 'session-control'])
+  assert.deepEqual(blockTypeNames(), ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes', 'session-control', 'sessions'])
 })
 
 test('defaultBlockFor gives sensible per-type seeds mirroring the shipped docs', () => {
@@ -57,6 +57,14 @@ test('defaultBlockFor gives sensible per-type seeds mirroring the shipped docs',
     show: 'always',
     top: 3,
     query: { source: 'live-senses', params: { session: 'current' }, top: 3 },
+  })
+  // #234: the now-registered `sessions` type must seed as its real history-list block (the note-taker rail),
+  // never fall through to the `custom` default — the editor picker offers it, so its seed must be honest.
+  assert.deepEqual(defaultBlockFor('sessions'), {
+    block: 'sessions',
+    show: 'always',
+    top: 6,
+    query: { source: 'sessions', params: {}, top: 24 },
   })
   assert.equal(defaultBlockFor('custom').custom?.htmlEndpoint, '/custom/example.html')
 })

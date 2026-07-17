@@ -6435,3 +6435,43 @@ for a follow-up (retro decides #136 closure).
 (assertions updated for the new HUD-stack lead block + the block-type enumeration; one parallel-load flake,
 `api/summaries-surface-e2e.test.ts`, green on isolated rerun) — all green under Node 22. Schemas regenerated
 zero-drift (`Action`/`Block`/`BlockTypeName`/`Surface`).
+
+## #234 — `sessions` block type enters the union; both disabled guardrails restored (type-narrowing + runtime seed validation)
+
+**The latent drift.** The note-taker's session-history rail ships `block: "sessions"` in the seed doc
+(`surfaces/notetaker.ts` `nt-left-sessions`), its byte-mirror template (`templates/openinfo-notetaker/surface.json`),
+and a live client renderer (`blocks/sessions.ts`, registered as `sessions` in `blocks/index.ts`) — yet `sessions`
+was ABSENT from the `BlockTypeName` contract union. Surfaced during the #233/#136 fresh-eyes verification. It went
+uncaught because BOTH guardrails were disabled at once: (1) `BlockTypeName` was built as
+`Type.Union([…strings].map(Type.Literal))` over a NON-`as const` array, so its generated type was
+`TUnion<TLiteral<string>[]>` and `Static<BlockTypeName>` collapsed to `string` — the compiler accepted any string
+as a block type; (2) there was NO `Value.Check` over surface documents anywhere (seeded as TS objects, served
+as-is), so the enum was never enforced at runtime either. The block rendered by client-registry luck, masking the
+mismatch.
+
+**Fix — compile-time.** `sessions` is appended to the `BlockTypeName` union (append-only), and every mapped
+literal-union array in `config/surface.ts` (`BlockTypeName`, `BlockQuery.source`, `Action.verb`, `Block.show`,
+`input.mode`) is now `as const`, so each `Static<…>` NARROWS to its literal union instead of widening to `string`.
+This restores enforcement at the seed site AND — for free — at the client `BlockRegistry`
+(`Partial<Record<BlockTypeName, …>>`): with the array widened, a renderer keyed by a type outside the union
+compiled silently (exactly how the `sessions` renderer slipped in); narrowed, it is a type error. Proven by
+construction: dropping `sessions` from the union (keeping `as const`) fails the client build at
+`blocks/index.ts` (`'sessions' does not exist in type Partial<Record<…>>`) and `sessions.test.ts`. That is the
+registry↔union cross-check (AC4) in the biting direction — the compiler now owns it, no separate runtime test
+needed. The reverse direction (a union member with no renderer) stays honest by design: `renderSurface` routes
+an unrendered type to the `custom` fallback.
+
+**Fix — runtime.** `engine/surfaces/seed-validation.test.ts` closes the runtime gap: it `Value.Check`s every
+SEEDED surface (`SEEDED_SURFACES`, in-process) and every cloneable template `surface.json` against the `Surface`
+contract, so an unregistered block type fails LOUDLY rather than rendering by luck. Red-then-green by
+construction — the seeded note-taker carries `block: "sessions"`, so before the union fix
+`Value.Errors(Surface, …)` over it was non-empty and the suite would have failed; a non-vacuous assertion pins
+that a seeded surface actually exercises the `sessions` type, and a negative probe (a real seeded surface with a
+bogus block type) proves the guard bites. Editor honesty follow-through: `surface-editor.ts` `defaultBlockFor`
+gained a `sessions` case (the editor's "add block" picker enumerates `BlockTypeName`, so a now-listed type must
+seed as its real history-list block, not fall through to the `custom` default).
+
+**Gates.** contracts 111 · fixtures 15 · client 606 · engine 1069 (1056 + 13: the new seed-validation guard over
+every seeded surface + template; the `blockTypeNames`/`defaultBlockFor` enumeration assertions updated for the new
+member) — all green under Node 22. Schemas regenerated zero-drift, purely additive: the `sessions` const enters
+`BlockTypeName.json` and the inline unions of `Block.json`/`Surface.json`.

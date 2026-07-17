@@ -58,6 +58,10 @@ export const defaultBlockFor = (type: string): Block => {
       return { block: 'sense-gates', show: 'always', query: { source: 'senses', params: {}, top: 1 } }
     case 'sense-lanes':
       return { block: 'sense-lanes', show: 'always', top: 3, query: { source: 'live-senses', params: { session: 'current' }, top: 3 } }
+    case 'sessions':
+      // Mirrors the note-taker's nt-left-sessions rail: the workspace session-history list over the
+      // `sessions` query source (no session param ⇒ whole-workspace history, newest-first).
+      return { block: 'sessions', show: 'always', top: 6, query: { source: 'sessions', params: {}, top: 24 } }
     case 'ask':
       return { block: 'ask' }
     case 'session-control':

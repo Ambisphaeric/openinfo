@@ -3,7 +3,7 @@ import { Id } from '../common.js'
 
 /** Append-only. Adding a name here is step 1 of the CONTRIBUTING "add a block type" recipe. */
 export const BlockTypeName = Type.Union(
-  ['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes', 'session-control'].map((b) => Type.Literal(b)),
+  (['now', 'moments', 'relevant-now', 'ledger', 'pinned-doc', 'hint', 'ask', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript-inspector', 'sense-gates', 'input', 'custom', 'sense-lanes', 'session-control', 'sessions'] as const).map((b) => Type.Literal(b)),
   { $id: 'BlockTypeName' },
 )
 export type BlockTypeName = Static<typeof BlockTypeName>
@@ -16,7 +16,7 @@ export type BlockTypeName = Static<typeof BlockTypeName>
 export const BlockQuery = Type.Object(
   {
     source: Type.Union(
-      ['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript', 'senses', 'live-senses'].map((s) => Type.Literal(s)),
+      (['relevant-now', 'moments', 'ledger', 'sessions', 'pins', 'entities', 'todos', 'drafts', 'teach', 'distillates', 'summaries', 'fields', 'queue', 'transcript', 'senses', 'live-senses'] as const).map((s) => Type.Literal(s)),
     ),
     params: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
     top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
@@ -30,7 +30,7 @@ export const Action = Type.Object(
     id: Id,
     label: Type.String({ minLength: 1, maxLength: 24 }),
     verb: Type.Union(
-      ['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate', 'accept', 'pin', 'mark-for-follow-up', 'session-start', 'session-stop'].map((v) => Type.Literal(v)),
+      (['copy', 'open', 'mark-done', 'dismiss', 'run-mode', 'draft-with', 'navigate', 'accept', 'pin', 'mark-for-follow-up', 'session-start', 'session-stop'] as const).map((v) => Type.Literal(v)),
     ),
     params: Type.Record(Type.String(), Type.Unknown(), { default: {} }),
   },
@@ -43,7 +43,7 @@ export const Block = Type.Object(
     block: BlockTypeName,
     id: Type.Optional(Id),
     query: Type.Optional(BlockQuery),
-    show: Type.Optional(Type.Union(['always', 'on-match', 'manual'].map((s) => Type.Literal(s)))),
+    show: Type.Optional(Type.Union((['always', 'on-match', 'manual'] as const).map((s) => Type.Literal(s)))),
     collapsed: Type.Optional(Type.Boolean()),
     top: Type.Optional(Type.Integer({ minimum: 1, maximum: 50, description: 'HUD shows top-K; workbench holds the rest' })),
     use: Type.Optional(
@@ -87,7 +87,7 @@ export const Block = Type.Object(
         {
           target: Type.String({ minLength: 1, description: 'what the entry feeds — a free identifier (chat | entity-map | pins | …)' }),
           submit: Type.String({ minLength: 1, description: 'engine route the entry POSTs to, e.g. "/chat"; a failed submit surfaces as visible text' }),
-          mode: Type.Optional(Type.Union(['text', 'file', 'both'].map((m) => Type.Literal(m)), { description: 'text-entry, file-drop, or both; absent ⇒ text' })),
+          mode: Type.Optional(Type.Union((['text', 'file', 'both'] as const).map((m) => Type.Literal(m)), { description: 'text-entry, file-drop, or both; absent ⇒ text' })),
           placeholder: Type.Optional(Type.String()),
           submitLabel: Type.Optional(Type.String({ description: 'submit affordance label; absent ⇒ "Send"' })),
           accept: Type.Optional(Type.String({ description: 'file-drop accept filter (MIME/extension), e.g. ".pdf,.txt,.md"; mode file/both only' })),
