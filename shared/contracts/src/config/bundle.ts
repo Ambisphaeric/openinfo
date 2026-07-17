@@ -39,7 +39,7 @@ export const BundleFace = Type.Object(
 export type BundleFace = Static<typeof BundleFace>
 
 /**
- * The kinds of context a chat turn may assemble — the EIGHT declared sources (owner canon 2026-07-11:
+ * The kinds of context a chat turn may assemble — the NINE declared sources (owner canon 2026-07-11:
  * "CONTEXT ASSEMBLY … must be DECLARED in the bundle config — data, not code — so a future DSL compiles
  * onto it"). Append-only closed union: a source an assembler has no path to gather is rejected at write
  * time rather than silently omitted. Each maps to an assembly stage the chat route already has (or will):
@@ -54,10 +54,15 @@ export type BundleFace = Static<typeof BundleFace>
  *   screen             — the one frame the turn shipped (Ask face screenshot-on-send), read through the
  *                        screen-understanding path (ocr slot, VLM fallback) and entered as TEXT under this
  *                        source's cap; the frame itself never leaves the machine (content-class `screen`).
+ *   packets            — the CURRENT session's converged ContextPackets (#176/#180): recency-bounded
+ *                        correlation windows rendered as one block per window, the three sense lanes kept
+ *                        SEPARATE with their attribution, refs resolved to their source records at read
+ *                        time (refs-not-content — the packet's converged window is the value). Screen-derived
+ *                        text inside a window carries content-class `screen`, so it can never leave the machine.
  */
 export const ChatContextSourceKind = Type.Union(
-  ['bundle-prompt', 'active-preset', 'transcript-window', 'insights', 'relevant-entities', 'attached-docs', 'recent-turns', 'screen'].map((k) => Type.Literal(k)),
-  { $id: 'ChatContextSourceKind', description: 'append-only closed union of the eight chat context sources' },
+  ['bundle-prompt', 'active-preset', 'transcript-window', 'insights', 'relevant-entities', 'attached-docs', 'recent-turns', 'screen', 'packets'].map((k) => Type.Literal(k)),
+  { $id: 'ChatContextSourceKind', description: 'append-only closed union of the nine chat context sources' },
 )
 export type ChatContextSourceKind = Static<typeof ChatContextSourceKind>
 

@@ -73,6 +73,7 @@ const baseDeps = (fabric: Fabric, sources: readonly ChatContextSource[] = DEFAUL
   relevant: () => [rel('Acme', 'org')],
   transcript: () => [],
   insights: () => [],
+  packets: () => ({ hasCurrentSession: false, windows: [] }),
   pinTitle: () => 'contract.txt',
   pinChunks: () => [chunk(0, 'the term is 12 months', 4)],
   workspaceDeniesEgress: () => false,
@@ -221,16 +222,18 @@ test('Ask face: a shipped screenshot reaches the screenText seam and its text en
     assert.match(system, /On the user's screen right now \(read at send\):\nINVOICE #42/)
     assert.match(reply.budget.note, /screen\(1\)/, 'the note discloses the screen contribution')
 
-    // Seam ABSENT while a frame shipped ⇒ the turn still answers, and the note says the screen was omitted.
+    // Seam ABSENT while a frame shipped ⇒ the turn still answers, and the note now discloses the ACTIONABLE
+    // reason (#180 disclosure repair — the seam-computed failure is threaded through, no longer dropped).
     const noSeam = await runChat(baseDeps(fabric), { message: 'and now?', screenshot: { contentType: 'image/png', data: 'aGVsbG8=' } })
-    assert.match(noSeam.budget.note, /screen \(unavailable\)/, 'unreadable frame is disclosed, never silent')
+    assert.match(noSeam.budget.note, /screen \(unavailable: no screen-understanding path wired\)/, 'unreadable frame is disclosed WITH its reason, never silent')
 
-    // A THROWING seam degrades the same way — the send proceeds WITHOUT the screen (never blocking).
+    // A THROWING seam degrades the same way — the send proceeds WITHOUT the screen (never blocking), and the
+    // thrown reason surfaces in the note (which rides the calm strip's hover detail on the client).
     const failing = await runChat(
       { ...baseDeps(fabric), screenText: async () => { throw new Error('no ocr endpoint answered') } },
       { message: 'still there?', screenshot: { contentType: 'image/jpeg', data: 'aGVsbG8=' } },
     )
-    assert.match(failing.budget.note, /screen \(unavailable\)/)
+    assert.match(failing.budget.note, /screen \(unavailable: no ocr endpoint answered\)/)
     assert.match(failing.answer, /invoice screen/)
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()))

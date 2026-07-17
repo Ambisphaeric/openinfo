@@ -6475,3 +6475,64 @@ seed as its real history-list block, not fall through to the `custom` default).
 every seeded surface + template; the `blockTypeNames`/`defaultBlockFor` enumeration assertions updated for the new
 member) — all green under Node 22. Schemas regenerated zero-drift, purely additive: the `sessions` const enters
 `BlockTypeName.json` and the inline unions of `Block.json`/`Surface.json`.
+
+## Slice: Ask grounded in the current session's ContextPackets  *(#180 slice 1, 2026-07-17)*
+
+Ask stopped being another parallel summary path and became a CONSUMER of the evidence kernel for the
+current situation. The chat context-assembly union grew to its NINTH declared source, `packets`
+(`shared/contracts/src/config/bundle.ts` — append-only closed union, `pnpm gen` regenerated zero-drift:
+`ChatContextSourceKind`/`ChatContextSource`/`ChatContextAssembly`/`Bundle`). The Standard App declares it
+in `bundle.standard-app.json` (limit 3 windows / tokenBudget 1500 — its OWN cap, not stealing the insights
+cap), placed after `relevant-entities`; `DEFAULT_CONTEXT_SOURCES` mirrors it; and
+`PREVIOUS_DEFAULT_BUNDLE_BODIES` gained the pre-#180 body (pill + `screen`, no `packets`) so an unedited
+seeded install refreshes onto the packets plan (the #130 seed-or-refresh discipline).
+
+**What the source renders (pure, `apps/engine/src/api/context-assembly.ts`).** The CURRENT session's
+converged ContextPackets, ONE block per correlation window, the three physical sense lanes kept SEPARATE
+with their attribution: screen-DERIVED recognized text under a `screen:` lane label (the window's content
+value), both audio lanes NAMED (`microphone` / `system audio`) with their segment count + chars heard — a
+size, never words, because SttSegment persists no transcript text by design — and their honest machine gap
+reason when silent, entity `candidates` with the #74 on-screen-corroboration form, and foreground/app
+focus. Recency-bounded (the most-recent windows, capped by the declared `limit`), and honest when there is
+nothing: `hasCurrentSession:false` ⇒ `empty` with detail "no current session" (NEVER a whole-workspace
+fallback — #210's runtime-current scope), a live session with no windows yet ⇒ `empty` with detail "no
+converged windows in this session yet" (#215 distinct why-lines). Screen-derived window content (OCR text
+or an on-screen-corroborated entity form) sets `containsScreenDerived`, so the composite turn stays
+`screen`-classed and egress-denied — the same rule the `screen`/`insights` sources apply.
+
+**Refs-not-content at read time (`apps/engine/src/api/http.ts`, `resolveCurrentPackets`).** The impure
+gatherer scopes to `ctx.senseLanes.currentSessionId` (SenseLaneTracker, #210), CONVERGES the current
+session's packets first (`materializeContextPackets`, idempotent + contained — never throws, the SAME
+deterministic builder the session-end seam runs) so a LIVE ask grounds in the current situation instead of
+waiting for session end, then resolves each window's refs to its source records' renderable text AT READ
+TIME (ocr-result → recognized text via a per-session id map; stt-segment → size only). The packet itself
+is never copied — the converged window is the value.
+
+**Disclosure repair (#180 criterion).** `SourceReport.detail` now carries a degraded source's actionable
+REASON. The `screen` source's failure reason was computed at the seam (`chat.ts`) and then DROPPED; it is
+now threaded into the report and `describeAssembly` renders "screen (unavailable: <why>)" — so
+"ocr endpoint not configured" / "raw frames are loopback-only" reaches the visible note, which the client
+already rides into the calm strip's HOVER detail (`calmChatStatus` `detail = reply.budget.note`). The
+visible strip is NOT re-cluttered — the reason lives behind inspection. before: `Omitted: … screen
+(unavailable).` after: `Omitted: … screen (unavailable: no ocr endpoint answered (…egress skipped…)).`
+
+**The real driven e2e (`apps/engine/src/api/ask-packets-e2e.test.ts`) — no faked seam past the capture
+route.** A fake loopback paddle OCR endpoint → real POST /capture/screen → the real ScreenOcrProcessor
+(`wireScreenOcr`, no injected invoke) → a persisted OcrResult → real packet materialization → real POST
+/chat. ARM 1 asserts the loopback llm's received system prompt carries the converged window (the header,
+the screen-derived recognized text under `screen:`, both audio lanes labeled with their honest gap
+reasons), the note discloses `packets(1)`, the reply is `screen`-classed, and GET /context/packets shows
+the durable packet naming the OcrResult (a ref) with both audio lanes honestly absent. ARM 2 is the
+summaries-egress-seam sentinel for chat: the session's mode denies egress and the ONLY llm endpoint is
+egress-classified ⇒ the egress endpoint receives ZERO bytes and the screen-derived turn degrades to an
+HONEST visible 502 naming the egress skip — never a silent no-op, never a screen byte off the machine.
+
+**Out of scope (named, not gold-plated), slice-2 carries:** durable-memory grounding (the claims graph —
+#178's substrate lands first), retrieval beyond recency, and UI changes beyond the disclosure detail.
+
+**Gates.** contracts 111 · fixtures 15 · engine 1071 (rebased onto origin/main at PR #235's 1069 + the driven
+ask-packets e2e + the assembler packets/disclosure unit test; two existing tests updated to assert the richer
+"unavailable: <reason>" disclosure the repair produces — they had encoded the reason-dropped behavior) ·
+client 606 (unchanged — the disclosure reason rides the existing `budget.note` into the hover, no client
+change) — all green under Node 22, each suite on an isolated run (the known `client seam.test` /
+`engine summaries-surface-e2e` parallel-load flakes pass isolated). Schemas regenerated zero-drift.
