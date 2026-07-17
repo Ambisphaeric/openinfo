@@ -1,3 +1,4 @@
+import { micAudioConstraints, type SupportedAudioConstraints } from './audio-constraints.js'
 import { matchSystemAudioDevice, type AudioDevice } from './device-match.js'
 import type { CaptureBridge, CaptureSourceKind, CaptureStartOptions, SystemAudioMethod } from './protocol.js'
 import {
@@ -82,6 +83,8 @@ interface BlobCtor {
 interface MediaTrackLike {
   stop(): void
   kind?: string
+  /** Actual applied audio settings (Chromium): read post-grant to DISCLOSE what the OS/browser granted. */
+  getSettings?(): Record<string, unknown>
 }
 interface MediaStreamLike {
   getTracks(): MediaTrackLike[]
@@ -139,6 +142,8 @@ interface CaptureGlobals {
       /** requires it) then dropped. Absent in older/odd runtimes — guarded before use. */
       getDisplayMedia(constraints: unknown): Promise<MediaStreamLike>
       enumerateDevices(): Promise<MediaDeviceInfoLike[]>
+      /** Feature-detect which constrainable properties this runtime understands (#142 follow-up: voiceIsolation). */
+      getSupportedConstraints?(): SupportedAudioConstraints
     }
   }
   MediaRecorder: MediaRecorderCtor
@@ -162,11 +167,15 @@ const pickMimeType = (): string => {
   return 'audio/webm'
 }
 
-/** getUserMedia constraints per source. Mic = default input, EC/NS on (unchanged). System-audio DEVICE = */
-/** the matched virtual input by exact deviceId, EC/NS/AGC OFF so the far end is captured faithfully. */
-const constraintsFor = (source: CaptureSourceKind, deviceId?: string): unknown =>
+/**
+ * getUserMedia constraints per source. Mic = default input with the anti-bleed set (EC on, AGC pinned OFF,
+ * voiceIsolation requested where supported — see audio-constraints.ts for the rationale; `supported` is the
+ * runtime's getSupportedConstraints so voiceIsolation is only asked for where advertised). System-audio
+ * DEVICE = the matched virtual input by exact deviceId, EC/NS/AGC OFF so the far end is captured faithfully.
+ */
+const constraintsFor = (source: CaptureSourceKind, deviceId?: string, supported?: SupportedAudioConstraints): unknown =>
   source === 'mic'
-    ? { audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } }
+    ? { audio: micAudioConstraints(supported) }
     : { audio: { deviceId: { exact: deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false } }
 
 /**
@@ -402,7 +411,34 @@ const acquireStream = async (source: CaptureSourceKind, method: SystemAudioMetho
     }
     return g.navigator.mediaDevices.getUserMedia(constraintsFor(source, match.deviceId))
   }
-  return g.navigator.mediaDevices.getUserMedia(constraintsFor(source))
+  // Mic: feature-detect the non-baseline voiceIsolation before requesting it, so an older Chromium/Electron
+  // (or an OS without low-level voice isolation) degrades to plain capture rather than an over-constrained
+  // getUserMedia. getSupportedConstraints itself is guarded (older runtimes may not expose it).
+  const supported = g.navigator.mediaDevices.getSupportedConstraints?.()
+  return g.navigator.mediaDevices.getUserMedia(constraintsFor(source, undefined, supported))
+}
+
+/**
+ * DISCLOSE what the browser/OS actually GRANTED on the mic track (issue follow-up). The anti-bleed
+ * constraints are ADVISORY — Chromium may not honour every one, and voiceIsolation only takes effect where
+ * the platform has low-level support — so the request is not proof of the result. `getSettings()` reports the
+ * applied values; logging them makes a rig run honest (the owner can read whether AGC really landed off and
+ * whether voice isolation engaged) without expanding the typed capture-status contract. Best-effort and fully
+ * guarded: no getSettings, or a throw, is a silent no-op — disclosure must never wedge capture.
+ */
+const discloseGrantedAudio = (stream: MediaStreamLike): void => {
+  try {
+    const track = stream.getAudioTracks()[0]
+    const settings = track?.getSettings?.()
+    if (!settings) return
+    const applied = (['echoCancellation', 'noiseSuppression', 'autoGainControl', 'voiceIsolation'] as const)
+      .filter((k) => k in settings)
+      .map((k) => `${k}=${String(settings[k])}`)
+      .join(' ')
+    console.info(`[capture-renderer] mic granted audio settings — ${applied || '(none reported)'}`)
+  } catch {
+    /* getSettings unavailable / threw — disclosure is best-effort, never fatal */
+  }
 }
 
 const start = (source: CaptureSourceKind, bridge: CaptureBridge, options?: CaptureStartOptions): void => {
@@ -439,6 +475,7 @@ const start = (source: CaptureSourceKind, bridge: CaptureBridge, options?: Captu
     }
     c.stream = granted
     c.running = true
+    if (source === 'mic') discloseGrantedAudio(granted)
     // Attach the amplitude probe when EITHER the system-audio silent flag OR the vad strategy needs it.
     if (source === 'system-audio' || c.strategy === 'vad') attachAmplitudeProbe(c)
     bridge.sendStatus({ source, state: 'ready' })

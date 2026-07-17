@@ -33,8 +33,18 @@ interface Harness {
   lastDisplayVideoTracks: FakeTrack[]
   /** Test-controlled current amplitude the fake AnalyserNode reports (drives vad pause detection). */
   peak: { value: number }
+  /** The constraints handed to each getUserMedia call — asserted for the mic anti-bleed set. */
+  getUserMediaConstraints: unknown[]
   onStart?: (source: CaptureSourceKind, options?: CaptureStartOptions) => void
   restore: () => void
+}
+
+/** Per-run control of the fake runtime's feature-detection + granted-settings readback (anti-bleed disclosure). */
+interface AudioCapabilityConfig {
+  /** What navigator.mediaDevices.getSupportedConstraints() advertises; undefined ⇒ the method is absent. */
+  supportedConstraints?: Record<string, boolean>
+  /** What the granted mic track's getSettings() reports; undefined ⇒ getSettings is absent. */
+  grantedSettings?: Record<string, unknown>
 }
 
 /** Per-run control over what the fake getDisplayMedia produces (#142 loopback path). */
@@ -53,13 +63,21 @@ interface FakeTrack {
   kind: string
   stopped: boolean
   stop(): void
+  getSettings?(): Record<string, unknown>
 }
-const makeTrack = (kind: string): FakeTrack => ({ kind, stopped: false, stop() { this.stopped = true } })
+const makeTrack = (kind: string, settings?: Record<string, unknown>): FakeTrack => ({
+  kind,
+  stopped: false,
+  stop() {
+    this.stopped = true
+  },
+  ...(settings ? { getSettings: () => settings } : {}),
+})
 
 /** A fake MediaStream with removable/stoppable tracks (mirrors the renderer's MediaStreamLike, #142). */
-const makeStream = (audio: number, video: number) => {
+const makeStream = (audio: number, video: number, audioSettings?: Record<string, unknown>) => {
   const tracks: FakeTrack[] = [
-    ...Array.from({ length: audio }, () => makeTrack('audio')),
+    ...Array.from({ length: audio }, () => makeTrack('audio', audioSettings)),
     ...Array.from({ length: video }, () => makeTrack('video')),
   ]
   return {
@@ -99,12 +117,17 @@ class FakeMediaRecorder {
 }
 
 /** Install the fake browser globals + bridge, then import a FRESH copy of the renderer (cache-busted). */
-const installAndLoad = async (bust: number, display: DisplayMediaConfig = { audioTracks: 1, videoTracks: 1 }): Promise<Harness> => {
+const installAndLoad = async (
+  bust: number,
+  display: DisplayMediaConfig = { audioTracks: 1, videoTracks: 1 },
+  caps: AudioCapabilityConfig = {},
+): Promise<Harness> => {
   const timers: Timer[] = []
   const intervals: Timer[] = []
   const emitted: RawSegment[] = []
   const statuses: CaptureStatus[] = []
   const peak = { value: 0 }
+  const getUserMediaConstraints: unknown[] = []
   const h: Harness = {
     timers,
     intervals,
@@ -113,6 +136,7 @@ const installAndLoad = async (bust: number, display: DisplayMediaConfig = { audi
     calls: { getUserMedia: 0, getDisplayMedia: 0, enumerateDevices: 0 },
     lastDisplayVideoTracks: [],
     peak,
+    getUserMediaConstraints,
     restore: () => undefined,
   }
 
@@ -145,10 +169,13 @@ const installAndLoad = async (bust: number, display: DisplayMediaConfig = { audi
   Object.defineProperty(globalThis, 'navigator', {
     value: {
       mediaDevices: {
-        getUserMedia: async () => {
+        getUserMedia: async (constraints: unknown) => {
           h.calls.getUserMedia += 1
-          return makeStream(1, 0)
+          getUserMediaConstraints.push(constraints)
+          return makeStream(1, 0, caps.grantedSettings)
         },
+        // Present only when the run configures it — models an older runtime that lacks the API entirely.
+        ...(caps.supportedConstraints ? { getSupportedConstraints: () => caps.supportedConstraints } : {}),
         // #142: loopback stream — the renderer must keep audio, stop+remove video. `audioTracks:0` models
         // the "dead stream" (no CoreAudio-Tap grant) case, which must degrade to a benign no-device.
         getDisplayMedia: async () => {
@@ -373,5 +400,80 @@ test('system-audio DEVICE method still enumerates + matches a BlackHole input, n
     assert.deepEqual(h.statuses.map((s) => s.state), ['no-device'], 'no matching device ⇒ no-device (unchanged floor)')
   } finally {
     h.restore()
+  }
+})
+
+/** Drive a mic start with a specific feature-detection + granted-settings runtime, and read the mic audio constraints. */
+const driveMic = async (caps: AudioCapabilityConfig): Promise<{ h: Harness; audio: Record<string, unknown> }> => {
+  const h = await installAndLoad(++bust, undefined, caps)
+  assert.ok(h.onStart, 'renderer registered an onStart handler on load')
+  h.onStart('mic', { segmentMs: 1000 })
+  await flush()
+  const constraints = h.getUserMediaConstraints[0] as { audio: Record<string, unknown> }
+  assert.ok(constraints && typeof constraints.audio === 'object', 'mic getUserMedia was called with audio constraints')
+  return { h, audio: constraints.audio }
+}
+
+test('mic capture pins the anti-bleed constraints: EC on, AGC OFF, mono (loud-speaker bleed fix)', async () => {
+  const { h, audio } = await driveMic({ supportedConstraints: { echoCancellation: true, autoGainControl: true } })
+  try {
+    assert.equal(audio.echoCancellation, true, 'echoCancellation stays ON — AEC subtracts the known far-end')
+    assert.equal(audio.noiseSuppression, true)
+    assert.equal(audio.autoGainControl, false, 'AGC pinned OFF so it never amplifies quiet speaker bleed')
+    assert.equal(audio.channelCount, 1)
+  } finally {
+    h.restore()
+  }
+})
+
+test('mic capture requests voiceIsolation ONLY when the runtime advertises it (feature-detect)', async () => {
+  const withVi = await driveMic({ supportedConstraints: { echoCancellation: true, voiceIsolation: true } })
+  try {
+    assert.equal(withVi.audio.voiceIsolation, true, 'voiceIsolation requested where getSupportedConstraints advertises it')
+  } finally {
+    withVi.h.restore()
+  }
+  // Runtime that does not advertise voiceIsolation: the key is omitted — never over-constrained.
+  const withoutVi = await driveMic({ supportedConstraints: { echoCancellation: true } })
+  try {
+    assert.equal('voiceIsolation' in withoutVi.audio, false, 'voiceIsolation omitted when unsupported')
+  } finally {
+    withoutVi.h.restore()
+  }
+  // Older runtime with NO getSupportedConstraints at all: still safe (treated as unsupported), capture works.
+  const noApi = await driveMic({})
+  try {
+    assert.equal('voiceIsolation' in noApi.audio, false, 'no getSupportedConstraints ⇒ voiceIsolation omitted, capture never breaks')
+    assert.equal(noApi.audio.autoGainControl, false, 'the baseline AGC-off still applies with no feature-detect API')
+  } finally {
+    noApi.h.restore()
+  }
+})
+
+test('mic capture DISCLOSES the granted audio settings for a rig run (best-effort, never fatal)', async () => {
+  const infos: string[] = []
+  const originalInfo = console.info
+  console.info = (...args: unknown[]) => void infos.push(args.map(String).join(' '))
+  try {
+    const withSettings = await driveMic({ grantedSettings: { echoCancellation: true, autoGainControl: false, voiceIsolation: false } })
+    try {
+      const line = infos.find((l) => l.includes('mic granted audio settings'))
+      assert.ok(line, 'a disclosure line is logged when the track reports getSettings')
+      assert.match(line!, /autoGainControl=false/, 'the disclosure names the applied AGC value the rig can verify')
+      assert.match(line!, /voiceIsolation=false/, 'the disclosure names whether voice isolation actually engaged')
+    } finally {
+      withSettings.h.restore()
+    }
+    // A runtime whose track has no getSettings must not throw or wedge capture — it just discloses nothing.
+    infos.length = 0
+    const noSettings = await driveMic({})
+    try {
+      assert.equal(noSettings.h.statuses.some((s) => s.state === 'ready'), true, 'capture still reaches ready with no getSettings')
+      assert.equal(infos.some((l) => l.includes('mic granted audio settings')), false, 'no disclosure line when getSettings is absent')
+    } finally {
+      noSettings.h.restore()
+    }
+  } finally {
+    console.info = originalInfo
   }
 })
