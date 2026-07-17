@@ -545,6 +545,27 @@ export const BuildContextPacketsRequest = Type.Object(
 export type BuildContextPacketsRequest = Static<typeof BuildContextPacketsRequest>
 
 /**
+ * The body of `POST /summaries/build` (#177) — run the hierarchical-summary producer over ONE session's
+ * stored inputs. The caller names only the scope (and optionally one `level`; absent ⇒ every live-loop
+ * level in finest→coarsest order); every summary field (ids, windows, children refs, bounds, revisions) is
+ * engine-derived, mirroring BuildContextPacketsRequest. The response is the summaries this run APPENDED
+ * (an empty array is the honest idempotent no-op — a stable child set produces nothing new).
+ */
+export const BuildSummariesRequest = Type.Object(
+  {
+    workspaceId: Id,
+    sessionId: Id,
+    level: Type.Optional(
+      Type.Union(['rolling', 'episode', 'five-minute', 'session', 'project'].map((l) => Type.Literal(l)), {
+        description: 'restrict production to one level; absent ⇒ every live-loop level (rolling → five-minute → session)',
+      }),
+    ),
+  },
+  { $id: 'BuildSummariesRequest', additionalProperties: false },
+)
+export type BuildSummariesRequest = Static<typeof BuildSummariesRequest>
+
+/**
  * The body of `POST /fabric/profiles/:id/clone` — the new profile's id (+ optional name). Cloning is
  * copying a document (ARCHITECTURE §2/§8): the engine reads the source profile, restamps id/name/
  * version, and writes a fresh document. Kept as a route (not client GET+PUT) so a clone is atomic.

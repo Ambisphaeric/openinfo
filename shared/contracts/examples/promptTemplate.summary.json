@@ -1,0 +1,17 @@
+{
+  "id": "tpl-summary-five-minute",
+  "name": "summary-five-minute",
+  "kind": "summary",
+  "slot": "llm",
+  "builtin": true,
+  "description": "hierarchical summary (#177): the concise five-minute view, over the window's rolling summaries plus a bounded selection of moments",
+  "summary": {
+    "level": "five-minute",
+    "windowMs": 300000,
+    "childLevel": "rolling",
+    "maxChildren": 5,
+    "maxEvidence": 5,
+    "cadenceMs": 300000
+  },
+  "body": "You are writing a concise five-minute view of a work session from the lower-level summaries below. Summarize only what they support; invent nothing. Keep it tight.\n\nLower-level summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nCorroborating moments:\n{{evidence}}\n\nFive-minute summary:"
+}

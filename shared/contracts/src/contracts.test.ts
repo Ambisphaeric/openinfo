@@ -17,7 +17,7 @@ const fileSchema: Record<string, keyof typeof AllSchemas> = {
   ocrInvokeParams: 'OcrInvokeParams', vlmInvokeParams: 'VlmInvokeParams',
   captureChunk: 'CaptureChunk', captureReceipt: 'CaptureReceipt', focusSignal: 'FocusSignal', calendarSignal: 'CalendarSignal', ack: 'Ack', transcriptUpdate: 'TranscriptUpdate', health: 'Health', queueStatus: 'QueueStatus', queueFailure: 'QueueFailure',
   distillate: 'Distillate', screenFrameMeta: 'ScreenFrameMeta', ocrResult: 'OcrResult', draft: 'Draft', promptTemplate: 'PromptTemplate', entity: 'Entity', relevantEntity: 'RelevantEntity', fieldValue: 'FieldValue',
-  sessionAnnotation: 'SessionAnnotation', sessionTitling: 'SessionTitling', sttSegment: 'SttSegment', contextPacket: 'ContextPacket',
+  sessionAnnotation: 'SessionAnnotation', sessionTitling: 'SessionTitling', sttSegment: 'SttSegment', contextPacket: 'ContextPacket', summary: 'Summary',
   session: 'Session', startSessionRequest: 'StartSessionRequest', rerouteRequest: 'RerouteRequest', setSessionTitleRequest: 'SetSessionTitleRequest', queryResult: 'QueryResult',
   pin: 'Pin', pinChunk: 'PinChunk', teachSignal: 'TeachSignal', entityCorrection: 'EntityCorrection',
   fabricProfile: 'FabricProfile', secretRef: 'SecretRef', secretValue: 'SecretValue',
@@ -63,6 +63,35 @@ test('ContextPacket is refs-only and rejects copied prose or content fields (#17
     microphone: [{ record: 'stt-segment', id: 'stt-mic-0001', at: '2026-07-12T13:00:00.000Z', text: 'heard words' }],
   }
   assert.ok([...Value.Errors(AllSchemas.ContextPacket, smuggling)].length > 0, 'a ref carrying content is rejected')
+})
+
+test('Summary is refs-only, marks prose as a model proposal, and stays honest when degraded (#177)', () => {
+  const summary = JSON.parse(readFileSync(join(examplesDir, 'summary.fiveMinute.json'), 'utf8'))
+  assert.deepEqual([...Value.Errors(AllSchemas.Summary, summary)], [], 'a refs-only proposed summary validates')
+
+  // The prose is a MODEL PROPOSAL, never canonical truth: `proposal` is the literal true, so a record that
+  // tries to demote itself to canonical (proposal:false) is rejected.
+  assert.ok([...Value.Errors(AllSchemas.Summary, { ...summary, proposal: false })].length > 0, 'proposal:false is rejected')
+
+  // Children are refs only: a child cannot smuggle copied content alongside its id.
+  const smuggling = { ...summary, children: [{ record: 'summary', id: 'sum-x', at: summary.windowStart, role: 'child', text: 'copied prose' }] }
+  assert.ok([...Value.Errors(AllSchemas.Summary, smuggling)].length > 0, 'a child ref carrying content is rejected')
+
+  // Honest unavailable state: a DEGRADED summary carries NO prose and an explicit machine-visible reason —
+  // no fabricated text, and the deterministic children/derivation path is still intact.
+  const { text: _text, ...withoutText } = summary
+  const degraded = {
+    ...withoutText,
+    degraded: { reason: 'no summarizer endpoint configured (fabric llm slot is empty)' },
+    provenance: { builder: 'bounded-hierarchical-summary', windowMs: 300000, childLevel: 'rolling', templateId: 'tpl-summary-five-minute' },
+  }
+  assert.deepEqual([...Value.Errors(AllSchemas.Summary, degraded)], [], 'a degraded (prose-less) summary validates honestly')
+
+  // The level enum is COMPLETE now (all five levels typed) even though slice 1 produces only some.
+  for (const level of ['rolling', 'episode', 'five-minute', 'session', 'project']) {
+    assert.deepEqual([...Value.Errors(AllSchemas.SummaryLevel, level)], [], `${level} is a typed level`)
+  }
+  assert.ok([...Value.Errors(AllSchemas.SummaryLevel, 'decade')].length > 0, 'an invented level is rejected')
 })
 
 test('CaptureReceipt is metadata-only and rejects raw or derived content fields', () => {

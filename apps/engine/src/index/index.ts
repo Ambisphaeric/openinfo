@@ -59,6 +59,32 @@ export {
   type MaterializeDeps,
   type MaterializeOutcome,
 } from './produce-packets.js'
+export {
+  assembleSummaries,
+  buildSummary,
+  type SummaryInput,
+  type SummaryLevelConfig,
+  type SummaryPlanItem,
+  type UnchangedSummary,
+  type AssembleSummariesInput,
+  type AssembleSummariesResult,
+  type SummaryProse,
+} from './summaries.js'
+export {
+  materializeSummaries,
+  createFabricSummarizer,
+  SummaryBuildLog,
+  SUMMARY_LEVEL_ORDER,
+  LIVE_SUMMARY_LEVELS,
+  type Summarizer,
+  type SummarizeRequest,
+  type SummaryBuildAttempt,
+  type SummaryBuildTrigger,
+  type MaterializeSummariesScope,
+  type MaterializeSummariesDeps,
+  type MaterializeSummariesOutcome,
+  type FabricSummarizerDeps,
+} from './produce-summaries.js'
 export { mergeCanon, type CanonGroup, type CanonResult } from './canon.js'
 export { relevantNow, type RelevantNowOptions } from './relevant.js'
 export * from './ingest/index.js'

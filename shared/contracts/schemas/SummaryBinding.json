@@ -1,0 +1,84 @@
+{
+  "$id": "SummaryBinding",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "level",
+    "windowMs",
+    "maxChildren"
+  ],
+  "properties": {
+    "level": {
+      "$id": "SummaryLevel",
+      "description": "the summary timescale, finest (rolling) to coarsest (project)",
+      "anyOf": [
+        {
+          "const": "rolling",
+          "type": "string"
+        },
+        {
+          "const": "episode",
+          "type": "string"
+        },
+        {
+          "const": "five-minute",
+          "type": "string"
+        },
+        {
+          "const": "session",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "type": "string"
+        }
+      ]
+    },
+    "windowMs": {
+      "minimum": 1,
+      "description": "the interval this level buckets over (ignored for whole-session levels)",
+      "type": "integer"
+    },
+    "childLevel": {
+      "$id": "SummaryLevel",
+      "description": "the summary timescale, finest (rolling) to coarsest (project)",
+      "anyOf": [
+        {
+          "const": "rolling",
+          "type": "string"
+        },
+        {
+          "const": "episode",
+          "type": "string"
+        },
+        {
+          "const": "five-minute",
+          "type": "string"
+        },
+        {
+          "const": "session",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "type": "string"
+        }
+      ]
+    },
+    "maxChildren": {
+      "minimum": 1,
+      "description": "HARD BOUND on lower-level inputs fed to the summarizer (newest kept)",
+      "type": "integer"
+    },
+    "maxEvidence": {
+      "minimum": 0,
+      "description": "bound on selectively-retrieved evidence records; absent ⇒ none",
+      "type": "integer"
+    },
+    "cadenceMs": {
+      "minimum": 0,
+      "description": "minimum re-summarize interval for the active window; absent ⇒ every pass",
+      "type": "integer"
+    }
+  }
+}

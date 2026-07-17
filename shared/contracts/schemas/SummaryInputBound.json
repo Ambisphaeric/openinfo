@@ -1,0 +1,33 @@
+{
+  "$id": "SummaryInputBound",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "childrenAvailable",
+    "childrenConsumed",
+    "evidenceAvailable",
+    "evidenceConsumed"
+  ],
+  "properties": {
+    "childrenAvailable": {
+      "minimum": 0,
+      "description": "lower-level inputs that existed in the window",
+      "type": "integer"
+    },
+    "childrenConsumed": {
+      "minimum": 0,
+      "description": "lower-level inputs actually fed to the summarizer (<= maxChildren)",
+      "type": "integer"
+    },
+    "evidenceAvailable": {
+      "minimum": 0,
+      "description": "candidate evidence records in the window",
+      "type": "integer"
+    },
+    "evidenceConsumed": {
+      "minimum": 0,
+      "description": "evidence records actually fed (<= maxEvidence)",
+      "type": "integer"
+    }
+  }
+}

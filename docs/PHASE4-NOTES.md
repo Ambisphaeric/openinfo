@@ -5901,3 +5901,80 @@ title is never clobbered by a store-recorded derived titling). (3) surfaces show
 via `session.titled`), `main/tray-menu.test.ts` (episode label), `main/engine-session.test.ts`
 (SessionLiveState title refresh). Derivation itself: `distill/episode-title.test.ts`. Gates: contracts 106
 (+3) / client 570 (+3) / engine 1012 (+24). Contract additions regen'd zero-drift.
+
+## Slice: hierarchical rolling, five-minute, and session summaries  *(#177 slice 1, 2026-07-16)*
+
+Runtime memory now has a multi-timescale summary hierarchy over the existing distillates and
+ContextPackets: `Summary` (`shared/contracts/src/records/summary.ts`), a typed, versioned, REFS-ONLY
+derived record at one `level`. The `level` enum is COMPLETE now — `rolling` / `episode` / `five-minute` /
+`session` / `project` — even though this slice PRODUCES only the live-loop levels (rolling, five-minute,
+session); episode and project production are slice 2. Each summary carries `children` (refs to lower-level
+summaries, packets, distillates, and evidence — never copied content, so a summary traces
+summary→summary→…→packet/distillate→observation), an explicit `SummaryInputBound`
+(`childrenAvailable`/`childrenConsumed` + the evidence pair), the model-proposed `text` framed as a
+proposal (`proposal: true`, the #189 invariant — never canonical truth), a deterministic confidence band
+(from the consumed-children count, not a model score), and append-only supersession (`revision` +
+`supersedes`). When the summarizing model is unavailable, `text` is ABSENT and `degraded.reason` names the
+honest machine-visible cause — no fabricated prose, and the deterministic derivation path stays intact.
+
+BOUNDED INPUTS are the load-bearing criterion. A coarser level consumes the level below it — rolling over
+distillates, five-minute over rolling summaries, session over five-minute summaries — plus a bounded
+selection of evidence (packets for rolling, moments for the coarser levels), and NEVER unbounded raw
+history. The bound is config on each level's prompt DOCUMENT (`maxChildren` / `maxEvidence` on
+`SummaryBinding`) and is recorded on every record's `bound`, so a reader (and a test) sees it held: when
+more inputs exist than the cap, the NEWEST are kept and `available > consumed` marks the truncation.
+
+CADENCE, PROMPT, AND RETENTION ARE DOCUMENTS. `PromptTemplate` gains kind `summary` and an optional
+`SummaryBinding` (level / windowMs / childLevel / maxChildren / maxEvidence / cadenceMs) — the append-only
+sibling of the #61 `field` binding. The three shipped summary documents (`distill/defaults.ts`,
+`defaultSummaryTemplates`) seed like the distill trio and edit over the SAME GET/PUT `/templates` routes,
+read fresh per pass, so editing a level's window, bound, or body changes the produced summaries with no
+restart — proven in the served e2e (tighten `maxChildren` to 1 over PUT `/templates`, rebuild, and the
+rolling summaries supersede with `childrenConsumed ≤ 1`).
+
+The assembler (`apps/engine/src/index/summaries.ts`, `assembleSummaries` / `buildSummary`) is pure and
+deterministic like the rest of index/: epoch-aligned `windowMs` buckets for windowed levels, ONE
+whole-session bucket for the session/project levels, bounding, deterministic confidence, and a
+content-derived id (sha-256 over the PROSE-EXCLUDED skeleton + chain position). Excluding prose from the id
+is the reasoned deviation from the packet pattern: model prose varies run-to-run, so hashing it would churn
+a revision on every pass — instead the "logical summary" is keyed on its bounded child set, a prose re-roll
+over the SAME children is an idempotent no-op, and a changed child set (new material in an active interval)
+appends a superseding revision (directly satisfying "updating an active interval creates a new version
+rather than rewriting history invisibly"). A degraded summary is upgraded IN PLACE (same id) when the model
+later answers — an honest fill-in, not a rewrite.
+
+The live producer (`apps/engine/src/index/produce-summaries.ts`, `materializeSummaries` +
+`createFabricSummarizer` + `SummaryBuildLog`) is the store-touching seam beside `produce-packets.ts`. It
+gathers a level's bounded inputs, runs the model prose through the SAME #64 egress consent + #63 guard
+chain the distiller enforces (a guard hold, an empty slot, or any invoke failure degrades honestly — no
+fabricated prose), persists ONLY appends, and records a per-(session, level) build attempt. It is CONTAINED
+(never throws, so a summary build can never sink the drain or session end) and idempotent. It is wired in
+`api/http.ts` at the drain/distill cadence (rolling + five-minute, finest→coarsest so five-minute reads the
+rolling heads produced this same pass) and at the `session.ended` seam (the durable session summary, after
+the packet build), all gated by the new `summaries.enabled` flag (default OFF, seeded in
+`flag.examples.json`, humanized in the Features section). Persistence lives where every record does:
+`store/workspaces.ts` gains the `summaries` table (additive DDL, nullable `session_id` for a future
+cross-session project summary), `saveSummary` (contract-validated, insert-or-replace on the content id) and
+`listSummaries` (axes: session, level, time-window intersection, supersession resolved before filters);
+`moveSession` carries the whole summary chain. Over HTTP: GET `/summaries`
+(`?workspace&session&level&from&to&superseded`) and POST `/summaries/build` (BuildSummariesRequest —
+returns ONLY appended/upgraded summaries; `[]` is the idempotent no-op; a model-unavailable summary is
+returned degraded, not an error; unknown workspace/session are 404s), both in the /routes manifest.
+
+Proof: pure assembler tests (`index/summaries.test.ts` — bounding, evidence bound, idempotence + append-only
+supersession, config-changes-behavior, whole-session bucketing, honest degraded shape), live-producer seam
+tests (`index/produce-summaries.test.ts` — materialize without the route, the input bound reaching the
+model, honest degraded + in-place upgrade, workspace isolation, contained failure), the determinism e2e
+(`index/summaries-replay.test.ts` — the same inputs replayed twice yield byte-identical summaries across
+rolling→five-minute→session with NO duplicate (level, window) heads, idempotent rebuild, refs-only
+children), and the served e2e (`api/summaries-e2e.test.ts` — a session ends and the summaries materialize
+with no build route, each a model proposal referencing its children, level filter honored, on-demand
+rebuild idempotent, template-edit changes behavior). A contract test (`contracts.test.ts`) pins refs-only,
+`proposal:true`, the honest degraded shape, and the complete level enum. Gates (rebased onto #211/#217): contracts 109 (+3),
+fixtures 15, client 570, engine 1025 (+13); no model runs in CI (fake loopback endpoints only).
+
+**Deferred to slice 2 (stated in the PR body).** episode-level and project-level PRODUCTION (project
+summaries incorporating later related sessions with prior versions kept), the raw-media-expiry
+derivation-path proof, and the default human-UI emphasis (five-minute + session surfaced, sentence-level
+distillates demoted to Diagnostics). The contract already carries the episode/project levels, so slice 2 is
+production wiring, not a re-model.
