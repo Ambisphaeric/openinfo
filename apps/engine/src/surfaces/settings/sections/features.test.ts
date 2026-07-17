@@ -1,8 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile, readdir } from 'node:fs/promises'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { Fabric, Flag } from '@openinfo/contracts'
 import type { SetupData } from '../../setup/view.js'
-import { renderFeatures } from './features.js'
+import { renderFeatures, FEATURE_META } from './features.js'
 
 const emptyFabric = (): Fabric => ({ slots: { stt: [], tts: [], llm: [], vlm: [], ocr: [], embed: [] } })
 
@@ -68,6 +71,36 @@ test('the on-count and the current toggle state reflect the flag documents', () 
   assert.doesNotMatch(html, /data-flag-key="act\.enabled" checked/)
   // the whole flag list is embedded so the browser can PUT the flipped document without re-fetching
   assert.match(html, /id="flags-data"/)
+})
+
+test('#227 every empty-state “turn on <toggle> in Settings → Features” remedy names a REGISTERED toggle', async () => {
+  // The class-killer the verifier prescribed: a HUD empty-state that tells the user to "turn on X in Settings
+  // → Features" is a DISHONEST instruction if X is not a real toggle — an unregistered flag renders as a raw
+  // humanized key under "Other", so the words point at nothing the user can find. This test scans EVERY client
+  // block renderer's source for that remedy pattern and asserts each named toggle is a live FEATURE_META label,
+  // so copy referencing an unregistered or renamed toggle fails here — guarding the block strings AND this file.
+  const labels = new Set(Object.values(FEATURE_META).map((m) => m.label))
+  // dist/surfaces/settings/sections → surfaces → dist → apps/engine → apps → repo root (six up), then the
+  // client block renderers as SOURCE (they exist in the tree regardless of the client build).
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../../..')
+  const blocksDir = join(repoRoot, 'apps/client/src/surfaces/blocks')
+  const files = (await readdir(blocksDir)).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+  const remedy = /turn on (.+?) in Settings → Features/g
+  const found: { file: string; toggle: string }[] = []
+  for (const f of files) {
+    const src = await readFile(join(blocksDir, f), 'utf8')
+    for (const m of src.matchAll(remedy)) {
+      found.push({ file: f, toggle: m[1]!.replace(/^[“"']+|[”"']+$/g, '').trim() })
+    }
+  }
+  // Not vacuous: the blocks that name a toggle today (distillates/todos/summaries/fields) must be seen.
+  assert.ok(found.length >= 4, `expected ≥4 toggle-naming remedy strings across the block renderers, found ${found.length}`)
+  for (const { file, toggle } of found) {
+    assert.ok(
+      labels.has(toggle),
+      `${file}: empty-state names "${toggle}", not a FEATURE_META label — Settings → Features would render it as a raw key under Other, so the instruction fails when followed`,
+    )
+  }
 })
 
 test('an unregistered flag still renders (under Other, humanized) — GET /flags drives the section', () => {
