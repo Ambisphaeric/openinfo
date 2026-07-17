@@ -137,7 +137,11 @@ const turnHtml = (turn: ChatTurn): string =>
 
 const citationsHtml = (reply: ChatReply): string => {
   if (reply.citations.length === 0) return ''
-  const tags = reply.citations.map((c) => escapeHtml(c.page !== undefined ? `p.${c.page}` : `#${c.ordinal}`)).join(' · ')
+  // A page anchor is human ("p.3"); the chunk ORDINAL is a machine index (hud-voice §2), so a pageless
+  // source is named by its human title instead, never "#2" (#242). Deduped so repeated anchors don't stutter.
+  const tags = [...new Set(reply.citations.map((c) => (c.page !== undefined ? `p.${c.page}` : (c.pinTitle ?? 'a passage'))))]
+    .map(escapeHtml)
+    .join(' · ')
   return `<div class="in-cites">cited ${tags}</div>`
 }
 
@@ -335,8 +339,10 @@ export class InputSession {
           const outcome = await this.deps.captureScreen()
           if (outcome.ok) screenshot = outcome.frame
           else captureNote = outcome.reason
-        } catch (error) {
-          captureNote = error instanceof Error ? error.message : String(error)
+        } catch {
+          // A capture bridge that throws is a screen-side failure, not the answer — say so in calm words,
+          // never paint the raw exception into the status line (hud-voice §2, #242).
+          captureNote = 'screen capture did not respond'
         }
       } else {
         captureNote = 'screen capture needs the desktop app'
@@ -388,8 +394,14 @@ export class InputSession {
       const calm = calmChatStatus(reply, captureNote)
       this.status = calm.text === '' ? undefined : { kind: 'ok', text: calm.text, detail: calm.detail }
     } catch (error) {
-      // VISIBLE FAILURE — the reason is painted as text, never swallowed.
-      this.status = { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+      // VISIBLE FAILURE — the reason is never swallowed, but the raw exception is machine-speak
+      // (hud-voice §2): the strip shows one calm human line and the raw message rides the hover title
+      // (the same detail-on-inspection pattern as calmChatStatus), reachable but never painted as slop (#242).
+      this.status = {
+        kind: 'error',
+        text: 'Couldn’t answer — the engine returned an error.',
+        detail: error instanceof Error ? error.message : String(error),
+      }
     } finally {
       this.streaming = undefined
       this.pending = false

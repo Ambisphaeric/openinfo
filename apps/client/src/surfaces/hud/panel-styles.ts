@@ -34,4 +34,13 @@ export const panelStyles = `
   font-size:11px;color:var(--s-muted);padding:6px 12px;border-bottom:1px solid var(--s-line-soft)}
 .panel-suggestion button{font:inherit;font-size:11px;color:var(--s-ink);background:none;
   border:1px solid var(--s-line);border-radius:7px;padding:2px 8px;cursor:pointer}
+/* Selection hygiene (#242): the chat VALUE (.in-msg — the message text) stays selectable; the
+   role label, citation line, status note, attachment chip, file-drop affordance, and suggestion
+   banner are decorations and must never ride into a native selection of the conversation. */
+.in-turn .in-who,
+.in-cites,
+.in-note,
+.in-attached,
+.in-drop,
+.panel-suggestion{-webkit-user-select:none;user-select:none}
 `

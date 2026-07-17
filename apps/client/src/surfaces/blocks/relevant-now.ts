@@ -114,7 +114,10 @@ const renderRow = (
   const glyph = clarifyGlyph(row.entity, clarify)
   const ask = clarifyAsk(row.entity, dismissBase.workspaceId, clarify)
   const body: VNode[] = [
-    h('span', { class: 'ttl' }, stateDot(row.entity.state, vocab), row.entity.name, ' ', h('span', { class: 'ext' }, ext)),
+    // The value (entity name) is the ONLY selectable text in the row title; the ext/kind tag carries its
+    // own leading space INSIDE the (non-selectable) .ext span so a native selection yields the bare value
+    // with no trailing separator (#242).
+    h('span', { class: 'ttl' }, stateDot(row.entity.state, vocab), row.entity.name, h('span', { class: 'ext' }, ` ${ext}`)),
     h('span', { class: 'why' }, why),
   ]
   if (ask) body.push(ask)

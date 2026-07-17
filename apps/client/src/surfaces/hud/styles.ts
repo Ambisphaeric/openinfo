@@ -108,6 +108,38 @@ body{margin:0;background:var(--page-bg);
 .mk.a{color:var(--m-artifact)} .mk.c{color:var(--m-commit)} .mk.q{color:var(--m-quest)}
 .mk.d{color:var(--m-decide)} .mk.p{color:var(--s-muted)}
 
+/* ── Selection hygiene (#242): the HUD is used to select/copy VALUES out of rows, so a native
+   double-click / drag / select-all must capture the bare value and NOTHING else. The value text
+   (entity/moment/summary/todo/draft/transcript/field text — .ttl text, .mo .x text, .lt-tx, .in-msg)
+   stays selectable by inheriting the default; every DECORATION span is user-select:none so it can
+   never ride into a selection. The .hudtop drag handle was already non-selectable (its .ctx/.el ride
+   with it). Setting none on a container (.rel .go, .glyphs, .clarify-ask, .session-control) covers its
+   buttons by inheritance; setting it on a descendant (.ttl .ext, .mo .x .unans) overrides the selectable
+   value ancestor for that one span. */
+.nowline,
+.hgroup .glbl,
+.rel .mk,
+.rel .body .ttl .ext,
+.rel .body .why,
+.rel .go,
+.dot,
+.glyphs,
+.clarify-ask,
+.mo .t,
+.mo .g,
+.mo .x .unans,
+.hintrow .hk,
+.hintrow .copybar,
+.lt-head,
+.lt-muted-note,
+.lt-empty,
+.lt-line .lt-who,
+.session-control,
+.nt-brand,
+.nt-nav,
+.nt-canvas-head,
+.nt-side-head{-webkit-user-select:none;user-select:none}
+
 .streamwrap{max-height:224px;overflow:hidden;position:relative;padding-bottom:8px;margin:0 18px}
 .streamwrap::after{content:"";position:absolute;left:0;right:0;bottom:0;height:30px;
   background:linear-gradient(transparent, rgba(21,24,32,.95));pointer-events:none}

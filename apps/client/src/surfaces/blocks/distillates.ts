@@ -6,7 +6,9 @@ import { actionButtons } from './actions.js'
 
 type Actions = NonNullable<Block['actions']>
 
-const LABEL = 'Transcript · distillate stream'
+// hud-voice §2: "distillate" is banned end-user vocabulary; the block is framed to the user as the
+// transcript (its empty state and Settings toggle already say so), so the label is the human word (#242).
+const LABEL = 'Transcript'
 
 /**
  * The `distillates` block — the transcript/distillate STREAM on a panel (#12). It reads the hydrated
@@ -34,7 +36,7 @@ const streamRow = (distillate: Distillate, actions: Actions): VNode =>
       'span',
       { class: 'body' },
       h('span', { class: 'ttl' }, distillate.text),
-      h('span', { class: 'why' }, 'distilled from capture'),
+      h('span', { class: 'why' }, 'from what was captured'),
     ),
     h('span', { class: 'go' }, ...actionButtons(actions, distillate.text)),
   )

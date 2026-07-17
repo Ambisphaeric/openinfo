@@ -49,7 +49,7 @@ test('the fields block renders each field value with its label, value, and a HUM
   const items = [fieldValue('field-topic', 'topic', 'Q3 planning')]
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result(items)] }, defaultBlockRegistry))
 
-  assert.match(html, /Fields · fast/) // the block's group label
+  assert.match(html, /class="glbl">Fields</) // the block's group label
   assert.match(html, /Q3 planning/) // store-derived field value (only via result.items)
   assert.match(html, /class="mk t">topic/) // the field label
   // the why-line is HUMAN (#117/#118): recency from the value's updatedAt, never the machine trail
@@ -86,7 +86,7 @@ test('a provisional field renders the #66 micro-state dot (a real signal, not de
 
 test('empty is EXPLAINABLE, not silent: an always-visible fields block renders a no-fields line', () => {
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([])] }, defaultBlockRegistry))
-  assert.match(html, /Fields · fast/)
+  assert.match(html, /class="glbl">Fields</)
   assert.match(html, /No fields yet/)
   // #100/#118: the empty state points at the Settings toggle in HUMAN terms — never the raw flag key
   assert.match(html, /turn on Fields in Settings → Features/)
@@ -104,5 +104,5 @@ test('an all-dismissed empty discloses the suppressed count (#66), and an on-mat
     stack: [{ block: 'now' }, { block: 'fields', show: 'on-match', query: { source: 'fields', params: {} } }],
   }
   const hidden = renderToHtml(renderSurface({ surface: onMatch, now, results: [undefined, result([])] }, defaultBlockRegistry))
-  assert.doesNotMatch(hidden, /Fields · fast/)
+  assert.doesNotMatch(hidden, /class="glbl">Fields</)
 })

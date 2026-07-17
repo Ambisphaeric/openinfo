@@ -50,7 +50,9 @@ const summaryRow = (summary: Summary, actions: Actions): VNode => {
       // The recorded machine reason stays reachable on inspection (hud-voice §4), never in glance position.
       h('span', degraded && summary.degraded ? { class: 'why', title: summary.degraded.reason } : { class: 'why' }, why),
     ),
-    h('span', { class: 'go' }, ...actionButtons(actions, degraded ? '' : summary.text!)),
+    // A degraded row has NO value to copy — suppress the copy affordance entirely rather than shipping a
+    // live Copy button that puts an empty string on the clipboard (#242). Live rows copy the prose.
+    h('span', { class: 'go' }, ...(degraded ? [] : actionButtons(actions, summary.text!))),
   )
 }
 

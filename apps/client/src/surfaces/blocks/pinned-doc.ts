@@ -29,7 +29,9 @@ const pinRow = (pin: Pin, actions: Actions): VNode =>
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, pin.title, ' ', h('span', { class: 'ext' }, pin.kind)),
+      // The kind tag carries its leading space inside the (non-selectable) .ext span so a native selection
+      // of the title yields the bare title with no trailing separator (#242).
+      h('span', { class: 'ttl' }, pin.title, h('span', { class: 'ext' }, ` ${pin.kind}`)),
       h('span', { class: 'why' }, ingestWhy(pin)),
     ),
     // copy payload = the document VALUE ONLY (`pin.uri`) — the pasteable reference, matching the fallback

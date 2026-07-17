@@ -48,3 +48,20 @@ test('pinned-doc copy payload is the pasteable reference ONLY — the title neve
   assert.doesNotMatch(payload ?? '', /—/)
   assert.doesNotMatch(payload ?? '', /Signed MSA/)
 })
+
+test('a URL pin copies the FULLY REALIZED link — the full canonical URI, not the display title (#242)', () => {
+  // The owner canon: copy must yield the whole value (a full URL), never a short/display form. A url-kind
+  // pin displays a human title in the .ttl but its `uri` is the full canonical link — the copy payload is
+  // the uri, so a copied link is complete (scheme + host + path + query), never the bare domain shown as title.
+  const link: Pin = {
+    id: 'pin-url', workspaceId: 'ws', uri: 'https://docs.example.com/rfc/soc2?section=controls#c-4',
+    title: 'SOC 2 controls', kind: 'url', ingest: { status: 'ingested' }, createdAt: '2026-07-16T20:10:00Z',
+  }
+  const html = render([link])
+  const payload = copyPayload(html)
+  assert.equal(payload, 'https://docs.example.com/rfc/soc2?section=controls#c-4') // the WHOLE URL
+  assert.match(html, /SOC 2 controls/) // the display title still renders on the row…
+  // …but never rides into the clipboard, and neither does the ext/kind decoration or a bare-domain shortening.
+  assert.doesNotMatch(payload ?? '', /SOC 2 controls|—/)
+  assert.notEqual(payload, 'docs.example.com')
+})
