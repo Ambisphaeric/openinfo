@@ -6316,3 +6316,61 @@ load-bearing (a reroute teaches a SPECIFIC non-current workspace) and the client
 surfacing a human name there needs name plumbing to the client (a `GET /workspaces` fetch + state), a larger
 change deferred rather than half-done. Descriptive prose like "the default workspace's recent passes" in the
 ledger/packets/trace footers is intentional copy, not an interpolated id — left as-is.
+## Slice: notetaker empty states name the enablement blocker; Record note drops the issue number  *(#227, 2026-07-17)*
+
+**The gap.** On a fresh/real install the note-taker's enrichments read functionally empty because every
+feeding flag ships OFF (`distill.enabled`, `distill.transcribe`, `distill.fields`, `act.tasks`,
+`summaries.enabled`) and enabling them lives out-of-surface in Settings → Features. #215 landed the
+*no-session vs live-empty* distinction, but the LIVE-empty line still only said a variant of "nothing
+captured yet" — it never named the true blocker (the feature is off) or where to fix it. Dark-by-default,
+under-spoken. Separately, the honest-inert Record button's disclosure note leaked a raw issue number
+(`… needs the #136 session-control block`) into end-user copy — machine-speak (hud-voice §2).
+
+**Why-lines name the real cause (the fields.ts pattern).** A block renderer is PURE and cannot read the
+runtime flag, so — exactly as `fields.ts` already does — it names the enablement PATH unconditionally rather
+than asserting off vs on (accurate whether the flag is off, or on with nothing produced yet). The #215
+progressive-disclosure contract is preserved: the **no-session** line stays session-first ("start a
+session…"); the **live-empty** line names the toggle. The two states stay visibly distinct.
+
+- `distillates.ts` — live-empty title now "No transcript yet", why "turn on “Distill what is captured” in
+  Settings → Features — the transcript fills as you talk". No-session why reworded domain-correctly to
+  "a transcript appears here once you start a session" (was the mis-domained "summaries appear here…").
+- `todos.ts` — live-empty why "turn on To-dos in Settings → Features — follow-ups appear as they come up"
+  (replacing the machine stage name "task-extract has found no follow-ups this session"). No-session +
+  suppressed-count arms unchanged.
+- `summaries.ts` — the source is session-scoped, so the block now reads `noCurrentSession` like its siblings
+  (it previously ignored it): no-session "a summary appears here once you start a session"; live-empty
+  "turn on “Build a summary timeline” in Settings → Features — a summary builds as the session runs".
+- Toggle names are the human labels the Settings → Features section renders (features.ts `FEATURE_META`),
+  quoted verbatim like the engine sense-gates fixes — no raw flag key, no banned "distillate"/"distilled"
+  display vocabulary.
+
+**Making the instruction TRUE (F1, fresh-eyes verification).** The first cut named toggles that Settings did
+NOT render: `act.tasks` and `distill.fields` had no `FEATURE_META` entry, so the section showed them as raw
+humanized keys ("act tasks" / "distill fields") under Other — a remedy that fails when followed. Fixed by
+registering both in `apps/engine/src/surfaces/settings/sections/features.ts` (presentation metadata only, no
+contract change): `act.tasks` → "To-dos" (Act stage, `depends:['workflow.enabled','distill.enabled']`) and
+`distill.fields` → "Fields" (Extraction stage, `depends:['distill.enabled','distill.transcribe']`), which also
+makes the pre-existing `fields.ts` "turn on Fields" copy true. The dependency chips disclose the master gates,
+so a user who enables "To-dos" alone sees it still "needs Distill what is captured (off)" — the honest path
+(summaries' dep-chip pattern). `FEATURE_META` is now EXPORTED for the cross-check below.
+
+**Class-killer test.** `features.test.ts` gains a test that scans EVERY client block renderer's source for the
+`turn on <toggle> in Settings → Features` remedy pattern and asserts each named toggle is a live `FEATURE_META`
+label — so any future empty-state copy that points at an unregistered or renamed toggle fails at build/test,
+not in front of a user. Guards the block strings and features.ts together.
+
+**Record note (`hud/notetaker-layout.ts`).** Copy only — the button stays honestly `disabled` (the
+interaction-honesty lint still passes). "Controlled from the tray · in-window start/stop needs the #136
+session-control block" → "Recording is controlled from the menu bar for now". No issue number in glance copy.
+
+**Acceptance / gates.** `distillates.test.ts`/`todos.test.ts`/`microstate-glyphs.test.ts`/`summaries.test.ts`
+assert the toggle-named live-empty copy and `doesNotMatch` the raw flag key + the machine stage name;
+`summaries.test.ts` gains a no-session vs live-empty distinctness test; `block-renderer/renderer.test.ts`
+(#215) updated for distillates' new title + toggle line and the reworded no-session line;
+`hud/notetaker-layout.test.ts` asserts the new Record note and `doesNotMatch(/#136/)`; `features.test.ts` gains
+the cross-check test (F1). Gates: contracts 110, fixtures 15, client 588 (+1), engine 1036 (+1) — presentation
+metadata + tests only, no contract change.
+
+**FIRST in this polish wave** — siblings N1 (surface docs + sessions block + leftRailChrome) and N3 (#136
+session-control) rebase over this.

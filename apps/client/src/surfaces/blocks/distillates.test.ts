@@ -55,8 +55,12 @@ test('empty is EXPLAINABLE, not silent: an always-visible distillates block rend
     renderSurface({ surface, now, results: [undefined, result([])] }, defaultBlockRegistry),
   )
   assert.match(html, /Transcript · distillate stream/) // the block still renders its label
-  assert.match(html, /No distilled windows yet/)
-  assert.match(html, /the distillate stream fills as capture is distilled/) // the explainable why
+  assert.match(html, /No transcript yet/)
+  // #227: the live-empty why NAMES the Settings → Features toggle in human words (a pure renderer can't read
+  // the runtime flag, so it names the enablement path unconditionally — the fields.ts pattern).
+  assert.match(html, /turn on “Distill what is captured” in Settings → Features/)
+  assert.match(html, /the transcript fills as you talk/)
+  assert.doesNotMatch(html, /distill\.enabled|distill\.transcribe/) // no raw flag key leaks
 })
 
 test('top caps the rendered rows, and an on-match empty distillates block stays hidden', () => {

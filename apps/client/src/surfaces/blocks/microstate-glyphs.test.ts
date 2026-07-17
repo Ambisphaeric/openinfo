@@ -111,5 +111,7 @@ test('empty-state disclosure: a to-do block emptied purely by dismissal says so 
   // genuinely empty (nothing suppressed) keeps the original "found nothing" copy — no false disclosure
   const empty = renderTodosBlock({ block: 'todos' }, todoResult([]))
   assert.match(empty, /No follow-ups yet/)
-  assert.match(empty, /task-extract has found no follow-ups/)
+  // #227: the live-empty why names the Settings → Features toggle in human words, no machine stage name.
+  assert.match(empty, /turn on To-dos in Settings → Features/)
+  assert.doesNotMatch(empty, /task-extract/)
 })

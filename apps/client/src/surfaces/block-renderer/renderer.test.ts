@@ -242,7 +242,7 @@ test('#215 session-scoped blocks word two DISTINCT empty states: no session runn
   assert.match(noSession, /people and topics surface here once you start a session/)
   assert.match(noSession, /follow-ups collect here once you start a session/)
   assert.match(noSession, /a draft is prepared when it ends/)
-  assert.match(noSession, /summaries appear here once you start a session/)
+  assert.match(noSession, /a transcript appears here once you start a session/) // distillates' session-first line
   assert.match(noSession, /fields fill as prompts run/)
   assert.doesNotMatch(noSession, /noCurrentSession|session: 'current'|undefined/) // no machine-speak leak
 
@@ -253,7 +253,8 @@ test('#215 session-scoped blocks word two DISTINCT empty states: no session runn
   assert.doesNotMatch(liveEmpty, /No session running/) // the two states never collapse into one line
   assert.match(liveEmpty, /Nothing captured yet/) // moments' live-but-empty state
   assert.match(liveEmpty, /Nothing relevant yet/) // relevant-now's live-but-empty state
-  assert.match(liveEmpty, /No distilled windows yet/) // distillates' existing live-but-empty copy, unchanged
+  assert.match(liveEmpty, /No transcript yet/) // distillates' live-but-empty title (#227)
+  assert.match(liveEmpty, /turn on “Distill what is captured” in Settings → Features/) // …naming the toggle (#227)
   assert.notEqual(noSession, liveEmpty) // visibly distinct end-to-end
 })
 

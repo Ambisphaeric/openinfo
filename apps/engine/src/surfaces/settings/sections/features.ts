@@ -48,8 +48,12 @@ interface FeatureMeta {
  * description/minTier, so adding human copy here keeps the schema untouched (additive, no engine change).
  * A flag NOT listed here still renders (under Other, humanized key + its own description) — GET /flags
  * drives the section, so a forward/hand-set flag is never invisible.
+ *
+ * EXPORTED so the empty-state copy cross-check (#227) can assert every "turn on <toggle> in Settings →
+ * Features" remedy string a block renders names a toggle that actually EXISTS here — a remedy that points at
+ * an unregistered flag (rendered as a raw humanized key under Other) is a dishonest instruction.
  */
-const FEATURE_META: Record<string, FeatureMeta> = {
+export const FEATURE_META: Record<string, FeatureMeta> = {
   'capture.camera': {
     label: 'Camera presence',
     stage: 'Capture',
@@ -83,6 +87,12 @@ const FEATURE_META: Record<string, FeatureMeta> = {
     depends: ['distill.enabled'],
     note: 'Extracts entities and ranks them by recency × frequency. Linking moments to entities also needs "Extract typed moments".',
   },
+  'distill.fields': {
+    label: 'Fields',
+    stage: 'Extraction',
+    depends: ['distill.enabled', 'distill.transcribe'],
+    note: 'Fans every fast-tier field prompt out over newly transcribed material and publishes each field’s latest value (provisional until a judge reviews it). Rides the transcribed batch, so it needs transcription to have produced text.',
+  },
   'summaries.enabled': {
     label: 'Build a summary timeline',
     stage: 'Distill',
@@ -94,6 +104,12 @@ const FEATURE_META: Record<string, FeatureMeta> = {
     stage: 'Act',
     depends: ['distill.enabled'],
     note: 'On session end, composes a follow-up draft from the session’s distillates + moments (prepared, never sent). Needs distillates to draft anything.',
+  },
+  'act.tasks': {
+    label: 'To-dos',
+    stage: 'Act',
+    depends: ['workflow.enabled', 'distill.enabled'],
+    note: 'On each drain, extracts follow-up items from the session’s distillates + moments into an editable to-do list (a follow-up draft can un-constrain them). Needs the workflow executor running and distillates to have anything to extract.',
   },
   'route.detect': {
     label: 'Detect what I am working on',

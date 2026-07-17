@@ -40,9 +40,15 @@ const streamRow = (distillate: Distillate, actions: Actions): VNode =>
   )
 
 /**
- * The empty state, EXPLAINABLE not silent — and honest about WHY (#215/hud-voice). With no session live
- * this process (`noCurrentSession`, #210) the stream is empty because nothing is being captured, so it says
- * so and what to do; with a session live it reflects the stream filling as capture is distilled. Distinct.
+ * The empty state, EXPLAINABLE not silent — and honest about WHY (#215/#227/hud-voice). Two distinct truths
+ * (#215 progressive disclosure, session gate first): with NO session live this process (`noCurrentSession`,
+ * #210) the stream is empty because nothing is being captured, so it stays session-first — start one. With a
+ * session live but the stream empty, the dominant cause on a fresh install is that capture-to-text is OFF
+ * (`distill.enabled` / `distill.transcribe` default OFF, enabled out-of-surface in Settings → Features), so
+ * the line NAMES that toggle and where it lives — the honest enablement disclosure #227 mandates. The renderer
+ * is pure and cannot read the runtime flag, so it names the enablement PATH rather than asserting off vs on
+ * (the fields.ts pattern). HUMAN copy (hud-voice §2): the toggle's own Settings label, never the raw flag key,
+ * and never the banned "distillate"/"distilled" display vocabulary.
  */
 const emptyRow = (noSession: boolean): VNode =>
   h(
@@ -52,11 +58,13 @@ const emptyRow = (noSession: boolean): VNode =>
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, noSession ? 'No session running' : 'No distilled windows yet'),
+      h('span', { class: 'ttl' }, noSession ? 'No session running' : 'No transcript yet'),
       h(
         'span',
         { class: 'why' },
-        noSession ? 'summaries appear here once you start a session' : 'the distillate stream fills as capture is distilled this session',
+        noSession
+          ? 'a transcript appears here once you start a session'
+          : 'turn on “Distill what is captured” in Settings → Features — the transcript fills as you talk',
       ),
     ),
   )

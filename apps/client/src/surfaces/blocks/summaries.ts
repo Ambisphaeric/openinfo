@@ -54,24 +54,37 @@ const summaryRow = (summary: Summary, actions: Actions): VNode => {
   )
 }
 
-const emptyRow = (): VNode =>
-  h(
+/**
+ * Empty is EXPLAINABLE, not silent — and honest about WHY (#215/#227/hud-voice). The summaries source is
+ * session-scoped, so it carries the `noCurrentSession` disclosure (#210) like its siblings: with NO session
+ * live this process the summary is empty because nothing is being captured — stay session-first (start one).
+ * With a session live but no summary, the dominant cause on a fresh install is that the summary timeline is
+ * OFF (`summaries.enabled` defaults OFF, enabled out-of-surface in Settings → Features), so the line NAMES
+ * that toggle and where it lives. The renderer is pure and cannot read the runtime flag, so it names the
+ * enablement PATH, not off vs on (the fields.ts pattern) — human copy, never the raw flag key.
+ */
+const emptyRow = (noSession: boolean): VNode => {
+  const [title, why] = noSession
+    ? ['No session running', 'a summary appears here once you start a session']
+    : ['No summary yet', 'turn on “Build a summary timeline” in Settings → Features — a summary builds as the session runs']
+  return h(
     'div',
     { class: 'rel' },
     h('span', { class: 'mk t' }, '—'),
     h(
       'span',
       { class: 'body' },
-      h('span', { class: 'ttl' }, 'No summary yet'),
-      h('span', { class: 'why' }, 'a summary appears as the session builds up'),
+      h('span', { class: 'ttl' }, title),
+      h('span', { class: 'why' }, why),
     ),
   )
+}
 
 export const renderSummaries: BlockRenderer = ({ block, result }) => {
   if (block.collapsed) return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL))
   const actions = block.actions ?? []
   const all = (result?.items ?? []) as Summary[]
   const rows = block.top !== undefined ? all.slice(0, block.top) : all
-  const nodes: VNode[] = rows.length > 0 ? rows.map((s) => summaryRow(s, actions)) : [emptyRow()]
+  const nodes: VNode[] = rows.length > 0 ? rows.map((s) => summaryRow(s, actions)) : [emptyRow(result?.noCurrentSession === true)]
   return h('div', { class: 'hgroup' }, h('div', { class: 'glbl' }, LABEL), ...nodes)
 }
