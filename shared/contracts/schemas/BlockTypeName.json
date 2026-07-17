@@ -80,6 +80,10 @@
     {
       "const": "session-control",
       "type": "string"
+    },
+    {
+      "const": "sessions",
+      "type": "string"
     }
   ]
 }
