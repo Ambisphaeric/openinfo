@@ -15,6 +15,7 @@ import {
   estimateTokens,
   type ActivePresetRef,
   type GatheredContext,
+  type GatheredPackets,
 } from './context-assembly.js'
 
 /**
@@ -92,6 +93,12 @@ export interface ChatDeps {
   relevant(workspaceId: string): RelevantEntity[]
   /** Ephemeral source-tagged transcript records for sessions owned by this workspace. */
   transcript(workspaceId: string): TranscriptUpdate[]
+  /**
+   * The CURRENT session's converged ContextPackets (#180), already resolved to renderable per-window views
+   * (the route reads the runtime-current session, converges its packets, and resolves each ref to its source
+   * record's text at read time). Honest scope: no runtime-current session ⇒ `{ hasCurrentSession: false }`.
+   */
+  packets(workspaceId: string): GatheredPackets
   /** Origin-retaining insight records; legacy string callers are treated as unknown-origin text. */
   insights(workspaceId: string): GatheredContext['insights']
   pinTitle(workspaceId: string, pinId: string): string | undefined
@@ -180,6 +187,7 @@ export const runChat = async (deps: ChatDeps, request: ChatRequest): Promise<Cha
         : { chunks: [] },
     recentTurns,
     screen,
+    packets: deps.packets(workspaceId),
   }
 
   const assembled = assembleChatContext(deps.contextSources, gathered)

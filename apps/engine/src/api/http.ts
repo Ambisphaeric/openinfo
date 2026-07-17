@@ -26,7 +26,7 @@ import { VoiceDocuments } from '../voice/index.js'
 import { ensureDefaultFlags } from './defaults.js'
 import { schemaByName, validationErrors } from './validation.js'
 import { runChat, BUNDLE_PROMPT, type ChatDeps } from './chat.js'
-import { DEFAULT_CONTEXT_SOURCES } from './context-assembly.js'
+import { DEFAULT_CONTEXT_SOURCES, type GatheredPackets, type PacketWindowView } from './context-assembly.js'
 import { readEngineVersion, readEngineBuild } from './version.js'
 import { EventSocketHub } from './ws.js'
 import { isPublicHealthRequest, type ControlPlaneAccess } from './control-plane.js'
@@ -2541,6 +2541,54 @@ async function runQuery(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
  * and returned as a 502 whose `error` the input block paints as visible text — the QA doctrine, no silent
  * no-op. A malformed body is a 400 before any model is touched.
  */
+/**
+ * How many of the current session's most-recent converged windows the chat `packets` source resolves. The
+ * assembler's DECLARED `limit` renders the tail of these; this hard cap bounds the read/resolve work so a
+ * long session never resolves an unbounded number of windows' refs on a single ask.
+ */
+const PACKET_GATHER_WINDOWS = 12
+
+/**
+ * Resolve the CURRENT session's ContextPackets for the chat `packets` source (#180). Scope is the
+ * RUNTIME-current session (SenseLaneTracker.currentSessionId, #210) — NEVER a whole-workspace fallback, so a
+ * stale unended session from a prior process cannot hydrate as current. Converges the session's packets
+ * FIRST (idempotent + contained — the same deterministic builder the session-end seam runs, and
+ * materializeContextPackets never throws) so Ask grounds in the CURRENT situation rather than only in
+ * post-session materialization, then resolves each window's REFS to its source records' renderable text AT
+ * READ TIME (refs-not-content). The three sense lanes stay separate; audio segments carry only a SIZE
+ * (SttSegment persists no transcript text by design — the durable audio text reaches chat via insights).
+ */
+function resolveCurrentPackets(ctx: HandlerContext, workspaceId: string): GatheredPackets {
+  const sessionId = ctx.senseLanes.currentSessionId(workspaceId)
+  if (sessionId === undefined) return { hasCurrentSession: false, windows: [] }
+  // Converge WITHOUT the build log: this internal read-time convergence must not overwrite the Context-packets
+  // diagnostics "last update" signal, which honestly reports the session-end / explicit on-demand BUILDS — a
+  // chat ask is not a user-triggered build. Persistence still happens; only the diagnostics attempt is skipped.
+  materializeContextPackets({ store: ctx.store }, { workspaceId, sessionId, trigger: 'on-demand' })
+  const packets = ctx.store.listContextPackets(workspaceId, { sessionId })
+  if (packets.length === 0) return { hasCurrentSession: true, windows: [] }
+  // Index the session's source records ONCE so per-window ref resolution is a map lookup, not a scan.
+  const ocrById = new Map(ctx.store.listOcrResults(workspaceId, sessionId).map((o) => [o.id, o]))
+  const sttById = new Map(ctx.store.listSttSegments(workspaceId, sessionId).map((s) => [s.id, s]))
+  const audioLane = (refs: ContextPacket['microphone']): { segments: number; chars: number } => ({
+    segments: refs.length,
+    chars: refs.reduce((n, ref) => n + (sttById.get(ref.id)?.textChars ?? 0), 0),
+  })
+  const recent = packets.slice(Math.max(0, packets.length - PACKET_GATHER_WINDOWS))
+  const windows: PacketWindowView[] = recent.map((p) => ({
+    windowStart: p.windowStart,
+    windowEnd: p.windowEnd,
+    // Resolve screen refs → the recognized OCR text (the window's screen-derived content value).
+    screen: p.screen.map((ref) => ocrById.get(ref.id)?.text.trim()).filter((t): t is string => t !== undefined && t !== ''),
+    mic: audioLane(p.microphone),
+    systemAudio: audioLane(p.systemAudio),
+    candidates: p.candidates.map((c) => ({ name: c.name, ...(c.seenOnScreen !== undefined ? { seenOnScreen: c.seenOnScreen.form } : {}) })),
+    gaps: p.gaps.map((g) => ({ lane: g.lane, reason: g.reason })),
+    focus: (p.focus ?? []).map((e) => `${e.kind}: ${e.detail}`),
+  }))
+  return { hasCurrentSession: true, windows }
+}
+
 async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
   const body = await readJson(req)
   const errors = validationErrors('ChatRequest', body)
@@ -2588,6 +2636,9 @@ async function postChat(req: IncomingMessage, res: ServerResponse, ctx: HandlerC
       )
       return ctx.transcripts.recentForSessions(sessionIds).filter((update) => update.text.trim() !== '')
     },
+    // The CURRENT session's converged ContextPackets (#180), scoped to the runtime-current session and
+    // resolved to per-window views here (impure store reads); the pure assembler renders + caps them.
+    packets: (workspaceId) => resolveCurrentPackets(ctx, workspaceId),
     // Session insights retain origin through assembly. OCR/VLM mirror rows are screen-derived even though
     // their payload is now text; if one is actually included, the composite chat hop stays off hosted.
     insights: (workspaceId) =>

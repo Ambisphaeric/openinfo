@@ -1,6 +1,6 @@
 {
   "$id": "ChatContextSourceKind",
-  "description": "append-only closed union of the eight chat context sources",
+  "description": "append-only closed union of the nine chat context sources",
   "anyOf": [
     {
       "const": "bundle-prompt",
@@ -32,6 +32,10 @@
     },
     {
       "const": "screen",
+      "type": "string"
+    },
+    {
+      "const": "packets",
       "type": "string"
     }
   ]

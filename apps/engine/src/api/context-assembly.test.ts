@@ -36,6 +36,7 @@ const bare: GatheredContext = {
   attachedDocs: { chunks: [] },
   recentTurns: [],
   screen: { attempted: false },
+  packets: { hasCurrentSession: false, windows: [] },
 }
 const report = (reports: readonly SourceReport[], kind: string): SourceReport => reports.find((r) => r.kind === kind)!
 
@@ -314,6 +315,48 @@ test('Ask face `screen` source: the four honest states (no frame / unreadable / 
   const short = assembleChatContext([{ kind: 'screen' }], { ...bare, screen: { attempted: true, text: 'a tiny toolbar' } })
   assert.equal(report(short.reports, 'screen').status, 'included')
   assert.match(short.contextText, /a tiny toolbar/)
-  // The disclosure note names the omission states in human terms.
-  assert.match(describeAssembly(unreadable.reports), /screen \(unavailable\)/)
+  // The disclosure note names the omission states in human terms — and, since #180, the ACTIONABLE reason
+  // (the seam-computed failure) rides through, so "screen (unavailable)" is now "screen (unavailable: <why>)".
+  assert.match(describeAssembly(unreadable.reports), /screen \(unavailable: no ocr endpoint answered\)/)
+})
+
+test('#180: the packets source — no current session, no windows, and a rendered correlated window (screen + both audio lanes)', () => {
+  const sources: ChatContextSource[] = [{ kind: 'packets', limit: 3 }]
+  // No runtime-current session ⇒ empty with an honest reason (NEVER a whole-workspace fallback, #210).
+  const noSession = assembleChatContext(sources, bare)
+  const noSessionRep = report(noSession.reports, 'packets')
+  assert.equal(noSessionRep.status, 'empty')
+  assert.equal(noSessionRep.detail, 'no current session')
+  assert.match(describeAssembly(noSession.reports), /packets \(empty: no current session\)/)
+  // A live session with no converged windows yet ⇒ a DISTINCT honest reason (#215 empty-state why-lines).
+  const noWindows = assembleChatContext(sources, { ...bare, packets: { hasCurrentSession: true, windows: [] } })
+  assert.equal(report(noWindows.reports, 'packets').detail, 'no converged windows in this session yet')
+  // A converged window: screen text present, BOTH audio lanes labeled and kept separate, attribution intact.
+  const out = assembleChatContext(sources, {
+    ...bare,
+    packets: {
+      hasCurrentSession: true,
+      windows: [
+        {
+          windowStart: '2026-07-16T09:00:00.000Z',
+          windowEnd: '2026-07-16T09:01:00.000Z',
+          screen: ['Sprint planning board'],
+          mic: { segments: 2, chars: 340 },
+          systemAudio: { segments: 0, chars: 0 },
+          candidates: [{ name: 'Acme', seenOnScreen: 'ACME' }],
+          gaps: [{ lane: 'system-audio', reason: 'no-observations-in-window' }],
+          focus: ['window: VS Code — openinfo'],
+        },
+      ],
+    },
+  })
+  assert.equal(report(out.reports, 'packets').status, 'included')
+  assert.match(out.contextText, /Converged activity in the CURRENT session/)
+  assert.match(out.contextText, /screen: Sprint planning board/)
+  assert.match(out.contextText, /microphone: 2 segments \(~340 chars heard\)/)
+  assert.match(out.contextText, /system audio: no-observations-in-window/, 'the silent audio lane keeps its machine gap reason, never guessed')
+  assert.match(out.contextText, /entities: Acme \(seen on screen: "ACME"\)/)
+  assert.match(out.contextText, /foreground: window: VS Code — openinfo/)
+  // Screen-derived text inside the window keeps the composite turn OFF hosted egress.
+  assert.equal(out.containsScreenDerived, true)
 })

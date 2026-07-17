@@ -4342,7 +4342,10 @@ test('Ask face privacy: a screenshot can NEVER reach an egress ocr endpoint — 
       body: JSON.stringify({ message: 'what is on my screen?', screenshot: { contentType: 'image/jpeg', data: 'aGVsbG8=' } }),
     })).json()) as ChatReply
     assert.equal(reply.answer, 'answered without the screen', 'the send proceeded WITHOUT the frame')
-    assert.match(reply.budget.note, /screen \(unavailable\)/, 'the omission is disclosed in the visible note')
+    // #180 disclosure repair: the omission now carries its ACTIONABLE reason (the egress-skip), not just the
+    // category — the seam-computed failure is threaded into the note (which rides the calm strip's hover).
+    assert.match(reply.budget.note, /screen \(unavailable: /, 'the omission is disclosed in the visible note WITH its reason, not just the category')
+    assert.match(reply.budget.note, /no ocr endpoint answered/, 'the threaded reason names the egress-skipped ocr slot')
     assert.ok(!chatSeen.some((b) => b.includes('aGVsbG8=')), 'the frame bytes never rode any outbound request')
   } finally {
     await app.close()

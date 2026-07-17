@@ -30,6 +30,7 @@
       { "kind": "transcript-window", "windowChars": 4000 },
       { "kind": "insights", "limit": 6 },
       { "kind": "relevant-entities", "limit": 8 },
+      { "kind": "packets", "limit": 3, "tokenBudget": 1500 },
       { "kind": "attached-docs", "limit": 4, "tokenBudget": 1500 },
       { "kind": "screen", "tokenBudget": 1000 },
       { "kind": "recent-turns", "limit": 8 }
