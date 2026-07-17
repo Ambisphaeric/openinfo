@@ -68,7 +68,11 @@ test('empty is EXPLAINABLE, not silent: an always-visible todos block renders a 
   )
   assert.match(html, /To-do · this session/) // the block still renders its label
   assert.match(html, /No follow-ups yet/)
-  assert.match(html, /task-extract has found no follow-ups this session/) // the explainable why
+  // #227: the live-empty why NAMES the Settings → Features toggle in human words — never the machine stage
+  // name "task-extract", never the raw flag key.
+  assert.match(html, /turn on To-dos in Settings → Features — follow-ups appear as they come up/)
+  assert.doesNotMatch(html, /task-extract/)
+  assert.doesNotMatch(html, /act\.tasks/)
 })
 
 test('top caps the rendered rows, and an on-match empty todos block stays hidden', () => {

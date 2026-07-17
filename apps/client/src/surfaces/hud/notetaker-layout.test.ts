@@ -153,8 +153,8 @@ test('the shipped note-taker document renders three zones through the real rende
   // #136/interaction-honesty: the record button is DISABLED (no live handler) and discloses where recording
   // is actually controlled with an INLINE note (`.nt-record-note`), never a tooltip-only fake-live button.
   assert.match(center, /class="nt-record pending"[^>]*data-nt="record"[^>]*disabled/)
-  assert.match(center, /class="nt-record-note">Controlled from the tray/) // inline, always-visible disclosure
-  assert.match(center, /#136 session-control block/) // the note links the gap it stands in for
+  assert.match(center, /class="nt-record-note">Recording is controlled from the menu bar for now/) // inline disclosure
+  assert.doesNotMatch(center, /#136/) // #227: end-user copy never leaks a raw issue number
   assert.match(center, /Q3 renewal — security review/) // the now context line
   assert.match(center, /Agreed to ship the quote Friday/) // the live note (moments)
   assert.match(center, /they agreed to ship the renewal quote Friday/) // the center FIVE-MINUTE summary (a proposal)
@@ -177,13 +177,17 @@ test('the note-taker zones are honest when empty (always-on blocks explain thems
     q('summaries', []), q('summaries', []), q('distillates', []), q('todos', []), q('fields', []),
   ]
   const { left, center, right } = zones(renderNotetaker({ surface, now, results: empty }, defaultBlockRegistry))
-  // the always-visible CENTER summary explains itself rather than vanish (never a blank canvas on a notes app)
+  // the always-visible CENTER summary explains itself rather than vanish (never a blank canvas on a notes app),
+  // and (#227) its live-empty why names the Settings → Features toggle so a fresh install has a path forward.
   assert.match(center, /No summary yet/)
+  assert.match(center, /turn on “Build a summary timeline” in Settings → Features/)
   // the on-match session-level summary card simply stays hidden until the loop rolls a session up (no empty card)
   assert.doesNotMatch(center, /This session/)
-  // the always-visible left sessions list + right rolling stream both explain their empty, never blank
+  // the always-visible left sessions list + right rolling stream both explain their empty, never blank; (#227)
+  // the right rolling distillates stream names its enablement toggle too (renamed live-empty title).
   assert.match(left, /No sessions yet/)
-  assert.match(right, /No distilled windows yet/)
+  assert.match(right, /No transcript yet/)
+  assert.match(right, /turn on “Distill what is captured” in Settings → Features/)
   // the on-match fields block simply stays hidden when it has produced nothing (no fabricated card)
   assert.doesNotMatch(right, /Fields · fast/)
 })

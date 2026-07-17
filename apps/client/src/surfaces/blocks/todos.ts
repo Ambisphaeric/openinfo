@@ -60,7 +60,12 @@ const todoRow = (item: TodoItem, actions: Actions, vocab: StateVocab, dismissBas
  *  - NO session running (`noCurrentSession`, #210): the list is empty because nothing is capturing yet —
  *    say so and what to do (start a session), NOT "found nothing this session" which would imply one is live.
  *  - emptied by DISMISSAL (#66): disclose "N dismissed" rather than implying task-extract found nothing.
- *  - a live session that has genuinely produced no follow-ups yet: the original "nothing this session" line.
+ *  - a live session that has produced no follow-ups yet: on a fresh install the dominant cause is that
+ *    follow-up capture is OFF (`act.tasks` defaults OFF, enabled out-of-surface in Settings → Features), so
+ *    the line NAMES that toggle and where it lives (the honest enablement disclosure #227 mandates; still
+ *    accurate once it is on but nothing has come up). The renderer is pure and cannot read the runtime flag,
+ *    so it names the enablement PATH, not off vs on (the fields.ts pattern) — human words, never the raw key
+ *    and never the machine stage name "task-extract".
  * A block never mysteriously disappears, and never fakes a running session.
  */
 const emptyRow = (suppressed: number, noSession: boolean): VNode => {
@@ -68,7 +73,7 @@ const emptyRow = (suppressed: number, noSession: boolean): VNode => {
     ? ['No session running', 'follow-ups collect here once you start a session']
     : suppressed > 0
       ? ['No follow-ups shown', `${suppressed} follow-up${suppressed === 1 ? '' : 's'} dismissed — nothing else to show`]
-      : ['No follow-ups yet', 'task-extract has found no follow-ups this session']
+      : ['No follow-ups yet', 'turn on To-dos in Settings → Features — follow-ups appear as they come up']
   return h(
     'div',
     { class: 'rel' },

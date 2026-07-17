@@ -126,7 +126,7 @@ const canvasHeaderChrome = (): VNode =>
       h(
         'span',
         { class: 'nt-record-note' },
-        'Controlled from the tray · in-window start/stop needs the #136 session-control block',
+        'Recording is controlled from the menu bar for now',
       ),
     ),
   )

@@ -55,9 +55,30 @@ test('HONEST degraded: a summary with no model prose renders a calm unavailable 
 test('empty is EXPLAINABLE, and an on-match empty summaries block stays hidden', () => {
   const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([])] }, defaultBlockRegistry))
   assert.match(html, /No summary yet/)
-  assert.match(html, /a summary appears as the session builds up/)
+  // #227: the live-empty why NAMES the Settings → Features toggle in human words — a pure renderer can't read
+  // the runtime flag, so it names the enablement path unconditionally (the fields.ts pattern).
+  assert.match(html, /turn on “Build a summary timeline” in Settings → Features/)
+  assert.match(html, /a summary builds as the session runs/)
+  assert.doesNotMatch(html, /summaries\.enabled/) // no raw flag key leaks
 
   const onMatch: Surface = { ...surface, stack: [{ block: 'now' }, { block: 'summaries', show: 'on-match', query: { source: 'summaries', params: {} } }] }
   const hidden = renderToHtml(renderSurface({ surface: onMatch, now, results: [undefined, result([])] }, defaultBlockRegistry))
   assert.doesNotMatch(hidden, />Summary</)
+})
+
+test('#227/#215 summaries words two DISTINCT empty states: no session running vs live-but-empty', () => {
+  // The summaries source is session-scoped, so it carries `noCurrentSession` (#210) like its siblings. With no
+  // live session the empty stays session-first (start one); live-but-empty names the enablement toggle. The two
+  // must be visibly distinct (the #215 non-tautological rule), and neither may leak a raw flag key.
+  const noSession = renderToHtml(
+    renderSurface({ surface, now: { live: false }, results: [undefined, { source: 'summaries', items: [], truncated: false, noCurrentSession: true }] }, defaultBlockRegistry),
+  )
+  assert.match(noSession, /No session running/)
+  assert.match(noSession, /a summary appears here once you start a session/)
+  assert.doesNotMatch(noSession, /Settings → Features/) // session gate first — not the enablement line
+
+  const liveEmpty = renderToHtml(renderSurface({ surface, now, results: [undefined, result([])] }, defaultBlockRegistry))
+  assert.doesNotMatch(liveEmpty, /No session running/) // the two states never collapse into one line
+  assert.match(liveEmpty, /turn on “Build a summary timeline” in Settings → Features/)
+  assert.notEqual(noSession, liveEmpty) // visibly distinct end-to-end
 })
