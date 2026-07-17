@@ -149,6 +149,29 @@ test('the HUD loads a surface, renders once, and re-queries on live WS events', 
   hud.stop()
 })
 
+test('#226 the Now context chip omits the lone DEFAULT workspace id (no "default /" machinery), but keeps a named one', async () => {
+  const transport = new FakeTransport()
+  let panel: VElement | undefined
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'default', now: () => new Date('2026-07-07T14:47:00Z') })
+  await hud.start()
+  // A live session in the single default workspace — the chip must NOT render its raw id.
+  transport.live = [session({ workspaceId: 'default', title: 'Renewal' })]
+  transport.fire('session.started')
+  await tick()
+  assert.ok(panel)
+  let html = renderToHtml(panel)
+  assert.doesNotMatch(html, /class="ws"/, 'the raw "default" workspace id is omitted, never shown as a name')
+  assert.match(html, /Renewal/, 'the episode name still renders')
+  // A NAMED workspace still disambiguates (the id is the only handle the client has) — chip present.
+  transport.live = [session({ workspaceId: 'acme', title: 'Renewal' })]
+  transport.fire('session.started')
+  await tick()
+  assert.ok(panel)
+  html = renderToHtml(panel)
+  assert.match(html, /class="ws">acme \//, 'an explicitly named workspace is still labelled')
+  hud.stop()
+})
+
 test('#211 the Now line names the episode: honest start-time fallback until titled, then the derived name', async () => {
   const transport = new FakeTransport()
   let panel: VElement | undefined

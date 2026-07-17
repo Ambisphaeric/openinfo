@@ -33,10 +33,14 @@
       "type": "string"
     },
     "source": {
-      "description": "derived (from an orientation pass) or user (a sovereign rename)",
+      "description": "derived (a judge/orientation pass), floor (a deterministic zero-model producer, #226), or user (a sovereign rename)",
       "anyOf": [
         {
           "const": "derived",
+          "type": "string"
+        },
+        {
+          "const": "floor",
           "type": "string"
         },
         {
@@ -46,59 +50,93 @@
       ]
     },
     "provenance": {
-      "$id": "TitlingProvenance",
-      "additionalProperties": false,
-      "type": "object",
-      "required": [
-        "annotationId",
-        "templateId",
-        "endpoint",
-        "classifiedAt",
-        "nature",
-        "direction",
-        "topics"
-      ],
-      "properties": {
-        "annotationId": {
-          "minLength": 1,
-          "description": "opaque identifier",
-          "type": "string"
+      "anyOf": [
+        {
+          "$id": "TitlingProvenance",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "annotationId",
+            "templateId",
+            "endpoint",
+            "classifiedAt",
+            "nature",
+            "direction",
+            "topics"
+          ],
+          "properties": {
+            "annotationId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "templateId": {
+              "minLength": 1,
+              "description": "opaque identifier",
+              "type": "string"
+            },
+            "endpoint": {
+              "description": "the fabric endpoint that classified (never a secret value)",
+              "type": "string"
+            },
+            "model": {
+              "description": "the model that answered, when the endpoint names one",
+              "type": "string"
+            },
+            "classifiedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            },
+            "nature": {
+              "description": "the orientation nature the title drew from (evidence, not fabricated)",
+              "type": "string"
+            },
+            "direction": {
+              "description": "the orientation direction the title drew from",
+              "type": "string"
+            },
+            "topics": {
+              "description": "the orientation topics the title drew from",
+              "type": "array",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              }
+            }
+          }
         },
-        "templateId": {
-          "minLength": 1,
-          "description": "opaque identifier",
-          "type": "string"
-        },
-        "endpoint": {
-          "description": "the fabric endpoint that classified (never a secret value)",
-          "type": "string"
-        },
-        "model": {
-          "description": "the model that answered, when the endpoint names one",
-          "type": "string"
-        },
-        "classifiedAt": {
-          "format": "date-time",
-          "description": "ISO-8601 timestamp",
-          "type": "string"
-        },
-        "nature": {
-          "description": "the orientation nature the title drew from (evidence, not fabricated)",
-          "type": "string"
-        },
-        "direction": {
-          "description": "the orientation direction the title drew from",
-          "type": "string"
-        },
-        "topics": {
-          "description": "the orientation topics the title drew from",
-          "type": "array",
-          "items": {
-            "minLength": 1,
-            "type": "string"
+        {
+          "$id": "FloorTitlingProvenance",
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "producer",
+            "subjects",
+            "derivedAt"
+          ],
+          "properties": {
+            "producer": {
+              "minLength": 1,
+              "description": "the deterministic producer that built this floor title, e.g. \"session-entities\" — never a model",
+              "type": "string"
+            },
+            "subjects": {
+              "description": "the ranked signal values the floor name drew from (evidence, not fabricated)",
+              "type": "array",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "derivedAt": {
+              "format": "date-time",
+              "description": "ISO-8601 timestamp",
+              "type": "string"
+            }
           }
         }
-      }
+      ]
     },
     "createdAt": {
       "format": "date-time",

@@ -55,7 +55,7 @@ import { Commitment, Watcher } from './records/commitment.js'
 import { ItemSignal, ItemSignalKind } from './records/signal.js'
 import { FieldValue, FieldValueProvenance, JudgeReview } from './records/fieldValue.js'
 import { SessionAnnotation, OrientationProvenance } from './records/sessionAnnotation.js'
-import { SessionTitling, TitlingProvenance } from './records/sessionTitling.js'
+import { SessionTitling, TitlingProvenance, FloorTitlingProvenance } from './records/sessionTitling.js'
 import { SttSegment } from './records/sttSegment.js'
 import { ContextPacket, ContextPacketRef, ContextPacketGap, ContextPacketCandidate, ContextPacketProvenance } from './records/contextPacket.js'
 import { Summary, SummaryLevel, SummaryChild, SummaryInputBound, SummaryProvenance } from './records/summary.js'
@@ -80,7 +80,7 @@ import { PhysicalSenseSource, SenseLaneDisposition, SenseLaneHealth, SenseLaneRe
 /** Every schema, by $id — the registry schema-gen, tests, and the engine's /contracts route walk. */
 export const AllSchemas = {
   InvokeUsage,
-  Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, EntityCorrectionSignal, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview, SessionAnnotation, OrientationProvenance, SessionTitling, TitlingProvenance, SttSegment,
+  Moment, MomentKind, Entity, Sighting, HeardAs, EntityOverride, EntityAmbiguity, EntityExternal, EntityResolution, Distillate, ScreenFrameMeta, OcrResult, Draft, Session, Workspace, Pin, PinChunk, TeachSignal, TeachSignalKind, EntityCorrectionSignal, Commitment, Watcher, ItemSignal, ItemSignalKind, FieldValue, FieldValueProvenance, JudgeReview, SessionAnnotation, OrientationProvenance, SessionTitling, TitlingProvenance, FloorTitlingProvenance, SttSegment,
   ContextPacket, ContextPacketRef, ContextPacketGap, ContextPacketCandidate, ContextPacketProvenance,
   Summary, SummaryLevel, SummaryChild, SummaryInputBound, SummaryProvenance,
   Dials, Register, VoiceBinding, DriftChainStep, DriftConfig,

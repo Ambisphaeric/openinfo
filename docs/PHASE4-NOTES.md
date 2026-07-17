@@ -6253,3 +6253,66 @@ carries `focus()`/`selectionStart`/`selectionEnd`, and `dispatch` fires the real
 true real-window proof — a real `transcript.updated` WS event re-rendering the panel mid-type while focus,
 caret, and text survive — is added to `scripts/chat-input-e2e.mjs` (real Electron + hud.html + preload);
 like the other `test:e2e:*` scripts it needs a GUI/darwin and is rig-verified, not in headless CI.
+
+## #226 — Episode-title sane defaults: judge-lane fallback + zero-model floor + no workspace-id leakage
+
+The #211 episode-title feature was dark on exactly the rigs that matter. Titles come from the #131 orientation
+pass, which `runJudge` tier-gates on a judge-DESIGNATED endpoint (`llm.judge`). A default install, and the
+common single-local-model rig (an `llm` slot filled with LFM/omlx, no separate judge designation), has no such
+endpoint — so the whole judge pass was a logged no-op and the flagship naming feature never fired. Three parts.
+
+**1. Judge lane fallback (depend on what you actually have).** The one-endpoint sub-fabric resolution moved
+from `judgeEndpoint(fabric)` (a single named endpoint or undefined) to `judgeLane(fabric)` returning
+`{endpoints, designated}`: a DESIGNATED `llm.judge` still wins and is isolated to its own endpoint (never
+spilling onto the fast endpoint — the original reason for the sub-fabric); with NO designation but a NON-EMPTY
+llm slot the lane FALLS BACK onto the whole llm slot in fabric order (spilling onto the primary llm IS the
+point — there is no separate fast endpoint on that rig). `hasJudgeEndpoint()` now means "a judge-capable lane
+exists" (designated OR fallback); only an EMPTY llm slot is the honest tier-gate no-op. This lights up BOTH
+the #62 verdict path and #131 orientation/#211 title on whatever llm the user has — a strict reading of the
+mandate ("orientation + its dependent title") that falls out naturally because both live behind the same gate.
+
+*Provenance / privacy.* Nothing new was needed for "which endpoint answered" — the completed invoke's
+`result.endpoint` already flows into `JudgeReview.endpoint`, `OrientationProvenance.endpoint`, and
+`TitlingProvenance.endpoint`, and on the fallback path it truthfully names the llm-slot endpoint (e.g. `llm`),
+distinct from a designated `llm.judge`. The egress + guard seams are the SAME code (`resolveEgress`,
+`guardOptions`, the shared `invoke`), so they apply unchanged; a new production test proves the fallback path
+stamps hosted-public egress + device-local guard and holds under a strict guard, exactly like the designated
+path. *Cadence.* Unchanged — the pass is still gated by the wiring's wider `judgeCadence`
+(`OPENINFO_JUDGE_CADENCE_MS`, default 4× the distill cadence), so the fallback cannot hammer the llm lane; it
+adds at most one occasional invoke per session per that window on top of the fast fan-out. No schedule assumed
+a dedicated endpoint, so no extra bound was required beyond the existing one (documented in a code comment).
+
+**2. Zero-model title floor (an honest name before, or instead of, any derivation).** `floor-title.ts` derives
+a deterministic, MODEL-FREE title from signals the session already has — its recency×frequency-ranked entities
+(the existing `rankEntities`), session-scoped by matching entity provenance/sighting `distillateId` against the
+session's distillates — into "Working on <subject(s)>". `FloorTitleScheduler` rides every distill batch (cheap,
+no invoke, so NOT flag-gated), skips any session that already carries a user/derived title (`hasAuthoredTitle`),
+dedupes on `latestFloorTitle`, and persists through the SAME append-only `recordSessionTitling` path +
+`session.titled` broadcast as #211. "Working on kubefast" beats "session live".
+
+*Design decision — a distinct `floor` source (deliberate deviation, flagged for scrutiny).* The mandate's
+literal wording said `source:'derived'`, but it ALSO required a four-rung ladder (user > judge-derived >
+deterministic-floor > start-time), that "a later judge derivation supersedes the floor", and provenance that
+"honestly names the deterministic producer (NOT pretending to be the judge)". Those cannot ALL hold under a
+shared `derived` source: (a) `TitlingProvenance` is the judge's shape (requires `annotationId`/`endpoint`/
+`classifiedAt`/`nature`/`direction`/`topics`) — a floor cannot fill it without fabricating a judge identity;
+(b) with one source, precedence is by append order, so a floor row appended after a derivation would wrongly
+win. So the floor is a NEW closed-union member `source:'floor'` with its own `FloorTitlingProvenance`
+(`producer`/`subjects`/`derivedAt`), and `resolveTitle` orders by SOURCE (user > derived > floor), which makes
+"derived supersedes floor" true regardless of order. Additive + backward-compatible: existing `derived`/`user`
+rows still validate (schema version left at 1, matching the repo's additive-without-bump convention);
+`provenance` is now a `TitlingProvenance|FloorTitlingProvenance` union; no surface reads titling provenance
+fields (audited), so the union's blast radius is the one #211 test that now narrows to `TitlingProvenance`.
+
+**3. No workspace id as display text.** Audit of client + engine-served surfaces (excluding the notetaker,
+another owner's domain). Fixed: (a) the settings Status live-session line dropped its `" in <workspaceId>"`
+clause — the section is already scoped to the single default workspace, so the clause only leaked "…in default"
+as machinery (a lone workspace needs no disambiguation); (b) the HUD `now` context chip omits the raw default
+workspace id ('default', the config sentinel) — "default /" read as machinery — while still labelling an
+explicitly-named workspace (the id is the only handle the client has; the HUD is single-workspace-filtered so
+the chip never disambiguates within an instance anyway). Both are driven by tests. *Reported-not-fixed:* the
+teach block's why-line ("… would teach <workspaceId>") renders the target workspace id — but there naming is
+load-bearing (a reroute teaches a SPECIFIC non-current workspace) and the client has no workspace-name source;
+surfacing a human name there needs name plumbing to the client (a `GET /workspaces` fetch + state), a larger
+change deferred rather than half-done. Descriptive prose like "the default workspace's recent passes" in the
+ledger/packets/trace footers is intentional copy, not an interpolated id — left as-is.

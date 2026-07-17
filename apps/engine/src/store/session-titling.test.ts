@@ -62,6 +62,30 @@ test('#211 resolveTitle: no titlings ⇒ undefined (caller supplies the honest f
   assert.equal(WorkspaceRegistry.resolveTitle([]), undefined)
 })
 
+test('#226 resolveTitle ladder: floor names a session only when there is no derived/user title', () => {
+  const floor = titling({ source: 'floor', title: 'Working on kubefast', provenance: { producer: 'session-entities', subjects: ['kubefast'], derivedAt: '2026-07-16T12:01:00.000Z' } })
+  assert.equal(WorkspaceRegistry.resolveTitle([floor]), 'Working on kubefast', 'floor fills the gap')
+  // A derived title always supersedes a floor, regardless of append order.
+  const derived = titling({ source: 'derived', title: 'Meeting on Q3 launch', createdAt: '2026-07-16T12:02:00.000Z' })
+  assert.equal(WorkspaceRegistry.resolveTitle([floor, derived]), 'Meeting on Q3 launch', 'derived beats floor (later)')
+  assert.equal(WorkspaceRegistry.resolveTitle([derived, floor]), 'Meeting on Q3 launch', 'derived beats floor even when the floor row is later')
+  // A user title beats both.
+  const user = titling({ source: 'user', title: 'Acme kickoff' })
+  assert.equal(WorkspaceRegistry.resolveTitle([floor, derived, user]), 'Acme kickoff', 'user is sovereign over floor + derived')
+})
+
+test('#226 latestFloorTitle + hasAuthoredTitle track the floor rung independently', async () => {
+  await withStore((store) => {
+    store.saveSession(session())
+    store.recordSessionTitling(titling({ source: 'floor', title: 'Working on kubefast', provenance: { producer: 'session-entities', subjects: ['kubefast'], derivedAt: '2026-07-16T12:01:00.000Z' } }))
+    assert.equal(store.latestFloorTitle(WS, SESS), 'Working on kubefast')
+    assert.equal(store.hasAuthoredTitle(WS, SESS), false, 'a floor title is NOT an authored (user/derived) title')
+    store.recordSessionTitling(titling({ source: 'derived', title: 'Meeting on Q3 launch' }))
+    assert.equal(store.hasAuthoredTitle(WS, SESS), true, 'a derived title IS authored — the floor stands down')
+    assert.equal(store.getSession(WS, SESS)?.title, 'Meeting on Q3 launch', 'derived materialised over the floor')
+  })
+})
+
 test('#211 recordSessionTitling: appends the row AND materialises the resolved title onto the session', async () => {
   await withStore((store) => {
     store.saveSession(session())

@@ -125,6 +125,63 @@ test('production fast fields + judge/orientation persist actual hosted and devic
   }
 })
 
+test('#226 judge FALLBACK path keeps every privacy seam: no llm.judge, but the filled llm slot egresses through the guard', async () => {
+  const target = await startChat(targetReply)
+  const guard = await startChat(() => '{"flagged":[]}')
+  const documentedHosted = `http://field-judge-fallback.egress.test:${new URL(target.url).port}`
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (raw.startsWith(documentedHosted)) return originalFetch(`${target.url}${raw.slice(documentedHosted.length)}`, init)
+    return originalFetch(input, init)
+  }) as typeof fetch
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-field-judge-fallback-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    store.saveSession(session)
+    const voice = new VoiceDocuments(store); voice.ensureDefaults()
+    const docs = new DistillDocuments(store); docs.ensureDefaults()
+    const fabric = new FabricDocuments(store)
+    // NO llm.judge endpoint — only a plain hosted `llm` slot endpoint. The judge must fall back onto it and
+    // apply the SAME egress + guard seams (workspace/mode egress resolution, device-local guard classifier).
+    fabric.save({ slots: { ...defaultFabric().slots,
+      llm: [{ kind: 'http', name: 'llm', url: documentedHosted, api: 'openai-compat', model: 'lfm-1b' }],
+      guard: [{ kind: 'http', name: 'guard.local', url: guard.url, api: 'openai-compat' }],
+    } })
+    const values = new FieldValueStore(store)
+    const guardDocs = new GuardDocuments(store); guardDocs.ensureDefaults()
+    const guardHolds = new GuardHoldStore(store)
+    const shared = { store, fabric, docs, values, guardDocs, guardHolds, guardEnabled: () => true }
+    const judge = new JudgeScheduler(shared)
+
+    // Seed a provisional value so the verdict path also runs on the fallback lane.
+    values.put({
+      id: FieldValueStore.idFor('default', 'field-topic', session.id), fieldId: 'field-topic', workspaceId: 'default', sessionId: session.id,
+      label: 'topic', value: 'Q3 contract', state: 'provisional',
+      provenance: { templateId: 'tpl-field-topic', slot: 'llm', endpoint: 'seed', sourceChunks: [material.id] },
+      updatedAt: '2026-07-14T13:00:06.000Z', schemaVersion: FIELD_VALUE_SCHEMA_VERSION,
+    })
+    await judge.runJudge([material])
+    assert.equal(guard.prompts.length, 2, 'both the verdict judge and orientation egressed through the guard on the fallback lane')
+    for (const value of values.list('default', session.id)) {
+      assert.equal(value.provenance.judge?.endpoint, 'llm', 'the fallback endpoint that ANSWERED is recorded (not llm.judge)')
+      assert.equal(value.provenance.judge?.egress?.destination, 'hosted-public', 'egress resolved on the fallback path')
+      assert.equal(value.provenance.judge?.guard?.classifierDestination, 'device-local', 'the device-local guard still ran')
+    }
+    const annotation = judge.latestAnnotation('default', session.id)
+    assert.equal(annotation?.provenance.endpoint, 'llm', 'orientation provenance names the fallback endpoint')
+    assert.equal(annotation?.provenance.egress?.destination, 'hosted-public')
+    assert.equal(annotation?.provenance.guard?.classifierDestination, 'device-local')
+    assert.deepEqual(guardHolds.list('default'), [], 'clean guard ⇒ no holds')
+  } finally {
+    store.close()
+    globalThis.fetch = originalFetch
+    await stop(target)
+    await stop(guard)
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('production strict guard creates one hosted-zero hold per field, judge, and orientation attempt', async () => {
   const target = await startChat(() => 'must not run')
   const guard = await startChat(() => '{"flagged":[{"start":0,"length":4,"kind":"secret"}]}')
