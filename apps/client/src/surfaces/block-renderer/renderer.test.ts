@@ -68,8 +68,9 @@ test('renderSurface is document-driven: renders the HUD stack with glyphs, why-l
   // every card states its why, built from real index data (mentions + latest moment)
   assert.match(html, /Referenced 4× · can you guarantee 30-day deletion\?/)
 
-  // actions: copy is wired (data-copy present), open is inert (ghost, no data-copy)
-  assert.match(html, /<button class="mini" data-verb="copy" data-action="a-copy" data-copy="Dana — Referenced 4×/)
+  // actions: copy is wired (data-copy present), open is inert (ghost, no data-copy). The copy payload is
+  // the entity VALUE ONLY — the why-line is display context and never rides into the clipboard (#118).
+  assert.match(html, /<button class="mini" data-verb="copy" data-action="a-copy" data-copy="Dana">/)
   assert.match(html, /<button class="mini ghost" data-verb="open" data-action="a-open">Open<\/button>/)
 
   // moments: the four typed glyphs, newest-first clock labels, speaker bold, unanswered marker
@@ -125,7 +126,7 @@ test('a pinned-doc block renders the hydrated pin from the store, and hides (on-
   assert.match(hydrated, /SOC 2 Type II report/) // store-derived title
   assert.doesNotMatch(hydrated, /configured placeholder/) // the static reference is NOT what rendered
   assert.match(hydrated, /ingested · 42 pages/) // why-line built from the Pin's ingest state
-  assert.match(hydrated, /data-copy="SOC 2 Type II report — file:\/\/\/soc2\.pdf"/) // copy carries title + uri
+  assert.match(hydrated, /data-copy="file:\/\/\/soc2\.pdf"/) // copy carries the pasteable reference (uri) ONLY — the display title never rides into the clipboard (#118)
 
   // empty backing store: on-match + zero items hides the block — explainable-empty, never a broken card
   const empty = renderToHtml(renderSurface({ surface, now: { live: true }, results: [undefined, result('pins', [])] }, defaultBlockRegistry))

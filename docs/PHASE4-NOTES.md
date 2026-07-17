@@ -6090,3 +6090,39 @@ too. Determinism/no-duplicates still proven over the #32 fixture; the whole-scop
 replay byte-stable.
 
 Issue #177 is closure-ready after this slice: all acceptance criteria are met across slices 1 + 2.
+
+## Slice: copy affordance puts the value on the clipboard, not display metadata  *(#223, 2026-07-17)*
+
+A rig QA pass found that clicking Copy on an extracted entity (a link) put `<value> — heard · <clock>` on
+the clipboard — the display why-line rode into the copy payload. Root cause: `relevant-now.ts` built its
+copy text by compositing the value with its one-line display why (`\`${entity.name} — ${why}\``) and handed
+that to the shared `rowAffordances` helper. The why-line is DISPLAY CONTEXT — source kind (heard / on screen
+/ from calendar) + recency — already rendered on the row; it must never enter the clipboard.
+
+**Principle (the fresh-install / sane-default gate for copy affordances):** a copy affordance puts EXACTLY
+the user-valuable value on the clipboard — never provenance/metadata decoration. Provenance and display
+context (why-lines, recency, source kind, ingest state, and a title already shown on the row) stay on the
+row and the inspection surfaces; they do not ride into the payload.
+
+**Fix.** `relevant-now.ts` copy text → the entity VALUE ONLY (`entity.name`); the `why`/`text` return of
+`whyLine` was trimmed to the single `why` VNode now that the copy path no longer needs the raw string.
+**Audit** of every copy payload producer (blocks passing copy text to `actions.ts` `actionButtons`/
+`rowAffordances`, plus a check that no engine-served surface emits `data-copy`): all single-value blocks
+were already clean — `fields` (`value.value`, why-line excluded), `todos` (`item.text`), `drafts`
+(`draft.body`), `distillates` (`distillate.text`), `summaries` (`summary.text`), `teach`
+(`candidate.pattern.contains`), `ledger` (`item.text`), `hint` (`excerpt`), and `pinned-doc` fallback row
+(`doc`). One further offender of the same shape: `pinned-doc.ts` hydrated-pin row composited
+`\`${pin.title} — ${pin.uri}\``, putting the display title (already on the row's `.ttl`) into the payload
+alongside the pasteable reference → fixed to `pin.uri` only, which also makes the pin row consistent with the
+block's own fallback row. No engine-served surface produces a copy payload (only client `actions.ts` sets
+`data-copy`).
+
+**Regression.** New `relevant-now.test.ts` (2) and `pinned-doc.test.ts` (1) pin each fixed block's
+`data-copy` to the bare value AND assert the payload carries no `—` join and none of the why-line/title text
+for a row whose why is known — so re-appending metadata fails the build. The existing `renderer.test.ts`
+assertions that had encoded the buggy composites (`data-copy="Dana — Referenced 4×…"` and
+`data-copy="… report — file:///soc2.pdf"`) were corrected to the value-only payloads. The rows still DISPLAY
+their why-line / title — display context is not removed, only the copy payload changed.
+
+**Gates.** contracts 110 · fixtures 15 · client 577 (574 + 3 added) · engine 1035 (one parallel-load flake,
+`api/summaries-surface-e2e.test.ts`, green on isolated rerun) — all green under Node 22.
