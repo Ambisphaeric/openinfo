@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Fabric, FieldValue, Session, SessionAnnotation } from '@openinfo/contracts'
+import type { CaptureChunk, Fabric, FieldValue, Session, SessionAnnotation, TitlingProvenance } from '@openinfo/contracts'
 import { FabricDocuments } from '../fabric/index.js'
 import { defaultFabric } from '../fabric/document.js'
 import type { InvokeOptions, LlmMessage, LlmResult } from '../fabric/index.js'
@@ -19,6 +19,14 @@ const SESS = 'sess-judge'
 /** A fabric whose llm slot carries a judge-designated endpoint (the tier-gate positive case). */
 const fabricWithJudge = (): Fabric => ({
   slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'llm.judge', url: 'http://127.0.0.1:9', api: 'openai-compat', model: 'big-32b' }] },
+})
+
+/**
+ * A fabric whose llm slot is FILLED but carries NO judge-designated endpoint (#226) — the common
+ * single-local-model rig. The judge must FALL BACK onto this slot so orientation/title still light up.
+ */
+const fabricLlmSlotOnly = (): Fabric => ({
+  slots: { ...defaultFabric().slots, llm: [{ kind: 'http', name: 'llm', url: 'http://127.0.0.1:9', api: 'openai-compat', model: 'lfm-1b' }] },
 })
 
 /** Seed a provisional fast-field value for `fieldId` so the judge has something to review. */
@@ -40,7 +48,7 @@ const seedValue = (values: FieldValueStore, fieldId: string, label: string, valu
 
 const harness = async (
   invoke: (messages: LlmMessage[], opts: InvokeOptions) => Promise<LlmResult>,
-  opts: { withJudgeEndpoint?: boolean; orientationDisposition?: OrientationDisposition } = {},
+  opts: { withJudgeEndpoint?: boolean; fabric?: Fabric; orientationDisposition?: OrientationDisposition } = {},
 ): Promise<{
   store: WorkspaceRegistry
   scheduler: JudgeScheduler
@@ -58,7 +66,8 @@ const harness = async (
   const docs = new DistillDocuments(store)
   docs.ensureDefaults()
   const fabric = new FabricDocuments(store)
-  if (opts.withJudgeEndpoint !== false) fabric.save(fabricWithJudge())
+  if (opts.fabric !== undefined) fabric.save(opts.fabric)
+  else if (opts.withJudgeEndpoint !== false) fabric.save(fabricWithJudge())
   const values = new FieldValueStore(store)
   const published: FieldValue[] = []
   const annotations: SessionAnnotation[] = []
@@ -375,10 +384,12 @@ test('#211 orientation derives an episode title: persisted append-only with prov
     const t = titlings[0]!
     assert.equal(t.source, 'derived')
     assert.equal(t.title, 'Meeting on Q3 GTM launch sequencing and vendor security review', 'derived from the orientation nature + top topics')
-    assert.equal(t.provenance?.annotationId, `oa:${WS}:${SESS}`, 'points at the orientation pass that produced it')
-    assert.equal(t.provenance?.templateId, 'tpl-judge-orientation')
-    assert.equal(t.provenance?.endpoint, 'llm.judge')
-    assert.deepEqual(t.provenance?.topics, ['Q3 GTM launch sequencing', 'vendor security review'], 'evidence recorded')
+    // A derived titling carries the orientation TitlingProvenance branch (#226 added a floor branch to the union).
+    const prov = t.provenance as TitlingProvenance
+    assert.equal(prov.annotationId, `oa:${WS}:${SESS}`, 'points at the orientation pass that produced it')
+    assert.equal(prov.templateId, 'tpl-judge-orientation')
+    assert.equal(prov.endpoint, 'llm.judge')
+    assert.deepEqual(prov.topics, ['Q3 GTM launch sequencing', 'vendor security review'], 'evidence recorded')
     // Materialised onto the session (so every surface reading session.title shows it) AND published.
     assert.equal(store.getSession(WS, SESS)?.title, 'Meeting on Q3 GTM launch sequencing and vendor security review')
     assert.equal(titled.length, 1, 'session.titled published once')
@@ -499,6 +510,63 @@ test('#131 gate-ready seam: gate disposition annotates-and-logs (hold not yet en
     assert.equal(a.nature, 'solo-work', 'gate still annotates today (no half-built hold)')
     assert.equal(annotations.length, 1, 'orientation.updated still emitted under gate')
     assert.ok(logs.some((l) => /gate.*not yet enforced/i.test(l)), 'the seam logs that gate is not yet enforced')
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
+// #226 judge lane fallback — no judge-designated endpoint but a FILLED llm slot ⇒ the orientation/title
+// pass lights up on the llm slot (the common single-local-model rig), instead of staying a tier-gated no-op.
+test('#226 fallback: no llm.judge but a filled llm slot ⇒ orientation classifies + a title derives on the llm slot', async () => {
+  let calls = 0
+  const invoke = async (): Promise<LlmResult> => {
+    calls += 1
+    // The fallback invoke reports the endpoint that ACTUALLY answered — the llm-slot endpoint, not llm.judge.
+    return { text: JSON.stringify({ nature: 'solo-work', direction: 'unclear', topics: ['kubefast'] }), endpoint: 'llm', model: 'lfm-1b', slot: 'llm' }
+  }
+  const { store, scheduler, annotations, titled, dir } = await harness(invoke, { fabric: fabricLlmSlotOnly() })
+  try {
+    assert.equal(scheduler.hasJudgeEndpoint(), true, 'a filled llm slot is a judge-capable lane (fallback)')
+    await scheduler.runJudge([sourceChunk()])
+    assert.ok(calls > 0, 'the fallback lane actually invoked')
+    const a = scheduler.latestAnnotation(WS, SESS)!
+    assert.equal(a.nature, 'solo-work', 'orientation classified on the fallback lane')
+    assert.equal(a.provenance.endpoint, 'llm', 'provenance names the endpoint that ANSWERED (the llm slot), not llm.judge')
+    const titlings = store.listSessionTitlings(WS, SESS)
+    assert.equal(titlings.length, 1, 'a derived title landed on the fallback lane')
+    assert.equal(titlings[0]!.title, 'Working on kubefast')
+    assert.equal(titlings[0]!.source, 'derived', 'the fallback still produces a DERIVED (model) title, not a floor one')
+    assert.equal(store.getSession(WS, SESS)?.title, 'Working on kubefast', 'materialised')
+    assert.equal(titled.length, 1, 'session.titled published')
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
+// #226 a DESIGNATED judge endpoint still WINS over the llm-slot fallback: when both are present the judge is
+// isolated to its own endpoint (never spilling onto the fast/primary llm), so its provenance names llm.judge.
+test('#226 fallback: a designated llm.judge endpoint still wins over the llm-slot fallback', async () => {
+  const endpoints: string[] = []
+  const invoke = async (): Promise<LlmResult> => {
+    endpoints.push('called')
+    return { text: JSON.stringify({ nature: 'call', direction: 'learn', topics: ['renewal'] }), endpoint: 'llm.judge', model: 'big-32b', slot: 'llm' }
+  }
+  // Both a fast llm endpoint AND a designated judge endpoint are present; the judge must pick llm.judge.
+  const fabric: Fabric = {
+    slots: {
+      ...defaultFabric().slots,
+      llm: [
+        { kind: 'http', name: 'llm', url: 'http://127.0.0.1:9', api: 'openai-compat', model: 'lfm-1b' },
+        { kind: 'http', name: 'llm.judge', url: 'http://127.0.0.1:9', api: 'openai-compat', model: 'big-32b' },
+      ],
+    },
+  }
+  const { store, scheduler, dir } = await harness(invoke, { fabric })
+  try {
+    await scheduler.runJudge([sourceChunk()])
+    const a = scheduler.latestAnnotation(WS, SESS)!
+    assert.equal(a.provenance.endpoint, 'llm.judge', 'the designated judge endpoint answered, not the fallback llm')
+    assert.equal(store.getSession(WS, SESS)?.title, 'Call about renewal')
   } finally {
     await cleanup(store, dir)
   }

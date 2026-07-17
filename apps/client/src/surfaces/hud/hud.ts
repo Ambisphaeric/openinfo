@@ -326,7 +326,10 @@ export class Hud {
     const session = this.session
     const context: NowContext = { live: session !== undefined && session.endedAt === undefined }
     if (session) {
-      context.workspace = session.workspaceId
+      // #226: the workspace chip is disambiguation copy, not a name. The lone DEFAULT workspace ('default',
+      // the config sentinel) needs none — showing its raw id read as machinery ("default /"), so omit it. A
+      // user who runs an explicitly-named workspace still sees that label. Never render a raw id as a name.
+      if (session.workspaceId !== 'default' && session.workspaceId.trim() !== '') context.workspace = session.workspaceId
       // #211: name the episode. A derived/user title lands on session.title (resolved server-side); until one
       // exists, an honest start-time fallback stands in — never a raw id, never a machine placeholder.
       context.title = session.title !== undefined && session.title.trim() !== '' ? session.title : `started ${clockLabel(session.startedAt)}`

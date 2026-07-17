@@ -173,12 +173,15 @@ export class JudgeScheduler {
     this.invoke =
       deps.invoke ??
       ((messages, opts) => {
-        // Route to the JUDGE endpoint specifically — a sub-fabric of exactly the judge-designated llm
-        // endpoint, so invokeLlm's fallback order can never spill the judge onto the fast endpoint.
+        // Resolve the judge LANE (#226): a DESIGNATED judge endpoint is isolated to its own sub-fabric so
+        // invokeLlm's fallback order can never spill it onto the fast endpoint; with NO designation the lane
+        // FALLS BACK onto the whole llm slot (the common single-filled-slot rig) — spilling onto the primary
+        // llm endpoint is then exactly the point, so the slot is passed in fallback order untouched. The
+        // completed invoke's `result.endpoint` records WHICH endpoint actually answered, on either path.
         const fabric = this.fabric.load()
-        const endpoint = this.judgeEndpoint(fabric)
-        if (endpoint === undefined) throw new Error('no judge endpoint configured (llm.judge)')
-        const judgeFabric: Fabric = { ...fabric, slots: { ...fabric.slots, llm: [endpoint] } }
+        const lane = this.judgeLane(fabric)
+        if (lane === undefined) throw new Error('no judge lane: neither a designated judge endpoint nor a filled llm slot')
+        const judgeFabric: Fabric = { ...fabric, slots: { ...fabric.slots, llm: lane.endpoints } }
         return invokeLlm(judgeFabric, messages, {
           ...opts,
           ...(resolveKey ? { resolveKey } : {}),
@@ -221,14 +224,28 @@ export class JudgeScheduler {
     this.log(`guard held judge pass for session ${ctx.sessionId}: ${err.verdict.reason}`)
   }
 
-  /** The judge-designated llm endpoint in the fabric, or undefined — the tier-gate primitive. */
-  private judgeEndpoint(fabric: Fabric): Endpoint | undefined {
-    return fabric.slots.llm.find((e) => e.name === this.endpointName)
+  /**
+   * The judge LANE the fabric resolves to (#226) — the tier-gate primitive, now with a documented fallback.
+   * A DESIGNATED judge endpoint (name === `endpointName`) wins and is returned isolated (`designated:true`)
+   * so it never spills onto the fast endpoint. With NO designation, a NON-EMPTY llm slot is the FALLBACK
+   * lane (`designated:false`): the orientation/title pass — dark on every rig without a dedicated judge
+   * endpoint — lights up on whatever llm the user actually has. `undefined` only when the llm slot is empty
+   * (the honest tier-gate: no llm at all ⇒ the pass stays a logged no-op). `designated` lets logs/provenance
+   * name which resolution won (a designated lane, or the llm-slot fallback).
+   */
+  private judgeLane(fabric: Fabric): { endpoints: Endpoint[]; designated: boolean } | undefined {
+    const designated = fabric.slots.llm.find((e) => e.name === this.endpointName)
+    if (designated !== undefined) return { endpoints: [designated], designated: true }
+    if (fabric.slots.llm.length > 0) return { endpoints: fabric.slots.llm, designated: false }
+    return undefined
   }
 
-  /** True when a judge-capable endpoint is configured — the honest gate the wiring reads before scheduling. */
+  /**
+   * True when a judge-capable lane exists — a designated judge endpoint OR the llm-slot fallback (#226).
+   * The honest gate the wiring reads before scheduling; false only when the llm slot is entirely empty.
+   */
   hasJudgeEndpoint(): boolean {
-    return this.judgeEndpoint(this.fabric.load()) !== undefined
+    return this.judgeLane(this.fabric.load()) !== undefined
   }
 
   /**
@@ -243,10 +260,19 @@ export class JudgeScheduler {
   async runJudge(chunks: readonly CaptureChunk[]): Promise<FieldValue[]> {
     const judges = this.docs.judgeTemplates()
     if (judges.length === 0) return []
-    // Tier-gate: no judge-capable endpoint ⇒ the fields stay provisional. Honest + visible, not an error.
-    if (!this.hasJudgeEndpoint()) {
-      this.log(`judge skipped: no judge endpoint "${this.endpointName}" in the fabric — fields stay provisional (tier-gated)`)
+    // Tier-gate (#226): a judge LANE is a designated endpoint OR the llm-slot fallback. Only an EMPTY llm
+    // slot gates the pass out — fields then stay provisional (honest + visible, not an error).
+    const lane = this.judgeLane(this.fabric.load())
+    if (lane === undefined) {
+      this.log(`judge skipped: no judge lane — neither a designated "${this.endpointName}" endpoint nor a filled llm slot; fields stay provisional (tier-gated)`)
       return []
+    }
+    // Observability: name the fallback so an operator can see the orientation/title pass is riding the llm
+    // slot (not a dedicated judge lane). Cadence is UNCHANGED — the pass is still gated by the wiring's wider
+    // judge cadence (OPENINFO_JUDGE_CADENCE_MS, default 4× the distill cadence), so it cannot hammer the llm
+    // lane; it adds at most one occasional invoke per session per that window, on top of the fast fan-out.
+    if (!lane.designated) {
+      this.log(`judge running on the llm slot (no "${this.endpointName}" designated) — orientation/title fall back onto the primary llm lane`)
     }
     const text = chunks.filter(isText)
     if (text.length === 0) return []

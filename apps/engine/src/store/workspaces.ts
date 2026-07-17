@@ -506,20 +506,26 @@ export class WorkspaceRegistry {
   }
 
   /**
-   * The effective title of a session (#211) — resolved across its append-only titlings by the sovereignty
-   * rule: the latest USER titling wins (a human's name is never clobbered by a later derivation), else the
-   * latest DERIVED titling, else `undefined` (no titling yet — the caller supplies an honest fallback, never
-   * a raw id). Pure over the titling list; the source of truth is the append-only table, not Session.title.
+   * The effective title of a session (#211, #226) — resolved across its append-only titlings by the
+   * precedence LADDER: the latest USER titling wins (a human's name is never clobbered by a machine), else
+   * the latest judge-DERIVED titling, else the latest deterministic-FLOOR titling (the zero-model rung that
+   * names a session from signals it already has — #226), else `undefined` (no titling yet — the caller
+   * supplies an honest start-time fallback, never a raw id). Precedence is by SOURCE, not append order, so a
+   * later judge derivation always supersedes an earlier floor and a user rename always beats both, regardless
+   * of when each landed. Pure over the titling list; the source of truth is the append-only table, not
+   * Session.title.
    */
   static resolveTitle(titlings: readonly SessionTitling[]): string | undefined {
     let latestUser: SessionTitling | undefined
     let latestDerived: SessionTitling | undefined
+    let latestFloor: SessionTitling | undefined
     // titlings arrive oldest-first (seq order), so a later match overwrites — the last one wins per source.
     for (const t of titlings) {
       if (t.source === 'user') latestUser = t
       else if (t.source === 'derived') latestDerived = t
+      else if (t.source === 'floor') latestFloor = t
     }
-    return (latestUser ?? latestDerived)?.title
+    return (latestUser ?? latestDerived ?? latestFloor)?.title
   }
 
   /**
@@ -530,6 +536,22 @@ export class WorkspaceRegistry {
     let latest: string | undefined
     for (const t of this.listSessionTitlings(workspaceId, sessionId)) if (t.source === 'derived') latest = t.title
     return latest
+  }
+
+  /**
+   * The latest deterministic-FLOOR title for a session, if any (#226) — the floor producer reads it to
+   * dedupe (a re-run only appends when the floor name CHANGES), exactly as the judge dedupes on
+   * latestDerivedTitle. Independent of the derived rung, so a floor and a derived title never cross-suppress.
+   */
+  latestFloorTitle(workspaceId: string, sessionId: string): string | undefined {
+    let latest: string | undefined
+    for (const t of this.listSessionTitlings(workspaceId, sessionId)) if (t.source === 'floor') latest = t.title
+    return latest
+  }
+
+  /** True when a session already carries a USER or judge-DERIVED titling (#226) — the floor never runs once a stronger rung exists. */
+  hasAuthoredTitle(workspaceId: string, sessionId: string): boolean {
+    return this.listSessionTitlings(workspaceId, sessionId).some((t) => t.source === 'user' || t.source === 'derived')
   }
 
   /**

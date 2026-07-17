@@ -6,7 +6,7 @@ import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQue
 import { SESSION_TITLING_SCHEMA_VERSION } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
-import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
+import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, FloorTitleScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
 import { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import { DiscoveryDocuments, FabricDocuments, FileSecretStore, GuardHeldError, LocalModelStore, LocalRuntimeManager, StarterModelsDocuments, checkEndpoint, discoverFabric, invokeLlm, invokeOcr, invokeStt, describeInvokeFailure, enrichFailureHint, resolveEgress, scanHosts, toQueueFailure, DEFAULT_NO_SPEECH_THRESHOLD, type SecretStore } from '../fabric/index.js'
 import { relevantNow, ingestPin, defaultFetchers, materializeContextPackets, PacketBuildLog, materializeSummaries, createFabricSummarizer, SummaryBuildLog, walkSummaryTrace, type Summarizer } from '../index/index.js'
@@ -274,6 +274,17 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     publishAnnotation: (annotation) => bus.publish('orientation.updated', annotation),
     // Episode naming (#211): when the orientation pass mints/revises a DERIVED title, the session is
     // re-broadcast with its materialised title so every session-rendering surface refreshes the name.
+    publishTitled: (session) => bus.publish('session.titled', session),
+    log,
+  })
+  // Zero-model title FLOOR (#226): the sane-defaults safety net that names a session from signals it
+  // already has (its ranked entities) BEFORE — or instead of — any judge derivation. Cheap + deterministic
+  // (a store read + a pure transform, no invoke), so it is NOT flag-gated and rides every distill batch; it
+  // never touches a session that already has a user/derived title and dedupes its own rows, so the judge
+  // derivation always supersedes it (resolveTitle precedence) and it can never spam. Same publishTitled
+  // broadcast as #211, so a floor name refreshes the tray/pill/status exactly like a derived one.
+  const floorTitles = new FloorTitleScheduler({
+    store,
     publishTitled: (session) => bus.publish('session.titled', session),
     log,
   })
@@ -562,12 +573,25 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       log(`judge pass failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
+  // The floor title pass (#226): cheap, deterministic, and self-gating (no subject ⇒ no-op), so it rides
+  // every released batch with NO cadence throttle and NO flag — a session gets an honest name from what it
+  // already has even when the judge never derives one. Best-effort like the fast fan-out: a floor error must
+  // never sink the drain.
+  const runFloorTitles = async (batch: readonly CaptureChunk[]): Promise<void> => {
+    if (batch.length === 0) return
+    try {
+      await floorTitles.run(batch)
+    } catch (error) {
+      log(`floor title pass failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
   const distillThrottled = async (chunks: readonly CaptureChunk[], opts: DistillOptions): Promise<void> => {
     if (flushing) {
       if (chunks.length > 0) {
         await distiller.distillChunks(chunks, opts)
         await runFastFields(chunks)
         await runJudgePass(chunks, true)
+        await runFloorTitles(chunks)
         // #177: roll the just-distilled tail up into rolling + five-minute summaries (gated + contained).
         await produceDrainSummaries(chunks)
       }
@@ -578,6 +602,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
       await distiller.distillChunks(due, opts)
       await runFastFields(due)
       await runJudgePass(due)
+      await runFloorTitles(due)
       // #177: the released distill batch now has fresh distillates — summarize each touched session's rolling
       // + five-minute windows over them. Idempotent supersession: an active window updates as material lands.
       await produceDrainSummaries(due)
@@ -605,6 +630,7 @@ export function createEngineApp(options: EngineOptions): EngineApp {
         await distiller.distillChunks(remainder, currentDistillOpts())
         await runFastFields(remainder)
         await runJudgePass(remainder, true)
+        await runFloorTitles(remainder)
       }
       // #177: the flushed tail's distillates are now durable — summarize the touched sessions once more so a
       // short (sub-cadence) session still gets its rolling + five-minute summaries (both paths share this).

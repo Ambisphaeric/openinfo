@@ -126,10 +126,12 @@ export const renderStatus = (data: SetupData): string => {
   const live = data.liveSession
   // #211: name the live session by its episode title (derived from orientation, or a user rename), never the
   // raw id (an id is not a name — hud-voice). Until one is derived, an honest start-time fallback stands in.
+  // #226: this line is already scoped to the single default workspace, so the old " in <workspaceId>" clause
+  // only leaked the raw id ("… in default") as machinery — omitted (a lone workspace needs no disambiguation).
   const sessionCard = card(
     'Session',
     live
-      ? row('live', `${dot(true)} ${escapeHtml(sessionTitleOrStart(live.title, live.startedAt))} in ${escapeHtml(live.workspaceId)}`)
+      ? row('live', `${dot(true)} ${escapeHtml(sessionTitleOrStart(live.title, live.startedAt))}`)
       : row('live', `${dot(false)} no live session`),
   )
 

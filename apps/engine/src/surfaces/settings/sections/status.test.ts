@@ -90,6 +90,12 @@ test('#211 no live session still reads honestly', () => {
   assert.match(renderStatus(data()), /no live session/)
 })
 
+test('#226 the live-session line never leaks the raw workspace id ("… in default")', () => {
+  const html = renderStatus(data({ liveSession: liveSession({ title: 'Meeting on Q3 launch' }) }))
+  assert.doesNotMatch(html, /in default/, 'a lone workspace needs no id disambiguation — omitted, never machinery')
+  assert.match(html, /Meeting on Q3 launch/, 'the human episode name still stands')
+})
+
 test('workflow-mode Status names the active VLM slot instead of the legacy OCR slot', () => {
   const fabric = emptyFabric()
   fabric.slots.vlm = [{ kind: 'http', name: 'vision', url: 'http://127.0.0.1:9003', api: 'openai-compat', model: 'gemma-3-12b' }]

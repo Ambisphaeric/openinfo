@@ -15,6 +15,7 @@ export {
 export { FieldValueStore } from './field-values.js'
 export { FastFieldScheduler, type FastFieldSchedulerDeps } from './fields.js'
 export { JudgeScheduler, JUDGE_ENDPOINT_NAME, type JudgeSchedulerDeps } from './judge.js'
+export { FloorTitleScheduler, deriveFloorTitle, type FloorTitleSchedulerDeps } from './floor-title.js'
 export {
   extractMoments,
   parseMomentCandidates,

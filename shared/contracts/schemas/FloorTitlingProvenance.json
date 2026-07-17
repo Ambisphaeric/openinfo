@@ -1,0 +1,30 @@
+{
+  "$id": "FloorTitlingProvenance",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "producer",
+    "subjects",
+    "derivedAt"
+  ],
+  "properties": {
+    "producer": {
+      "minLength": 1,
+      "description": "the deterministic producer that built this floor title, e.g. \"session-entities\" — never a model",
+      "type": "string"
+    },
+    "subjects": {
+      "description": "the ranked signal values the floor name drew from (evidence, not fabricated)",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "derivedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    }
+  }
+}
