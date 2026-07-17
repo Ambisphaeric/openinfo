@@ -195,10 +195,6 @@ body{margin:0;background:var(--page-bg);
   color:var(--s-muted);font-size:12px;font-weight:550;cursor:pointer}
 .nt-navitem:hover{color:var(--s-ink);background:rgba(255,255,255,.04)}
 .nt-navitem.active{color:var(--s-ink);background:rgba(255,255,255,.06)}
-.nt-folders{padding:6px 0 2px}
-.nt-folder{display:flex;align-items:center;gap:8px;padding:5px 9px;font-size:11.5px;color:var(--s-muted);cursor:default}
-.nt-folder-glyph{color:var(--s-faint);font-size:9px}
-.nt-folder-note{padding:2px 9px 4px 25px;font-size:9.5px;font-style:italic;color:var(--s-faint)}
 
 /* Center canvas header + the relocated Record affordance (honest, inert placeholder — see #136) */
 .nt-canvas-head{display:flex;align-items:center;justify-content:space-between;gap:12px;

@@ -2,6 +2,7 @@ import type { Surface } from '@openinfo/contracts'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { defaultHudSurface, SEEDED_SURFACES } from './defaults.js'
 import { defaultPillSurface, PREVIOUS_DEFAULT_PILL_BODY } from './pill.js'
+import { defaultNotetakerSurface, PREVIOUS_DEFAULT_NOTETAKER_BODY } from './notetaker.js'
 
 const SURFACE_KIND = 'surface'
 
@@ -33,6 +34,18 @@ export class SurfaceDocuments {
         JSON.stringify(existing.body) === PREVIOUS_DEFAULT_PILL_BODY
       ) {
         this.store.layouts.put(SURFACE_KIND, surface.id, defaultPillSurface)
+      }
+      // The #177/#211 note-taker rewire — same conservative one-time refresh as the pill above. An install
+      // whose note-taker record is provably the exact untouched v1 seed gets the summary-hierarchy center +
+      // session-history left rail; any user save (record version > 1) or customization (changed body) means
+      // the surface is the user's and is left alone. The refresh is record v2 carrying shipped body v2, so it
+      // cannot repeat.
+      if (
+        surface.id === defaultNotetakerSurface.id &&
+        existing.version === 1 &&
+        JSON.stringify(existing.body) === PREVIOUS_DEFAULT_NOTETAKER_BODY
+      ) {
+        this.store.layouts.put(SURFACE_KIND, surface.id, defaultNotetakerSurface)
       }
     }
   }

@@ -11,8 +11,9 @@ import { h, renderSurface, type BlockRegistry, type SurfaceRenderInput, type VEl
  * (`nt-left-*` / `nt-center-*` / `nt-right-*`). This module partitions the flat stack by that prefix,
  * renders EACH zone's sub-stack through the SAME `renderSurface` (so every block behaves exactly as it does
  * on the HUD — same hydration, same actions, same empty states), and composes the three resulting panels
- * into a CSS-grid frame with the app chrome (home + feature nav + folders on the left, the record affordance
- * in the center canvas header). A block whose id carries no recognized prefix falls to the CENTER — so an
+ * into a CSS-grid frame with the app chrome (home + feature nav on the left above the Pins + Sessions blocks,
+ * the record affordance in the center canvas header). A block whose id carries no recognized prefix falls to
+ * the CENTER — so an
  * un-annotated document still renders, and the DOCUMENT (not this code) owns which block lives where.
  *
  * Signature-compatible with `renderSurface` so the Hud controller can call it interchangeably for the
@@ -69,13 +70,21 @@ const renderZonePanel = (input: SurfaceRenderInput, zone: ZoneInput, registry: B
   )
 
 /**
- * The left-rail nav + folder chrome (NOT blocks — see the module header on the missing sessions block).
- * The home button and the feature-nav tabs (Notes/Summary/Search) have NO live handler yet — multi-view
- * routing (#19 multi-window / the session-list block) is not built. Per the interaction-honesty policy
- * (a rendered affordance with no live handler must not present as live), each is rendered `disabled` with
- * a `title` that discloses why, rather than a fake-live tab. The `data-nt` hook stays so the day a handler
- * lands (dev-entry) the same markup lights up. `Notes` keeps its `active` styling — it names the ONLY view
- * this window renders today, so a disabled current-view indicator is the honest read.
+ * The left-rail nav chrome (NOT blocks — the Pins + Sessions lists below are real hydrated blocks). The home
+ * button and the feature-nav tabs (Notes/Summary/Search) have NO live handler yet — multi-view routing (#19
+ * multi-window) is not built. Per the interaction-honesty policy (a rendered affordance with no live handler
+ * must not present as live), each is rendered `disabled` with a `title` that discloses why, rather than a
+ * fake-live tab. The `data-nt` hook stays so the day a handler lands (dev-entry) the same markup lights up.
+ * `Notes` keeps its `active` styling — it names the ONLY view this window renders today, so a disabled
+ * current-view indicator is the honest read. `Search` stays disabled — the search VIEW it promises is a
+ * disclosed follow-up (#230), not silently omitted.
+ *
+ * The old Meetings/Archives placeholder folders + their "session-list block pending" note are GONE: the
+ * session history they stood in for is now a real, self-labeling `sessions` block (nt-left-sessions) rendered
+ * in the left zone panel BELOW this chrome. Two static folder labels are not lit up here because (1) the
+ * frame renders this chrome above the WHOLE left zone, so a folder header could never sit adjacent to its
+ * list, and (2) the `sessions` source is one honest ordered history with no data-backed archive/meeting
+ * distinction, so two folders would be a fiction — one bounded list with an honest "N more" is the truth.
  */
 const leftRailChrome = (): VNode =>
   h(
@@ -88,15 +97,6 @@ const leftRailChrome = (): VNode =>
       h('button', { class: 'nt-navitem active', 'data-nt': 'nav-notes', title: 'Notes — the current view (only view this window renders today)', disabled: true }, 'Notes'),
       h('button', { class: 'nt-navitem', 'data-nt': 'nav-summary', title: 'Summary — view not built yet', disabled: true }, 'Summary'),
       h('button', { class: 'nt-navitem', 'data-nt': 'nav-search', title: 'Search — view not built yet', disabled: true }, 'Search'),
-    ),
-    // Meetings / Archives folders: the LABELS are chrome; the session list they should hold has no block
-    // type yet (the `sessions` query source exists — see the module header). Honest placeholder, not blank.
-    h(
-      'div',
-      { class: 'nt-folders' },
-      h('div', { class: 'nt-folder' }, h('span', { class: 'nt-folder-glyph' }, '▸'), 'Meetings'),
-      h('div', { class: 'nt-folder' }, h('span', { class: 'nt-folder-glyph' }, '▸'), 'Archives'),
-      h('div', { class: 'nt-folder-note' }, 'session-list block pending'),
     ),
   )
 
