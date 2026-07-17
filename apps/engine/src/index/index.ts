@@ -84,7 +84,15 @@ export {
   type MaterializeSummariesDeps,
   type MaterializeSummariesOutcome,
   type FabricSummarizerDeps,
+  CROSS_SESSION_SUMMARY_LEVELS,
 } from './produce-summaries.js'
+export {
+  walkSummaryTrace,
+  type SummaryTrace,
+  type SummaryTraceNode,
+  type TraceRef,
+  type TraceSourceStatus,
+} from './summaries-trace.js'
 export { mergeCanon, type CanonGroup, type CanonResult } from './canon.js'
 export { relevantNow, type RelevantNowOptions } from './relevant.js'
 export * from './ingest/index.js'

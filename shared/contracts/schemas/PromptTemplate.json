@@ -262,6 +262,29 @@
           "minimum": 0,
           "description": "minimum re-summarize interval for the active window; absent ⇒ every pass",
           "type": "integer"
+        },
+        "scope": {
+          "$id": "SummaryScope",
+          "description": "the config scope a summary template binds to — workspace-global (default), or a specific workflow/app",
+          "anyOf": [
+            {
+              "const": "workspace",
+              "type": "string"
+            },
+            {
+              "const": "workflow",
+              "type": "string"
+            },
+            {
+              "const": "app",
+              "type": "string"
+            }
+          ]
+        },
+        "targetId": {
+          "minLength": 1,
+          "description": "the workflow/app id this binding is scoped to; absent ⇒ workspace-global",
+          "type": "string"
         }
       }
     },

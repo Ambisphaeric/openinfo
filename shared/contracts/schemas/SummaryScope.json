@@ -1,0 +1,18 @@
+{
+  "$id": "SummaryScope",
+  "description": "the config scope a summary template binds to — workspace-global (default), or a specific workflow/app",
+  "anyOf": [
+    {
+      "const": "workspace",
+      "type": "string"
+    },
+    {
+      "const": "workflow",
+      "type": "string"
+    },
+    {
+      "const": "app",
+      "type": "string"
+    }
+  ]
+}

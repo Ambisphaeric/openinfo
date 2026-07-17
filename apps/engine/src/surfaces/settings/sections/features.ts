@@ -87,7 +87,7 @@ const FEATURE_META: Record<string, FeatureMeta> = {
     label: 'Build a summary timeline',
     stage: 'Distill',
     depends: ['distill.enabled'],
-    note: 'Rolls the distillates up into a rolling and five-minute view during the session, and a durable session summary at the end. Each summary points back to its sources; the prose is a proposal, and if the summarizing model is unavailable the entry says so rather than inventing one.',
+    note: 'Rolls the distillates up into rolling, episode, and five-minute views during the session, a durable session summary at the end, and a continuing project summary that folds each new session in without losing the prior ones. Each summary points back to its sources; the prose is a proposal, and if the summarizing model is unavailable the entry says so rather than inventing one.',
   },
   'act.enabled': {
     label: 'Prepare a follow-up draft',

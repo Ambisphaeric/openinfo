@@ -1,6 +1,6 @@
 export { Distiller, type DistillerDeps, type DistillOptions, type LlmInvoke } from './distiller.js'
 export { bucketIntoWindows, type MergeWindow, type MergeWindowConfig } from './merge.js'
-export { DistillDocuments } from './documents.js'
+export { DistillDocuments, resolveSummaryTemplate, type SummaryScopeContext } from './documents.js'
 export {
   defaultDistillTemplate,
   defaultEntitiesTemplate,

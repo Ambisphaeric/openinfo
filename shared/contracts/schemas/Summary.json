@@ -276,6 +276,23 @@
           "description": "opaque identifier",
           "type": "string"
         },
+        "templateScope": {
+          "description": "which config scope resolved this level’s template (#177 slice 2 per-workflow/app scoping) — the which-scope-won audit; absent ⇒ workspace-global",
+          "anyOf": [
+            {
+              "const": "workspace",
+              "type": "string"
+            },
+            {
+              "const": "workflow",
+              "type": "string"
+            },
+            {
+              "const": "app",
+              "type": "string"
+            }
+          ]
+        },
         "slot": {
           "description": "fabric capability slot",
           "anyOf": [

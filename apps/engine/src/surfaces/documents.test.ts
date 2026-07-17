@@ -18,8 +18,10 @@ test('SurfaceDocuments seeds the openinfo HUD and serves it by id', async () => 
     const hud = docs.get(defaultHudSurface.id)
     assert.ok(hud)
     assert.equal(hud.name, 'openinfo HUD')
-    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'relevant-now', 'moments', 'fields'])
+    assert.deepEqual(hud.stack.map((b) => b.block), ['now', 'summaries', 'summaries', 'relevant-now', 'moments', 'fields'])
     assert.equal(hud.stack.find((b) => b.block === 'relevant-now')?.top, 4)
+    // #177 slice 2: the memory headline leads — the concise five-minute VIEW then the durable session result.
+    assert.deepEqual(hud.stack.filter((b) => b.block === 'summaries').map((b) => b.query?.params['level']), ['five-minute', 'session'])
     const pill = docs.get(defaultPillSurface.id)
     assert.ok(pill)
     assert.equal(pill.version, 2)
@@ -148,12 +150,12 @@ test('SurfaceDocuments.save bumps the version and never clobbers a user edit on 
     const edited = { ...defaultHudSurface, stack: defaultHudSurface.stack.filter((b) => b.block !== 'moments') }
     const saved = docs.save(edited)
     assert.equal(saved.version, 2)
-    assert.deepEqual(saved.stack.map((b) => b.block), ['now', 'relevant-now', 'fields'])
+    assert.deepEqual(saved.stack.map((b) => b.block), ['now', 'summaries', 'summaries', 'relevant-now', 'fields'])
 
     // a fresh ensureDefaults must NOT clobber the edit
     new SurfaceDocuments(store).ensureDefaults()
     const reloaded = docs.get(defaultHudSurface.id)
-    assert.deepEqual(reloaded?.stack.map((b) => b.block), ['now', 'relevant-now', 'fields'])
+    assert.deepEqual(reloaded?.stack.map((b) => b.block), ['now', 'summaries', 'summaries', 'relevant-now', 'fields'])
     assert.equal(reloaded?.version, 2)
   } finally {
     store.close()

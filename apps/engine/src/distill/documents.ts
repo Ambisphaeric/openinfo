@@ -1,4 +1,4 @@
-import type { Mode, PromptTemplate, SummaryLevel } from '@openinfo/contracts'
+import type { Mode, PromptTemplate, SummaryLevel, SummaryScope } from '@openinfo/contracts'
 import { Mode as ModeSchema, PromptTemplate as PromptTemplateSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import type { WorkspaceRegistry } from '../store/index.js'
@@ -6,6 +6,47 @@ import { PREVIOUS_BUILTIN_BODIES, defaultAskTemplate, defaultDistillTemplate, de
 
 const TEMPLATE_KIND = 'prompt-template'
 const MODE_KIND = 'mode'
+
+/** The context a summary template is resolved against (#177 slice 2) — the active workflow / app instance. */
+export interface SummaryScopeContext {
+  workflowId?: string
+  appId?: string
+}
+
+/** Resolution precedence for a per-scope summary binding, most specific first (the voice-binding precedent). */
+const SUMMARY_SCOPE_PRECEDENCE: readonly SummaryScope[] = ['app', 'workflow', 'workspace']
+
+/** The context target a given binding scope matches against; workspace-global matches unconditionally. */
+const summaryTargetFor = (scope: SummaryScope, ctx: SummaryScopeContext): string | undefined =>
+  scope === 'app' ? ctx.appId : scope === 'workflow' ? ctx.workflowId : undefined
+
+/** True ⇒ this binding is in force for the context (its declared scope's target matches, or it is workspace-global). */
+const summaryBindingMatches = (template: PromptTemplate, scope: SummaryScope, ctx: SummaryScopeContext): boolean => {
+  const declared = template.summary!.scope ?? 'workspace'
+  if (declared !== scope) return false
+  if (scope === 'workspace') return true
+  const target = summaryTargetFor(scope, ctx)
+  return target !== undefined && template.summary!.targetId === target
+}
+
+/**
+ * Pick the summary template that governs a level in a context: the most-specific matching scope wins
+ * (app > workflow > workspace). Pure — the caller supplies the candidate templates (all summary-binding
+ * documents) and the context. Absent context ⇒ only the workspace-global binding matches, so a plain
+ * install resolves exactly as before. Returns undefined when no binding produces the level at all.
+ */
+export const resolveSummaryTemplate = (
+  templates: readonly PromptTemplate[],
+  level: SummaryLevel,
+  ctx: SummaryScopeContext = {},
+): PromptTemplate | undefined => {
+  const forLevel = templates.filter((t) => t.summary?.level === level)
+  for (const scope of SUMMARY_SCOPE_PRECEDENCE) {
+    const match = forLevel.find((t) => summaryBindingMatches(t, scope, ctx))
+    if (match !== undefined) return match
+  }
+  return undefined
+}
 
 /** The shipped prompt templates, by seed order — the code fallback GET /templates/:id resolves against an
  * unseeded store, mirroring WorkflowDocuments' loadDefaultWorkflow fallback for `workflow-default`. The
@@ -157,9 +198,16 @@ export class DistillDocuments {
     return this.templates().filter((t) => t.summary !== undefined)
   }
 
-  /** The summary prompt document for one level (latest stored, else the shipped default), or undefined. */
-  summaryTemplate(level: SummaryLevel): PromptTemplate | undefined {
-    return this.summaryTemplates().find((t) => t.summary!.level === level)
+  /**
+   * The summary prompt document for one level, RESOLVED for a scope context (#177 slice 2). Cadence/template
+   * are configurable per workflow/app, not only workspace-global: a binding scoped `workflow`/`app` whose
+   * `targetId` matches the context WINS over the workspace-global one for that level (precedence app >
+   * workflow > workspace — the voice-binding precedent). Absent context ⇒ only the workspace-global binding
+   * resolves, so the default install is unchanged. The winning template's `summary.scope` is the which-scope-won
+   * audit the producer stamps onto every summary's provenance (`templateScope`).
+   */
+  summaryTemplate(level: SummaryLevel, ctx: SummaryScopeContext = {}): PromptTemplate | undefined {
+    return resolveSummaryTemplate(this.summaryTemplates(), level, ctx)
   }
 
   /**
