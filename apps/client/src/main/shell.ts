@@ -236,6 +236,7 @@ const captureStatusInput = () => {
 const trayState = (): TrayState => ({
   visible: hudWindow?.isVisible() ?? false,
   sessionLive: liveState.live,
+  sessionTitle: liveState.liveSessionTitle, // #211: name the live session in the tray, not just "● session live"
   connected,
   engineTried,
   engineUrl: cfg.engineUrl,
@@ -349,8 +350,10 @@ const dispatch = (command: ShellCommand): void => {
       captureConsent.grant()
       captureFault = undefined
       clientLog('[shell] user started a session — capture consent granted for this launch')
+      // #211: no hardcoded placeholder title — an auto-named episode is derived from what's said (and shows
+      // an honest start-time fallback until then). A user can rename it (sovereign) via PUT /sessions/:id/title.
       void session
-        .startSession({ workspaceId: cfg.workspace, modeId: cfg.modeId, title: 'menu-bar session' })
+        .startSession({ workspaceId: cfg.workspace, modeId: cfg.modeId })
         .catch((err) => clientLog(`[shell] start session failed: ${String(err)}`))
       return
     case 'end-session': {

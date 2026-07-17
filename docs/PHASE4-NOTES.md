@@ -5847,3 +5847,57 @@ hop with no downstream summary hop, the honest "capture with no downstream hops"
 and never leaking the other frame's text. `GET /screen/status` confirms the driven path (processed 1 /
 blank 1 / skipped 1 the meta chunk / failed 0). Gates: contracts 103 / fixtures 15 / client 567 /
 engine 988 (+1), no contract change.
+
+## Slice: episode naming — derive and persist a session title from orientation output  *(#211, 2026-07-16)*
+
+The gap #211 named: `Session.title` existed but was only ever a hardcoded placeholder (`'menu-bar session'`
+from the tray; routed/auto-started sessions got none), and the built orientation judge (#131) — which lands
+a `SessionAnnotation` of nature/direction/topics — fed nothing downstream. Sessions surfaced as opaque ids
+(Settings status showed `live.id`) or a machine placeholder. This slice derives a human-meaningful EPISODE
+TITLE from the orientation output and surfaces it everywhere a session renders.
+
+**The seam.** Title derivation is DOWNSTREAM of orientation production, in the SAME judge pass — no second
+model call. `JudgeScheduler.applyAnnotation` persists the annotation (the model PROPOSAL), then
+`deriveTitle` transforms it deterministically (`distill/episode-title.ts`: `deriveEpisodeTitle` — leads with
+the top ≤2 topics, lightly framed by nature: "Meeting on …" / "Call about …" / "Working on …"; `undefined`
+when there are no topics, so a too-thin classification never mints a hollow name). This honors "model output
+= proposal" — the annotation is the proposal, the title is a pure function of it.
+
+**Persistence = APPEND-ONLY titlings, resolution over them.** A new contract `SessionTitling`
+(`records/sessionTitling.ts`, + `TitlingProvenance`) is the durable truth: one immutable row per naming,
+carrying `source: 'derived' | 'user'` and (for derived) the provenance — which orientation pass
+(`annotationId`/`templateId`/`endpoint`) and the EVIDENCE it drew from (`nature`/`direction`/`topics`). Rows
+live in a per-workspace `session_titlings` table (autoincrement `seq` = stable append order; same-ms rows
+would otherwise be unorderable — the `chat_turns` idiom). `WorkspaceRegistry.resolveTitle` is the sovereignty
+rule: latest `user` wins (a derivation NEVER clobbers a human's name), else latest `derived`, else
+`undefined`. `recordSessionTitling` appends the row AND MATERIALISES the resolved title onto `Session.title`,
+so every existing surface that reads `session.title` shows the name with zero per-read resolution — the
+titlings are the source of truth, `Session.title` is a cache. Dedup: the judge appends a derived row ONLY
+when the derived name actually CHANGES (`latestDerivedTitle`), so a re-classification with the same reading
+is a no-op — but a CHANGED reading appends (append-only history preserved). No `Session` contract change.
+
+**Surfaces (criterion 3).** A new event `session.titled` (payload = the Session with its materialised title;
+`bus/events.ts`, WS-broadcast in `api/http.ts`, in the `Events` contract) drives refresh in place. Now
+line/pill (`surfaces/hud/hud.ts` `buildNow` + `session.titled` in `REFRESH_EVENTS`): shows the derived/user
+title, with an honest start-time fallback ("started 2:16p") until one exists — never a raw id. Settings
+Status (`sections/status.ts`) leads with the title (or start-time fallback), never `live.id`. Tray
+(`main/tray-menu.ts` `trayStatusLabel` + `SessionLiveState` tracking title via `session.titled`): the live
+line reads "● Meeting on Q3 launch" instead of "● session live". The client's hardcoded `'menu-bar session'`
+placeholder is removed (`main/shell.ts`).
+
+**User sovereignty (criterion 2).** `PUT /sessions/:id/title` (`SetSessionTitleRequest`) appends a `user`
+titling and materialises it; a caller-supplied start title (`POST /sessions`) is likewise recorded `user`.
+Either outranks any derived title forever. Surface exposure of a rename affordance is follow-up polish; the
+engine route + persistence are the sovereign primitive. Reroute moves the titling history with the session
+(`moveSession` phase-1 copy + phase-2 delete), so a rerouted session keeps its name.
+
+**Acceptance (file evidence).** (1) auto/routed session gets a derived title, no up-front declaration:
+`distill/judge.test.ts` "#211 orientation derives an episode title …" (real store, orientation pass →
+persisted derived titling + materialised `Session.title` + `session.titled` published). (2) append-only +
+provenance + user-sovereign: `store/session-titling.test.ts` (resolveTitle sovereignty; re-derivation
+appends; user survives a later derivation) + `api/episode-naming-e2e.test.ts` (driven HTTP: a caller/user
+title is never clobbered by a store-recorded derived titling). (3) surfaces show it:
+`sections/status.test.ts` (title not id; fallback), `surfaces/hud/hud.test.ts` (Now line fallback → titled
+via `session.titled`), `main/tray-menu.test.ts` (episode label), `main/engine-session.test.ts`
+(SessionLiveState title refresh). Derivation itself: `distill/episode-title.test.ts`. Gates: contracts 106
+(+3) / client 570 (+3) / engine 1012 (+24). Contract additions regen'd zero-drift.

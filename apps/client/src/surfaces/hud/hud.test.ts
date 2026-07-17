@@ -138,6 +138,34 @@ test('the HUD loads a surface, renders once, and re-queries on live WS events', 
   hud.stop()
 })
 
+test('#211 the Now line names the episode: honest start-time fallback until titled, then the derived name', async () => {
+  const transport = new FakeTransport()
+  let panel: VElement | undefined
+  const hud = new Hud({ transport, onRender: (p) => { panel = p }, workspace: 'acme', now: () => new Date('2026-07-07T14:47:00Z') })
+  await hud.start()
+  assert.ok(panel)
+
+  // A live session with NO title yet — the Now line shows an honest start-time fallback, never a raw id.
+  const untitled: Session = {
+    id: 'ses-live', workspaceId: 'acme', modeId: 'mode-meeting', startedAt: '2026-07-07T14:16:00Z',
+    attribution: { evidence: [{ kind: 'manual', detail: 'x', weight: 1 }], confidence: 1 },
+  }
+  transport.live = [untitled]
+  transport.fire('session.started')
+  await tick()
+  assert.match(renderToHtml(panel), /class="ws">acme \/<\/span> started 2:16p/, 'untitled ⇒ human start-time fallback')
+  assert.doesNotMatch(renderToHtml(panel), /ses-live/, 'the session id never renders as the name')
+
+  // A derived (or user) title lands server-side; session.titled triggers a re-query and the name appears.
+  transport.live = [session({ title: 'Meeting on the renewal' })]
+  transport.fire('session.titled')
+  await tick()
+  assert.match(renderToHtml(panel), /class="ws">acme \/<\/span> Meeting on the renewal/, 'the derived title replaces the fallback in place')
+  assert.doesNotMatch(renderToHtml(panel), /started 2:16p/)
+
+  hud.stop()
+})
+
 test('the HUD renders the configured surface id (client config / ?surface=)', async () => {
   const transport = new FakeTransport()
   const hud = new Hud({ transport, onRender: () => undefined, surfaceId: 'surf-glass-minimal' })

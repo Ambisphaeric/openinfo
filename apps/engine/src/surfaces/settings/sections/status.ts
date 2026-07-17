@@ -27,6 +27,18 @@ const humanUptime = (ms: number): string => {
 /** A ● (occupied/on) or ○ (empty/off) status dot with a class for colour. */
 const dot = (on: boolean): string => `<span class="stat-dot ${on ? 'on' : 'off'}">${on ? '●' : '○'}</span>`
 
+/**
+ * The session's episode title, or an honest start-time fallback (#211) — never a raw id. A session with no
+ * derived/user title yet reads as "started 2:16 PM" (calm, human), so the row always names the episode in
+ * words. The time is the viewer-local clock of the server render, coarse to the minute.
+ */
+const sessionTitleOrStart = (title: string | undefined, startedAt: string): string => {
+  if (title !== undefined && title.trim() !== '') return title
+  const at = new Date(startedAt)
+  if (Number.isNaN(at.getTime())) return 'just started'
+  return `started ${at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+}
+
 /** One per-slot occupancy line — how many endpoints the live fabric wires into each slot. */
 const slotLinesHtml = (fabric: Fabric): string =>
   ALL_SLOTS.map((slot) => {
@@ -112,10 +124,12 @@ export const renderStatus = (data: SetupData): string => {
   )
 
   const live = data.liveSession
+  // #211: name the live session by its episode title (derived from orientation, or a user rename), never the
+  // raw id (an id is not a name — hud-voice). Until one is derived, an honest start-time fallback stands in.
   const sessionCard = card(
     'Session',
     live
-      ? row('live', `${dot(true)} session <span class="stat-mono">${escapeHtml(live.id)}</span> in ${escapeHtml(live.workspaceId)}${live.title ? ` · ${escapeHtml(live.title)}` : ''}`)
+      ? row('live', `${dot(true)} ${escapeHtml(sessionTitleOrStart(live.title, live.startedAt))} in ${escapeHtml(live.workspaceId)}`)
       : row('live', `${dot(false)} no live session`),
   )
 

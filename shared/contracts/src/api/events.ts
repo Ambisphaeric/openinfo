@@ -8,6 +8,10 @@ export const Events = {
   'session.ended': 'Session',
   'session.switched': 'Session',
   'session.rerouted': 'Session',
+  // The session's episode title changed (#211) — a derived title was minted/revised from an orientation
+  // pass, or a user renamed it. Payload is the Session with its materialised (resolved) title, so every
+  // session-rendering surface refreshes the name in place. The append-only titlings are the source of truth.
+  'session.titled': 'Session',
   'moment.created': 'Moment',
   'distillate.updated': 'Distillate',
   // Ephemeral live-transcript fast-path (#58) — payload is a TranscriptUpdate, NOT persisted anywhere.

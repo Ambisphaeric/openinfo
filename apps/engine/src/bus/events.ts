@@ -32,6 +32,9 @@ export interface EngineEvents {
   'session.ended': Session
   'session.switched': Session
   'session.rerouted': Session
+  // Episode naming (#211): a derived title was minted/revised from an orientation pass, or a user renamed the
+  // session. Payload is the Session carrying its materialised (resolved) title; append-only titlings are truth.
+  'session.titled': Session
   'draft.created': Draft
   'fabric.changed': Fabric
   'workflow.updated': WorkflowSpec

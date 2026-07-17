@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import type { CaptureChunk, Endpoint, Fabric, FieldValue, GuardHold, JudgeReview, Mode, PromptTemplate, SessionAnnotation } from '@openinfo/contracts'
-import { SESSION_ANNOTATION_SCHEMA_VERSION } from '@openinfo/contracts'
+import type { CaptureChunk, Endpoint, Fabric, FieldValue, GuardHold, JudgeReview, Mode, PromptTemplate, Session, SessionAnnotation, SessionTitling } from '@openinfo/contracts'
+import { SESSION_ANNOTATION_SCHEMA_VERSION, SESSION_TITLING_SCHEMA_VERSION } from '@openinfo/contracts'
+import { deriveEpisodeTitle } from './episode-title.js'
 import { FabricDocuments, GuardHeldError, invokeLlm, resolveEgress, type GuardOptions, type InvokeOptions, type LlmMessage, type LlmResult, type LocalRuntimeManager, type SecretResolver } from '../fabric/index.js'
 import type { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
@@ -89,6 +90,8 @@ export interface JudgeSchedulerDeps {
   publish?: (value: FieldValue) => void | Promise<void>
   /** publish the orientation annotation (orientation.updated) so the classification reaches WS clients (#131); optional in tests. */
   publishAnnotation?: (annotation: SessionAnnotation) => void | Promise<void>
+  /** publish the session with its materialised episode title (session.titled) when a derived title lands (#211); optional in tests. */
+  publishTitled?: (session: Session) => void | Promise<void>
   /** how the orientation classification is applied — the gate-ready seam (#131). Defaults to 'annotate'. */
   orientationDisposition?: OrientationDisposition
   /** injectable for tests; defaults to invoking the judge-designated llm endpoint (a sub-fabric of one endpoint). */
@@ -134,6 +137,7 @@ export class JudgeScheduler {
   private readonly values: FieldValueStore
   private readonly publish: ((v: FieldValue) => void | Promise<void>) | undefined
   private readonly publishAnnotation: ((a: SessionAnnotation) => void | Promise<void>) | undefined
+  private readonly publishTitled: ((s: Session) => void | Promise<void>) | undefined
   private readonly orientationDisposition: OrientationDisposition
   private readonly invoke: LlmInvoke
   private readonly resolveKey: SecretResolver | undefined
@@ -153,6 +157,7 @@ export class JudgeScheduler {
     this.values = deps.values
     this.publish = deps.publish
     this.publishAnnotation = deps.publishAnnotation
+    this.publishTitled = deps.publishTitled
     this.orientationDisposition = deps.orientationDisposition ?? 'annotate'
     this.resolveKey = deps.resolveKey
     this.guardDocs = deps.guardDocs
@@ -521,7 +526,45 @@ export class JudgeScheduler {
     this.store.layouts.put<SessionAnnotation>(SESSION_ANNOTATION_KIND, annotation.id, annotation)
     await this.publishAnnotation?.(annotation)
     this.log(`orientation: session ${annotation.sessionId} → ${annotation.nature}/${annotation.direction} (${annotation.topics.length} topic(s))`)
+    await this.deriveTitle(annotation)
     return annotation
+  }
+
+  /**
+   * Derive an episode title from the orientation classification and APPEND it (#211). The model output
+   * (the annotation) is the PROPOSAL; the title is a deterministic transform of it (`deriveEpisodeTitle`),
+   * so no second invoke is spent and nothing is fabricated. APPEND-ONLY + deduped: a new derived titling is
+   * appended ONLY when the derived name CHANGES (a re-derivation with the same name is a no-op — otherwise
+   * every judge pass would spam an identical row). A too-thin classification yields no title (honest — the
+   * session keeps its start-time fallback). A user rename is never touched here: the store's resolution
+   * keeps a `user` titling sovereign over any `derived` one. Best-effort: never sinks the orientation pass.
+   */
+  private async deriveTitle(annotation: SessionAnnotation): Promise<void> {
+    const title = deriveEpisodeTitle(annotation)
+    if (title === undefined) return
+    if (this.store.latestDerivedTitle(annotation.workspaceId, annotation.sessionId) === title) return
+    const titling: SessionTitling = {
+      id: `ot:${annotation.workspaceId}:${annotation.sessionId}:${this.newId()}`,
+      workspaceId: annotation.workspaceId,
+      sessionId: annotation.sessionId,
+      title,
+      source: 'derived',
+      provenance: {
+        annotationId: annotation.id,
+        templateId: annotation.provenance.templateId,
+        endpoint: annotation.provenance.endpoint,
+        ...(annotation.provenance.model !== undefined ? { model: annotation.provenance.model } : {}),
+        classifiedAt: annotation.provenance.classifiedAt,
+        nature: annotation.nature,
+        direction: annotation.direction,
+        topics: annotation.topics,
+      },
+      createdAt: this.now().toISOString(),
+      schemaVersion: SESSION_TITLING_SCHEMA_VERSION,
+    }
+    const updated = this.store.recordSessionTitling(titling)
+    this.log(`orientation: session ${annotation.sessionId} titled "${title}" (derived)`)
+    if (updated !== undefined) await this.publishTitled?.(updated)
   }
 
   /** The deterministic annotation-document id for a session (#131) — the id IS the SessionAnnotation.id. */

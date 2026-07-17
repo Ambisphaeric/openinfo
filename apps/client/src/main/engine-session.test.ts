@@ -124,6 +124,32 @@ test('SessionLiveState tracks live from WS events, scoped to its workspace', () 
   assert.deepEqual(changes, [true, false])
 })
 
+test('#211 SessionLiveState tracks the episode title and refreshes on session.titled', () => {
+  const state = new SessionLiveState('default')
+  const changes: boolean[] = []
+  state.onChange((live) => changes.push(live))
+
+  state.applyEvent({ name: 'session.started', payload: session({ id: 's1' }) })
+  assert.equal(state.liveSessionTitle, undefined, 'untitled at first')
+
+  // a derived/user title lands mid-session — the tray label refreshes WITHOUT a liveness flip
+  const changed = state.applyEvent({ name: 'session.titled', payload: session({ id: 's1', title: 'Meeting on Q3 launch' }) })
+  assert.equal(changed, true, 'the change is signalled so the tray repaints')
+  assert.equal(state.liveSessionTitle, 'Meeting on Q3 launch')
+  assert.equal(state.live, true, 'still live')
+
+  // a titled event for a DIFFERENT session is ignored
+  state.applyEvent({ name: 'session.titled', payload: session({ id: 'sX', title: 'Someone else' }) })
+  assert.equal(state.liveSessionTitle, 'Meeting on Q3 launch')
+
+  // an identical retitle is a no-op (no needless repaint)
+  assert.equal(state.applyEvent({ name: 'session.titled', payload: session({ id: 's1', title: 'Meeting on Q3 launch' }) }), false)
+
+  // ending the session clears the title too
+  state.applyEvent({ name: 'session.ended', payload: session({ id: 's1', endedAt: '2026-07-07T01:00:00.000Z' }) })
+  assert.equal(state.liveSessionTitle, undefined)
+})
+
 test('fabric() GETs the live fabric', async () => {
   const fab: Fabric = { slots: emptySlots() }
   const { fetch, calls } = stubFetch(fab)

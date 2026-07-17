@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Endpoint, Fabric, Flag, QueueStatus, WorkflowSpec } from '@openinfo/contracts'
+import type { Endpoint, Fabric, Flag, QueueStatus, Session, WorkflowSpec } from '@openinfo/contracts'
 import type { SetupData } from '../../setup/view.js'
 import { renderStatus } from './status.js'
 
@@ -63,6 +63,31 @@ test('a queue lastFailure on the stt endpoint surfaces as the health-gate blocke
   }
   const html = renderStatus(data({ liveFabric: fabric, flags, queue }))
   assert.match(html, /Start the stt server on :9001/)
+})
+
+const liveSession = (over: Partial<Session> = {}): Session => ({
+  id: 'ses-abc123',
+  workspaceId: 'default',
+  modeId: 'mode-meeting',
+  startedAt: '2026-07-07T14:16:00.000Z',
+  attribution: { evidence: [], confidence: 1 },
+  ...over,
+})
+
+test('#211 Status names the live session by its episode title, never its raw id', () => {
+  const html = renderStatus(data({ liveSession: liveSession({ title: 'Meeting on Q3 launch' }) }))
+  assert.match(html, /Meeting on Q3 launch/)
+  assert.doesNotMatch(html, /ses-abc123/, 'the opaque id is not a name (hud-voice) — it must not render')
+})
+
+test('#211 an untitled live session shows an honest start-time fallback, not an id', () => {
+  const html = renderStatus(data({ liveSession: liveSession() }))
+  assert.doesNotMatch(html, /ses-abc123/, 'no raw id')
+  assert.match(html, /started \d{1,2}:\d{2}/, 'a human start-time label stands in until a title is derived')
+})
+
+test('#211 no live session still reads honestly', () => {
+  assert.match(renderStatus(data()), /no live session/)
 })
 
 test('workflow-mode Status names the active VLM slot instead of the legacy OCR slot', () => {

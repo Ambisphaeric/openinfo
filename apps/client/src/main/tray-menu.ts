@@ -16,6 +16,12 @@ export interface TrayState {
   visible: boolean
   /** Is there a live (unended) session in the target workspace? (drives Start ⇄ End) */
   sessionLive: boolean
+  /**
+   * The live session's episode title (#211) — its human name, derived from what's been said (or set by the
+   * user). When present, the status line leads with it ("● Meeting on Q3 launch") instead of the bare "●
+   * session live". Undefined until a title is derived/set; the label then falls back to the plain live state.
+   */
+  sessionTitle?: string | undefined
   /** True once the initial session state has been fetched — before that Start/End is disabled. */
   connected: boolean
   /**
@@ -143,13 +149,16 @@ export const trayStatusLabel = (state: TrayState): string => {
     return '○ connecting…'
   }
   if (!state.sessionLive) return '○ no session'
+  // #211: when the session has a name (derived from what's been said, or user-set), the live line LEADS with
+  // it — "● Meeting on Q3 launch" reads as a teammate, not machinery. Untitled falls back to "● session live".
+  const head = state.sessionTitle && state.sessionTitle.trim() !== '' ? `● ${state.sessionTitle.trim()}` : '● session live'
   // A dropped/failed capture start is surfaced VISIBLY and takes priority over the warming-up state, so
   // the user is never left staring at "mic…" while nothing happens (issue #41).
-  if (state.captureFault) return `● session live · ⚠ capture failed — ${state.captureFault}`
-  if (state.micBlocked) return '● session live · mic blocked'
-  if (state.capturing) return `● session live · ● rec (${recSourcesLabel(state)})`
-  if (state.micStarting) return '● session live · ○ mic…'
-  return '● session live'
+  if (state.captureFault) return `${head} · ⚠ capture failed — ${state.captureFault}`
+  if (state.micBlocked) return `${head} · mic blocked`
+  if (state.capturing) return `${head} · ● rec (${recSourcesLabel(state)})`
+  if (state.micStarting) return `${head} · ○ mic…`
+  return head
 }
 
 /**

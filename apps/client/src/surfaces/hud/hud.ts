@@ -13,7 +13,7 @@ const DEFAULT_SURFACE_ID = 'surf-openinfo-hud'
  * engine restart are missed, so a fresh socket re-hydrates once to catch up (coalesced; harmless on the
  * very first open, which lands right after start()'s own refresh).
  */
-const REFRESH_EVENTS = new Set(['moment.created', 'entity.updated', 'distillate.updated', 'session.started', 'session.ended', 'ws.open'])
+const REFRESH_EVENTS = new Set(['moment.created', 'entity.updated', 'distillate.updated', 'session.started', 'session.ended', 'session.titled', 'ws.open'])
 
 /** The ephemeral live-transcript fast-path event (#58) — PAYLOAD-fed, not a query-refresh trigger. */
 const TRANSCRIPT_EVENT = 'transcript.updated'
@@ -327,7 +327,9 @@ export class Hud {
     const context: NowContext = { live: session !== undefined && session.endedAt === undefined }
     if (session) {
       context.workspace = session.workspaceId
-      if (session.title !== undefined) context.title = session.title
+      // #211: name the episode. A derived/user title lands on session.title (resolved server-side); until one
+      // exists, an honest start-time fallback stands in — never a raw id, never a machine placeholder.
+      context.title = session.title !== undefined && session.title.trim() !== '' ? session.title : `started ${clockLabel(session.startedAt)}`
       context.elapsed = `${clockLabel(session.startedAt)} · ${elapsedLabel(session.startedAt, this.clock())}`
     }
     const topic = this.latestMomentText()
