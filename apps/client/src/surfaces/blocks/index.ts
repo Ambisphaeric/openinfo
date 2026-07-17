@@ -19,9 +19,11 @@ import { renderSenseGates } from './sense-gates.js'
 import { renderSenseLanes } from './sense-lanes.js'
 import { renderInput } from './input.js'
 import { renderCustom } from './custom.js'
+import { renderSessionControlBlock } from './session-control.js'
 
 export { momentGlyph, entityGlyph } from './glyphs.js'
 export { actionButtons, glyphStrip, rowAffordances, GLYPH_VERBS, type ActionPayload } from './actions.js'
+export { renderSessionControl, renderSessionControlBlock, NO_BRIDGE_REASON, type SessionReadiness } from './session-control.js'
 
 /**
  * The built-in block registry — one renderer per BlockTypeName (append-only). `custom` doubles as the
@@ -49,5 +51,6 @@ export const defaultBlockRegistry: BlockRegistry = {
   'sense-gates': renderSenseGates,
   'sense-lanes': renderSenseLanes,
   input: renderInput,
+  'session-control': renderSessionControlBlock,
   custom: renderCustom,
 }

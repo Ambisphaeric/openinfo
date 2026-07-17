@@ -84,6 +84,10 @@
         {
           "const": "sense-lanes",
           "type": "string"
+        },
+        {
+          "const": "session-control",
+          "type": "string"
         }
       ]
     },
@@ -286,6 +290,14 @@
               },
               {
                 "const": "mark-for-follow-up",
+                "type": "string"
+              },
+              {
+                "const": "session-start",
+                "type": "string"
+              },
+              {
+                "const": "session-stop",
                 "type": "string"
               }
             ]

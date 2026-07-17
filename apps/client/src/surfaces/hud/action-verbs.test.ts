@@ -132,6 +132,35 @@ test('dismiss click calls its handler with the item payload, and a rejected writ
   assert.match(bad.className, /\bcopyfail\b/)
 })
 
+test('session-start / session-stop clicks dispatch through the injected shell handlers; disabled never fires (#136)', async () => {
+  const started: number[] = []
+  const stopped: number[] = []
+  const { target, clickButton } = makeStage()
+  wireActions(target, { copy: () => undefined, sessionStart: () => void started.push(1), sessionStop: () => void stopped.push(1) })
+
+  // the LIVE start control (rendered when the shell is ready + stopped) dispatches session-start
+  clickButton(makeButton({ 'data-verb': 'session-start' }, 'Record', 'session-record'))
+  await flush()
+  assert.deepEqual([started.length, stopped.length], [1, 0]) // start reached its handler, stop untouched
+
+  // the SAME control while live dispatches session-stop (one control, both jobs — the tray toggle model)
+  clickButton(makeButton({ 'data-verb': 'session-stop' }, 'Stop', 'session-record recording'))
+  await flush()
+  assert.deepEqual([started.length, stopped.length], [1, 1]) // stop reached its handler
+
+  // the honestly-DISABLED control carries NO data-verb (only when ready does it get a verb), so a click on
+  // it never reaches a dispatch branch — the "never render clickable when it can't succeed" guarantee
+  clickButton(makeButton({ 'data-nt': 'record' }, 'Record', 'session-record pending'))
+  await flush()
+  assert.deepEqual([started.length, stopped.length], [1, 1]) // unchanged — the disabled control is inert
+
+  // a build with NO session handlers injected (no shell bridge) never dispatches either — honest no-op
+  const bare = makeStage()
+  wireActions(bare.target, { copy: () => undefined })
+  bare.clickButton(makeButton({ 'data-verb': 'session-start' }, 'Record', 'session-record'))
+  await flush() // no throw, nothing to fire — the branch is skipped because the handler is absent
+})
+
 // ---- served e2e: a live throwaway engine implementing the write routes over real fetch ----
 interface StoredSignal { workspaceId: string; source: string; itemId: string; kind: string; at: string }
 interface StoredCorrection { workspaceId: string; entityId: string; heard: string; verdict: string; rivalId?: string; rivalName?: string }

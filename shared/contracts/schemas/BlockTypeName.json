@@ -76,6 +76,10 @@
     {
       "const": "sense-lanes",
       "type": "string"
+    },
+    {
+      "const": "session-control",
+      "type": "string"
     }
   ]
 }

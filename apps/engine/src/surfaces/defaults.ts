@@ -25,6 +25,11 @@ export const defaultHudSurface: Surface = {
   context: 'meeting',
   version: 1,
   stack: [
+    // #136 on-surface session control — the start/stop affordance the owner asked for, on the HUD too (not
+    // menu-bar-only). Layout-only (no query): it reads the live state from `now`'s context + the shell's
+    // readiness signal, and dispatches through the SAME tray session path (consent unchanged, #41). It leads
+    // the stack so the primary act — turn capture on/off — is the first thing on the glance.
+    { block: 'session-control', id: 'hud-session-control' },
     { block: 'now' },
     // #177 slice 2 — the memory HEADLINE. The default human surface leads with the concise five-minute VIEW
     // and the durable session result, NOT the sentence-level distillate stream (which now lives on the

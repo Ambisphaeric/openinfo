@@ -61,6 +61,14 @@
         {
           "const": "mark-for-follow-up",
           "type": "string"
+        },
+        {
+          "const": "session-start",
+          "type": "string"
+        },
+        {
+          "const": "session-stop",
+          "type": "string"
         }
       ]
     },

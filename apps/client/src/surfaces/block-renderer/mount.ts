@@ -87,6 +87,16 @@ export interface ActionHandlers {
   pillToggle?: () => void
   /** Open the EXISTING settings path from the pill's settings-on-hover affordance (shell bridge). */
   pillSettings?: () => void
+  /**
+   * Start a session from an on-surface control (#136) — the SAME shell path the tray's Start Session uses
+   * (dev-entry → the openinfoSession bridge → shell.ts `dispatch('start-session')`: capture consent granted
+   * there, one lifecycle). NOT a paintFeedback write: the outcome (a session started, capture began, or a
+   * fault) flows back as the live/capture state on the next render, exactly like the tray's label flip. A
+   * build without the bridge leaves the control disabled, so this never fires there.
+   */
+  sessionStart?: () => void
+  /** Stop the live session from an on-surface control (#136) — the SAME shell `end-session` path (revokes consent). */
+  sessionStop?: () => void
 }
 
 /** Replace the target's content with a freshly rendered VNode (called on every live update). */
@@ -155,6 +165,8 @@ export const WIRED_VERBS: ReadonlySet<string> = new Set([
   'pill-face',
   'pill-toggle',
   'pill-settings',
+  'session-start',
+  'session-stop',
 ])
 
 /**
@@ -256,6 +268,19 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
       // Settings-on-hover: open the EXISTING settings path over the shell bridge. Not a paintFeedback
       // write — a fire-and-forget open handled in main; a missing bridge is an honest no-op there.
       handlers.pillSettings()
+      return
+    }
+    if (verb === 'session-start' && handlers.sessionStart) {
+      // #136 in-window start: dispatch through the SAME shell session path the tray uses (consent granted
+      // in main). Not paintFeedback — the session.started event + readiness snapshot re-render the control
+      // into its live/capture state, exactly like the tray's label flip. The button is disabled when it
+      // cannot act, so a live click always has a real dispatch behind it.
+      handlers.sessionStart()
+      return
+    }
+    if (verb === 'session-stop' && handlers.sessionStop) {
+      // #136 in-window stop: the SAME shell end-session path (revokes consent so nothing auto-resumes).
+      handlers.sessionStop()
       return
     }
     // Reached by a WIRED_VERBS verb whose handler was not injected, or whose button carries no payload:

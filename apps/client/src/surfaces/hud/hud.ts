@@ -1,5 +1,5 @@
 import type { CaptureSource, Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
-import { renderSurface, clockLabel, elapsedLabel, type BlockRegistry, type NowContext, type SurfaceRenderInput, type VElement } from '../block-renderer/index.js'
+import { renderSurface, clockLabel, elapsedLabel, type BlockRegistry, type NowContext, type SessionReadiness, type SurfaceRenderInput, type VElement } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
 import { pruneTranscript, renderLiveTranscript, type TranscriptLine } from './live-transcript.js'
 import { patchLiveSenseResults, reconcileLiveSenseHydration, sanitizeSenseLaneSnapshot } from './sense-lane-cache.js'
@@ -59,6 +59,13 @@ export interface HudOptions {
    * the InputSession, which appends the delta to its in-flight turn. Additive/optional.
    */
   onChatDelta?: (payload: unknown) => void
+  /**
+   * #136: the on-surface session control's can-this-act signal, read FRESH on every render (like the pill's
+   * state getter) so a change in engine/capture readiness repaints the control without a re-query. The dev
+   * entry supplies it from the shell's openinfoSession bridge; absent ⇒ no bridge (browser dev / served
+   * frame), so the control renders its disabled, disclosed state. Never fetches — a pure state read.
+   */
+  sessionReadiness?: () => SessionReadiness | undefined
 }
 
 /**
@@ -82,6 +89,7 @@ export class Hud {
   private readonly onError: ((error: unknown) => void) | undefined
   private readonly onSurfaceLoaded: ((surface: Surface) => void) | undefined
   private readonly onChatDelta: ((payload: unknown) => void) | undefined
+  private readonly sessionReadiness: (() => SessionReadiness | undefined) | undefined
 
   private surface: Surface | undefined
   private results: (QueryResult | undefined)[] = []
@@ -115,6 +123,7 @@ export class Hud {
     this.onError = options.onError
     this.onSurfaceLoaded = options.onSurfaceLoaded
     this.onChatDelta = options.onChatDelta
+    this.sessionReadiness = options.sessionReadiness
   }
 
   /** Load the surface document, hydrate + render once, then start listening for live updates. */
@@ -261,7 +270,10 @@ export class Hud {
     if (!this.surface) return
     const now = this.buildNow()
     const clarify = { suppressed: this.clarifySuppressed, ...(this.clarifyExpanded !== undefined ? { expanded: this.clarifyExpanded } : {}) }
-    const panel = this.renderSurface({ surface: this.surface, now, results: this.results, clarify }, this.registry)
+    // #136: read the session-control readiness fresh each render (a pure state read, never a fetch) so a
+    // change in engine/capture state repaints the on-surface control. Absent ⇒ no shell bridge (disabled).
+    const session = this.sessionReadiness?.()
+    const panel = this.renderSurface({ surface: this.surface, now, results: this.results, clarify, ...(session !== undefined ? { session } : {}) }, this.registry)
     // Compose the event-fed live-transcript feed onto the query-rendered panel (#58). Pruned here so the
     // feed self-expires on every repaint; appended LAST so the distilled blocks keep primacy and the raw
     // live strip reads as a distinct layer beneath them. Absent (idle, nothing to say) ⇒ panel unchanged.

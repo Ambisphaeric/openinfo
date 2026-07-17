@@ -1,0 +1,8 @@
+{ "id": "surf-session-control", "name": "Session control surface", "context": "any", "version": 1,
+  "stack": [
+    { "block": "session-control", "id": "blk-session-control" },
+    { "block": "now" },
+    { "block": "moments", "id": "blk-moments", "show": "on-match", "top": 20,
+      "query": { "source": "moments", "params": { "session": "current" }, "top": 20 },
+      "actions": [ { "id": "act-start", "label": "Record", "verb": "session-start", "params": {} },
+                   { "id": "act-stop", "label": "Stop", "verb": "session-stop", "params": {} } ] } ] }

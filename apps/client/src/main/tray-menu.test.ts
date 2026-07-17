@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTrayMenu, recSourcesLabel, senseDot, setupItemLabel, trayStatusLabel, trayTooltip, type TrayState } from './tray-menu.js'
+import { buildTrayMenu, recSourcesLabel, senseDot, sessionControlReadiness, setupItemLabel, trayStatusLabel, trayTooltip, type TrayState } from './tray-menu.js'
 
 const state = (over: Partial<TrayState> = {}): TrayState => ({ visible: false, sessionLive: false, connected: true, ...over })
 
@@ -256,4 +256,22 @@ test('quit is always present and enabled', () => {
   const q = item(buildTrayMenu(state()), 'quit')
   assert.equal(q?.command, 'quit')
   assert.equal(q?.enabled, true)
+})
+
+test('sessionControlReadiness mirrors the tray: the on-surface control can act iff the tray can (#136)', () => {
+  // Connected, no session, no fault → ready with no capture note (the in-window Record can start).
+  assert.deepEqual(sessionControlReadiness(state({ connected: true })), { ready: true })
+
+  // Not connected: honest disabled reason distinguishes "not yet tried" from "tried and failed".
+  assert.deepEqual(sessionControlReadiness(state({ connected: false, engineTried: false })), { ready: false, reason: 'Connecting to the engine…' })
+  assert.deepEqual(sessionControlReadiness(state({ connected: false, engineTried: true })), { ready: false, reason: 'Engine unreachable — reconnecting' })
+
+  // A skew REFUSAL leads over everything — same as the tray's status line (won't drive sessions through it).
+  assert.deepEqual(sessionControlReadiness(state({ connected: true, engineSkewRefused: 'v0.0.1 ≠ v0.0.2' })), { ready: false, reason: 'Engine refused — version mismatch' })
+
+  // Mic-blocked / a capture fault do NOT disable start/stop (the tray keeps Start enabled) — they ride as an
+  // honest capture note the control shows while live, matching the tray's `● rec` / `mic blocked` status.
+  assert.deepEqual(sessionControlReadiness(state({ connected: true, micBlocked: true })), { ready: true, capture: { tone: 'warn', note: 'Mic blocked — audio off, notes still capture' } })
+  assert.deepEqual(sessionControlReadiness(state({ connected: true, captureFault: 'renderer crashed' })), { ready: true, capture: { tone: 'warn', note: 'Capture failed — renderer crashed' } })
+  assert.deepEqual(sessionControlReadiness(state({ connected: true, capturing: true, systemCapturing: true })), { ready: true, capture: { tone: 'rec', note: 'Recording · mic + system' } })
 })

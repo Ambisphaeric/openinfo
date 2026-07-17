@@ -4,6 +4,7 @@
   "context": "meeting",
   "version": 1,
   "stack": [
+    { "block": "session-control", "id": "hud-session-control" },
     { "block": "now" },
     {
       "block": "relevant-now",

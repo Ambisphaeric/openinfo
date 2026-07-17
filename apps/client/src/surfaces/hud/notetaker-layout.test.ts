@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Distillate, FieldValue, Moment, Pin, QueryResult, Session, Summary, Surface, TodoItem } from '@openinfo/contracts'
-import { renderToHtml, type NowContext, type VElement } from '../block-renderer/index.js'
+import { renderToHtml, type NowContext, type SessionReadiness, type VElement } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
 import { renderNotetaker, zoneOf, partitionZones } from './notetaker-layout.js'
 
@@ -149,11 +149,11 @@ test('the shipped note-taker document renders three zones through the real rende
   assert.doesNotMatch(left, /nt-record/) // the record button is NOT in the left rail
   assert.doesNotMatch(left, /Rolling — Dana/) // the rolling summary is NOT in the left rail
 
-  // CENTER canvas: the relocated Record affordance (honest DISABLED placeholder) + context + notes + summary.
-  // #136/interaction-honesty: the record button is DISABLED (no live handler) and discloses where recording
-  // is actually controlled with an INLINE note (`.nt-record-note`), never a tooltip-only fake-live button.
-  assert.match(center, /class="nt-record pending"[^>]*data-nt="record"[^>]*disabled/)
-  assert.match(center, /class="nt-record-note">Recording is controlled from the menu bar for now/) // inline disclosure
+  // CENTER canvas: the #136 in-window session control + context + notes + summary. With NO shell readiness
+  // in this render input (a plain frame), the control is honestly DISABLED with the true reason inline
+  // (`.session-record-note`), never a tooltip-only fake-live button — the interaction-honesty pattern.
+  assert.match(center, /class="session-record pending"[^>]*data-nt="record"[^>]*disabled/)
+  assert.match(center, /class="session-record-note">Recording is controlled from the desktop app/) // inline disclosure
   assert.doesNotMatch(center, /#136/) // #227: end-user copy never leaks a raw issue number
   assert.match(center, /Q3 renewal — security review/) // the now context line
   assert.match(center, /Agreed to ship the quote Friday/) // the live note (moments)
@@ -168,6 +168,44 @@ test('the shipped note-taker document renders three zones through the real rende
   assert.match(right, /Q3 renewal pricing/) // the fast field value
   assert.match(right, /class="dot provisional"/) // the #66 micro-state dot rides through unchanged
   assert.doesNotMatch(right, /they agreed to ship the renewal quote Friday/) // the center summary stays in the center
+})
+
+test('the note-taker Record control is LIVE when the shell is ready: start when stopped, stop when live (#136)', async () => {
+  const surface = await loadNotetaker()
+  const centerOf = (input: Parameters<typeof renderNotetaker>[0]): string => zones(renderNotetaker(input, defaultBlockRegistry)).center
+
+  // Ready + STOPPED (no live session) → a LIVE start button dispatching the wired `session-start` verb.
+  const stopped = centerOf({ surface, now: { ...now, live: false }, results: results(), session: { ready: true } })
+  assert.match(stopped, /class="session-record"[^>]*data-nt="record"[^>]*data-verb="session-start"/)
+  assert.doesNotMatch(stopped, /disabled/) // it is genuinely live, not the placeholder
+  assert.match(stopped, />Record</)
+
+  // Ready + LIVE → the SAME control now STOPS the session (wired `session-stop`) + an honest capture note.
+  const capturing: SessionReadiness = { ready: true, capture: { tone: 'rec', note: 'Recording · mic + system' } }
+  const live = centerOf({ surface, now: { ...now, live: true }, results: results(), session: capturing })
+  assert.match(live, /class="session-record recording"[^>]*data-nt="record"[^>]*data-verb="session-stop"/)
+  assert.match(live, />Stop</)
+  assert.match(live, /class="session-record-note">Recording · mic \+ system/) // honest capture sub-state
+})
+
+test('the note-taker Record control is honestly DISABLED with the true reason when the shell cannot act (#136)', async () => {
+  const surface = await loadNotetaker()
+  const centerOf = (session: SessionReadiness | undefined): string =>
+    zones(renderNotetaker({ surface, now, results: results(), ...(session !== undefined ? { session } : {}) }, defaultBlockRegistry)).center
+
+  // Each honest-disabled reason: not-connected engine, skew-refused, and no bridge at all (undefined). The
+  // button carries `disabled` (never receives a click) and the TRUE reason renders inline (hud-voice).
+  const unreachable = centerOf({ ready: false, reason: 'Engine unreachable — reconnecting' })
+  assert.match(unreachable, /class="session-record pending"[^>]*data-nt="record"[^>]*disabled/)
+  assert.match(unreachable, /class="session-record-note">Engine unreachable — reconnecting/)
+
+  const skew = centerOf({ ready: false, reason: 'Engine refused — version mismatch' })
+  assert.match(skew, /class="session-record pending"[^>]*disabled/)
+  assert.match(skew, /class="session-record-note">Engine refused — version mismatch/)
+
+  const noBridge = centerOf(undefined) // a plain browser / served frame — no desktop shell
+  assert.match(noBridge, /class="session-record pending"[^>]*disabled/)
+  assert.match(noBridge, /class="session-record-note">Recording is controlled from the desktop app/)
 })
 
 test('the note-taker zones are honest when empty (always-on blocks explain themselves, on-match blocks hide)', async () => {
