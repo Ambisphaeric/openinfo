@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type Bundle, type CaptureChunk, type ContextPacket, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type Bundle, type CaptureChunk, type ContextPacket, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type SetSessionTitleRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type SessionTitling, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { SESSION_TITLING_SCHEMA_VERSION } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
 import { DistillDocuments, Distiller, DistillCadence, DEFAULT_DISTILL_CADENCE_MS, FieldValueStore, FastFieldScheduler, JudgeScheduler, transcribeChunks, isAudioChunk, buildTranscriptUpdates, TranscriptRing, EchoDedupe, echoDedupeEnabled, ECHO_DEDUPE_WINDOW_MS, type DistillOptions } from '../distill/index.js'
@@ -267,6 +268,9 @@ export function createEngineApp(options: EngineOptions): EngineApp {
     // SessionAnnotation and emits orientation.updated — the trigger source a contextual sidebar (#134)
     // subscribes to. Disposition defaults to 'annotate' (the gate-ready seam; a future config flips to 'gate').
     publishAnnotation: (annotation) => bus.publish('orientation.updated', annotation),
+    // Episode naming (#211): when the orientation pass mints/revises a DERIVED title, the session is
+    // re-broadcast with its materialised title so every session-rendering surface refreshes the name.
+    publishTitled: (session) => bus.publish('session.titled', session),
     log,
   })
   // Seam (see PHASE2-NOTES): distill rides the queue drain, gated on distill.enabled (OFF by
@@ -799,6 +803,8 @@ export function createEngineApp(options: EngineOptions): EngineApp {
   bus.subscribe('session.ended', (session) => ws.broadcast('session.ended', session))
   bus.subscribe('session.switched', (session) => ws.broadcast('session.switched', session))
   bus.subscribe('session.rerouted', (session) => ws.broadcast('session.rerouted', session))
+  // Episode naming (#211): the session's title was derived or renamed — surfaces refresh the name in place.
+  bus.subscribe('session.titled', (session) => ws.broadcast('session.titled', session))
   bus.subscribe('draft.created', (draft) => ws.broadcast('draft.created', draft))
   bus.subscribe('fabric.changed', (fabricDoc) => ws.broadcast('fabric.changed', fabricDoc))
   bus.subscribe('workflow.updated', (workflowSpec) => ws.broadcast('workflow.updated', workflowSpec))
@@ -1100,6 +1106,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'POST' && sessionEnd?.[1]) return endSession(res, ctx, decodeURIComponent(sessionEnd[1]))
   const sessionReroute = url.pathname.match(/^\/sessions\/([^/]+)\/reroute$/)
   if (req.method === 'POST' && sessionReroute?.[1]) return reroute(req, res, ctx, decodeURIComponent(sessionReroute[1]))
+  const sessionTitle = url.pathname.match(/^\/sessions\/([^/]+)\/title$/)
+  if (req.method === 'PUT' && sessionTitle?.[1]) return setSessionTitle(req, res, ctx, decodeURIComponent(sessionTitle[1]))
   if (req.method === 'GET' && url.pathname === '/moments') return send(res, 200, readMoments(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/entities') return send(res, 200, readEntities(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/relevant') return send(res, 200, readRelevant(ctx.store, url))
@@ -1746,8 +1754,46 @@ async function startSession(req: IncomingMessage, res: ServerResponse, ctx: Hand
     ...(request.title !== undefined ? { title: request.title } : {}),
   }
   ctx.store.saveSession(session)
+  // #211: a caller-supplied title is a SOVEREIGN user name — record it as an append-only `user` titling so a
+  // later orientation-derived title never clobbers it. The auto/routed case supplies none: it is named by
+  // derivation (and shows an honest start-time fallback until then), never a hardcoded placeholder.
+  if (request.title !== undefined) {
+    ctx.store.recordSessionTitling(userTitling(ctx, session.workspaceId, session.id, request.title, now))
+  }
   await ctx.bus.publish('session.started', session)
   send(res, 200, session)
+}
+
+/** Mint an append-only USER-source SessionTitling (#211) — a sovereign rename or a caller-supplied start title. */
+function userTitling(ctx: HandlerContext, workspaceId: string, sessionId: string, title: string, at: string): SessionTitling {
+  return {
+    id: `ot:${workspaceId}:${sessionId}:${randomUUID()}`,
+    workspaceId,
+    sessionId,
+    title,
+    source: 'user',
+    createdAt: at,
+    schemaVersion: SESSION_TITLING_SCHEMA_VERSION,
+  }
+}
+
+/**
+ * Rename a session's episode title (#211) — a sovereign USER title. Appends an append-only `user`-source
+ * titling and materialises it onto the session (a user title outranks any derived one and is never clobbered
+ * by a later orientation pass). Unknown id ⇒ 404; empty title ⇒ 400. Emits session.titled so surfaces
+ * refresh the name in place. The session is looked up across workspaces (ids are globally unique).
+ */
+async function setSessionTitle(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext, id: string): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('SetSessionTitleRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid SetSessionTitleRequest', details: errors })
+  const session = ctx.store.findSession(id)
+  if (!session) return send(res, 404, { error: `no such session: ${id}` })
+  const title = (body as SetSessionTitleRequest).title.trim()
+  if (title === '') return send(res, 400, { error: 'title must not be blank' })
+  const updated = ctx.store.recordSessionTitling(userTitling(ctx, session.workspaceId, session.id, title, new Date().toISOString()))
+  if (updated !== undefined) await ctx.bus.publish('session.titled', updated)
+  send(res, 200, updated ?? session)
 }
 
 /**

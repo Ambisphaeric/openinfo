@@ -514,6 +514,21 @@ export const RerouteRequest = Type.Object(
 export type RerouteRequest = Static<typeof RerouteRequest>
 
 /**
+ * The body of `PUT /sessions/:id/title` (#211) — a sovereign USER rename of a session's episode title.
+ * The caller supplies ONLY the human title; the engine appends an APPEND-ONLY `user`-source
+ * SessionTitling (stamping id/timestamps/provenance itself) and materialises it onto the session. A
+ * user title outranks any derived title and is never clobbered by a later orientation pass. A dedicated
+ * payload (not a partial Session), mirroring RerouteRequest's precedent.
+ */
+export const SetSessionTitleRequest = Type.Object(
+  {
+    title: Type.String({ minLength: 1, description: 'the human-meaningful title to give this session' }),
+  },
+  { $id: 'SetSessionTitleRequest', additionalProperties: false },
+)
+export type SetSessionTitleRequest = Static<typeof SetSessionTitleRequest>
+
+/**
  * The body of `POST /context/packets/build` (#176) — run the deterministic ContextPacket builder over
  * ONE session's stored observations. The caller names only the scope; every packet field (ids, windows,
  * refs, revisions, timestamps) is engine-derived from the stored records — the caller invents nothing,

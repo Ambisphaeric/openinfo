@@ -1,0 +1,55 @@
+{
+  "$id": "TitlingProvenance",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "annotationId",
+    "templateId",
+    "endpoint",
+    "classifiedAt",
+    "nature",
+    "direction",
+    "topics"
+  ],
+  "properties": {
+    "annotationId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "templateId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "endpoint": {
+      "description": "the fabric endpoint that classified (never a secret value)",
+      "type": "string"
+    },
+    "model": {
+      "description": "the model that answered, when the endpoint names one",
+      "type": "string"
+    },
+    "classifiedAt": {
+      "format": "date-time",
+      "description": "ISO-8601 timestamp",
+      "type": "string"
+    },
+    "nature": {
+      "description": "the orientation nature the title drew from (evidence, not fabricated)",
+      "type": "string"
+    },
+    "direction": {
+      "description": "the orientation direction the title drew from",
+      "type": "string"
+    },
+    "topics": {
+      "description": "the orientation topics the title drew from",
+      "type": "array",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      }
+    }
+  }
+}

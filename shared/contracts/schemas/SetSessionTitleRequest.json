@@ -1,0 +1,15 @@
+{
+  "$id": "SetSessionTitleRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "title"
+  ],
+  "properties": {
+    "title": {
+      "minLength": 1,
+      "description": "the human-meaningful title to give this session",
+      "type": "string"
+    }
+  }
+}

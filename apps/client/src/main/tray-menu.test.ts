@@ -68,6 +68,18 @@ test('the status header + tooltip reflect live-session state', () => {
   assert.match(trayTooltip(state({ sessionLive: false })), /idle/)
 })
 
+test('#211 the live status line leads with the episode title when the session is named', () => {
+  assert.equal(trayStatusLabel(state({ sessionLive: true, sessionTitle: 'Meeting on Q3 launch' })), '● Meeting on Q3 launch')
+  // the title composes with the capture suffix, not instead of it
+  assert.equal(
+    trayStatusLabel(state({ sessionLive: true, sessionTitle: 'Design review', capturing: true })),
+    '● Design review · ● rec (mic only)',
+  )
+  // untitled falls back to the plain live state (never a raw id); blank title is treated as untitled
+  assert.equal(trayStatusLabel(state({ sessionLive: true })), '● session live')
+  assert.equal(trayStatusLabel(state({ sessionLive: true, sessionTitle: '   ' })), '● session live')
+})
+
 test('the tooltip gains a quiet "· watching context" note when focus polling is active (session or not)', () => {
   assert.match(trayTooltip(state({ watchingContext: true })), /watching context/) // no session — focus is independent
   assert.match(trayTooltip(state({ sessionLive: true, watchingContext: true })), /session live · watching context/)

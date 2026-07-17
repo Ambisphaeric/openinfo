@@ -106,6 +106,7 @@ export const needsModelSetup = (fabric: Fabric): boolean => fabric.slots.llm.len
  */
 export class SessionLiveState {
   private liveId: string | undefined
+  private liveTitle: string | undefined
   private onChangeCb: ((live: boolean) => void) | undefined
 
   constructor(private readonly workspace: string) {}
@@ -123,12 +124,17 @@ export class SessionLiveState {
     return this.liveId
   }
 
+  /** The live session's episode title (#211), or undefined until one is derived/set — the tray names by it. */
+  get liveSessionTitle(): string | undefined {
+    return this.liveTitle
+  }
+
   /** Seed from the initial fetch (or a fresh reconnect). */
   seed(session: Session | undefined): void {
     this.apply(session && session.endedAt === undefined ? session : undefined)
   }
 
-  /** Apply a WS event; ignores events for other workspaces. Returns true if liveness changed. */
+  /** Apply a WS event; ignores events for other workspaces. Returns true if the tray-visible state changed. */
   applyEvent(event: { name: string; payload: unknown }): boolean {
     const session = event.payload as Session | undefined
     if (!session || session.workspaceId !== this.workspace) return false
@@ -138,13 +144,24 @@ export class SessionLiveState {
       if (this.liveId === session.id) return this.apply(undefined)
       return false
     }
+    // #211: the live session was (re)named — refresh the tray's episode label without a liveness flip.
+    if (event.name === 'session.titled') {
+      if (this.liveId !== session.id) return false
+      const nextTitle = session.title
+      if (nextTitle === this.liveTitle) return false
+      this.liveTitle = nextTitle
+      this.onChangeCb?.(this.live)
+      return true
+    }
     return false
   }
 
   private apply(session: Session | undefined): boolean {
     const next = session?.id
-    if (next === this.liveId) return false
+    const nextTitle = session?.title
+    if (next === this.liveId && nextTitle === this.liveTitle) return false
     this.liveId = next
+    this.liveTitle = nextTitle
     this.onChangeCb?.(this.live)
     return true
   }

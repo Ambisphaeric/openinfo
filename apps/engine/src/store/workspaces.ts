@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
-import type { ChatTurn, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
+import type { ChatTurn, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, Session, SessionAnnotation, SessionTitling, Sighting, SttSegment, TodoList, Workspace } from '@openinfo/contracts'
 import { ChatTurn as ChatTurnSchema, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
@@ -447,6 +447,70 @@ export class WorkspaceRegistry {
   }
 
   /**
+   * List a session's APPEND-ONLY episode titlings (#211), oldest first — the naming history behind its
+   * resolved title. Ordered by `seq` (append order), not `created_at`: same-millisecond titlings would
+   * otherwise be unorderable. Unknown workspace reads as [] (mirrors listSessions) — never an error.
+   */
+  listSessionTitlings(workspaceId: string, sessionId: string): SessionTitling[] {
+    if (!this.all().some((ws) => ws.id === workspaceId)) return []
+    const db = this.openWorkspace(workspaceId)
+    const rows = db.prepare('select body from session_titlings where session_id = ? order by seq').all(sessionId) as { body: string }[]
+    return rows.map((row) => JSON.parse(row.body) as SessionTitling)
+  }
+
+  /**
+   * The effective title of a session (#211) — resolved across its append-only titlings by the sovereignty
+   * rule: the latest USER titling wins (a human's name is never clobbered by a later derivation), else the
+   * latest DERIVED titling, else `undefined` (no titling yet — the caller supplies an honest fallback, never
+   * a raw id). Pure over the titling list; the source of truth is the append-only table, not Session.title.
+   */
+  static resolveTitle(titlings: readonly SessionTitling[]): string | undefined {
+    let latestUser: SessionTitling | undefined
+    let latestDerived: SessionTitling | undefined
+    // titlings arrive oldest-first (seq order), so a later match overwrites — the last one wins per source.
+    for (const t of titlings) {
+      if (t.source === 'user') latestUser = t
+      else if (t.source === 'derived') latestDerived = t
+    }
+    return (latestUser ?? latestDerived)?.title
+  }
+
+  /**
+   * The latest DERIVED title for a session, if any (#211) — the judge reads it to avoid appending a
+   * duplicate titling every pass: a re-derivation only appends when the derived name actually CHANGES.
+   */
+  latestDerivedTitle(workspaceId: string, sessionId: string): string | undefined {
+    let latest: string | undefined
+    for (const t of this.listSessionTitlings(workspaceId, sessionId)) if (t.source === 'derived') latest = t.title
+    return latest
+  }
+
+  /**
+   * Append a titling and MATERIALISE the session's resolved title (#211). The titling row is the durable
+   * append-only truth; Session.title is a cache of the resolution so every existing surface that reads
+   * `session.title` shows the name with no per-read resolution. Returns the updated Session (for the
+   * `session.titled` broadcast), or undefined when no session record exists yet (the titling is still
+   * persisted — a session created later will resolve it). Idempotent on the materialised value: if the
+   * resolution is unchanged, the session is returned without a rewrite.
+   */
+  recordSessionTitling(titling: SessionTitling): Session | undefined {
+    this.ensureWorkspace({ id: titling.workspaceId, name: titling.workspaceId })
+    const db = this.openWorkspace(titling.workspaceId)
+    db.prepare('insert or replace into session_titlings (id, session_id, created_at, source, body) values (?, ?, ?, ?, ?)').run(
+      titling.id,
+      titling.sessionId,
+      titling.createdAt,
+      titling.source,
+      JSON.stringify(titling),
+    )
+    const session = this.getSession(titling.workspaceId, titling.sessionId)
+    if (!session) return undefined
+    const resolved = WorkspaceRegistry.resolveTitle(this.listSessionTitlings(titling.workspaceId, titling.sessionId))
+    if (resolved === undefined || resolved === session.title) return session
+    return this.saveSession({ ...session, title: resolved })
+  }
+
+  /**
    * Persist an extracted moment to its workspace's OWN sqlite file (DB-handle hard rule: only
    * store/ writes; the distiller asks store to write). Workspace is created on demand, mirroring
    * saveDistillate. Idempotent per moment id (insert or replace).
@@ -877,6 +941,12 @@ export class WorkspaceRegistry {
         const moved: ContextPacket = { ...packet, workspaceId: toWorkspaceId }
         toDb.prepare('insert or replace into context_packets (id, session_id, window_start, window_end, created_at, body) values (?, ?, ?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.windowStart, moved.windowEnd, moved.createdAt, JSON.stringify(moved))
       }
+      // #211: the append-only episode titlings move with the session (its naming history), workspace scope
+      // rewritten; ids stay stable (opaque once minted), so a retry converges instead of duplicating.
+      for (const titling of this.listSessionTitlings(fromWorkspaceId, sessionId)) {
+        const moved: SessionTitling = { ...titling, workspaceId: toWorkspaceId }
+        toDb.prepare('insert or replace into session_titlings (id, session_id, created_at, source, body) values (?, ?, ?, ?, ?)').run(moved.id, moved.sessionId, moved.createdAt, moved.source, JSON.stringify(moved))
+      }
       toDb.prepare('insert or replace into sessions (id, started_at, ended_at, body) values (?, ?, ?, ?)').run(movedSession.id, movedSession.startedAt, movedSession.endedAt ?? null, JSON.stringify(movedSession))
     })()
 
@@ -898,6 +968,7 @@ export class WorkspaceRegistry {
       fromDb.prepare('delete from ocr_results where session_id = ?').run(sessionId)
       fromDb.prepare('delete from stt_segments where session_id = ?').run(sessionId)
       fromDb.prepare('delete from context_packets where session_id = ?').run(sessionId)
+      fromDb.prepare('delete from session_titlings where session_id = ?').run(sessionId)
       fromDb.prepare('delete from sessions where id = ?').run(sessionId)
     })()
 
@@ -1382,6 +1453,14 @@ export class WorkspaceRegistry {
     db.pragma('journal_mode = WAL')
     db.prepare(
       'create table if not exists sessions (id text primary key, started_at text not null, ended_at text, body text not null)',
+    ).run()
+    // #211: APPEND-ONLY episode titlings — one row per naming (a derived title from an orientation pass, or
+    // a user rename). `seq` (autoincrement) is the stable append order: several titlings can share a
+    // created_at millisecond, so time alone cannot order them (the chat_turns idiom). Never mutated; the
+    // effective title is RESOLVED across the rows (latest user > latest derived). Additive
+    // `create table if not exists` in the per-workspace open path ⇒ existing DBs gain it on next open.
+    db.prepare(
+      'create table if not exists session_titlings (seq integer primary key autoincrement, id text not null unique, session_id text not null, created_at text not null, source text not null, body text not null)',
     ).run()
     db.prepare(
       'create table if not exists distillates (id text primary key, session_id text not null, created_at text not null, body text not null)',

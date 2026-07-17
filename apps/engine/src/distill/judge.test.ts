@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { CaptureChunk, Fabric, FieldValue, SessionAnnotation } from '@openinfo/contracts'
+import type { CaptureChunk, Fabric, FieldValue, Session, SessionAnnotation } from '@openinfo/contracts'
 import { FabricDocuments } from '../fabric/index.js'
 import { defaultFabric } from '../fabric/document.js'
 import type { InvokeOptions, LlmMessage, LlmResult } from '../fabric/index.js'
@@ -47,11 +47,14 @@ const harness = async (
   values: FieldValueStore
   published: FieldValue[]
   annotations: SessionAnnotation[]
+  titled: Session[]
   logs: string[]
   dir: string
 }> => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-judge-'))
   const store = new WorkspaceRegistry(dir)
+  // #211: persist a session record so an orientation-derived title can MATERIALISE onto it (and publish).
+  store.saveSession({ id: SESS, workspaceId: WS, modeId: 'mode-meeting', startedAt: '2026-07-09T12:00:00.000Z', attribution: { evidence: [], confidence: 1 } })
   const docs = new DistillDocuments(store)
   docs.ensureDefaults()
   const fabric = new FabricDocuments(store)
@@ -59,6 +62,7 @@ const harness = async (
   const values = new FieldValueStore(store)
   const published: FieldValue[] = []
   const annotations: SessionAnnotation[] = []
+  const titled: Session[] = []
   const logs: string[] = []
   const scheduler = new JudgeScheduler({
     store,
@@ -69,10 +73,11 @@ const harness = async (
     now: () => new Date('2026-07-09T12:01:00.000Z'),
     publish: (value) => void published.push(value),
     publishAnnotation: (annotation) => void annotations.push(annotation),
+    publishTitled: (session) => void titled.push(session),
     log: (message) => void logs.push(message),
     ...(opts.orientationDisposition ? { orientationDisposition: opts.orientationDisposition } : {}),
   })
-  return { store, scheduler, values, published, annotations, logs, dir }
+  return { store, scheduler, values, published, annotations, titled, logs, dir }
 }
 
 const chunk = (sec: number, data: string): CaptureChunk => ({
@@ -347,6 +352,79 @@ test('#131 orientation: annotate-and-correct — a later classification replaces
     assert.equal(a.direction, 'teach')
     assert.deepEqual(a.topics, ['onboarding'])
     assert.equal(annotations.length, 2, 'each pass emits orientation.updated')
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
+// #211 episode naming — the orientation classification (the model PROPOSAL) is transformed into a
+// human-meaningful episode title, appended with provenance, materialised onto the session, and published.
+test('#211 orientation derives an episode title: persisted append-only with provenance, materialised, published', async () => {
+  const invoke = async (): Promise<LlmResult> => ({
+    text: JSON.stringify({ nature: 'meeting', direction: 'learn', topics: ['Q3 GTM launch sequencing', 'vendor security review'] }),
+    endpoint: 'llm.judge',
+    model: 'big-32b',
+    slot: 'llm',
+  })
+  const { store, scheduler, titled, dir } = await harness(invoke)
+  try {
+    await scheduler.runJudge([sourceChunk()])
+    // A derived titling was appended with FULL provenance (which pass + the evidence it drew from).
+    const titlings = store.listSessionTitlings(WS, SESS)
+    assert.equal(titlings.length, 1, 'one derived titling appended')
+    const t = titlings[0]!
+    assert.equal(t.source, 'derived')
+    assert.equal(t.title, 'Meeting on Q3 GTM launch sequencing and vendor security review', 'derived from the orientation nature + top topics')
+    assert.equal(t.provenance?.annotationId, `oa:${WS}:${SESS}`, 'points at the orientation pass that produced it')
+    assert.equal(t.provenance?.templateId, 'tpl-judge-orientation')
+    assert.equal(t.provenance?.endpoint, 'llm.judge')
+    assert.deepEqual(t.provenance?.topics, ['Q3 GTM launch sequencing', 'vendor security review'], 'evidence recorded')
+    // Materialised onto the session (so every surface reading session.title shows it) AND published.
+    assert.equal(store.getSession(WS, SESS)?.title, 'Meeting on Q3 GTM launch sequencing and vendor security review')
+    assert.equal(titled.length, 1, 'session.titled published once')
+    assert.equal(titled[0]!.title, 'Meeting on Q3 GTM launch sequencing and vendor security review')
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
+test('#211 title derivation is deduped AND append-only: identical re-read is a no-op, a CHANGED read appends', async () => {
+  let call = 0
+  const invoke = async (): Promise<LlmResult> => {
+    call += 1
+    // pass 1 & 2 classify the SAME way (same title); pass 3 sharpens the topic (a new title).
+    const topics = call < 3 ? ['renewal terms'] : ['renewal terms', 'security review']
+    return { text: JSON.stringify({ nature: 'call', direction: 'learn', topics }), endpoint: 'llm.judge', model: 'big-32b', slot: 'llm' }
+  }
+  const { store, scheduler, titled, dir } = await harness(invoke)
+  try {
+    await scheduler.runJudge([sourceChunk()]) // "Call about renewal terms"
+    await scheduler.runJudge([sourceChunk()]) // identical → no new titling, no publish
+    assert.equal(store.listSessionTitlings(WS, SESS).length, 1, 'an identical re-derivation does not spam a duplicate row')
+    assert.equal(titled.length, 1, 'no redundant session.titled')
+    await scheduler.runJudge([sourceChunk()]) // sharper → appends a NEW titling
+    const titlings = store.listSessionTitlings(WS, SESS)
+    assert.equal(titlings.length, 2, 'a CHANGED derivation appends (append-only history)')
+    assert.deepEqual(titlings.map((t) => t.title), ['Call about renewal terms', 'Call about renewal terms and security review'])
+    assert.equal(store.getSession(WS, SESS)?.title, 'Call about renewal terms and security review', 'latest derived materialised')
+  } finally {
+    await cleanup(store, dir)
+  }
+})
+
+test('#211 a too-thin classification mints NO title — the session keeps its honest fallback (no hollow name)', async () => {
+  const invoke = async (): Promise<LlmResult> => ({
+    text: JSON.stringify({ nature: 'unclear', direction: 'unclear', topics: [] }),
+    endpoint: 'llm.judge',
+    model: 'big-32b',
+    slot: 'llm',
+  })
+  const { store, scheduler, titled, dir } = await harness(invoke)
+  try {
+    await scheduler.runJudge([sourceChunk()])
+    assert.equal(store.listSessionTitlings(WS, SESS).length, 0, 'nothing to name ⇒ no titling')
+    assert.equal(store.getSession(WS, SESS)?.title, undefined, 'session stays untitled (surface shows a start-time fallback)')
+    assert.equal(titled.length, 0)
   } finally {
     await cleanup(store, dir)
   }
