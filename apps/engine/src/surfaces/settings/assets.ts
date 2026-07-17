@@ -204,6 +204,30 @@ body.settings{padding:0;background:
 .trc-body{margin-top:4px;font-size:13px;color:var(--ink-2);line-height:1.5;max-width:72ch}
 .trc-meta{margin-top:4px}
 .trc-verdicts{margin-top:5px;display:flex;gap:14px;align-items:baseline}
+/* ---------- Context packets (#176) ---------- */
+.cpk-note{margin:2px 0 12px;font-size:12px;color:var(--faint)}
+.cpk-status{margin-bottom:14px}
+.cpk-status-warn{border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 7%,transparent)}
+.cpk-window{margin-bottom:14px}
+.cpk-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;margin-bottom:10px}
+.cpk-when{font-family:var(--mono);font-size:13.5px;color:var(--ink);font-weight:600}
+.cpk-conf{font-size:12px;color:var(--muted)}
+.cpk-lane{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;padding:6px 0;font-size:13px;border-top:1px solid var(--line-soft)}
+.cpk-lane:first-of-type{border-top:0}
+.cpk-lane-name{color:var(--ink);flex:0 0 110px;min-width:100px}
+.cpk-lane-count{color:var(--ink-2);font-size:12px}
+.cpk-seen{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;padding:2px 0 6px 110px;font-size:12.5px}
+.cpk-seen-text{color:var(--ink-2);flex:1 1 260px;line-height:1.5}
+.cpk-gaps{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px 10px}
+.cpk-gap{font-size:11.5px;color:var(--faint);font-style:italic;border:1px dashed var(--line-soft);border-radius:6px;padding:2px 8px}
+.cpk-cands{margin-top:10px}
+.cpk-sub{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:6px}
+.cpk-cand{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;padding:3px 0;font-size:13px}
+.cpk-cand-name{color:var(--ink);font-weight:600}
+.cpk-corr{font-size:11px;color:var(--accent);font-weight:600}
+.cpk-cand-note{color:var(--ink-2);font-size:12.5px;flex:1 1 240px}
+.cpk-rev{margin-top:10px;padding-top:8px;border-top:1px solid var(--line-soft);font-size:12px;color:var(--muted);
+  display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline}
 @media (max-width:720px){
   .app{grid-template-columns:1fr}
   .sidebar{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line-soft)}

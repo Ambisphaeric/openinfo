@@ -5700,3 +5700,69 @@ bearer, 400/404 caller errors, build → idempotent rebuild → late-observation
 axis over HTTP). Deferred to slice 2 (per the issue): the diagnostics surface rendering packet
 membership, exclusions, timing, and confidence. Non-goals honored: no diarization, no durable user
 facts/tasks, no model-written graph edges — no model runs anywhere in this path.
+
+## Slice: the live producer and the Context-packets diagnostics  *(#176 slice 2, 2026-07-16)*
+
+Slice 2 closes the issue's two remaining criteria: packets now materialize during normal capture, and a
+served diagnostics surface renders the converged slice.
+
+**The live producer** (`apps/engine/src/index/produce-packets.ts`). Slice 1's builder is pure but had
+only one caller — the on-demand POST route. `materializeContextPackets` is the thin impure seam that
+wires it to the store (the one index/ module beside `relevant.ts` that touches store): it reads a
+session's stored observations, runs `buildContextPackets`, persists ONLY the appends, and records the
+attempt on an in-memory `PacketBuildLog`. The wiring seam is `session.ended` in `api/http.ts`, placed
+AFTER the existing drain-first flush — so the whole session's observations are already durable when the
+build runs. **Why session end, not per drain:** it is the honest converged-slice moment (late/out-of-order
+observations have landed, the cadence tail is flushed), it is batched ONCE per session (no per-observation
+hot-loop cost — the explicit anti-requirement), and the append-only supersession chain gets its cleanest
+input. Mid-session/manual rebuilds stay available on the on-demand route, which now runs the SAME seam
+(unified build + log; still 404-validated for unknown workspace/session, and a contained failure returns
+500 instead of the old silent throw). The retro should scrutinize this choice: a per-drain seam would
+surface packets mid-session but at repeated whole-session rebuild cost, and slice 2 deliberately did not
+take it.
+
+**Contained failure is the non-negotiable.** A derived packet must never block or fail the capture/distill
+path that produced the observations, and a failure must be VISIBLE, not swallowed. `materializeContextPackets`
+therefore NEVER throws: any read/build/write error is caught, recorded on the log with its reason, and
+returned as `outcome.error`. The `session.ended` handler logs it and moves on; the durable observations
+are untouched (the derived packet is rebuildable). `index/produce-packets.test.ts` proves the three seam
+properties directly — materialize-without-the-route, idempotence (a converged rebuild appends nothing and
+records `created:0`), workspace isolation (a ws-a build never touches ws-b), and contained failure (a
+store stub that throws is caught, never propagated, and its reason recorded).
+
+**The diagnostics surface** (`apps/engine/src/surfaces/settings/sections/packets.ts`, Settings →
+Diagnostics → **Context packets**, following the #116 Trace precedent). Pure `buildContextPacketViews`
+groups a workspace's packets into per-window views (the not-superseded packet is the head, the rest its
+ordered revision history) and `renderContextPackets` renders each: per-lane MEMBERSHIP (mic/system-audio
+counts + instants with the record id on hover; the screen lane resolves the recognized text by reading
+the SOURCE OcrResult at render time — refs-not-content held end to end, and spoken words are never
+fabricated since an utterance stores none), EXCLUSIONS (the `gaps` reasons as human words — "nothing
+captured this session" / "nothing this minute"), TIMING (the window clock span + each observation's
+instant, full ISO on inspection), CONFIDENCE (framed by contributing-sense count per hud-voice — "one
+sense" / "two senses agree" — with the raw score only in the title), and the append-only SUPERSESSION
+chain ("now version 2 … version 1"). Every dynamic value resolves to provenance; every state is text —
+the fresh-install empty state says what will appear and what to do, an assembly failure surfaces its true
+reason (`problem`, like Trace's corrupted-store path), and a contained live-producer failure shows the
+honest "last update didn't finish — <reason>. The packets below are the last good version" line from the
+build log (so a seam failure is never invisible).
+
+**Proof.** The mandatory DRIVEN served e2e `api/context-packets-e2e.test.ts` starts a real engine with
+fake stt/llm servers on loopback, POSTs mic capture through `/capture/mic`, ENDS the session, then polls
+the SERVED `/settings/context-packets` until the converged window appears — asserting membership,
+exclusions, timing, and confidence on the HTML a browser gets, with NO build route ever called (then
+confirms the on-demand route is still idempotent, and that a corrupted packet row surfaces the true reason
+as visible text). Fixture-level `sections/packets.test.ts` covers every render state and the supersession
+grouping. Design skills consulted before markup: hud-voice (calm display, human words, honest states,
+glanceable ladder) and ui-ux-pro-max.
+
+**#176 acceptance criteria — status across both slices** (file evidence): packet shape
+(`contextPacket.ts`) ✓ slice 1; correlation by time/session/foreground/entity (`index/packets.ts`) ✓
+slice 1; prose is a read-time view, assertions traceable (no prose field; screen text resolved from
+source at render in `sections/packets.ts`) ✓; screen + both audio lanes, no merged attribution ✓ slice
+1; late/out-of-order → append-only supersession ✓ slice 1 (and now visible in the diagnostics chain);
+idempotent + deterministic under fixture replay (`packets-replay.test.ts`) ✓ slice 1; **diagnostics
+renders membership/exclusions/timing/confidence** ✓ slice 2 (`sections/packets.ts` +
+`context-packets-e2e.test.ts`); queryable by workspace/session/time-window/entity ✓ slice 1; missing
+senses degrade with an explicit reason ✓ slice 1 (rendered honestly in slice 2). The live producer
+answers the issue's slice-2 comment ("a live drain/session-end seam so packets materialize during normal
+capture, not only when the route is called"). Closure is the retro's call, not this PR's.
