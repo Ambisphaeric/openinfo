@@ -409,7 +409,11 @@ export class WorkspaceRegistry {
       live.push(s)
     }
     for (const u of latestUser.values()) live.push(u)
-    return live
+    // Restore the append-only read order the SQL query establishes (window_start, created_at, id), so a
+    // correction lands in its window's place rather than at the tail where it was collected.
+    return live.sort((a, b) =>
+      a.windowStart < b.windowStart ? -1 : a.windowStart > b.windowStart ? 1 : a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+    )
   }
 
   /**
