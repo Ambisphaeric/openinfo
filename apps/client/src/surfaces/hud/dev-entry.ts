@@ -1,10 +1,11 @@
 import type { AttributionPattern, BlockQuery, Bundle, ChatReply, ChatScreenshot, ChatTurn, Pin, PromptTemplate, QueryResult, Session, Surface, TodoList, WorkspaceHints } from '@openinfo/contracts'
-import { mountSurface, renderInto, type MountTarget, type SessionReadiness } from '../block-renderer/index.js'
+import { mountSurface, renderInto, type BlockRegistry, type MountTarget, type SessionReadiness, type SurfaceRenderInput } from '../block-renderer/index.js'
 import { Hud } from './hud.js'
 import { backoffMs, createBootController } from './boot.js'
 import type { HudTransport } from './transport.js'
 import { hudStyles, hudOutlineStyles } from './styles.js'
 import { renderNotetaker } from './notetaker-layout.js'
+import { NotetakerView } from './notetaker-view.js'
 import { panelStyles } from './panel-styles.js'
 import { pillStyles } from './pill-styles.js'
 import { createPillRenderer, type PillFaceSources } from './pill-layout.js'
@@ -525,18 +526,25 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
   // `pillState` is a GETTER so the renderer works before the PillController is built (in onSurfaceLoaded);
   // `pillSources` is the mutable Ask-face resolution (GET /bundles → chat face surface), filled async.
   const isPill = resolvedSurfaceId === PILL_SURFACE_ID
+  const isNotetaker = resolvedSurfaceId === 'surf-openinfo-notetaker'
   let pill: PillController | undefined
   const pillSources: PillFaceSources = { chat: null, resolving: isPill }
   const pillState = (): PillState => pill?.state() ?? { face: 'listen', open: true, askAvailable: false }
 
-  // Per-surface layout renderer: the note-taker composes its three-zone frame (renderNotetaker); the pill
-  // composes its header-bar + docked-panel frame (createPillRenderer). Both are signature-compatible with
-  // the generic renderSurface; every other surface uses the controller default. Selected by surface id here
-  // so the Hud controller stays layout-agnostic (see HudOptions.renderSurface).
+  // #247: the note-taker's session-history drill-down view-state. It re-queries the center for a selected
+  // past session (its mapQuery below) and names the read-only view (its selection, read by the renderer).
+  // A change calls hud.refresh() (re-query + re-render); a rejection re-enters the boot loop via onHudError.
+  const notetakerView = isNotetaker ? new NotetakerView(() => void hud.refresh().catch((error: unknown) => onHudError(error))) : undefined
+
+  // Per-surface layout renderer: the note-taker composes its three-zone frame (renderNotetaker, given the
+  // current #247 selection so the center paints live or a past session); the pill composes its header-bar +
+  // docked-panel frame (createPillRenderer). Both are signature-compatible with the generic renderSurface;
+  // every other surface uses the controller default. Selected by surface id here so the Hud controller stays
+  // layout-agnostic (see HudOptions.renderSurface).
   const surfaceRenderer = isPill
     ? createPillRenderer(pillState, () => pillSources)
-    : resolvedSurfaceId === 'surf-openinfo-notetaker'
-      ? renderNotetaker
+    : isNotetaker
+      ? (input: SurfaceRenderInput, registry: BlockRegistry) => renderNotetaker(input, registry, notetakerView?.selection())
       : undefined
 
   const style = doc.createElement('style')
@@ -620,6 +628,9 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     // pure state read, no fetch). Absent (a plain browser / served frame) ⇒ undefined, so the control
     // renders its honest disabled state. Main pushes fresh snapshots over hud:session-state on every change.
     sessionReadiness: () => g.openinfoSession?.state(),
+    // #247: the note-taker's history drill-down remaps the CENTER blocks to a selected past session, so a
+    // plain refresh re-hydrates the center against it. Absent on every other surface (the controller default).
+    ...(notetakerView ? { mapQuery: notetakerView.mapQuery } : {}),
     // #134: size the window to the declared attached panel (collapsed/expanded along its edge) and, for a
     // reveal:'event' panel, subscribe to the trigger to open it as a dismissible suggestion. Electron-only
     // (needs the panel bridge); a plain browser page simply scrolls. Created once — hot-reloads keep it.
@@ -704,6 +715,10 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
           // bridge leaves the control disabled, so these never fire there (an honest no-op regardless).
           sessionStart: () => g.openinfoSession?.start(),
           sessionStop: () => g.openinfoSession?.stop(),
+          // #247: the note-taker history drill-down — READ-ONLY navigation (no capture start/stop). Opening a
+          // past session flips the view-state and re-queries the center; back-to-live returns to the live pad.
+          sessionOpen: (payload) => notetakerView?.open(payload),
+          sessionBack: () => notetakerView?.backToLive(),
         })
         // #134: install the input block's delegated submit/file listeners ONCE on the container (they
         // survive innerHTML replacement, exactly like wireActions' click delegation).

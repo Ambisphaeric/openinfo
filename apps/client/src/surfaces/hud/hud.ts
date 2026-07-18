@@ -1,4 +1,4 @@
-import type { CaptureSource, Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
+import type { Block, BlockQuery, CaptureSource, Moment, QueryResult, Session, Surface } from '@openinfo/contracts'
 import { renderSurface, clockLabel, elapsedLabel, type BlockRegistry, type NowContext, type SessionReadiness, type SurfaceRenderInput, type VElement } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
 import { pruneTranscript, renderLiveTranscript, type TranscriptLine } from './live-transcript.js'
@@ -66,6 +66,15 @@ export interface HudOptions {
    * frame), so the control renders its disabled, disclosed state. Never fetches — a pure state read.
    */
   sessionReadiness?: () => SessionReadiness | undefined
+  /**
+   * Remap a block's query before it is hydrated, read FRESH on every refresh (a pure function of the block +
+   * whatever view-state the caller closes over). Returns the query to run, or undefined to use `block.query`
+   * unchanged. The controller stays layout-agnostic: it neither knows nor cares WHY a query changed. The
+   * note-taker uses this for its session-history drill-down (#247) — when a past session is selected it
+   * rewrites the CENTER session-scoped blocks from `session: 'current'` to the selected past-session id, so a
+   * plain `hud.refresh()` re-hydrates the center against that session. Absent ⇒ every block uses its own query.
+   */
+  mapQuery?: (block: Block) => BlockQuery | undefined
 }
 
 /**
@@ -90,6 +99,7 @@ export class Hud {
   private readonly onSurfaceLoaded: ((surface: Surface) => void) | undefined
   private readonly onChatDelta: ((payload: unknown) => void) | undefined
   private readonly sessionReadiness: (() => SessionReadiness | undefined) | undefined
+  private readonly mapQuery: ((block: Block) => BlockQuery | undefined) | undefined
 
   private surface: Surface | undefined
   private results: (QueryResult | undefined)[] = []
@@ -124,6 +134,7 @@ export class Hud {
     this.onSurfaceLoaded = options.onSurfaceLoaded
     this.onChatDelta = options.onChatDelta
     this.sessionReadiness = options.sessionReadiness
+    this.mapQuery = options.mapQuery
   }
 
   /** Load the surface document, hydrate + render once, then start listening for live updates. */
@@ -240,7 +251,13 @@ export class Hud {
     const surface = this.surface
     const [live, results] = await Promise.all([
       this.transport.sessions({ workspace: this.workspace, live: true }),
-      Promise.all(surface.stack.map((block) => (block.query ? this.transport.query(block.query, surface.id) : Promise.resolve(undefined)))),
+      Promise.all(
+        surface.stack.map((block) => {
+          // A caller-supplied view-state may remap the query (the #247 drill-down); absent ⇒ the block's own.
+          const query = (this.mapQuery ? this.mapQuery(block) : undefined) ?? block.query
+          return query ? this.transport.query(query, surface.id) : Promise.resolve(undefined)
+        }),
+      ),
     ])
     // A lane event can land while this query is in flight. Reconcile same-scope rows by updatedAt so the
     // older response snapshot cannot overwrite newer payload truth; a different query scope still wins.

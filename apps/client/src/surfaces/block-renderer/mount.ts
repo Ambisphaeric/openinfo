@@ -97,6 +97,15 @@ export interface ActionHandlers {
   sessionStart?: () => void
   /** Stop the live session from an on-surface control (#136) — the SAME shell `end-session` path (revokes consent). */
   sessionStop?: () => void
+  /**
+   * Open a PAST session in the note-taker's center column (#247) — a client-local, READ-ONLY navigation, not
+   * a write and NOT a session-lifecycle action (it never starts/stops capture; the consent boundary is
+   * untouched). Like clarifyOpen it flips notetaker view-state and re-queries the center for the selected
+   * session, so no paintFeedback. The row carries the id + a resolved title + start time to name the view.
+   */
+  sessionOpen?: (payload: { sessionId: string; title?: string; startedAt?: string }) => void
+  /** Return the note-taker center from a past session to the live current-session view (#247) — client-local. */
+  sessionBack?: () => void
 }
 
 /** Replace the target's content with a freshly rendered VNode (called on every live update). */
@@ -167,6 +176,8 @@ export const WIRED_VERBS: ReadonlySet<string> = new Set([
   'pill-settings',
   'session-start',
   'session-stop',
+  'session-open',
+  'session-back',
 ])
 
 /**
@@ -281,6 +292,22 @@ export const wireActions = (target: MountTarget, handlers: ActionHandlers): void
     if (verb === 'session-stop' && handlers.sessionStop) {
       // #136 in-window stop: the SAME shell end-session path (revokes consent so nothing auto-resumes).
       handlers.sessionStop()
+      return
+    }
+    if (verb === 'session-open' && handlers.sessionOpen) {
+      // #247 history drill-down: READ-ONLY navigation — flips notetaker view-state to the selected past
+      // session and re-queries the center. NOT a lifecycle action (no capture start/stop). No paintFeedback:
+      // the re-render into the past view IS the feedback. An inert row (no addressable id) is left untouched.
+      const sessionId = el.getAttribute('data-session')
+      if (sessionId === null) return
+      const title = el.getAttribute('data-session-title')
+      const startedAt = el.getAttribute('data-session-started')
+      handlers.sessionOpen({ sessionId, ...(title !== null ? { title } : {}), ...(startedAt !== null ? { startedAt } : {}) })
+      return
+    }
+    if (verb === 'session-back' && handlers.sessionBack) {
+      // #247: return the center from a past session to the live current-session view — client-local, no write.
+      handlers.sessionBack()
       return
     }
     // Reached by a WIRED_VERBS verb whose handler was not injected, or whose button carries no payload:

@@ -141,6 +141,36 @@ test('honest display scope: "current" with NO live session reads empty, never wh
   }
 })
 
+test('an EXPLICIT past session id is honored over "current" — the #247 history drill-down contract', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-drill-'))
+  const store = new WorkspaceRegistry(dir)
+  try {
+    // Two ended sessions plus a live one. The drill-down passes an explicit PAST id on the center blocks.
+    store.saveMoment(moment('m-live', 'ses-live', '2026-07-07T14:10:00Z'))
+    store.saveMoment(moment('m-past-1', 'ses-past', '2026-07-07T13:05:00Z'))
+    store.saveMoment(moment('m-past-2', 'ses-past', '2026-07-07T13:20:00Z'))
+    const live = () => 'ses-live'
+
+    // resolveQueryScope: an explicit id resolves to THAT session, never the live one — even with a live
+    // resolver present. This is the seam the note-taker's selected-session view rides.
+    const scope = resolveQueryScope(store, { workspace: 'ws-q', session: 'ses-past' }, undefined, live)
+    assert.equal(scope.sessionId, 'ses-past')
+    assert.equal(scope.noCurrentSession, undefined)
+
+    // A session-scoped source (moments) reads the SELECTED past session's records, not the live session's —
+    // read-only history, honored over the runtime-current binding.
+    const past = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q', session: 'ses-past' } }, undefined, {}, undefined, live)
+    assert.deepEqual((past.items as Moment[]).map((m) => m.id), ['m-past-2', 'm-past-1'])
+
+    // …while "current" still binds to the live session — the two coexist (drill-down vs. live pad).
+    const cur = compileQuery(store, { source: 'moments', params: { workspace: 'ws-q', session: 'current' } }, undefined, {}, undefined, live)
+    assert.deepEqual((cur.items as Moment[]).map((m) => m.id), ['m-live'])
+  } finally {
+    store.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('compileQuery resolves the pins source through the store (most-recent first, top caps + truncates)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'openinfo-query-pins-'))
   const store = new WorkspaceRegistry(dir)

@@ -136,13 +136,19 @@ test('the shipped note-taker document renders three zones through the real rende
 
   const { left, center, right } = zones(frame)
 
-  // LEFT rail: home + feature nav + the Pins list (real pinned-doc) + the Sessions history list (new block)
-  assert.match(left, /class="nt-home"/)
-  assert.match(left, /Notes<\/button>/)
-  assert.match(left, /Search<\/button>/) // the disabled Search tab stays (the deferred search view, disclosed)
+  // LEFT rail: just the brand mark (the dead feature-nav tabs + Home button are GONE, #247) + the Pins list
+  // (real pinned-doc) + the Sessions history list, whose rows are now clickable nav controls.
+  assert.match(left, /class="nt-home"/) // the ◆ brand mark stays…
+  assert.doesNotMatch(left, /<button[^>]*class="nt-home"/) // …but it is NOT a (dead) button anymore
+  assert.doesNotMatch(left, /nt-navitem/) // the dead Notes/Summary/Search feature-nav tabs are removed
+  assert.doesNotMatch(left, />Summary<\/button>/)
+  assert.doesNotMatch(left, />Search<\/button>/) // the Search VIEW stays tracked by #230, not rendered dead here
   assert.match(left, /Renewal MSA/) // the pin hydrates
   assert.match(left, /Sessions</) // the sessions block self-labels (realizing the old Meetings/Archives folders)
   assert.match(left, /Q3 renewal — security review/) // the session-history row title hydrates
+  // the history row is a real clickable nav control carrying the wired verb + the session id/title/start time
+  assert.match(left, /<button class="rel sess-nav" data-verb="session-open" data-session="ses-1"/)
+  assert.match(left, /data-session-started="2026-07-10T12:00:00Z"/)
   assert.doesNotMatch(left, /session-list block pending/) // the placeholder gap note is GONE — the block realizes it
   assert.doesNotMatch(left, /Meetings</) // the dead placeholder folders are gone
   assert.doesNotMatch(left, /Archives</)
@@ -161,8 +167,11 @@ test('the shipped note-taker document renders three zones through the real rende
   assert.match(center, /a draft you can correct/) // the summaries why-line — never asserted as truth
   assert.doesNotMatch(center, /Rolling — Dana/) // the rolling distillate stream belongs to the RIGHT sidebar
 
-  // RIGHT sidebar (enrichments): the raw rolling distillate stream + action items + fast fields
-  assert.match(right, /Enrichments</)
+  // RIGHT sidebar: no hard-coded machine header (the old "Enrichments" is GONE, #247) — the blocks self-label
+  // (Transcript / … / Fields), exactly as the left column's Pinned + Sessions do.
+  assert.doesNotMatch(right, /Enrichments/) // the machine-word column header is removed
+  assert.doesNotMatch(right, /nt-side-head/)
+  assert.match(right, /class="glbl">Transcript</) // the rolling distillate block carries its own header
   assert.match(right, /Rolling — Dana asked about SOC 2/) // the raw rolling distillate stream (demoted here)
   assert.match(right, /Send updated quote to Dana/) // the action item (todos)
   assert.match(right, /Q3 renewal pricing/) // the fast field value
@@ -228,4 +237,44 @@ test('the note-taker zones are honest when empty (always-on blocks explain thems
   assert.match(right, /turn on “Distill what is captured” in Settings → Features/)
   // the on-match fields block simply stays hidden when it has produced nothing (no fabricated card)
   assert.doesNotMatch(right, /class="glbl">Fields</)
+})
+
+test('#247: selecting a past session shows its read-only record in the center with a back-to-live control', async () => {
+  const surface = await loadNotetaker()
+  // The controller re-queried the center against this session (Hud.mapQuery); the renderer paints the view.
+  const selection = { sessionId: 'ses-1', title: 'Q3 renewal — security review', startedAt: '2026-07-10T12:00:00Z' }
+  const { center } = zones(renderNotetaker({ surface, now, results: results() }, defaultBlockRegistry, selection))
+  // the past-session header names the session + carries the ALWAYS-visible back-to-live control (wired verb)
+  assert.match(center, /Past session/)
+  assert.match(center, /nt-canvas-title">Q3 renewal — security review/)
+  assert.match(center, /<button class="nt-back-live" data-verb="session-back"/)
+  // READ-ONLY posture (consent boundary): no Record/session-start control stands in a historical view
+  assert.doesNotMatch(center, /session-record/)
+  assert.doesNotMatch(center, /data-verb="session-start"/)
+  // the live `now` heartbeat is dropped — a historical record must not read as live truth
+  assert.doesNotMatch(center, /class="nowline"/)
+  // the past session's OWN moments + summary render (the results the mapQuery-driven re-query produced)
+  assert.match(center, /Agreed to ship the quote Friday/) // moments
+  assert.match(center, /they agreed to ship the renewal quote Friday/) // the five-minute summary
+})
+
+test('#247: a past session that captured nothing says so plainly — never a blank center', async () => {
+  const surface = await loadNotetaker()
+  const emptyCenter: (QueryResult | undefined)[] = [
+    q('pins', [pin]), q('sessions', [session]), undefined, q('moments', []),
+    q('summaries', []), q('summaries', []), q('distillates', []), q('todos', []), q('fields', []),
+  ]
+  const selection = { sessionId: 'ses-9', title: 'Quiet sync', startedAt: '2026-07-09T09:00:00Z' }
+  const { center } = zones(renderNotetaker({ surface, now, results: emptyCenter }, defaultBlockRegistry, selection))
+  assert.match(center, /Nothing was captured in this session\./) // the honest empty, never a blank
+  assert.match(center, /<button class="nt-back-live" data-verb="session-back"/) // back-to-live is still present
+  assert.doesNotMatch(center, /No summary yet/) // NOT the live fresh-install "turn this on" prompt over a finished session
+})
+
+test('#247: with NO selection the center is the live current-session pad (Record control, no past header)', async () => {
+  const surface = await loadNotetaker()
+  const { center } = zones(renderNotetaker({ surface, now, results: results() }, defaultBlockRegistry, undefined))
+  assert.doesNotMatch(center, /Past session/)
+  assert.doesNotMatch(center, /nt-back-live/)
+  assert.match(center, /session-record/) // the live Record control is present when live
 })
