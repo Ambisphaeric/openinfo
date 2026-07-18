@@ -70,6 +70,13 @@ const renderZonePanel = (input: SurfaceRenderInput, zone: ZoneInput, registry: B
       results: zone.results,
       ...(input.clarify !== undefined ? { clarify: input.clarify } : {}),
       ...(input.session !== undefined ? { session: input.session } : {}),
+      // #246: thread the summary-correction context so the PAD's summary rows (the owner's flagship surface)
+      // get the same in-place edit affordance the HUD has. It flows to the CENTER live summary AND — since the
+      // past-session body re-renders through this same path — to a past session's record: a correction targets
+      // a summary IDENTITY (id/window), not `session:'current'`, so the write-path works on any session. A
+      // read-only past view still forbids CAPTURE (no Record control), but correcting derived prose IS the
+      // sovereignty affordance and stays available.
+      ...(input.summaryEdit !== undefined ? { summaryEdit: input.summaryEdit } : {}),
     },
     registry,
   )

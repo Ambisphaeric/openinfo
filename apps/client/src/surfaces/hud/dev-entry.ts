@@ -768,16 +768,20 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
         inputSession.repaint(panel as unknown as Parameters<InputSession['repaint']>[0])
         summaryEdit.repaint(panel as unknown as Parameters<SummaryEditSession['repaint']>[0])
       } else {
-        // #222 chat-focus repair: a focus/caret/IME-preserving re-render. renderInto still wipes innerHTML
-        // (destroying the textarea), but rerenderInto snapshots focus + caret before the wipe and restores
-        // them in its own paired repaint after — so the ~1/s live refresh no longer steals focus mid-type —
-        // and DEFERS the wipe entirely while an IME composition is in flight (flushed on compositionend).
-        inputSession.rerenderInto(
-          panel as unknown as Parameters<InputSession['rerenderInto']>[0],
-          () => renderInto(panel, node),
+        // #222/#225/#246 focus repair: a focus/caret/IME-preserving re-render. renderInto still wipes innerHTML
+        // (destroying the textareas), but each controller's rerenderInto snapshots ITS field's focus + caret
+        // before the wipe and restores them in its paired repaint after — so the ~1/s live refresh never steals
+        // focus mid-type — and DEFERS the wipe while an IME composition is in flight (flushed on compositionend).
+        // The two are NESTED so BOTH the chat input (#225) and the summary correction editor (#246) survive one
+        // wipe: only one field is focused/composing at a time, so whichever is active is the one preserved.
+        summaryEdit.rerenderInto(
+          panel as unknown as Parameters<SummaryEditSession['rerenderInto']>[0],
+          () =>
+            inputSession.rerenderInto(
+              panel as unknown as Parameters<InputSession['rerenderInto']>[0],
+              () => renderInto(panel, node),
+            ),
         )
-        // #246: re-inject the open editor's draft + failure line after the live wipe (compose-after-render).
-        summaryEdit.repaint(panel as unknown as Parameters<SummaryEditSession['repaint']>[0])
       }
     },
     onError: (error) => onHudError(error),

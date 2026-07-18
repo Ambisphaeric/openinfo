@@ -5,7 +5,8 @@ import type { Block, QueryResult, Summary, Surface } from '@openinfo/contracts'
 import { renderSurface, renderToHtml, type NowContext, type VNode } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from '../blocks/index.js'
 import { correctSummaryWrite } from './dev-entry.js'
-import { SummaryEditSession, type SummaryDomEvent, type SummaryDomNode } from './summary-correct.js'
+import { renderNotetaker } from './notetaker-layout.js'
+import { SummaryEditSession, type SummaryDomEvent, type SummaryDomEventType, type SummaryDomNode } from './summary-correct.js'
 
 /**
  * #246 DRIVEN SERVED e2e — the correction affordance exercised end-to-end over a REAL HTTP write path, the
@@ -86,12 +87,12 @@ class FakeNode implements SummaryDomNode {
     }
     return null
   }
-  addEventListener(type: 'click' | 'input', handler: (event: SummaryDomEvent) => void): void {
+  addEventListener(type: SummaryDomEventType, handler: (event: SummaryDomEvent) => void): void {
     const list = this.listeners.get(type) ?? []
     list.push(handler)
     this.listeners.set(type, list)
   }
-  dispatch(type: 'click' | 'input', target: FakeNode): void {
+  dispatch(type: SummaryDomEventType, target: FakeNode): void {
     const event: SummaryDomEvent = { target }
     for (const h of this.listeners.get(type) ?? []) h(event)
   }
@@ -168,37 +169,55 @@ const startFakeEngine = async (opts: { failCorrect?: boolean } = {}): Promise<{ 
 }
 
 const now: NowContext = { live: true, workspace: 'acme' }
-const surface: Surface = {
+const hudSurface: Surface = {
   id: 'surf-openinfo-hud', name: 'HUD', context: 'meeting', version: 1,
   stack: [{ block: 'summaries', show: 'always', query: { source: 'summaries', params: { session: 'current', level: 'five-minute' } }, actions: [{ id: 'a-copy', label: 'Copy', verb: 'copy', params: {} }] } as Block],
 }
+// The PAD (#133/#246): the same summaries block, in the CENTER zone (nt-center- prefix), rendered through
+// renderNotetaker — the owner's flagship surface where the pencil must reach.
+const padSurface: Surface = {
+  id: 'surf-openinfo-notetaker', name: 'Note-taker', context: 'meeting', version: 1,
+  stack: [{ block: 'summaries', id: 'nt-center-summary', show: 'always', query: { source: 'summaries', params: { session: 'current', level: 'five-minute' } }, actions: [{ id: 'a-copy', label: 'Copy', verb: 'copy', params: {} }] } as Block],
+}
+type Renderer = (input: Parameters<typeof renderSurface>[0], registry: typeof defaultBlockRegistry) => ReturnType<typeof renderSurface>
+const hudRenderer: Renderer = (input, registry) => renderSurface(input, registry)
+const padRenderer: Renderer = (input, registry) => renderNotetaker(input, registry) // live view (no past-session selection)
 
-/** Drive the real controller + real renderer against the fake engine, and hand back the harness. */
-const harness = async (opts: { failCorrect?: boolean } = {}) => {
+/**
+ * Drive the real controller + real renderer against the fake engine over a persistent container. Re-renders
+ * after the initial mount go through the controller's own `rerenderInto` (capture focus → wipe → repaint),
+ * faithfully mirroring dev-entry's live-refresh path — so the focus/caret survival is really exercised.
+ */
+const harness = async (opts: { failCorrect?: boolean; renderer?: Renderer; surface?: Surface } = {}) => {
+  const renderer = opts.renderer ?? hudRenderer
+  const surface = opts.surface ?? hudSurface
   const engine = await startFakeEngine(opts)
   let summaries: Summary[] = (await (await fetch(`${engine.url}/summaries`)).json()) as Summary[]
   const container = new FakeNode('root', ['hud'])
-  const controller = new SummaryEditSession({
-    correct: correctSummaryWrite(engine.url),
-    requestRender: () => render(),
-    refresh: async () => {
-      summaries = (await (await fetch(`${engine.url}/summaries`)).json()) as Summary[]
-      render()
-    },
-  })
   let html = ''
-  const render = (): void => {
+  const rebuild = (): void => {
     const result: QueryResult = { source: 'summaries', items: summaries, truncated: false }
     const editingId = controller.editingId()
-    const vnode = renderSurface({ surface, now, results: [result], summaryEdit: editingId !== undefined ? { editing: editingId } : {} }, defaultBlockRegistry)
+    const vnode = renderer({ surface, now, results: [result], summaryEdit: editingId !== undefined ? { editing: editingId } : {} }, defaultBlockRegistry)
     html = renderToHtml(vnode)
     container.children = [] // the container node persists (listeners survive), its children are replaced
     for (const child of vnode.children) mountInto(container, child)
-    controller.repaint(container)
   }
+  const controller: SummaryEditSession = new SummaryEditSession({
+    correct: correctSummaryWrite(engine.url),
+    requestRender: () => controller.rerenderInto(container, rebuild),
+    refresh: async () => {
+      summaries = (await (await fetch(`${engine.url}/summaries`)).json()) as Summary[]
+      controller.rerenderInto(container, rebuild)
+    },
+  })
   controller.install(container)
-  render()
-  return { engine, container, controller, render, html: () => html }
+  rebuild()
+  controller.repaint(container)
+  // A background live re-render (a WS-triggered refresh in production): re-render THROUGH rerenderInto, exactly
+  // as dev-entry's onRender else-branch does — the path that must not steal focus mid-edit.
+  const backgroundRerender = (): void => controller.rerenderInto(container, rebuild)
+  return { engine, container, controller, backgroundRerender, html: () => html }
 }
 
 test('e2e (#246): click the pencil, type, save — the corrected prose renders, persists on re-query, and marks the row as your edit', async () => {
@@ -258,6 +277,61 @@ test('e2e (#246): a REFUSED save surfaces an honest visible error line — never
     assert.match(status.title, /disk full/)
     // The editor is still open with the typed text intact — the failure did not discard the correction.
     assert.equal(h.container.querySelector('.sum-edit-text')!.value, 'a correction the engine will refuse')
+  } finally {
+    await new Promise<void>((resolve) => h.engine.server.close(() => resolve()))
+  }
+})
+
+test('#246 focus survival: the editor keeps focus, caret, AND draft across a background live re-render', async () => {
+  const h = await harness()
+  try {
+    // Open the editor — the fresh textarea takes keyboard focus (caret at the end).
+    h.container.dispatch('click', h.container.querySelector('[data-verb="summary-edit"]')!)
+    let textarea = h.container.querySelector('.sum-edit-text')!
+    assert.equal(textarea.focused, true, 'the editor takes focus on open')
+
+    // Type a correction and place the caret mid-text.
+    textarea.value = 'Dana owns the deck'
+    h.container.dispatch('input', textarea)
+    textarea.selectionStart = 4
+    textarea.selectionEnd = 4
+
+    // A background live re-render fires (the ~1/s WS-triggered refresh) — the exact sequence the verifier
+    // probed and got focused=false. Nothing user-initiated; the panel is wiped and re-rendered underneath.
+    h.backgroundRerender()
+
+    // The textarea is a FRESH node after the wipe; the draft, focus, and caret all survived it.
+    textarea = h.container.querySelector('.sum-edit-text')!
+    assert.equal(textarea.value, 'Dana owns the deck', 'the typed draft survived the wipe')
+    assert.equal(textarea.focused, true, 'keyboard focus survived (the focused=false probe is now green)')
+    assert.equal(textarea.selectionStart, 4, 'the caret position survived')
+    assert.equal(textarea.selectionEnd, 4)
+  } finally {
+    await new Promise<void>((resolve) => h.engine.server.close(() => resolve()))
+  }
+})
+
+test('e2e (#246 pad): the pencil reaches the PAD center summary — open, type, save renders + persists', async () => {
+  const h = await harness({ renderer: padRenderer, surface: padSurface })
+  try {
+    // The flagship pad frame renders the center summary WITH the pencil (the whole point of the slice).
+    assert.match(h.html(), /class="nt-app"/) // the three-zone pad frame
+    assert.match(h.html(), /data-verb="summary-edit"/) // the pencil reached the pad center
+
+    h.container.dispatch('click', h.container.querySelector('[data-verb="summary-edit"]')!)
+    const textarea = h.container.querySelector('.sum-edit-text')!
+    textarea.value = 'the pad correction — ships Thursday'
+    h.container.dispatch('input', textarea)
+    h.container.dispatch('click', h.container.querySelector('[data-verb="summary-correct"]')!)
+    await new Promise((r) => setTimeout(r, 20))
+
+    // The corrected prose renders in the pad, marked as the user's edit.
+    assert.match(h.html(), /the pad correction — ships Thursday/)
+    assert.match(h.html(), /edited by you/)
+    // PERSISTS: a fresh re-query returns the correction as the head.
+    const reread = (await (await fetch(`${h.engine.url}/summaries`)).json()) as Summary[]
+    assert.equal(reread[0]!.source, 'user')
+    assert.equal(reread[0]!.text, 'the pad correction — ships Thursday')
   } finally {
     await new Promise<void>((resolve) => h.engine.server.close(() => resolve()))
   }

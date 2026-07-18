@@ -375,8 +375,8 @@ export class WorkspaceRegistry {
   private static summaryCorrectionKey(s: Summary): string {
     const whole = s.level === 'session' || s.level === 'project'
     return whole
-      ? `${s.sessionId ?? ''} ${s.level}`
-      : `${s.sessionId ?? ''} ${s.level} ${s.windowStart} ${s.windowEnd}`
+      ? `${s.sessionId ?? ''}\u0000${s.level}`
+      : `${s.sessionId ?? ''}\u0000${s.level}\u0000${s.windowStart}\u0000${s.windowEnd}`
   }
 
   /**
@@ -461,7 +461,7 @@ export class WorkspaceRegistry {
     if (target === undefined) throw new Error(`no summary ${input.summaryId} in workspace ${input.workspaceId}`)
     if (target.text === undefined) throw new Error(`summary ${input.summaryId} has no prose to correct (it is degraded — connect a summary model first)`)
     const at = new Date().toISOString()
-    const id = `sum-user-${createHash('sha256').update(`${target.id} ${input.text}`).digest('hex').slice(0, 24)}`
+    const id = `sum-user-${createHash('sha256').update(`${target.id}\u0000${input.text}`).digest('hex').slice(0, 24)}`
     // Keep ONLY the structural provenance — a user correction has no model invocation, so the slot/endpoint/
     // model/usage/egress/guard fields are dropped (never attribute human prose to a model).
     const provenance: Summary['provenance'] = {

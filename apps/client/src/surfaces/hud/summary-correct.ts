@@ -26,7 +26,7 @@ export interface SummaryDomNode {
   closest(selector: string): SummaryDomNode | null
   querySelector(selector: string): SummaryDomNode | null
   getAttribute(name: string): string | null
-  addEventListener(type: 'click' | 'input', handler: (event: SummaryDomEvent) => void): void
+  addEventListener(type: SummaryDomEventType, handler: (event: SummaryDomEvent) => void): void
   value: string
   textContent: string
   title: string
@@ -36,6 +36,8 @@ export interface SummaryDomNode {
   selectionEnd?: number | null
   setSelectionRange?(start: number, end: number): void
 }
+/** The events the controller delegates on its container. All bubble, so ONE listener each covers a re-rendered subtree. */
+export type SummaryDomEventType = 'click' | 'input' | 'focusin' | 'focusout' | 'compositionstart' | 'compositionend' | 'compositioncancel'
 export interface SummaryDomEvent {
   target: { closest(selector: string): SummaryDomNode | null } | null
 }
@@ -62,6 +64,15 @@ export class SummaryEditSession {
   private error: { text: string; detail?: string } | undefined
   // Focus the textarea once when an editor first opens (best-effort; a headless test simply skips it).
   private focusPending = false
+  // Interaction state the live refresh must not trample (the #225/#222 focus repair, scoped to `.sum-edit-text`).
+  // `focused` tracks whether the editor holds keyboard focus (via bubbling focusin/focusout); `composing` is
+  // true while an IME composition is in flight (a destructive re-render is DEFERRED then, so the node is never
+  // replaced mid-composition); `focusSnapshot` is the focus + caret captured just before a wipe, restored by the
+  // paired repaint; `renderDeferred` remembers a refresh skipped during composition so compositionend flushes it.
+  private focused = false
+  private composing = false
+  private renderDeferred = false
+  private focusSnapshot: { start: number; end: number } | undefined
   private container: SummaryDomNode | undefined
 
   constructor(deps: SummaryCorrectDeps) {
@@ -95,6 +106,42 @@ export class SummaryEditSession {
       const el = event.target?.closest('.sum-edit-text')
       if (el) this.draft = el.value
     })
+    // Focus tracking so a destructive re-render can restore focus to the fresh textarea (focusin/focusout
+    // BUBBLE to the container; focus/blur do not, which is why the delegated listener uses these).
+    container.addEventListener('focusin', (event) => {
+      if (event.target?.closest('.sum-edit-text')) this.focused = true
+    })
+    container.addEventListener('focusout', (event) => {
+      if (!event.target?.closest('.sum-edit-text')) return
+      this.focused = false
+      // A blur can end an IME composition without emitting compositionend (not spec-guaranteed across IMEs).
+      // If `composing` stuck true, every later wipe would defer forever — a frozen editor. Conservatively end it.
+      if (this.composing) this.endComposition()
+    })
+    // IME composition: while a candidate is being composed the textarea node must NOT be replaced (that drops
+    // the composition buffer), so rerenderInto defers the wipe; ending the composition flushes any deferred one.
+    container.addEventListener('compositionstart', (event) => {
+      if (event.target?.closest('.sum-edit-text')) this.composing = true
+    })
+    const onCompositionDone = (event: SummaryDomEvent): void => {
+      if (event.target?.closest('.sum-edit-text')) this.endComposition()
+    }
+    container.addEventListener('compositionend', onCompositionDone)
+    container.addEventListener('compositioncancel', onCompositionDone)
+  }
+
+  /** True while an IME composition is in flight in the editor — the host must defer a destructive re-render. */
+  isComposing(): boolean {
+    return this.composing
+  }
+
+  /** End the current IME composition and flush a re-render deferred while it was in flight (or defensively on blur). */
+  private endComposition(): void {
+    this.composing = false
+    if (this.renderDeferred) {
+      this.renderDeferred = false
+      this.deps.requestRender()
+    }
   }
 
   private openEditor(summaryId: string | null): void {
@@ -149,6 +196,43 @@ export class SummaryEditSession {
     }
   }
 
+  /**
+   * Run a destructive panel re-render (renderInto wipes innerHTML, replacing the `.sum-edit-text` node) while
+   * PRESERVING the editor's interaction state — the #225 fix, scoped to the correction editor. The draft text
+   * is already held here (repaint restores it); this adds focus, caret, and IME:
+   *  - mid-IME-composition: the render is DEFERRED (the live node survives) and flushed on compositionend, so a
+   *    refresh can never replace the node the user is composing into.
+   *  - otherwise: focus + caret are snapshotted BEFORE the wipe and restored by the paired repaint AFTER it (one
+   *    synchronous turn), so a live refresh never steals keyboard focus from an editor being typed in.
+   * Composed by the host AROUND the actual wipe (dev-entry nests it with the input block's rerenderInto).
+   */
+  rerenderInto(container: SummaryDomNode, doRender: () => void): void {
+    if (this.composing) {
+      this.renderDeferred = true
+      return
+    }
+    this.captureFocus(container)
+    // repaint runs in `finally` so a throwing render still CONSUMES the one-shot snapshot (a leaked snapshot
+    // would phantom-focus a later repaint) and still re-injects the editor state; the error then propagates.
+    try {
+      doRender()
+    } finally {
+      this.repaint(container)
+    }
+  }
+
+  /** Snapshot whether the editor holds focus and where its caret sits, before a wipe destroys the node. */
+  private captureFocus(container: SummaryDomNode): void {
+    this.focusSnapshot = undefined
+    if (!this.focused) return
+    const textarea = container.querySelector('.sum-edit-text')
+    if (!textarea) return
+    const caretEnd = textarea.value.length
+    const start = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : caretEnd
+    const end = typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : caretEnd
+    this.focusSnapshot = { start, end }
+  }
+
   /** Paint the honest failure line straight into an open row's `.sum-status` (no re-render — keeps the textarea). */
   private paintStatus(row: SummaryDomNode): void {
     const status = row.querySelector('.sum-status')
@@ -168,14 +252,35 @@ export class SummaryEditSession {
     if (this.editing === undefined) return
     const textarea = container.querySelector('.sum-edit-text')
     if (!textarea) return
-    if (this.draft !== undefined && textarea.value !== this.draft) textarea.value = this.draft
+    // Restore the in-progress draft the wipe erased — but NOT mid-composition (writing .value would disrupt the
+    // live IME buffer; the 'input' events keep the draft current meanwhile).
+    if (!this.composing && this.draft !== undefined && textarea.value !== this.draft) textarea.value = this.draft
     const row = textarea.closest('.sum-editing')
     if (row) this.paintStatus(row)
+    // Initial open: focus the fresh editor once and place the caret at the end (and mark it focused, since a
+    // programmatic focus() may not emit focusin for our delegated tracker).
     if (this.focusPending) {
       this.focusPending = false
+      this.focused = true
       textarea.focus?.()
       const end = textarea.value.length
-      textarea.setSelectionRange?.(end, end)
+      this.setCaret(textarea, end, end)
+      return
+    }
+    // Live refresh survival: restore keyboard focus + caret snapshotted before the wipe (one-shot).
+    if (this.focusSnapshot) {
+      const { start, end } = this.focusSnapshot
+      this.focusSnapshot = undefined
+      textarea.focus?.()
+      this.setCaret(textarea, start, end)
+    }
+  }
+
+  private setCaret(textarea: SummaryDomNode, start: number, end: number): void {
+    if (textarea.setSelectionRange) textarea.setSelectionRange(start, end)
+    else {
+      textarea.selectionStart = start
+      textarea.selectionEnd = end
     }
   }
 }
