@@ -224,7 +224,13 @@ const materializeLevel = async (
   try {
     const children = gatherChildren(deps.store, scope.workspaceId, scope.sessionId, config)
     const evidence = gatherEvidence(deps.store, scope.workspaceId, scope.sessionId, config)
-    const existing = deps.store.listSummaries(scope.workspaceId, { ...sessionScope, level: config.level, includeSuperseded: true })
+    // The MACHINE chain only: a sovereign `source:'user'` correction (#246) is a read-time overlay, never
+    // part of the deterministic skeleton the assembler supersedes — including it would let a human revision
+    // masquerade as a machine head (headContent reads model provenance a correction does not carry). The
+    // correction still OUTRANKS whatever this produces, at read time (store.resolveSummaryHeads).
+    const existing = deps.store
+      .listSummaries(scope.workspaceId, { ...sessionScope, level: config.level, includeSuperseded: true })
+      .filter((s) => s.source !== 'user')
     const { plan, unchanged } = assembleSummaries({ workspaceId: scope.workspaceId, ...sessionScope, config, children, evidence, existing })
 
     // NEW / CHANGED windows: summarize the bounded inputs and append. A window with no summarizable text

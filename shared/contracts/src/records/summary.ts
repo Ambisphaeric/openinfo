@@ -95,13 +95,39 @@ export const SummaryProvenance = Type.Object(
 export type SummaryProvenance = Static<typeof SummaryProvenance>
 
 /**
+ * A SOVEREIGN user correction stamp on a summary (#246) — recorded as first-class, append-only data that
+ * marks a summary revision as HUMAN-authored prose, never a model proposal. It mirrors the claim-correction
+ * sovereignty precedent (#178 `ClaimCorrection`): a human decision has no builder, so a `source:'user'`
+ * summary carries THIS stamp in place of the model-invoke provenance fields, and a reader (or a test) can
+ * never mistake a human correction for a model invocation. Present ONLY on a `source:'user'` summary; a
+ * `source:'model'` summary carries the model-invoke provenance instead (or none, when degraded).
+ */
+export const SummaryCorrection = Type.Object(
+  {
+    at: IsoTime,
+    by: Type.Optional(Type.String({ description: 'who made the correction — the user (never a machine)' })),
+  },
+  { $id: 'SummaryCorrection', additionalProperties: false },
+)
+export type SummaryCorrection = Static<typeof SummaryCorrection>
+
+/**
  * A multi-timescale summary (#177) — one interval's view at one `level`, built ONLY from references to
- * lower-level summaries, distillates, packets, and source evidence (never copied content). The prose is a
- * MODEL PROPOSAL (`proposal: true`, the #189 invariant): it is never canonical truth, and a human
- * correction would supersede it. The deterministic skeleton (window, children, bound, confidence) is a
- * pure function of the stored inputs — so replaying the same inputs yields the same skeleton and the same
- * `id`, which is content-derived over that skeleton (prose EXCLUDED, so a re-roll of prose over the SAME
- * children does not churn a new revision).
+ * lower-level summaries, distillates, packets, and source evidence (never copied content). Model-produced
+ * prose is a MODEL PROPOSAL (`proposal: true`, the #189 invariant): it is never canonical truth, and a human
+ * correction supersedes it. The deterministic skeleton (window, children, bound, confidence) is a pure
+ * function of the stored inputs — so replaying the same inputs yields the same skeleton and the same `id`,
+ * which is content-derived over that skeleton (prose EXCLUDED, so a re-roll of prose over the SAME children
+ * does not churn a new revision).
+ *
+ * SOVEREIGN USER CORRECTION (#246): a `source:'user'` summary is a human-authored revision (`proposal:false`)
+ * that `corrects` a machine revision. It is append-only — it never mutates or deletes the machine summary or
+ * its derivation path (it carries the target's children/bound/window so it stays traceable to the same
+ * inputs), and it OUTRANKS any machine revision on read, INCLUDING one produced by a later re-derivation of
+ * the same window/level (resolved at read time over the level's scope, the `resolveClaimHeads` precedent). A
+ * `source:'user'` summary carries a `correction` stamp instead of the model-invoke provenance fields, so it
+ * can never be mistaken for a model output. `source` ABSENT ⇒ a model summary (back-compat: rows persisted
+ * before this field predate corrections and are model-derived by construction).
  *
  * HONEST DEGRADATION: when the summarizing model is unavailable, `text` is ABSENT and `degraded` names the
  * machine-visible reason — no fabricated prose. The children/derivation path is still intact (it is
@@ -122,8 +148,15 @@ export const Summary = Type.Object(
     windowEnd: IsoTime,
     children: Type.Array(SummaryChild, { description: 'refs to bounded lower-level inputs + selective evidence — never copied content' }),
     bound: SummaryInputBound,
-    text: Type.Optional(Type.String({ description: 'the MODEL-PROPOSED summary prose; ABSENT ⇒ degraded (see `degraded`)' })),
-    proposal: Type.Literal(true, { description: '#189: summary prose is a model PROPOSAL, never canonical truth' }),
+    text: Type.Optional(Type.String({ description: 'the summary prose (model-PROPOSED, or human-authored on a `source:user` correction); ABSENT ⇒ degraded (see `degraded`)' })),
+    proposal: Type.Boolean({ description: '#189: true ⇒ model PROPOSAL, never canonical truth; false ⇒ a sovereign user correction' }),
+    source: Type.Optional(
+      Type.Union(['model', 'user'].map((s) => Type.Literal(s)), {
+        description: 'model (deterministic-skeleton + model prose proposal) · user (sovereign human correction, outranks model); ABSENT ⇒ model (pre-#246 rows)',
+      }),
+    ),
+    correction: Type.Optional(SummaryCorrection),
+    corrects: Type.Optional(Id),
     degraded: Type.Optional(
       Type.Object(
         { reason: Type.String({ minLength: 1, description: 'why no prose was produced — e.g. no summarizer endpoint, invoke failed' }) },

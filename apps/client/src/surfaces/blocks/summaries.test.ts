@@ -70,6 +70,48 @@ test('empty is EXPLAINABLE, and an on-match empty summaries block stays hidden',
   assert.doesNotMatch(hidden, />Summary</)
 })
 
+test('#246 correctable: a live row grows the pencil affordance ONLY where the surface threads the correction context', () => {
+  // No correction context threaded ⇒ no edit affordance (opt-in; a surface that never wired it shows none).
+  const off = renderToHtml(renderSurface({ surface, now, results: [undefined, result([summary()])] }, defaultBlockRegistry))
+  assert.doesNotMatch(off, /data-verb="summary-edit"/)
+  // Context threaded ⇒ a live row grows the pencil (client-local open verb), still copy carries the prose.
+  const on = renderToHtml(renderSurface({ surface, now, results: [undefined, result([summary()])], summaryEdit: {} }, defaultBlockRegistry))
+  assert.match(on, /data-verb="summary-edit"[^>]*data-summary="sum-1"/)
+  assert.match(on, /data-copy="the team agreed to ship Thursday; Dana owns the deck"/)
+})
+
+test('#246 correctable: a degraded row gets NO edit affordance (nothing to correct until a model connects)', () => {
+  const degraded = summary({ degraded: { reason: 'no summarizer endpoint' } })
+  delete (degraded as { text?: string }).text
+  const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([degraded])], summaryEdit: {} }, defaultBlockRegistry))
+  assert.doesNotMatch(html, /data-verb="summary-edit"/)
+  assert.doesNotMatch(html, /<textarea/)
+})
+
+test('#246 correctable: the open row swaps to an inline editor prefilled with the current prose, live Save + Cancel', () => {
+  const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([summary()])], summaryEdit: { editing: 'sum-1' } }, defaultBlockRegistry))
+  assert.match(html, /<textarea[^>]*class="sum-edit-text"[^>]*data-summary="sum-1"[^>]*>the team agreed to ship Thursday; Dana owns the deck<\/textarea>/)
+  assert.match(html, /data-verb="summary-correct"[^>]*data-summary="sum-1"[^>]*data-workspace="ws"/) // Save carries the write payload
+  assert.match(html, /data-verb="summary-edit-cancel"/) // Cancel is live
+  assert.match(html, /class="sum-status"/) // an empty honest-failure region the controller paints into
+})
+
+test('#246 corrected: a user-corrected row shows the corrected prose, marks it your edit, and copy carries the CORRECTED bare text', () => {
+  const corrected = summary({
+    id: 'sum-user-1', text: 'Dana owns the deck; we ship Thursday', proposal: false, source: 'user',
+    correction: { at: '2026-07-07T14:31:00Z' }, corrects: 'sum-1', confidence: 1,
+    provenance: { builder: 'bounded-hierarchical-summary', windowMs: 300_000, childLevel: 'rolling', templateId: 'tpl-summary-five-minute' },
+  })
+  const html = renderToHtml(renderSurface({ surface, now, results: [undefined, result([corrected])], summaryEdit: {} }, defaultBlockRegistry))
+  assert.match(html, /Dana owns the deck; we ship Thursday/) // the corrected prose shows
+  assert.match(html, /class="corr">edited by you/) // the honest correction marker
+  assert.doesNotMatch(html, /a draft you can correct/) // a correction is your own text, no longer "a draft"
+  // Copy stays value-only: it now carries the CORRECTED bare text (extends the copy-value invariant).
+  assert.match(html, /data-copy="Dana owns the deck; we ship Thursday"/)
+  // The row is still re-correctable (the pencil remains).
+  assert.match(html, /data-verb="summary-edit"[^>]*data-summary="sum-user-1"/)
+})
+
 test('#227/#215 summaries words two DISTINCT empty states: no session running vs live-but-empty', () => {
   // The summaries source is session-scoped, so it carries `noCurrentSession` (#210) like its siblings. With no
   // live session the empty stays session-first (start one); live-but-empty names the enablement toggle. The two

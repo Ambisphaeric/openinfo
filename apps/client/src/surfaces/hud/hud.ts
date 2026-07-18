@@ -75,6 +75,14 @@ export interface HudOptions {
    * plain `hud.refresh()` re-hydrates the center against that session. Absent ⇒ every block uses its own query.
    */
   mapQuery?: (block: Block) => BlockQuery | undefined
+  /**
+   * #246: which summary row (if any) is OPEN in the inline correction editor, read FRESH on every render
+   * (like the pill/session-readiness getters) so opening/closing the editor re-paints without a re-query.
+   * The dev entry supplies it from the SummaryEditSession controller; PRESENCE threads the correction render
+   * context, which is what makes a surface's summary rows correctable (and renders the edit affordance).
+   * Absent ⇒ this surface does not support in-place correction (no edit affordance, no dead button).
+   */
+  summaryEditing?: () => string | undefined
 }
 
 /**
@@ -100,6 +108,7 @@ export class Hud {
   private readonly onChatDelta: ((payload: unknown) => void) | undefined
   private readonly sessionReadiness: (() => SessionReadiness | undefined) | undefined
   private readonly mapQuery: ((block: Block) => BlockQuery | undefined) | undefined
+  private readonly summaryEditing: (() => string | undefined) | undefined
 
   private surface: Surface | undefined
   private results: (QueryResult | undefined)[] = []
@@ -135,6 +144,7 @@ export class Hud {
     this.onChatDelta = options.onChatDelta
     this.sessionReadiness = options.sessionReadiness
     this.mapQuery = options.mapQuery
+    this.summaryEditing = options.summaryEditing
   }
 
   /** Load the surface document, hydrate + render once, then start listening for live updates. */
@@ -290,7 +300,15 @@ export class Hud {
     // #136: read the session-control readiness fresh each render (a pure state read, never a fetch) so a
     // change in engine/capture state repaints the on-surface control. Absent ⇒ no shell bridge (disabled).
     const session = this.sessionReadiness?.()
-    const panel = this.renderSurface({ surface: this.surface, now, results: this.results, clarify, ...(session !== undefined ? { session } : {}) }, this.registry)
+    // #246: thread the correction context iff this surface supports it (the getter is wired). Its presence —
+    // not just `editing` — is what turns on the edit affordance, so a surface without it shows none. Built
+    // without an `editing:undefined` key (exactOptionalPropertyTypes), so an empty context reads as "on, none open".
+    let summaryEdit: { editing?: string } | undefined
+    if (this.summaryEditing !== undefined) {
+      const editing = this.summaryEditing()
+      summaryEdit = editing !== undefined ? { editing } : {}
+    }
+    const panel = this.renderSurface({ surface: this.surface, now, results: this.results, clarify, ...(session !== undefined ? { session } : {}), ...(summaryEdit !== undefined ? { summaryEdit } : {}) }, this.registry)
     // Compose the event-fed live-transcript feed onto the query-rendered panel (#58). Pruned here so the
     // feed self-expires on every repaint; appended LAST so the distilled blocks keep primacy and the raw
     // live strip reads as a distinct layer beneath them. Absent (idle, nothing to say) ⇒ panel unchanged.

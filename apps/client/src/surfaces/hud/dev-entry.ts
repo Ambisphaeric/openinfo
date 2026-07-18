@@ -14,6 +14,7 @@ import { installWindowDrag, type DragBridge } from './window-drag.js'
 import { installAutoResize, type ResizeBridge } from './auto-resize.js'
 import { PanelController, type PanelSize } from './panel.js'
 import { InputSession, type AttachedDoc, type CaptureOutcome, type ChatThread, type UploadFile } from './input-submit.js'
+import { SummaryEditSession } from './summary-correct.js'
 
 /** The pill surface id — the surface whose window is the pill (its renderer + height authority differ). */
 const PILL_SURFACE_ID = 'surf-openinfo-pill'
@@ -396,6 +397,28 @@ export const submitEntityCorrection =
   }
 
 /**
+ * The summary correction write path (#246) — the SOVEREIGN, append-only user edit. POSTs the corrected prose
+ * to `POST /summaries/correct`, which mints a `source:'user'` revision that OUTRANKS the machine summary on
+ * read (and survives re-derivation) WITHOUT deleting it. A LOCAL write only — it creates no egress path. The
+ * body carries only workspace + summary id + text; provenance is engine-stamped. Honest failure: a non-ok
+ * POST REJECTS with the engine's `error` message (or the HTTP status), so the editor paints it as a calm
+ * visible line (raw reason on hover) rather than a silent no-op (#43 / the Save-button lesson).
+ */
+export const correctSummaryWrite =
+  (baseUrl: string, fetchFn: FetchLike = fetch) =>
+  async ({ workspaceId, summaryId, text }: { workspaceId: string; summaryId: string; text: string }): Promise<void> => {
+    const res = await fetchFn(`${baseUrl}/summaries/correct`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId, summaryId, text }),
+    })
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => undefined)) as { error?: string } | undefined
+      throw new Error(detail?.error ?? `correction failed (HTTP ${res.status})`)
+    }
+  }
+
+/**
  * The `input` block's chat submit path (#134). POSTs the turn to the configured route (e.g. /chat) WITH the
  * attached pin id + prior turns, and returns the ChatReply. Honest failure: a non-ok response REJECTS with
  * the engine's `error` message (or the HTTP status), so the input block paints it as visible text — never a
@@ -602,6 +625,16 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     // must never be interrupted by a wipe). Invoked only at compositionend, after `hud` is constructed below.
     requestRender: () => hud.rerender(),
   })
+  // #246: the summary correction controller — owns which row is open in the inline editor, the typed draft,
+  // and the honest failure line (its state lives here, not the DOM, so a live re-render never eats it —
+  // repaint re-injects after every render, the input-block discipline). A save is a LOCAL write that
+  // outranks the machine row; the refresh re-hydrates so the corrected row loads as the live head. `hud` is
+  // referenced through closures invoked after it is constructed below (as the InputSession deps are).
+  const summaryEdit = new SummaryEditSession({
+    correct: correctSummaryWrite(baseUrl, engineFetch),
+    requestRender: () => hud.rerender(),
+    refresh: () => hud.refresh(),
+  })
   // Ask-history: rehydrate the workspace's persisted thread so the chat window opens mid-conversation
   // (seedHistory never clobbers a live session; the paint lands with the next render). A failed read is
   // logged to the console (visible in the shell's log surface) — the thread simply starts empty, and the
@@ -631,6 +664,9 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
     // #247: the note-taker's history drill-down remaps the CENTER blocks to a selected past session, so a
     // plain refresh re-hydrates the center against it. Absent on every other surface (the controller default).
     ...(notetakerView ? { mapQuery: notetakerView.mapQuery } : {}),
+    // #246: which summary row is open in the correction editor, read fresh each render (owned by the
+    // controller). Threading this getter turns ON in-place correction for this surface's summary rows.
+    summaryEditing: (): string | undefined => summaryEdit.editingId(),
     // #134: size the window to the declared attached panel (collapsed/expanded along its edge) and, for a
     // reveal:'event' panel, subscribe to the trigger to open it as a dismissible suggestion. Electron-only
     // (needs the panel bridge); a plain browser page simply scrolls. Created once — hot-reloads keep it.
@@ -723,10 +759,14 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
         // #134: install the input block's delegated submit/file listeners ONCE on the container (they
         // survive innerHTML replacement, exactly like wireActions' click delegation).
         inputSession.install(panel as unknown as Parameters<InputSession['install']>[0])
+        // #246: install the summary correction controller's delegated listeners ONCE on the same container
+        // (open/cancel/save all survive innerHTML replacement, exactly like the input block's).
+        summaryEdit.install(panel as unknown as Parameters<SummaryEditSession['install']>[0])
         mounted = true
         // #134: re-inject the input block's conversation/attachment/status after the initial mount (the
         // pure renderer leaves those regions empty) — the compose-after-render discipline the live strip uses.
         inputSession.repaint(panel as unknown as Parameters<InputSession['repaint']>[0])
+        summaryEdit.repaint(panel as unknown as Parameters<SummaryEditSession['repaint']>[0])
       } else {
         // #222 chat-focus repair: a focus/caret/IME-preserving re-render. renderInto still wipes innerHTML
         // (destroying the textarea), but rerenderInto snapshots focus + caret before the wipe and restores
@@ -736,6 +776,8 @@ export const startHud = (options: { baseUrl?: string; workspace?: string; surfac
           panel as unknown as Parameters<InputSession['rerenderInto']>[0],
           () => renderInto(panel, node),
         )
+        // #246: re-inject the open editor's draft + failure line after the live wipe (compose-after-render).
+        summaryEdit.repaint(panel as unknown as Parameters<SummaryEditSession['repaint']>[0])
       }
     },
     onError: (error) => onHudError(error),

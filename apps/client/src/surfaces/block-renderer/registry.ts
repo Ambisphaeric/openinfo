@@ -41,6 +41,19 @@ export interface SessionReadiness {
   capture?: { tone: 'rec' | 'warn'; note: string }
 }
 
+/**
+ * The #246 summary-correction render context — which summary row (if any) is currently OPEN in the inline
+ * editor. Session-ephemeral, owned by the Hud (mirrors ClarifyRenderContext); a block that surfaces
+ * correctable prose (summaries) consults it to swap the open row to an editable field. Its PRESENCE also
+ * gates the edit affordance: a surface that threads this context supports in-place correction and renders
+ * the edit glyph on live rows; a surface that does not (it never threads the context) renders no edit
+ * affordance — so the affordance is opt-in and never a dead button where nothing wired it.
+ */
+export interface SummaryEditRenderContext {
+  /** the summary id whose row is currently open in the inline editor (only one open at a time). */
+  editing?: string
+}
+
 export interface BlockRenderArgs {
   block: Block
   result?: QueryResult
@@ -48,6 +61,8 @@ export interface BlockRenderArgs {
   clarify?: ClarifyRenderContext
   /** #136: the session-control readiness, threaded from the surface render input (see SurfaceRenderInput). */
   session?: SessionReadiness
+  /** #246: the summary-correction context — present ⇒ this surface supports in-place summary correction. */
+  summaryEdit?: SummaryEditRenderContext
 }
 
 /** A block renderer: pure `(config + hydrated data) → VNode(s)`. Returns null to render nothing. */
@@ -65,6 +80,8 @@ export interface SurfaceRenderInput {
   clarify?: ClarifyRenderContext
   /** #136 session-control readiness, threaded to the session-control block + the note-taker canvas control. */
   session?: SessionReadiness
+  /** #246 summary-correction context — present ⇒ this surface supports in-place summary correction. */
+  summaryEdit?: SummaryEditRenderContext
 }
 
 /**
@@ -84,7 +101,7 @@ export const renderSurface = (input: SurfaceRenderInput, registry: BlockRegistry
     if (show === 'on-match' && (!result || result.items.length === 0)) return
     const renderer = registry[block.block] ?? registry.custom
     if (!renderer) return
-    const node = renderer({ block, now: input.now, ...(result !== undefined ? { result } : {}), ...(input.clarify !== undefined ? { clarify: input.clarify } : {}), ...(input.session !== undefined ? { session: input.session } : {}) })
+    const node = renderer({ block, now: input.now, ...(result !== undefined ? { result } : {}), ...(input.clarify !== undefined ? { clarify: input.clarify } : {}), ...(input.session !== undefined ? { session: input.session } : {}), ...(input.summaryEdit !== undefined ? { summaryEdit: input.summaryEdit } : {}) })
     if (Array.isArray(node)) children.push(...node)
     else if (node) children.push(node)
   })

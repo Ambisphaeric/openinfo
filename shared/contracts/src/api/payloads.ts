@@ -611,6 +611,25 @@ export const CorrectClaimRequest = Type.Object(
 export type CorrectClaimRequest = Static<typeof CorrectClaimRequest>
 
 /**
+ * The body of `POST /summaries/correct` (#246) — record a SOVEREIGN, append-only USER correction on a
+ * summary. The correction OUTRANKS the machine summary on read without deleting it or its derivation path
+ * (the roadmap invariant; the claim/titling-sovereignty pattern). `summaryId` names the machine summary the
+ * user is rewriting; `text` is the human-authored prose. The correction inherits the target's identity
+ * (level, window, session scope, children refs, bound) so it stays traceable to the same inputs and keeps
+ * winning on read even after the producer re-derives that window/level. `by` stamps the human provenance.
+ */
+export const CorrectSummaryRequest = Type.Object(
+  {
+    workspaceId: Id,
+    summaryId: Id,
+    text: Type.String({ minLength: 1, description: 'the human-authored corrected prose — a correction never empties a summary (use the machine degraded state for “no prose”)' }),
+    by: Type.Optional(Type.String()),
+  },
+  { $id: 'CorrectSummaryRequest', additionalProperties: false },
+)
+export type CorrectSummaryRequest = Static<typeof CorrectSummaryRequest>
+
+/**
  * One counterpart in the depth-1 relationship walk (#178): `GET /claims/related?entity=` answers "what does
  * this entity relate to?" by walking entity → its live claims → the counterpart entity at the other end of
  * each. `entityId`/`name` name the counterpart; `relations` is the deduped set of relation kinds linking the

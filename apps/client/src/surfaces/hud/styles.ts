@@ -95,6 +95,22 @@ body{margin:0;background:var(--page-bg);
 .gverb.copied{border-color:rgba(77,164,122,.55);color:#7cc4a0;background:rgba(77,164,122,.14)}
 .gverb.copyfail{border-color:rgba(224,106,60,.6);color:#e0865c;background:rgba(224,106,60,.14)}
 
+/* Summary correction (#246): the honest "edited by you" marker + the inline editor a row swaps to when the
+   pencil (.sum-edit-open) is clicked. The marker is DECORATION — user-select:none (in the block below) so it
+   never rides into a copied selection of the corrected value. The editor's textarea (.sum-edit-text) IS the
+   value, so it stays selectable; only its chrome (status line, action buttons) is suppressed. A failed save
+   paints .sum-status.err with a calm human line (hud-voice §3) and the raw reason on its hover title. */
+.corr{display:inline-block;margin-top:2px;font-family:var(--s-mono);font-size:9px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--m-decide)}
+.sum-editing .body{display:flex;flex-direction:column;gap:6px}
+.sum-edit-text{width:100%;min-height:52px;resize:vertical;font:inherit;font-size:12.5px;line-height:1.4;
+  color:var(--s-ink);background:rgba(0,0,0,.28);border:1px solid var(--s-line);border-radius:7px;padding:6px 8px}
+.sum-edit-text:focus{outline:none;border-color:rgba(111,158,207,.6)}
+.sum-edit-actions{display:flex;gap:6px}
+.sum-status{font-size:11px;line-height:1.45;color:var(--s-muted)}
+.sum-status:empty{display:none}
+.sum-status.err{color:#e0865c}
+
 /* #75 clarify affordance: the ≟ rides the .go glyph strip (a .gverb); when expanded, ONE inline ask line
    under the why. Never a modal — a single dismissible row. The choices are .mini-scale ✓-class buttons. */
 .clarify-open{font-weight:700}
@@ -123,7 +139,10 @@ body{margin:0;background:var(--page-bg);
 .rel .body .ttl .ext,
 .rel .body .ttl .due,
 .rel .body .why,
+.rel .body .corr,
 .rel .go,
+.sum-status,
+.sum-edit-actions,
 .dot,
 .glyphs,
 .clarify-ask,
