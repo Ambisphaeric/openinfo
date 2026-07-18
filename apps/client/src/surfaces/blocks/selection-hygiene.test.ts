@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { Block, Distillate, Entity, RelevantEntity, TodoItem } from '@openinfo/contracts'
+import type { Block, Distillate, Entity, RelevantEntity, Summary, TodoItem } from '@openinfo/contracts'
 import type { NowContext } from '../block-renderer/index.js'
 import type { VNode } from '../block-renderer/vnode.js'
 import { hudStyles } from '../hud/styles.js'
@@ -99,6 +99,21 @@ const distillate: Distillate = {
 }
 const distNode = render(distBlock, [distillate])
 
+// A user-corrected summary (#246): the corrected prose is the selectable value; the "edited by you" marker
+// (.corr) and the why line are decoration and must NOT ride into a selection of the corrected value.
+const correctedSummary: Summary = {
+  id: 'sum-user-1', workspaceId: 'ws', sessionId: 'ses', level: 'five-minute',
+  windowStart: '2026-07-16T14:25:00Z', windowEnd: '2026-07-16T14:30:00Z',
+  children: [{ record: 'summary', id: 'r-1', at: '2026-07-16T14:25:00Z', role: 'child', level: 'rolling' }],
+  bound: { childrenAvailable: 1, childrenConsumed: 1, evidenceAvailable: 0, evidenceConsumed: 0 },
+  text: 'Dana owns the deck; we ship Thursday', proposal: false, source: 'user',
+  correction: { at: '2026-07-16T14:31:00Z' }, corrects: 'sum-1', confidence: 1,
+  provenance: { builder: 'bounded-hierarchical-summary', windowMs: 300_000, childLevel: 'rolling', templateId: 'tpl-summary-five-minute' },
+  revision: 1, schemaVersion: 1, createdAt: '2026-07-16T14:31:00Z',
+}
+const sumBlock: Block = { block: 'summaries', show: 'always', query: { source: 'summaries', params: { session: 'current', level: 'five-minute' } }, actions: copyAction }
+const sumNode = render(sumBlock, [correctedSummary])
+
 test('a native selection of a relevant-now row keeps the bare value only — no why, mark, kind tag, or affordance', () => {
   // The row DISPLAYS its why ("heard · …"), a mark glyph, the kind/mention tag, and a Copy button — none may
   // ride into a selection. The only selectable text is the entity value (here, the full canonical URL).
@@ -115,10 +130,16 @@ test('a native selection of a distillates (transcript) row keeps the bare value 
   assert.equal(selectableText(distNode, suppressed), distillate.text)
 })
 
+test('a native selection of a user-corrected summary row keeps the bare corrected value only — the "edited by you" marker never rides in', () => {
+  // #246: the corrected prose is the value; the .corr marker + the why line are decoration. A selection must
+  // yield only the corrected text — never "…edited by you" trailing the value.
+  assert.equal(selectableText(sumNode, suppressed), correctedSummary.text)
+})
+
 test('the classes this test relies on are non-selectable in the ACTUAL stylesheet (by-construction guard)', () => {
   // Derived from styles.ts / panel-styles.ts, not hardcoded — removing any of these rules fails BOTH this
   // assertion and the equality tests above (the decoration text would leak into selectableText).
-  for (const cls of ['why', 'ext', 'due', 'mk', 'glbl', 'go', 'dot', 't', 'unans', 'in-cites', 'in-who']) {
+  for (const cls of ['why', 'ext', 'due', 'mk', 'glbl', 'go', 'dot', 't', 'unans', 'in-cites', 'in-who', 'corr']) {
     assert.ok(suppressed.has(cls), `.${cls} must be non-selectable`)
   }
 })

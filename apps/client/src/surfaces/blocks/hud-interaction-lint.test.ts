@@ -8,6 +8,7 @@ import { h } from '../block-renderer/vnode.js'
 import { renderNotetaker } from '../hud/notetaker-layout.js'
 import { createPillRenderer } from '../hud/pill-layout.js'
 import { INPUT_SUBMIT_VERB } from '../hud/input-submit.js'
+import { SUMMARY_EDIT_VERBS } from './summaries.js'
 
 /**
  * The machine-speak INTERACTION LINT — the sibling of the register lint (#118) and the enforcement arm of
@@ -30,7 +31,10 @@ import { INPUT_SUBMIT_VERB } from '../hud/input-submit.js'
 // WIRED_VERBS (mount.ts wireActions gates on it) unioned with the input block's own verb (input-submit.ts).
 // No hand-maintained copy — a verb wired (or unwired) in production moves this set with it, so the lint can
 // never drift into false-positiving a new verb or silently blessing a button whose verb was un-wired.
-const LIVE_VERBS = new Set<string>([...WIRED_VERBS, INPUT_SUBMIT_VERB])
+// The summary correction verbs (#246) are dispatched by the SummaryEditSession controller (hud/summary-
+// correct.ts), the same posture as the input block's own verb — so they are unioned in from their source of
+// truth (blocks/summaries.ts) rather than hand-copied, keeping the lint honest as the verb set moves.
+const LIVE_VERBS = new Set<string>([...WIRED_VERBS, INPUT_SUBMIT_VERB, ...SUMMARY_EDIT_VERBS])
 
 /** Every `<button …>` opening tag in a rendered HTML string. */
 const buttonTags = (html: string): string[] => html.match(/<button\b[^>]*>/g) ?? []

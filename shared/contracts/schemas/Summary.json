@@ -198,13 +198,49 @@
       }
     },
     "text": {
-      "description": "the MODEL-PROPOSED summary prose; ABSENT ⇒ degraded (see `degraded`)",
+      "description": "the summary prose (model-PROPOSED, or human-authored on a `source:user` correction); ABSENT ⇒ degraded (see `degraded`)",
       "type": "string"
     },
     "proposal": {
-      "description": "#189: summary prose is a model PROPOSAL, never canonical truth",
-      "const": true,
+      "description": "#189: true ⇒ model PROPOSAL, never canonical truth; false ⇒ a sovereign user correction",
       "type": "boolean"
+    },
+    "source": {
+      "description": "model (deterministic-skeleton + model prose proposal) · user (sovereign human correction, outranks model); ABSENT ⇒ model (pre-#246 rows)",
+      "anyOf": [
+        {
+          "const": "model",
+          "type": "string"
+        },
+        {
+          "const": "user",
+          "type": "string"
+        }
+      ]
+    },
+    "correction": {
+      "$id": "SummaryCorrection",
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "at"
+      ],
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "description": "ISO-8601 timestamp",
+          "type": "string"
+        },
+        "by": {
+          "description": "who made the correction — the user (never a machine)",
+          "type": "string"
+        }
+      }
+    },
+    "corrects": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
     },
     "degraded": {
       "additionalProperties": false,

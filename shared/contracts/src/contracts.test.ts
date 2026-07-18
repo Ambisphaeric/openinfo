@@ -69,9 +69,15 @@ test('Summary is refs-only, marks prose as a model proposal, and stays honest wh
   const summary = JSON.parse(readFileSync(join(examplesDir, 'summary.fiveMinute.json'), 'utf8'))
   assert.deepEqual([...Value.Errors(AllSchemas.Summary, summary)], [], 'a refs-only proposed summary validates')
 
-  // The prose is a MODEL PROPOSAL, never canonical truth: `proposal` is the literal true, so a record that
-  // tries to demote itself to canonical (proposal:false) is rejected.
-  assert.ok([...Value.Errors(AllSchemas.Summary, { ...summary, proposal: false })].length > 0, 'proposal:false is rejected')
+  // #246: a MODEL summary's prose is a PROPOSAL (`proposal:true`); a SOVEREIGN user correction demotes it to
+  // `proposal:false`. `proposal` is a boolean (both are representable) so the correction path is expressible,
+  // but the honest source is what distinguishes them — a `source:'user'` correction carries a `correction`
+  // stamp + `corrects` link and human prose, and outranks the model proposal at read time (store-resolved).
+  const correction = { ...summary, id: 'sum-user-1', text: 'the corrected prose', proposal: false, source: 'user', correction: { at: summary.createdAt }, corrects: summary.id, confidence: 1 }
+  assert.deepEqual([...Value.Errors(AllSchemas.Summary, correction)], [], 'a sovereign user correction (proposal:false, source:user) validates')
+  assert.ok([...Value.Errors(AllSchemas.Summary, { ...summary, source: 'robot' })].length > 0, 'an invented source is rejected (closed union)')
+  // A correction stamp is itself a first-class, closed shape (no smuggled extra fields).
+  assert.deepEqual([...Value.Errors(AllSchemas.SummaryCorrection, { at: summary.createdAt, by: 'me' })], [], 'a correction stamp validates')
 
   // Children are refs only: a child cannot smuggle copied content alongside its id.
   const smuggling = { ...summary, children: [{ record: 'summary', id: 'sum-x', at: summary.windowStart, role: 'child', text: 'copied prose' }] }

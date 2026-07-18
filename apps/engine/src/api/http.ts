@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
-import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type BuildSummariesRequest, type BuildClaimsRequest, type CorrectClaimRequest, type Claim, type RelatedEntity, type Bundle, type CaptureChunk, type ContextPacket, type Summary, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type SetSessionTitleRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type SessionTitling, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
+import { AllSchemas, Routes, STT_SEGMENT_SCHEMA_VERSION, type Ack, type BlockQuery, type BuildContextPacketsRequest, type BuildSummariesRequest, type BuildClaimsRequest, type CorrectClaimRequest, type CorrectSummaryRequest, type Claim, type RelatedEntity, type Bundle, type CaptureChunk, type ContextPacket, type Summary, type ChatHistory, type ChatRequest, type ChatScreenshot, type CloneProfileRequest, type Draft, type Endpoint, type EndpointProbe, type Entity, type Fabric, type GenerateProbe, type FabricProfile, type Flag, type GuardPolicy, type ItemSignal, type LocalDownloadRequest, type Mode, type Moment, type OverflowState, type Pin, type QueueFailure, type QueueStatus, type PinChunk, type PromptTemplate, type Register, type RelevantEntity, type RerouteRequest, type SetSessionTitleRequest, type EntityCorrection, type EntityOverride, type ScanRequest, type ScreenCaptureObservation, type SecretValue, type SenseLaneSnapshot, type Session, type SessionTitling, type StartSessionRequest, type SttSegment, type SttSlotEndpoint, type Surface, type TodoList, type WorkflowSpec, type WorkspaceHints } from '@openinfo/contracts'
 import { SESSION_TITLING_SCHEMA_VERSION } from '@openinfo/contracts'
 import { Actor, ActDocuments, TodoDocuments, TaskExtractor } from '../act/index.js'
 import { EventBus, type EngineEvents } from '../bus/index.js'
@@ -1230,6 +1230,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCon
   if (req.method === 'GET' && url.pathname === '/summaries') return send(res, 200, readSummaries(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/summaries/trace') return readSummaryTrace(res, ctx.store, url)
   if (req.method === 'POST' && url.pathname === '/summaries/build') return buildSummaries(req, res, ctx)
+  if (req.method === 'POST' && url.pathname === '/summaries/correct') return correctSummary(req, res, ctx)
   if (req.method === 'GET' && url.pathname === '/claims') return send(res, 200, readClaims(ctx.store, url))
   if (req.method === 'GET' && url.pathname === '/claims/related') return readRelatedEntities(res, ctx.store, url)
   if (req.method === 'POST' && url.pathname === '/claims/build') return buildClaims(req, res, ctx)
@@ -2110,6 +2111,31 @@ async function buildSummaries(req: IncomingMessage, res: ServerResponse, ctx: Ha
     ctx.log(`summaries: on-demand appended ${outcome.created.length} for session ${sessionId} (${outcome.degraded} degraded, ${outcome.unchanged} unchanged)`)
   }
   send(res, 200, outcome.created)
+}
+
+/**
+ * Record a SOVEREIGN user correction on a summary (#246) — append-only, outranks the machine summary on
+ * read, never deletes it or its derivation path, and creates NO egress path (a purely local store write).
+ * Route decides (404 for an unknown workspace or summary; 400 for a degraded/absent-prose target — nothing
+ * to correct until a model connects); the store mints the `source:'user'` revision (carrying the target's
+ * identity, so it stays traceable AND keeps winning on read after re-derivation). Returns the persisted
+ * correction. A failing store call surfaces as a 404/400 with the real reason for the client to paint.
+ */
+async function correctSummary(req: IncomingMessage, res: ServerResponse, ctx: HandlerContext): Promise<void> {
+  const body = await readJson(req)
+  const errors = validationErrors('CorrectSummaryRequest', body)
+  if (errors.length > 0) return send(res, 400, { error: 'invalid CorrectSummaryRequest', details: errors })
+  const { workspaceId, summaryId, text, by } = body as CorrectSummaryRequest
+  if (!ctx.store.all().some((ws) => ws.id === workspaceId)) return send(res, 404, { error: `no such workspace: ${workspaceId}` })
+  try {
+    const summary = ctx.store.correctSummary({ workspaceId, summaryId, text, ...(by !== undefined ? { by } : {}) })
+    ctx.log(`summaries: recorded user correction on ${summaryId} in workspace ${workspaceId}`)
+    send(res, 200, summary satisfies Summary)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    // A degraded target ("no prose to correct") is a bad request; an unknown id is a 404. Distinguish by message.
+    send(res, /no prose to correct/.test(message) ? 400 : 404, { error: message })
+  }
 }
 
 /**

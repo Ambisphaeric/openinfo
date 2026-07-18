@@ -1,0 +1,30 @@
+{
+  "$id": "CorrectSummaryRequest",
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "workspaceId",
+    "summaryId",
+    "text"
+  ],
+  "properties": {
+    "workspaceId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "summaryId": {
+      "minLength": 1,
+      "description": "opaque identifier",
+      "type": "string"
+    },
+    "text": {
+      "minLength": 1,
+      "description": "the human-authored corrected prose — a correction never empties a summary (use the machine degraded state for “no prose”)",
+      "type": "string"
+    },
+    "by": {
+      "type": "string"
+    }
+  }
+}

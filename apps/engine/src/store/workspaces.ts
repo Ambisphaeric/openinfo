@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import type { ChatTurn, Claim, ClaimRelation, ContextPacket, Distillate, Draft, Entity, EntityProvenance, EntityOverride, EntityResolution, EgressPolicy, FieldValue, GuardHold, HeardAs, Moment, OcrResult, Pin, PinChunk, RelatedEntity, Session, SessionAnnotation, SessionTitling, Sighting, SttSegment, Summary, SummaryLevel, TodoList, Workspace } from '@openinfo/contracts'
-import { ChatTurn as ChatTurnSchema, Claim as ClaimSchema, CLAIM_SCHEMA_VERSION, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema, Summary as SummarySchema } from '@openinfo/contracts'
+import { ChatTurn as ChatTurnSchema, Claim as ClaimSchema, CLAIM_SCHEMA_VERSION, ContextPacket as ContextPacketSchema, Entity as EntitySchema, Pin as PinSchema, PinChunk as PinChunkSchema, Summary as SummarySchema, SUMMARY_SCHEMA_VERSION } from '@openinfo/contracts'
 import { Value } from '@sinclair/typebox/value'
 import { DEFAULT_RESOLVER_CONFIG, resolveEntity, type Resolution, type ResolutionSignals, type ResolverConfig } from '../index/resolve.js'
 import { DEFAULT_GAZETTEER, GAZETTEER_KEY, GAZETTEER_KIND, gazetteerRivals, type GazetteerDocument } from '../index/gazetteer.js'
@@ -363,11 +363,67 @@ export class WorkspaceRegistry {
   }
 
   /**
+   * The stable read-time IDENTITY of a summary window/level for correction sovereignty (#246) — the key that
+   * a user correction rules on, chosen so it SURVIVES re-derivation (the `resolveClaimHeads` pair-key
+   * precedent). A windowed level's epoch-aligned window (`windowStart`/`windowEnd`) is byte-stable across a
+   * rebuild of the same bucket, so it keys by (session, level, window). A whole-scope level (`session`/
+   * `project`) grows its window span with each new child set, so it keys by (session, level) ALONE —
+   * matching how the producer heads a whole level by scope, not by window (see index/summaries.ts
+   * `latestOverall`). A user correction copies its target's level/window/session, so its key equals the
+   * target's — and keeps equalling the key of any later machine revision of the same window/level.
+   */
+  private static summaryCorrectionKey(s: Summary): string {
+    const whole = s.level === 'session' || s.level === 'project'
+    return whole
+      ? `${s.sessionId ?? ''}\u0000${s.level}`
+      : `${s.sessionId ?? ''}\u0000${s.level}\u0000${s.windowStart}\u0000${s.windowEnd}`
+  }
+
+  /**
+   * Resolve a summary set to its LIVE heads (#177 supersession × #246 sovereignty) in one pure pass, so a
+   * reader never sees a superseded machine revision or a machine revision a user has corrected:
+   *   1. MACHINE SUPERSESSION: a machine revision named by another's `supersedes` is dropped.
+   *   2. USER SOVEREIGNTY: for each window/level a user has corrected (keyed by `summaryCorrectionKey`), the
+   *      LATEST `source:'user'` correction becomes the live head and EVERY machine revision on that key is
+   *      dropped — so RE-DERIVING that window/level can never defeat the correction (the producer keeps
+   *      appending machine revisions, but they stay behind the sovereign head at read time).
+   * The machine summaries and their derivation paths are never deleted — `includeSuperseded` returns the
+   * whole append-only history for audit/trace. Pure over the list; the append-only table is the truth store.
+   */
+  static resolveSummaryHeads(summaries: readonly Summary[], includeSuperseded = false): Summary[] {
+    if (includeSuperseded) return [...summaries]
+    const key = WorkspaceRegistry.summaryCorrectionKey
+    const superseded = new Set(summaries.map((s) => s.supersedes).filter((id): id is string => id !== undefined))
+    const latestUser = new Map<string, Summary>()
+    for (const u of summaries) {
+      if (u.source !== 'user') continue
+      const k = key(u)
+      const prior = latestUser.get(k)
+      if (prior === undefined || u.createdAt > prior.createdAt || (u.createdAt === prior.createdAt && u.id > prior.id)) latestUser.set(k, u)
+    }
+    const live: Summary[] = []
+    for (const s of summaries) {
+      if (s.source === 'user') continue
+      if (superseded.has(s.id)) continue
+      if (latestUser.has(key(s))) continue // a sovereign correction sits over this window/level
+      live.push(s)
+    }
+    for (const u of latestUser.values()) live.push(u)
+    // Restore the append-only read order the SQL query establishes (window_start, created_at, id), so a
+    // correction lands in its window's place rather than at the tail where it was collected.
+    return live.sort((a, b) =>
+      a.windowStart < b.windowStart ? -1 : a.windowStart > b.windowStart ? 1 : a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+    )
+  }
+
+  /**
    * Query a workspace's Summaries (#177) — the axes the issue names: workspace (the DB), session, level, and
    * time window (`from`/`to` keep summaries whose window INTERSECTS the range). Default reads return each
-   * interval's LIVE chain head only; superseded revisions stay retrievable with `includeSuperseded`.
-   * Supersession is resolved over the whole workspace/level scope BEFORE the time filter, so a filtered read
-   * can never present a superseded summary as live. Unknown workspace reads as [] (mirrors listContextPackets).
+   * interval's LIVE chain head only; superseded revisions and overruled machine rows stay retrievable with
+   * `includeSuperseded`. SUPERSESSION AND SOVEREIGNTY ARE RESOLVED FIRST (resolveSummaryHeads), over the
+   * whole session/workspace scope BEFORE the level/time filters, so a filtered read can never present a
+   * superseded revision (or a machine row a user has corrected) as live merely because its successor/
+   * correction fell outside the filter. Unknown workspace reads as [] (mirrors listContextPackets).
    */
   listSummaries(
     workspaceId: string,
@@ -378,15 +434,64 @@ export class WorkspaceRegistry {
     const rows = opts.sessionId
       ? (db.prepare('select body from summaries where session_id = ? order by window_start, created_at, id').all(opts.sessionId) as { body: string }[])
       : (db.prepare('select body from summaries order by window_start, created_at, id').all() as { body: string }[])
-    let summaries = rows.map((row) => JSON.parse(row.body) as Summary)
+    let summaries = WorkspaceRegistry.resolveSummaryHeads(rows.map((row) => JSON.parse(row.body) as Summary), opts.includeSuperseded)
     if (opts.level !== undefined) summaries = summaries.filter((s) => s.level === opts.level)
-    if (!opts.includeSuperseded) {
-      const superseded = new Set(summaries.map((s) => s.supersedes).filter((id): id is string => id !== undefined))
-      summaries = summaries.filter((s) => !superseded.has(s.id))
-    }
     if (opts.from !== undefined) summaries = summaries.filter((s) => s.windowEnd > opts.from!)
     if (opts.to !== undefined) summaries = summaries.filter((s) => s.windowStart < opts.to!)
     return summaries
+  }
+
+  /**
+   * Record a SOVEREIGN user correction on a summary (#246) — the durable, append-only revision that OUTRANKS
+   * the machine summary on read without deleting it or its derivation path (the roadmap invariant; the
+   * claim-correction sovereignty pattern). It mints a `source:'user'` Summary that `corrects` the target:
+   * `proposal:false` (a human decision is not a proposal), `text` the human prose, `confidence:1` (sovereign,
+   * not a derived score), a `correction` stamp in place of the model-invoke provenance, and the target's
+   * identity (level, window, session scope, children refs, bound) carried verbatim so it stays traceable to
+   * the same inputs AND keeps matching the target's read-time key after re-derivation. The provenance keeps
+   * only the STRUCTURAL fields (builder/window/childLevel/template) — the model-invoke fields (slot/endpoint/
+   * model/usage/egress/guard) are DROPPED, so a correction never falsely attributes human prose to a model.
+   * The id is content-derived over (target id, text) EXCLUDING the timestamp, so re-issuing the same
+   * correction is idempotent (insert-or-replace, no duplicate). Contract-validated on write via saveSummary.
+   * Throws for an unknown summary id or a degraded target (a summary with no prose has nothing to correct —
+   * connect a model first). This is a LOCAL write: it appends a row and creates NO egress path.
+   */
+  correctSummary(input: { workspaceId: string; summaryId: string; text: string; by?: string }): Summary {
+    const target = this.listSummaries(input.workspaceId, { includeSuperseded: true }).find((s) => s.id === input.summaryId)
+    if (target === undefined) throw new Error(`no summary ${input.summaryId} in workspace ${input.workspaceId}`)
+    if (target.text === undefined) throw new Error(`summary ${input.summaryId} has no prose to correct (it is degraded — connect a summary model first)`)
+    const at = new Date().toISOString()
+    const id = `sum-user-${createHash('sha256').update(`${target.id}\u0000${input.text}`).digest('hex').slice(0, 24)}`
+    // Keep ONLY the structural provenance — a user correction has no model invocation, so the slot/endpoint/
+    // model/usage/egress/guard fields are dropped (never attribute human prose to a model).
+    const provenance: Summary['provenance'] = {
+      builder: 'bounded-hierarchical-summary',
+      windowMs: target.provenance.windowMs,
+      ...(target.provenance.childLevel !== undefined ? { childLevel: target.provenance.childLevel } : {}),
+      templateId: target.provenance.templateId,
+      ...(target.provenance.templateScope !== undefined ? { templateScope: target.provenance.templateScope } : {}),
+    }
+    const correction: Summary = {
+      id,
+      workspaceId: input.workspaceId,
+      ...(target.sessionId !== undefined ? { sessionId: target.sessionId } : {}),
+      level: target.level,
+      windowStart: target.windowStart,
+      windowEnd: target.windowEnd,
+      children: target.children, // carry the target's refs → traceable to the same inputs
+      bound: target.bound,
+      text: input.text,
+      proposal: false, // a sovereign human decision, not a model proposal
+      source: 'user',
+      correction: { at, ...(input.by !== undefined ? { by: input.by } : {}) },
+      corrects: target.id,
+      confidence: 1,
+      provenance,
+      revision: target.revision, // an overlay on the target's position; sovereignty is resolved at read time
+      schemaVersion: SUMMARY_SCHEMA_VERSION,
+      createdAt: at,
+    }
+    return this.saveSummary(correction)
   }
 
   /**
