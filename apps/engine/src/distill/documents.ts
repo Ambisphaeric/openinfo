@@ -93,13 +93,13 @@ export class DistillDocuments {
     if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultAskTemplate.id)) {
       this.store.layouts.put(TEMPLATE_KIND, defaultAskTemplate.id, defaultAskTemplate)
     }
-    // The hierarchical-summary prompt documents (#177) — one per live-loop level. Seed-if-absent like the
-    // fast/judge documents; each edits over the same GET/PUT /templates routes and is read fresh per pass, so
-    // a user's edit to a level's cadence/bound/body takes effect with no restart and is never clobbered.
+    // The hierarchical-summary prompt documents (#177) — one per live-loop level. Seed-if-absent, then the
+    // same one-time unedited-builtin refresh the window templates use (#245): the summary bodies moved to the
+    // human note-taking register, so an UNEDITED summary builtin left at its #177 body auto-upgrades while a
+    // user edit is never clobbered. Each edits over the same GET/PUT /templates routes and is read fresh per
+    // pass, so a user's edit to a level's cadence/bound/body still takes effect with no restart.
     for (const summaryTemplate of defaultSummaryTemplates) {
-      if (!this.store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, summaryTemplate.id)) {
-        this.store.layouts.put(TEMPLATE_KIND, summaryTemplate.id, summaryTemplate)
-      }
+      this.seedOrRefreshBuiltin(summaryTemplate)
     }
     if (!this.store.layouts.getLatest<Mode>(MODE_KIND, defaultMeetingMode.id)) {
       this.store.layouts.put(MODE_KIND, defaultMeetingMode.id, defaultMeetingMode)

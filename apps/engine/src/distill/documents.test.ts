@@ -7,7 +7,7 @@ import type { PromptTemplate } from '@openinfo/contracts'
 import { WorkspaceRegistry } from '../store/index.js'
 import { NEUTRAL_DIALS, compileVoiceVars, interpolateTemplate } from '../voice/index.js'
 import { DistillDocuments } from './documents.js'
-import { PREVIOUS_BUILTIN_BODIES, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate } from './defaults.js'
+import { NOTHING_NOTEWORTHY, PREVIOUS_BUILTIN_BODIES, defaultDistillTemplate, defaultEntitiesTemplate, defaultExtractTemplate, defaultSummaryTemplates } from './defaults.js'
 
 const TEMPLATE_KIND = 'prompt-template'
 
@@ -41,7 +41,7 @@ test('a fresh install seeds the three neutral window templates (no baked voice v
   })
 })
 
-test('the rendered default distill prompt for a fresh install contains no voice/persona vocabulary (re-bloat guard)', async () => {
+test('the rendered default distill prompt for a fresh install carries no dial vocabulary and pins the notes-voice register (#245)', async () => {
   await withStore((store) => {
     const docs = new DistillDocuments(store)
     docs.ensureDefaults()
@@ -54,11 +54,16 @@ test('the rendered default distill prompt for a fresh install contains no voice/
       transcript: 'we shipped the thing',
     })
     assert.doesNotMatch(rendered, VOICE_VOCAB)
-    // and it dropped materially vs the previous voice-baked body (the length guard against re-bloat)
-    assert.ok(
-      docs.template().body.length < PREVIOUS_BUILTIN_BODIES[defaultDistillTemplate.id]!.length - 100,
-      'neutral distill body must be materially shorter than the old voice-baked body',
-    )
+    // The #245 register is opinionated by DESIGN, not by re-bloated dials: it drops the old slop framing,
+    // it explicitly BANS the transcription-narration openers, and it carries the silence sentinel.
+    const body = docs.template().body
+    assert.doesNotMatch(body, /tight, factual summary of what just happened/, 'the old slop framing is gone')
+    assert.match(body, /the transcript indicates/i, 'the body names the banned narration framings (as prohibitions)')
+    assert.match(body, /the speaker (said|expressed|stated)/i, 'the body bans the speaker-narration framings')
+    assert.ok(body.includes(NOTHING_NOTEWORTHY), 'the body instructs the silence sentinel')
+    // Still bounded (a re-bloat guard without depending on a since-superseded prior body): a note-taking
+    // instruction is a handful of lines, never a persona essay.
+    assert.ok(body.length < 1400, 'the distill body stays a tight instruction, not a re-bloated essay')
   })
 })
 
@@ -136,5 +141,61 @@ test('a builtin whose v1 body diverges from the previous shipped body is left un
     const now = store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, defaultDistillTemplate.id)!
     assert.equal(now.version, 1)
     assert.equal(now.body.body, 'some other v1 body {{transcript}}')
+  })
+})
+
+// #245 — the SUMMARY-family bodies (distill window notes + the five hierarchical levels) speak the human
+// note-taking register: no transcription-narration framings, honesty preserved, and each hierarchical level
+// still interpolates its bound placeholders. The banned framings appear in the bodies only as PROHIBITIONS.
+
+// The narration framings the notes-voice register forbids the model from OPENING with. They legitimately
+// appear inside the template bodies as the ban instruction itself, so this is a value-level, not body-level,
+// guard: it is asserted against RENDERED slop in the suppression/pipeline tests, and asserted PRESENT (as a
+// prohibition) in the body tests below.
+const NARRATION_FRAMINGS = /the (speaker|transcript) (said|expressed|stated|indicates|shows|mentions)|it was (mentioned|noted|recorded|discussed)|the notes indicate/i
+
+test('#245: every summary-family body drops the old slop framing and keeps the invent-nothing honesty rule', async () => {
+  const distillId = defaultDistillTemplate.id
+  const families = [defaultDistillTemplate, ...defaultSummaryTemplates]
+  for (const t of families) {
+    assert.doesNotMatch(t.body, VOICE_VOCAB, `${t.id} carries no dial vocabulary`)
+    assert.doesNotMatch(t.body, /(tight, factual summary of what just happened|You are writing a|You are naming|You are distilling)/, `${t.id} drops the old report-speak framing`)
+    assert.match(t.body, /invent nothing|no invented/i, `${t.id} keeps an invent-nothing honesty rule`)
+    // the leading instruction reads like a note-taking directive, never a minutes preamble
+    assert.match(t.body.split('\n')[0]!, /\b(jot|keep|write|name)\b/i, `${t.id} leads with a note-taking directive`)
+    // only the distill window template carries the silence sentinel (the distiller is the drop point);
+    // the hierarchical levels ride on suppressed distillates and are not sentinel-gated (#245 design).
+    if (t.id === distillId) {
+      assert.ok(t.body.includes(NOTHING_NOTEWORTHY), 'the distill body instructs the silence sentinel')
+      assert.match(t.body, NARRATION_FRAMINGS, 'the distill body names the banned narration framings as prohibitions')
+    }
+  }
+})
+
+test('#245: an UNEDITED summary builtin left at its #177 body auto-upgrades to the notes-voice body', async () => {
+  await withStore((store) => {
+    for (const t of defaultSummaryTemplates) {
+      store.layouts.put(TEMPLATE_KIND, t.id, { ...t, body: PREVIOUS_BUILTIN_BODIES[t.id]! })
+    }
+    const docs = new DistillDocuments(store)
+    docs.ensureDefaults()
+    for (const t of defaultSummaryTemplates) {
+      const now = store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, t.id)!
+      assert.equal(now.version, 2, `${t.id} refreshed (version bumped once)`)
+      assert.equal(now.body.body, t.body, `${t.id} refreshed to the notes-voice body`)
+    }
+  })
+})
+
+test('#245: a USER-EDITED summary builtin is never clobbered by the refresh', async () => {
+  await withStore((store) => {
+    const target = defaultSummaryTemplates[0]! // rolling
+    store.layouts.put(TEMPLATE_KIND, target.id, { ...target, body: PREVIOUS_BUILTIN_BODIES[target.id]! })
+    store.layouts.put(TEMPLATE_KIND, target.id, { ...target, body: 'MY OWN SUMMARY PROMPT {{children}}' })
+    const docs = new DistillDocuments(store)
+    docs.ensureDefaults()
+    const now = store.layouts.getLatest<PromptTemplate>(TEMPLATE_KIND, target.id)!
+    assert.equal(now.version, 2, 'the user edit stands — no refresh put')
+    assert.equal(now.body.body, 'MY OWN SUMMARY PROMPT {{children}}')
   })
 })

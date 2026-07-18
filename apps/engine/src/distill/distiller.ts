@@ -8,6 +8,7 @@ import type { PresetDocuments } from '../presets/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
 import { bucketIntoWindows } from './merge.js'
+import { NOTHING_NOTEWORTHY } from './defaults.js'
 import { DistillDocuments } from './documents.js'
 import { extractMoments, type ExtractInput } from './moments.js'
 import { captureLaneLabel } from './transcribe.js'
@@ -68,6 +69,20 @@ export interface DistillerDeps {
  */
 const isText = (chunk: CaptureChunk): boolean =>
   chunk.encoding === 'utf8' && chunk.source !== 'focus' && chunk.contentType !== 'application/json'
+
+/**
+ * Silence over noise (#245) — the deterministic pre-gate: the minimum count of OBSERVED window material
+ * (chunk.data, never our machine-owned capture-lane labels — the fields.ts precedent) below which a window is
+ * too small to hold any substantive phrase, so it produces NO distillate (and no moments/entities) without
+ * ever spending an invoke. This floor is deliberately LOW — LOWER than the fast-field gates (topic 40 /
+ * entities 60 / work-items 80). Those fields are OPTIONAL derived views that skip when a specific slice lacks
+ * enough material to be worth deriving, so a high bar is harmless. The distill note is the PRIMARY record of
+ * what was said; suppressing a real short utterance ("We ship Thursday.", "agreed, ship it") would be data
+ * loss. So the deterministic layer only drops windows too small to carry even a two-word substantive phrase
+ * (stray ASR tokens, acknowledgements, garble) and delegates the harder "enough words, no real substance"
+ * judgment to the model's NOTHING_NOTEWORTHY sentinel below. 12 chars ≈ two short words.
+ */
+const DISTILL_MIN_CHARS = 12
 
 const groupBySession = (chunks: readonly CaptureChunk[]): Map<string, CaptureChunk[]> => {
   const groups = new Map<string, CaptureChunk[]>()
@@ -210,6 +225,17 @@ export class Distiller {
       const windows = bucketIntoWindows(sessionChunks, mode.distill.mergeWindow)
       for (const window of windows) {
         const workspaceId = window.chunks[0]!.workspaceId
+        // #245 silence gate (pre-gate): a window whose OBSERVED material is below the meaningful floor carries
+        // nothing a human notetaker would jot — skip the whole window (no distillate, and therefore no moments
+        // or entities from filler). Count chunk.data only, never the capture-lane labels the transcript below
+        // prefixes (fields.ts precedent: relevance is about observed material, not our label vocabulary). This
+        // is a cheap deterministic guard before any invoke; a window that clears it but still holds nothing is
+        // caught by the model's NOTHING_NOTEWORTHY sentinel after the summary call. Skips are logged, not silent.
+        const observedChars = window.chunks.map((chunk) => chunk.data).join('\n').trim().length
+        if (observedChars < DISTILL_MIN_CHARS) {
+          this.log(`distill window ${window.start}→${window.end} skipped: ${observedChars} < ${DISTILL_MIN_CHARS} observed chars (silence gate)`)
+          continue
+        }
         // #116: ONE correlation id per window pass — the distillate, its moments, its entity mentions, and
         // a guard hold (if the window is suspended) all share it, so the audit trail joins them exactly.
         const spanId = this.newId()
@@ -280,6 +306,19 @@ export class Distiller {
           throw err
         }
 
+        // #245 silence gate (model escape): the summary template is instructed to answer with the exact
+        // sentinel when the window — though it cleared the character floor — holds nothing worth a note. Drop
+        // the whole window (no distillate, no moments, no entities) when the trimmed response is EITHER the
+        // exact sentinel (case-sensitive, full-text — a sentinel embedded inside a real note does NOT count,
+        // so a genuine note that mentions the token is kept) OR empty: an empty/whitespace-only response is
+        // the most literal "nothing", and persisting it as an empty-text distillate would defeat the gate.
+        // Determinism is preserved: the drop is a pure function of the (replayable) model text.
+        const summaryText = result.text.trim()
+        if (summaryText === '' || summaryText === NOTHING_NOTEWORTHY) {
+          this.log(`distill window ${window.start}→${window.end} dropped: ${summaryText === '' ? 'empty response' : 'nothing noteworthy'}`)
+          continue
+        }
+
         const distillate: Distillate = {
           id: this.newId(),
           sessionId,
@@ -288,7 +327,7 @@ export class Distiller {
           windowEnd: window.end,
           sourceChunks: window.chunks.map((chunk) => chunk.id),
           spanId,
-          text: result.text.trim(),
+          text: summaryText,
           voice: {
             scope: resolved.scope,
             dials: resolved.dials,

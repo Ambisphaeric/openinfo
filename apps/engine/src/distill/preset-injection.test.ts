@@ -58,7 +58,7 @@ test('pill P2: an UNSET preset is byte-identical to today (regression guard)', a
     assert.equal(prompts.length, 1, 'one summary invoke')
     // Byte-identical to the pre-P2 prompt: it starts with the shipped distill instruction and carries no
     // prepended preset context.
-    assert.ok(prompts[0]!.startsWith('You are distilling a live meeting'), 'the base distill prompt, unmodified')
+    assert.ok(prompts[0]!.startsWith('Jot the notes a sharp colleague would take'), 'the base distill prompt, unmodified')
     assert.ok(!prompts[0]!.startsWith('Context:'), 'no preset context prepended')
     assert.equal(distillate!.provenance.presetId, undefined, 'no presetId stamped when none was active')
   } finally {
@@ -84,7 +84,7 @@ test('pill P2: flipping the active preset changes the distill prompt AND stamps 
     // summary — proof the selection actually reaches the prompt path).
     assert.notEqual(withPreset, baseline, 'the prompt changed when the preset was flipped')
     assert.ok(withPreset.startsWith(`${salesBody}\n\n`), 'the active preset body is prepended')
-    assert.ok(withPreset.includes('You are distilling a live meeting'), 'the base distill prompt is preserved beneath it')
+    assert.ok(withPreset.includes('Jot the notes a sharp colleague would take'), 'the base distill prompt is preserved beneath it')
     // The why-record honestly names the preset that shaped the summary.
     assert.equal(distillate!.provenance.presetId, 'preset-sales', 'provenance names the active preset')
 
