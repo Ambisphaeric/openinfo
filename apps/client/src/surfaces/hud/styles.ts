@@ -136,9 +136,9 @@ body{margin:0;background:var(--page-bg);
 .lt-line .lt-who,
 .session-control,
 .nt-brand,
-.nt-nav,
+.sess-nav,
 .nt-canvas-head,
-.nt-side-head{-webkit-user-select:none;user-select:none}
+.nt-past-empty{-webkit-user-select:none;user-select:none}
 
 .streamwrap{max-height:224px;overflow:hidden;position:relative;padding-bottom:8px;margin:0 18px}
 .streamwrap::after{content:"";position:absolute;left:0;right:0;bottom:0;height:30px;
@@ -217,16 +217,19 @@ body{margin:0;background:var(--page-bg);
 .nt-app .streamwrap::after{display:none}
 
 /* Left rail chrome */
-.nt-rail-chrome{padding:14px 14px 6px;border-bottom:1px solid var(--s-line-soft)}
-.nt-brand{display:flex;align-items:center;gap:9px;padding:2px 4px 12px}
+.nt-rail-chrome{padding:14px 14px 10px;border-bottom:1px solid var(--s-line-soft)}
+/* Brand mark only — the dead feature-nav tabs + Home button are gone (#247); the ◆ is a non-interactive mark. */
+.nt-brand{display:flex;align-items:center;gap:9px;padding:2px 4px 2px}
 .nt-home{width:26px;height:26px;border-radius:8px;border:1px solid var(--s-line);background:rgba(224,106,60,.14);
-  color:var(--accent);font-size:13px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+  color:var(--accent);font-size:13px;line-height:1;display:inline-flex;align-items:center;justify-content:center}
 .nt-brand-name{font-size:13.5px;font-weight:650;letter-spacing:-.01em;color:var(--s-ink)}
-.nt-nav{display:flex;flex-direction:column;gap:2px;padding-bottom:10px}
-.nt-navitem{text-align:left;padding:6px 9px;border-radius:7px;border:0;background:transparent;
-  color:var(--s-muted);font-size:12px;font-weight:550;cursor:pointer}
-.nt-navitem:hover{color:var(--s-ink);background:rgba(255,255,255,.04)}
-.nt-navitem.active{color:var(--s-ink);background:rgba(255,255,255,.06)}
+/* Session-history rows are clickable nav controls (#247): a whole-row button, reset to a flush row, quiet
+   until hovered/focused. It navigates the center to a past session — a nav affordance, not a copy target. */
+.sess-nav{width:100%;text-align:left;border:0;background:transparent;cursor:pointer;
+  border-bottom:1px solid var(--s-line-soft);color:inherit;font:inherit}
+.sess-nav:last-child{border-bottom:none}
+.sess-nav:hover,.sess-nav:focus-visible{background:rgba(255,255,255,.045);outline:none}
+.sess-nav:focus-visible{box-shadow:inset 0 0 0 1px var(--s-line)}
 
 /* Center canvas header + the relocated Record affordance (honest, inert placeholder — see #136) */
 .nt-canvas-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
@@ -249,9 +252,18 @@ body{margin:0;background:var(--page-bg);
 .session-record-note{font-size:10px;color:var(--s-muted)}
 .session-record-note.warn{color:var(--accent)}
 
-/* Right sidebar header */
-.nt-side-head{padding:13px 18px 9px;border-bottom:1px solid var(--s-line-soft);
-  font-family:var(--s-mono);font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--s-faint)}
+/* Past-session view (#247): the center header while a history row is open — a calm eyebrow + the session
+   name + when, and an always-visible Back-to-live control. Read-only: no Record affordance stands here. */
+.nt-past-id{display:flex;flex-direction:column;gap:1px;min-width:0}
+.nt-past-eyebrow{font-family:var(--s-mono);font-size:9px;letter-spacing:.15em;text-transform:uppercase;color:var(--s-faint)}
+.nt-past-when{font-size:11px;color:var(--s-muted)}
+.nt-back-live{padding:6px 12px;border-radius:8px;border:1px solid var(--s-line);background:transparent;
+  color:var(--s-muted);font-size:11.5px;font-weight:600;cursor:pointer;white-space:nowrap}
+.nt-back-live:hover,.nt-back-live:focus-visible{color:var(--s-ink);border-color:var(--accent);outline:none}
+/* The honest "nothing was captured" note when a past session has no moments/summary — never a blank center. */
+.nt-past-empty{padding:6px 0;font-size:12.5px;color:var(--s-muted)}
+
+/* The right sidebar has NO hard-coded header (#247): its blocks self-label, like the left column's do. */
 
 /* The live-transcript ticker, parked full-width across the bottom (controller-composed .lt) */
 .nt-app > .lt{grid-area:strip;margin:0;padding:9px 18px 11px;border-top:1px solid var(--s-line);

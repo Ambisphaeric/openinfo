@@ -32,8 +32,21 @@ test('the sessions block renders a history row: derived title, start time, and a
   assert.match(html, /Q3 renewal — security review/) // the resolved title
   assert.match(html, /2:00p/) // the start time (viewer-local clock; UTC-pinned here)
   assert.match(html, /Jul 10 · 42m/) // date + ended duration in the why line
-  assert.doesNotMatch(html, /ses-1/) // NEVER a raw session id at a human tier (hud-voice §2)
-  assert.doesNotMatch(html, /<button/) // read-only this slice: plain rows, never a fake-live click target
+  assert.doesNotMatch(html, />ses-1</) // NEVER a raw session id in HUMAN-VISIBLE text (hud-voice §2)…
+  // …but the row IS a clickable nav control (#247) carrying the id/title/start time in DATA attributes only,
+  // dispatching the wired `session-open` verb — a live affordance, not a dead one.
+  assert.match(html, /<button class="rel sess-nav" data-verb="session-open" data-session="ses-1"/)
+  assert.match(html, /data-session-title="Q3 renewal — security review"/)
+  assert.match(html, /data-session-started="2026-07-10T14:00:00Z"/)
+})
+
+test('the empty + overflow notes stay PLAIN — there is nothing to open, so no fake click target', () => {
+  assert.doesNotMatch(render([]), /<button/) // empty state: no session to navigate to
+  const many = Array.from({ length: 8 }, (_, i) => session({ id: `ses-${i}`, title: `Session ${i}` }))
+  const html = render(many, false, 6)
+  // the "N more" note is a plain div row (the earlier sessions are disclosed, not individually openable here)
+  assert.match(html, /<div class="rel"><span class="mk t">⋯<\/span>/)
+  assert.match(html, /2 earlier sessions in history/)
 })
 
 test('a live (unended) session reads "in progress", never a fabricated end', () => {
@@ -47,7 +60,8 @@ test('an untitled session falls back to an HONEST start-time name (#211), never 
   const { title: _title, ...untitled } = session() // omit title entirely
   const html = render([untitled])
   assert.match(html, /Session · Jul 10/) // the honest fallback title — the session named by when it started
-  assert.doesNotMatch(html, /ses-1/)
+  // the raw id may ride in DATA attributes (the nav payload), but never in human-visible text (hud-voice §2)
+  assert.doesNotMatch(html.replace(/\sdata-[a-z-]+="[^"]*"/g, ''), /ses-1/)
 })
 
 test('the empty state is explainable, not a blank card', () => {

@@ -12,11 +12,14 @@ import { clockLabel, elapsedLabel } from '../block-renderer/format.js'
  * "in progress"). No session summary is joined here — that needs the `summaries` source, so its presence is
  * deliberately NOT claimed (a follow-up; see the slice issue).
  *
- * READ-ONLY this slice (hud-voice §4 / the interaction-honesty policy): there is no session-detail view to
- * navigate to yet, so rows render as PLAIN ROWS, never as buttons — no fake-live click target, no dead
- * affordance. Click-through is a disclosed follow-up. The block self-labels "Sessions" exactly like the
- * sibling Pinned block, because the note-taker frame renders its rail chrome ABOVE the whole left zone, so a
- * folder header in chrome could never sit adjacent to this list.
+ * WALKABLE (#247): each real session row is a CLICKABLE navigation control (the wired `session-open` verb),
+ * carrying the session id + its resolved title + start time as data attributes. Clicking one opens that
+ * session's read-only record in the note-taker's CENTER column (the drill-down) — it is READ-ONLY navigation,
+ * never a lifecycle action (it starts/stops no capture; the #41 consent boundary is untouched). The row is a
+ * single button (a nav control, non-selectable — no per-field copy value here), so it is honest: a live verb,
+ * not a dead affordance. The empty/"N more" notes stay PLAIN (no click target — there is nothing to open).
+ * The block self-labels "Sessions" exactly like the sibling Pinned block, because the note-taker frame renders
+ * its rail chrome ABOVE the whole left zone, so a folder header in chrome could never sit adjacent to this list.
  *
  * HONEST STATES (hud-voice §3): empty says what will appear rather than a blank card; the recent window is
  * bounded and any sessions beyond it are disclosed as an honest "N more", never silently dropped.
@@ -49,8 +52,14 @@ const statusOf = (session: Session, timeZone?: string): string => {
 
 const sessionRow = (session: Session, timeZone?: string): VNode =>
   h(
-    'div',
-    { class: 'rel' },
+    'button',
+    {
+      class: 'rel sess-nav',
+      'data-verb': 'session-open',
+      'data-session': session.id,
+      'data-session-title': titleOf(session, timeZone),
+      'data-session-started': session.startedAt,
+    },
     h('span', { class: 'mk t' }, clockLabel(session.startedAt, timeZone)),
     h(
       'span',

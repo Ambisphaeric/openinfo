@@ -85,6 +85,10 @@ export const resolveQueryScope = (
     const live = currentSessionId?.(workspaceId)
     return live !== undefined ? { workspaceId, sessionId: live } : { workspaceId, noCurrentSession: true }
   }
+  // An EXPLICIT session id (anything other than the `current` sentinel) is honored verbatim, over any live
+  // session — this is what makes the note-taker's session-history DRILL-DOWN (#247) work: the client sets a
+  // selected past-session id on the center blocks' `params.session`, and the session-scoped sources
+  // (moments, summaries, …) read THAT session's records, read-only, whether or not a session is live now.
   if (typeof sessionParam === 'string' && sessionParam.length > 0) return { workspaceId, sessionId: sessionParam }
   return { workspaceId }
 }
