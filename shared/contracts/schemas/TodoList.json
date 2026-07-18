@@ -65,6 +65,11 @@
             "description": "user checked it off; extraction never sets this",
             "type": "boolean"
           },
+          "due": {
+            "format": "date-time",
+            "description": "ISO-8601 timestamp",
+            "type": "string"
+          },
           "provenance": {
             "$id": "TodoProvenance",
             "additionalProperties": false,
@@ -386,6 +391,18 @@
                     "type": "string"
                   }
                 }
+              },
+              "dueSource": {
+                "anyOf": [
+                  {
+                    "const": "model",
+                    "type": "string"
+                  },
+                  {
+                    "const": "anchored",
+                    "type": "string"
+                  }
+                ]
               }
             }
           },

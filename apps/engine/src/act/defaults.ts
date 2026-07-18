@@ -51,7 +51,11 @@ export const defaultTaskExtractTemplate: PromptTemplate = {
     'do after it. Base them ONLY on what the summaries and moments support; invent nothing.\n\n' +
     'What was discussed (distilled summaries):\n{{summaries}}\n\n' +
     'Key moments:\n{{moments}}\n\n' +
-    'Return a JSON array of follow-up tasks, each an object with a single "text" field holding one short ' +
-    'imperative line (e.g. [{"text": "Send Dana the updated deck"}]). If there are no follow-ups yet, ' +
+    'The current time is {{now}} (ISO-8601). If a task has a stated deadline — absolute ("by 3pm") or ' +
+    'relative ("in eighteen minutes", "tomorrow") — resolve it AGAINST that current time and add a "due" ' +
+    'field holding the absolute ISO-8601 instant. If a task has no clear deadline, OMIT "due" — never guess one.\n\n' +
+    'Return a JSON array of follow-up tasks, each an object with a "text" field (one short imperative line) ' +
+    'and an optional "due" (ISO-8601) — e.g. [{"text": "Send Dana the updated deck"}, ' +
+    '{"text": "Give QA feedback", "due": "2026-07-16T15:18:00Z"}]. If there are no follow-ups yet, ' +
     'return []. Return ONLY the JSON array, nothing else.',
 }

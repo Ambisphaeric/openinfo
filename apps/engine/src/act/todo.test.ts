@@ -22,6 +22,15 @@ const distillate = (id: string, text: string, sessionId = 'ses-1'): Distillate =
 const step: WorkflowStep = { id: 'task-extract', kind: 'act', trigger: 'drain', params: {} }
 const cannedInvoke = (text: string) => async (): Promise<{ text: string; endpoint: string; slot: 'llm' }> => ({ text, endpoint: 'llm.fast', slot: 'llm' })
 
+test('default task-extract template gives a time anchor and requests an optional ISO due (#179)', () => {
+  const body = defaultTaskExtractTemplate.body
+  assert.match(body, /\{\{now\}\}/) // the extraction wall-clock is interpolated as the anchor
+  assert.match(body, /due/i)
+  assert.match(body, /ISO-8601/)
+  assert.match(body, /OMIT "due"|omit/i) // no deadline ⇒ omit, never guess
+  assert.match(body, /invent nothing/) // invent-nothing discipline preserved
+})
+
 // ---- renderTodo (the {{todo}} value; empty-state honesty) ----
 
 test('renderTodo: empty list → empty string (an omitted section, not an empty heading)', () => {
@@ -80,6 +89,47 @@ test('composeTaskExtract: parses items (text/task/bare-string), stamps provenanc
   assert.equal(result.dropped, 1)
   assert.equal(result.items[0]!.provenance?.distillateId, 'dst-9')
   assert.equal(result.items[0]!.provenance?.sessionId, 'ses-1')
+})
+
+test('composeTaskExtract: resolves an optional due — model ISO, deterministic fallback, or none — with dueSource provenance', async () => {
+  // item 1: model emits a valid ISO due → kept, marked model-sourced.
+  // item 2: no model due but the text carries a spoken relative phrase → engine anchors it to `now`.
+  // item 3: no deadline anywhere → no due, no dueSource.
+  const raw = '[{"text": "Give QA feedback", "due": "2026-07-16T15:18:00.000Z"}, {"text": "Call Dana back in 30 minutes"}, {"text": "Send the deck"}]'
+  const result = await composeTaskExtract(
+    {
+      sessionId: 'ses-1', workspaceId: 'ws-1',
+      distillates: [distillate('dst-1', 'QA feedback due soon')], moments: [],
+      dials: { tone: 5, warmth: 5, wit: 5, charm: 5, specificity: 5, brevity: 5 }, provenanceDistillateId: 'dst-1',
+    },
+    {
+      invoke: cannedInvoke(raw),
+      template: defaultTaskExtractTemplate,
+      now: () => new Date('2026-07-16T15:00:00.000Z'),
+      newId: (() => { let n = 0; return () => `x${(n += 1)}` })(),
+    },
+  )
+  assert.equal(result.items[0]!.due, '2026-07-16T15:18:00.000Z')
+  assert.equal(result.items[0]!.provenance?.dueSource, 'model')
+  assert.equal(result.items[1]!.due, '2026-07-16T15:30:00.000Z')
+  assert.equal(result.items[1]!.provenance?.dueSource, 'anchored')
+  assert.equal(result.items[2]!.due, undefined)
+  assert.equal(result.items[2]!.provenance?.dueSource, undefined)
+})
+
+test('composeTaskExtract: a garbage/out-of-horizon model due is DROPPED, the item survives without a fabricated deadline', async () => {
+  const raw = '[{"text": "Do the thing", "due": "whenever"}, {"text": "Other thing", "due": "2029-01-01T00:00:00.000Z"}]'
+  const result = await composeTaskExtract(
+    {
+      sessionId: 'ses-1', workspaceId: 'ws-1',
+      distillates: [distillate('dst-1', 'x')], moments: [],
+      dials: { tone: 5, warmth: 5, wit: 5, charm: 5, specificity: 5, brevity: 5 },
+    },
+    { invoke: cannedInvoke(raw), template: defaultTaskExtractTemplate, now: () => new Date('2026-07-16T15:00:00.000Z') },
+  )
+  assert.equal(result.items.length, 2)
+  assert.equal(result.items[0]!.due, undefined)
+  assert.equal(result.items[1]!.due, undefined)
 })
 
 test('composeTaskExtract: wholly unparseable → bounded re-sample then []', async () => {

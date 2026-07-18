@@ -41,7 +41,9 @@ export const defaultExtractTemplate: PromptTemplate = {
     'You extract typed moments from a meeting transcript. Return ONLY a JSON array, no prose, no code fences.\n' +
     'Each element: {"kind": one of "commitment"|"question"|"decision"|"artifact", "text": string, ' +
     '"speaker": string (optional), "confidence": number 0..1 (optional), "answered": boolean (only for kind "question")}.\n' +
-    '- commitment (●): someone promised to do something.\n' +
+    '- commitment (●): something someone will do. This INCLUDES the user speaking in the first person about ' +
+    'their own intent — "I need to…", "I\'ll…", "I have to…", "let me…", "I should…". Write the text as the ' +
+    'action, and if the person said WHEN ("by 3pm", "in 20 minutes", "tomorrow"), keep that timing in the text.\n' +
     '- question (◆): a question directed at the user awaiting an answer.\n' +
     '- decision (▲): a choice the group settled on.\n' +
     '- artifact (✱): a document, link, or file referenced or to produce.\n' +

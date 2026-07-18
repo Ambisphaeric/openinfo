@@ -9,6 +9,7 @@ import type { GuardDocuments, GuardHoldStore } from '../guard/index.js'
 import type { WorkspaceRegistry } from '../store/index.js'
 import { VoiceDocuments, compileVoiceVars, interpolateTemplate, resolveVoice } from '../voice/index.js'
 import type { ActDocuments } from './documents.js'
+import { resolveDue } from './due.js'
 import { effectiveActContentClass } from './privacy.js'
 
 const TODO_KIND = 'todo-list'
@@ -107,6 +108,16 @@ const candidateText = (candidate: unknown): string => {
   return ''
 }
 
+/** Read the model's PROPOSED deadline off a candidate object — `due`/`by`/`deadline`; else undefined. */
+const candidateDue = (candidate: unknown): unknown => {
+  if (candidate === null || typeof candidate !== 'object') return undefined
+  const c = candidate as Record<string, unknown>
+  for (const key of ['due', 'by', 'deadline']) {
+    if (typeof c[key] === 'string' && (c[key] as string).trim().length > 0) return c[key]
+  }
+  return undefined
+}
+
 /**
  * The CONSTRAIN side of the loop: distill a session's accumulated distillates + moments into a
  * structured array of follow-up items. Pure and store-free/bus-free (like composeFollowUpDraft /
@@ -126,10 +137,17 @@ export const composeTaskExtract = async (input: TaskExtractInput, deps: TaskExtr
     return { items: [], dropped: 0, attempts: 0 }
   }
 
+  // The extraction wall-clock — the end of the just-drained window — is the anchor for every relative
+  // deadline the model resolves ("in eighteen minutes" → an absolute instant). Computed once so the
+  // interpolated {{now}} the model sees and the fallback the engine applies share one reference (and it
+  // is injectable via `now` for deterministic tests).
+  const anchor = now()
+
   const prompt = interpolateTemplate(deps.template.body, {
     ...compileVoiceVars(input.dials),
     summaries: input.distillates.map((d) => `- ${d.text}`).join('\n'),
     moments: renderMoments(input.moments),
+    now: anchor.toISOString(),
   })
 
   const sourceProvenance =
@@ -172,7 +190,18 @@ export const composeTaskExtract = async (input: TaskExtractInput, deps: TaskExtr
         dropped += 1
         continue
       }
-      items.push({ id: newId(), text, provenance, createdAt: now().toISOString() })
+      // Resolve an optional deadline: the model's proposed ISO wins when valid + in-horizon, else a
+      // deterministic "in N minutes/hours" fallback over the item text, else nothing. `dueSource` records
+      // which path stood; an invalid model time is dropped, leaving the item without a fabricated deadline.
+      const { due, dueSource } = resolveDue({ modelDue: candidateDue(candidate), text, anchor })
+      const itemProvenance = dueSource !== undefined ? { ...provenance, dueSource } : provenance
+      items.push({
+        id: newId(),
+        text,
+        ...(due !== undefined ? { due } : {}),
+        provenance: itemProvenance,
+        createdAt: anchor.toISOString(),
+      })
     }
     if (dropped > 0) log(`task-extract: salvaged ${items.length}, dropped ${dropped} textless candidates`)
     return { items, dropped, attempts }

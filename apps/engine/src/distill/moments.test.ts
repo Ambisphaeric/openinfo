@@ -8,6 +8,19 @@ import { extractMoments, parseMomentCandidates, type ExtractInput } from './mome
 
 const dials: Dials = { tone: 3, warmth: 4, wit: 2, charm: 2, specificity: 9, brevity: 8 }
 
+test('default extract template teaches the commitment kind to include FIRST-PERSON intent (#244)', () => {
+  // Small models returned [] for "I need to…/I'll…" under the old "someone promised to do something"
+  // definition. The commitment bullet must now explicitly name first-person intent and keep the 4 kinds.
+  const body = defaultExtractTemplate.body
+  assert.match(body, /first person/i)
+  assert.match(body, /I'll|I need to|I have to/)
+  // still the strict-JSON, invent-nothing discipline over the 4 shipped kinds — nothing new invented.
+  assert.match(body, /Return ONLY a JSON array/)
+  assert.match(body, /invent nothing/)
+  for (const kind of ['commitment', 'question', 'decision', 'artifact']) assert.match(body, new RegExp(kind))
+  assert.doesNotMatch(body, /"mention"|"note"/) // the 4 kinds unchanged
+})
+
 const input: ExtractInput = {
   transcript: 'I will send the retention language to legal today.\nCan you get Dana a written answer by Thursday?',
   summary: 'User committed to routing retention language through legal today.',

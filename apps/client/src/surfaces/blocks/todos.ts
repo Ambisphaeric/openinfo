@@ -1,6 +1,7 @@
 import type { Block, TodoItem } from '@openinfo/contracts'
 import { h, type VNode } from '../block-renderer/vnode.js'
 import type { BlockRenderer } from '../block-renderer/registry.js'
+import { clockLabel } from '../block-renderer/format.js'
 import { stateDot, resolveStateVocab, type StateVocab } from '../block-renderer/micro-state.js'
 import { rowAffordances, type ActionPayload } from './actions.js'
 
@@ -29,6 +30,20 @@ const whyLine = (item: TodoItem): string => {
   return item.done === true ? `done · ${origin}` : origin
 }
 
+/**
+ * The due decoration (#179): a follow-up with a resolved deadline shows it as "due 3:29p" (the same
+ * compact clockLabel the summary/transcript rows use). Rendered ONLY when the item carries a `due` that
+ * parses to a real wall-clock — an absent or unparseable due yields NO decoration, never a placeholder
+ * or fake time. It states the deadline plainly, with no urgency dressing (no colour, no "overdue!",
+ * no exclamation) — honest whether the time is ahead or already past. The span is user-select:none (see
+ * styles.ts): the deadline is decoration, so a native selection of the row keeps only the bare task text.
+ */
+const dueDecoration = (item: TodoItem): VNode | false => {
+  if (item.due === undefined) return false
+  const label = clockLabel(item.due)
+  return label.length > 0 ? h('span', { class: 'due' }, `due ${label}`) : false
+}
+
 const todoRow = (item: TodoItem, actions: Actions, vocab: StateVocab, dismissBase: DismissBase): VNode => {
   const done = item.done === true
   // mark-done addresses PUT /todos/:sessionId. The flattened query row keeps the item's provenance, and
@@ -48,7 +63,7 @@ const todoRow = (item: TodoItem, actions: Actions, vocab: StateVocab, dismissBas
     h(
       'span',
       { class: 'body' },
-      h('span', { class: done ? 'ttl done' : 'ttl' }, stateDot(item.state, vocab), item.text),
+      h('span', { class: done ? 'ttl done' : 'ttl' }, stateDot(item.state, vocab), item.text, dueDecoration(item)),
       h('span', { class: 'why' }, whyLine(item)),
     ),
     h('span', { class: 'go' }, ...rowAffordances(actions, item.text, { markDone, dismiss })),

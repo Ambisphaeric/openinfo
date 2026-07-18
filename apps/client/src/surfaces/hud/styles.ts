@@ -65,6 +65,7 @@ body{margin:0;background:var(--page-bg);
 .rel .mk{padding-top:3px;text-align:center;font-size:10px;line-height:1}
 .rel .body .ttl{font-size:12.5px;font-weight:600;color:var(--s-ink);line-height:1.4}
 .rel .body .ttl .ext{font-family:var(--s-mono);font-size:10px;color:var(--s-faint);font-weight:400}
+.rel .body .ttl .due{margin-left:8px;font-family:var(--s-mono);font-size:10px;color:var(--s-muted);font-weight:400}
 .rel .body .why{font-size:11.5px;color:var(--s-muted);line-height:1.5;margin-top:1px}
 .rel .go{display:flex;gap:6px;padding-top:2px}
 .mini{padding:3px 10px;border-radius:6px;font-size:10.5px;font-weight:600;border:1px solid var(--s-line);color:var(--s-ink);background:rgba(27,31,40,.9);white-space:nowrap;cursor:pointer}
@@ -120,6 +121,7 @@ body{margin:0;background:var(--page-bg);
 .hgroup .glbl,
 .rel .mk,
 .rel .body .ttl .ext,
+.rel .body .ttl .due,
 .rel .body .why,
 .rel .go,
 .dot,

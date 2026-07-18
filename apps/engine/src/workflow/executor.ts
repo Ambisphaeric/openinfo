@@ -131,9 +131,17 @@ export class WorkflowExecutor {
 
     const ready =
       transcribeStep && this.flagOn(transcribeStep.when) ? await this.deps.transcribe(chunks) : chunks
+    // The extraction toggles are FLAG-AUTHORITATIVE, not step-conditional (#244). moments/index are not
+    // independent pipeline stages — they are two boolean OPTIONS on the single distill call this pass
+    // already makes — so the user-facing Settings toggle (`distill.moments` / `distill.index`) is the
+    // authority. A PRESENT step may RE-BIND the gate to a different flag (advanced document composition);
+    // its ABSENCE must NEVER silently override the Settings toggle to off, which is exactly the bug that
+    // let `workflow.enabled` ON quietly disable extraction (kin to ownership.ts:88 screen.ocr inertness).
+    // So: step present ⇒ obey its when-flag (behavior-identical for the seeded default, which binds these
+    // very flags); step absent ⇒ the flag governs directly, exactly as the legacy direct drain does.
     await this.deps.distill(ready, {
-      extractMoments: Boolean(momentsStep && this.flagOn(momentsStep.when)),
-      extractEntities: Boolean(indexStep && this.flagOn(indexStep.when)),
+      extractMoments: momentsStep ? this.flagOn(momentsStep.when) : isFlagEnabled(this.deps.store, 'distill.moments'),
+      extractEntities: indexStep ? this.flagOn(indexStep.when) : isFlagEnabled(this.deps.store, 'distill.index'),
     })
 
     // Drain-triggered act steps (e.g. task-extract) run AFTER the distill pass, in document order. Each

@@ -126,6 +126,48 @@ test('runDrain: moments/index gate independently (moments on, index off)', async
   assert.deepEqual(spy.distillCalls[0]!.opts, { extractMoments: true, extractEntities: false })
 })
 
+// The default spec with the moments/index drain steps REMOVED — a legally authored workflow that
+// distills but declares no extraction steps. Before #244 this silently forced extraction OFF even with
+// the Settings toggle ON (the headline QA defect: `workflow.enabled` ON ⇒ empty Moments/Relevant-now).
+const withoutExtractSteps = (): WorkflowSpec => {
+  const spec = defaultSpec()
+  spec.steps = spec.steps.filter((s) => s.kind !== 'moments' && s.kind !== 'index')
+  return spec
+}
+
+test('runDrain: FLAG-AUTHORITATIVE — no moments/index step but the flags are ON ⇒ extraction runs (the #244 silent-inert case)', async () => {
+  const { executor, spy } = build(
+    { 'distill.enabled': true, 'distill.moments': true, 'distill.index': true },
+    withoutExtractSteps(),
+  )
+  await executor.runDrain([chunk('a')])
+  assert.equal(spy.distillCalls.length, 1)
+  // The exact regression: with the steps absent the flags MUST still drive extraction, so a Settings
+  // toggle is never silently inert under the workflow path.
+  assert.deepEqual(spy.distillCalls[0]!.opts, { extractMoments: true, extractEntities: true })
+})
+
+test('runDrain: FLAG-AUTHORITATIVE — no step + flags OFF ⇒ no extraction (flag is the authority both ways)', async () => {
+  const { executor, spy } = build(
+    { 'distill.enabled': true, 'distill.moments': false, 'distill.index': false },
+    withoutExtractSteps(),
+  )
+  await executor.runDrain([chunk('a')])
+  assert.deepEqual(spy.distillCalls[0]!.opts, { extractMoments: false, extractEntities: false })
+})
+
+test('runDrain: a PRESENT moments step still RE-BINDS the gate (advanced composition) — its when-flag governs, not the default flag', async () => {
+  // moments step gated on a CUSTOM flag that is OFF, while the default distill.moments flag is ON: the
+  // present step wins (extraction off), proving the document stays meaningful as data (a step can re-bind
+  // the gate) — only the ABSENCE of a step falls back to the Settings flag.
+  const spec = defaultSpec()
+  const moments = spec.steps.find((s) => s.kind === 'moments')!
+  moments.when = { flag: 'custom.moments' }
+  const { executor, spy } = build({ 'distill.enabled': true, 'distill.moments': true, 'custom.moments': false }, spec)
+  await executor.runDrain([chunk('a')])
+  assert.equal(spy.distillCalls[0]!.opts.extractMoments, false)
+})
+
 test('runDrain: COALESCES the distill family into exactly ONE distill call', async () => {
   const { executor, spy } = build({ 'distill.enabled': true, 'distill.moments': true, 'distill.index': true })
   await executor.runDrain([chunk('a'), chunk('b')])
