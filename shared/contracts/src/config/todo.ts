@@ -24,6 +24,14 @@ export const TodoProvenance = Type.Object(
     contentClass: Type.Optional(ContentClass),
     egress: Type.Optional(EgressDecision),
     guard: Type.Optional(GuardVerdict),
+    /**
+     * How a `due` (if present) was derived — the provenance trail for the deadline (#179 opener). Absent
+     * when the item carries no due. `model`: the task-extract call emitted an ISO time we validated in place.
+     * `anchored`: the model gave no usable time, so the engine resolved a plain relative expression ("in N
+     * minutes/hours") deterministically against the extraction wall-clock. A surface can tell a model-proposed
+     * deadline from an engine-anchored one; neither is fabricated (a `due` that fails validation is dropped).
+     */
+    dueSource: Type.Optional(Type.Union([Type.Literal('model'), Type.Literal('anchored')])),
   },
   { $id: 'TodoProvenance', additionalProperties: false },
 )
@@ -40,6 +48,14 @@ export const TodoItem = Type.Object(
     id: Id,
     text: Type.String({ minLength: 1, description: 'the follow-up, as a short imperative line' }),
     done: Type.Optional(Type.Boolean({ description: 'user checked it off; extraction never sets this' })),
+    /**
+     * An optional absolute deadline for this follow-up (#179 opener), resolved from a relative expression
+     * spoken in the meeting ("in eighteen minutes") against the extraction wall-clock. A MODEL PROPOSAL:
+     * the engine validates it (parseable ISO, within a sane horizon) and drops it if invalid, keeping the
+     * item. `provenance.dueSource` records how it was derived. Server-stamped like ids/timestamps — the
+     * model proposes the time, the engine owns whether it stands.
+     */
+    due: Type.Optional(IsoTime),
     provenance: Type.Optional(TodoProvenance),
     createdAt: IsoTime,
     state: Type.Optional(

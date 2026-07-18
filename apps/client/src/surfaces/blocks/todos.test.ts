@@ -4,6 +4,9 @@ import type { QueryResult, Surface, TodoItem } from '@openinfo/contracts'
 import { renderSurface, renderToHtml, type NowContext } from '../block-renderer/index.js'
 import { defaultBlockRegistry } from './index.js'
 
+// clockLabel renders viewer-local; pin this process to UTC so the due-time assertion below is host-stable.
+process.env.TZ = 'UTC'
+
 const now: NowContext = { live: true, workspace: 'acme', title: 'Renewal — security review' }
 const result = (items: unknown[]): QueryResult => ({ source: 'todos', items, truncated: false })
 
@@ -60,6 +63,25 @@ test('the todos block renders STORE-DERIVED items: text, done status and a prove
   // an item with NO session trail (hand-added, t3) leaves mark-done visible-but-INERT (ghost, no payload) —
   // it can't address a write, so it is honestly inert rather than a falsely-live button (#15).
   assert.match(html, /<button class="mini ghost" data-verb="mark-done" data-action="a-done">Done<\/button>/)
+})
+
+test('a due deadline renders as an honest "due <time>" decoration; absent/invalid due ⇒ no decoration; copy stays bare text (#179)', () => {
+  const items = [
+    todo('t1', 'Give QA feedback', { due: '2026-07-16T15:18:00Z', provenance: { sessionId: 'ses', distillateId: 'dst-1', dueSource: 'model' } }),
+    todo('t2', 'Send the deck'), // no due → no decoration
+    todo('t3', 'Broken deadline', { due: 'not-a-time' }), // unparseable → no decoration (never a placeholder)
+  ]
+  const html = renderToHtml(
+    renderSurface({ surface, now, results: [undefined, result(items)] }, defaultBlockRegistry),
+  )
+  // the deadline shows as a compact clock decoration on the row (UTC-pinned: 15:18 → 3:18p)
+  assert.match(html, /class="due">due 3:18p/)
+  // exactly one due decoration — the no-due and the invalid-due rows render none
+  assert.equal(html.match(/class="due"/g)?.length, 1)
+  // the copy payload is the BARE task text — the due time never rides into a copy (negative guard)
+  assert.match(html, /data-copy="Give QA feedback"/)
+  assert.doesNotMatch(html, /data-copy="[^"]*3:18p[^"]*"/)
+  assert.doesNotMatch(html, /data-copy="[^"]*due[^"]*"/)
 })
 
 test('empty is EXPLAINABLE, not silent: an always-visible todos block renders a no-follow-ups line', () => {

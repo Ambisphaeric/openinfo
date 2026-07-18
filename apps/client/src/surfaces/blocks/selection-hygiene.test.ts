@@ -85,7 +85,8 @@ const rel: RelevantEntity = { entity: linkEntity, score: 1, moments: [] }
 const relNode = render(relBlock, [rel])
 
 const todoBlock: Block = { block: 'todos', show: 'always', query: { source: 'todos', params: { session: 'current' } }, actions: copyAction }
-const todo: TodoItem = { id: 't1', text: 'Send Dana the signed MSA', createdAt: '2026-07-16T14:40:00Z', provenance: { sessionId: 'ses', distillateId: 'dst-9' } }
+// Carries a due so the deadline decoration ("due 3:29p") is in the row — it must NOT ride into a selection.
+const todo: TodoItem = { id: 't1', text: 'Send Dana the signed MSA', due: '2026-07-16T15:29:00Z', createdAt: '2026-07-16T14:40:00Z', provenance: { sessionId: 'ses', distillateId: 'dst-9', dueSource: 'model' } }
 const todoNode = render(todoBlock, [todo])
 
 const distBlock: Block = { block: 'distillates', show: 'always', query: { source: 'distillates', params: {} }, actions: copyAction }
@@ -117,7 +118,7 @@ test('a native selection of a distillates (transcript) row keeps the bare value 
 test('the classes this test relies on are non-selectable in the ACTUAL stylesheet (by-construction guard)', () => {
   // Derived from styles.ts / panel-styles.ts, not hardcoded — removing any of these rules fails BOTH this
   // assertion and the equality tests above (the decoration text would leak into selectableText).
-  for (const cls of ['why', 'ext', 'mk', 'glbl', 'go', 'dot', 't', 'unans', 'in-cites', 'in-who']) {
+  for (const cls of ['why', 'ext', 'due', 'mk', 'glbl', 'go', 'dot', 't', 'unans', 'in-cites', 'in-who']) {
     assert.ok(suppressed.has(cls), `.${cls} must be non-selectable`)
   }
 })

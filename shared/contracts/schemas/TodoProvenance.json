@@ -319,6 +319,18 @@
           "type": "string"
         }
       }
+    },
+    "dueSource": {
+      "anyOf": [
+        {
+          "const": "model",
+          "type": "string"
+        },
+        {
+          "const": "anchored",
+          "type": "string"
+        }
+      ]
     }
   }
 }

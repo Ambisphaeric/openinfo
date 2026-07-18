@@ -3364,13 +3364,23 @@ test('e2e: PUT an edited workflow with workflow.enabled ON — the drain honors 
         body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
       })
     }
+    // a custom gate flag the edited moments step will re-bind to, held OFF (the hot-edit's observable).
+    await fetch(`${base}/flags/moments.hushed`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'moments.hushed', default: false, scope: 'engine', description: 'moments.hushed' }),
+    })
 
-    // THE USER COMPOSES THE PIPELINE: edit the running document to DROP the moments step — while its
-    // when.flag (distill.moments) stays ON. If the executor read the flag it would still extract moments;
-    // it reads the DOCUMENT, so moments stop. The index step stays, so distill+index still run — proving
-    // the pipeline itself is live, not merely switched off. No engine restart between the PUT and the drain.
+    // THE USER COMPOSES THE PIPELINE: edit the running document so the moments step RE-BINDS its gate to a
+    // custom flag that is OFF, while distill.moments stays ON. Under the #244 flag-authoritative contract a
+    // DROPPED step would NOT stop moments (the flag is the authority, so absence falls back to it — that is
+    // the silent-inert bug we removed); a PRESENT step, however, re-binds the gate, so this edit is the
+    // honest way to prove a document change is live. The index step is untouched, so distill+index still run
+    // — the pipeline is live, not merely switched off. No engine restart between the PUT and the drain.
     const current = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
-    const edited = { ...current, steps: current.steps.filter((s) => s.kind !== 'moments') }
+    const edited = {
+      ...current,
+      steps: current.steps.map((s) => (s.kind === 'moments' ? { ...s, when: { flag: 'moments.hushed' } } : s)),
+    }
     const putRes = await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(edited) })
     assert.equal(putRes.status, 200)
 
@@ -3393,10 +3403,62 @@ test('e2e: PUT an edited workflow with workflow.enabled ON — the drain honors 
       const entities = (await (await fetch(`${base}/entities?workspace=default`)).json()) as Entity[]
       assert.ok(entities.some((e) => /Dana/i.test(e.name)), 'distill+index ran under the edited document')
     })
-    // NEGATIVE (the proof): no moments for this session — the removed step was honored with no restart,
-    // even though distill.moments is still ON.
+    // NEGATIVE (the proof): no moments for this session — the re-bound step's OFF gate was honored on the
+    // very next drain with no restart, even though distill.moments is still ON (the present step re-binds).
     const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
-    assert.equal(moments.length, 0, 'the dropped moments step took effect on the very next drain — hot edit')
+    assert.equal(moments.length, 0, 'the re-bound moments gate took effect on the very next drain — hot edit')
+  } finally {
+    await app.close()
+    await rm(dir, { recursive: true, force: true })
+    await new Promise<void>((resolve) => llm.server.close(() => resolve()))
+  }
+})
+
+test('e2e (#244): workflow.enabled ON + a document with NO moments step + distill.moments ON ⇒ moments STILL extract (flag-authoritative)', async () => {
+  // The exact QA defect: with the executor path active and the extraction toggle ON, a workflow document
+  // that happens not to declare a moments step used to yield EMPTY Moments. Under the flag-authoritative
+  // contract the Settings toggle is the authority, so the absence of the step no longer silences it.
+  const llm = await startFakeLlm()
+  const dir = await mkdtemp(join(tmpdir(), 'openinfo-api-'))
+  const app = createEngineApp({ dataRoot: dir, log: () => undefined })
+  await new Promise<void>((resolve) => app.server.listen(0, resolve))
+  try {
+    const address = app.server.address()
+    assert.ok(address && typeof address === 'object')
+    const base = `http://127.0.0.1:${address.port}`
+
+    const fabric = (await (await fetch(`${base}/fabric`)).json()) as Fabric
+    await fetch(`${base}/fabric`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slots: { ...fabric.slots, llm: [{ kind: 'http', name: 'llm.fast', url: llm.url, api: 'openai-compat', model: 'llama-3.2-3b' }] } }),
+    })
+    for (const key of ['distill.enabled', 'distill.moments', 'workflow.enabled']) {
+      await fetch(`${base}/flags/${key}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, default: true, scope: 'engine', description: key }),
+      })
+    }
+    // Author a workflow that distills but declares NO moments step (index dropped too, to isolate moments).
+    const current = (await (await fetch(`${base}/workflows/workflow-default`)).json()) as WorkflowSpec
+    const edited = { ...current, steps: current.steps.filter((s) => s.kind !== 'moments' && s.kind !== 'index') }
+    assert.equal((await fetch(`${base}/workflows/workflow-default`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(edited) })).status, 200)
+
+    const started = (await (await fetch(`${base}/sessions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'default', modeId: 'mode-meeting' }),
+    })).json()) as Session
+    const chunk = (sequence: number, sec: number, data: string): CaptureChunk => ({
+      id: `c-${sequence}`, sessionId: started.id, workspaceId: 'default', source: 'mic', sequence,
+      capturedAt: new Date(Date.UTC(2026, 6, 8, 14, 0, sec)).toISOString(), contentType: 'text/plain', encoding: 'utf8', data,
+    })
+    for (const c of [chunk(1, 0, 'we should ship Thursday'), chunk(2, 20, 'Dana agreed, ship Thursday')]) {
+      await fetch(`${base}/capture/mic`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(c) })
+    }
+    // The proof: moments hydrate even though the document carries no moments step — the flag drove it.
+    await eventuallyHttp(async () => {
+      const moments = (await (await fetch(`${base}/moments?workspace=default&session=${started.id}`)).json()) as Moment[]
+      assert.ok(moments.length > 0, 'moments extracted from the flag alone, with no moments step in the document')
+    })
   } finally {
     await app.close()
     await rm(dir, { recursive: true, force: true })
