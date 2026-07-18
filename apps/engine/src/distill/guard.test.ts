@@ -125,7 +125,7 @@ test('guard OFF (guardEnabled false) skips the guard entirely — pre-#63 behavi
       return Promise.resolve({ text: 'summary', endpoint: 'loc', slot: 'llm' })
     }
     const distiller = new Distiller({ store: deps.store, voice: deps.voice, docs: deps.docs, fabric: deps.fabric, guardDocs: deps.guardDocs, guardHolds: deps.guardHolds, guardEnabled: () => false, invoke })
-    const produced = await distiller.distillChunks([speech(1, 'hello')])
+    const produced = await distiller.distillChunks([speech(1, 'hello everyone, thanks for joining')])
     assert.equal(produced.length, 1)
     assert.equal(sawGuardOpt, false, 'no guard option is threaded when the flag is off')
   } finally {

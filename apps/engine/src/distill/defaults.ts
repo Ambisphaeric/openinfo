@@ -1,13 +1,24 @@
 import type { Mode, PromptTemplate } from '@openinfo/contracts'
 
 /**
+ * The exact sentinel a SUMMARY-family template emits when a window holds nothing worth noting — the
+ * model-level half of the silence-over-noise gate (#245). Defined here, next to the template bodies that
+ * embed it, and imported by the distiller that drops on it, so the instruction text and the drop check can
+ * never silently drift apart. Drop semantics are EXACT: the engine drops only when the whole trimmed model
+ * response equals this token (case-sensitive) — a sentinel embedded inside a real note does NOT count.
+ */
+export const NOTHING_NOTEWORTHY = 'NOTHING_NOTEWORTHY'
+
+/**
  * The shipped distill prompt template — a document, not a hardcoded preset (glass mistake left
- * behind). The FACTORY default is neutral (#130): a short, factual rolling-merge summary that keeps
- * only the load-bearing parts (output grammar, invent-nothing rule, {{transcript}}/{{windowStart}}/
- * {{windowEnd}} window interpolation) and bakes NO persona/voice dials. The voice-vector machinery
- * (compileVoiceVars → {{tone}}…{{voice.rules}}) is still live for a user-authored/edited template —
- * it is simply not pre-tweaked into the shipped body. Mirrors
- * shared/contracts/examples/promptTemplate.distill.json.
+ * behind). The FACTORY default is neutral of persona dials (#130: no baked voice vector — the voice
+ * machinery `compileVoiceVars → {{tone}}…{{voice.rules}}` stays live for a user-authored/edited template,
+ * it is simply not pre-tweaked into the shipped body) but is deliberately OPINIONATED about REGISTER (#245):
+ * generic small models, given "a tight, factual summary", default to meeting-minutes report-speak that
+ * narrates the act of transcription ("The speaker expressed…", "The transcript indicates…"). The body
+ * instead pins the human note-taking register — lead with the substance, banned narration framings, terse —
+ * and keeps the load-bearing parts (invent-nothing honesty, {{transcript}}/{{windowStart}}/{{windowEnd}}
+ * interpolation, the NOTHING_NOTEWORTHY escape). Mirrors shared/contracts/examples/promptTemplate.distill.json.
  */
 export const defaultDistillTemplate: PromptTemplate = {
   id: 'tpl-distill-default',
@@ -15,11 +26,15 @@ export const defaultDistillTemplate: PromptTemplate = {
   kind: 'distill',
   slot: 'llm',
   builtin: true,
-  description: 'rolling-merge summary; neutral factual default (no baked voice vector — dials remain available to edited templates)',
+  description: 'rolling-merge window notes; human note-taking register, silence when nothing was said (no baked voice vector — dials remain available to edited templates)',
   body:
-    'You are distilling a live meeting into a tight, factual summary of what just happened.\n' +
-    'Summarize only what the transcript supports. Do not invent commitments or names.\n\n' +
-    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nSummary:',
+    'Jot the notes a sharp colleague would take on this stretch of a live meeting — the substance, nothing more.\n' +
+    '- Lead with the fact itself. Write "Feedback to QA — due soon", not "The speaker expressed a goal to provide feedback".\n' +
+    '- Never narrate the transcript. Do not open with "the speaker said/expressed/stated", "the transcript indicates/shows", or "it was mentioned/noted/recorded/discussed" — write the thing, not the fact that it was said.\n' +
+    '- Keep only what the transcript supports: no invented commitments, names, numbers, or motives.\n' +
+    '- Terse: the fewest words that carry it. No preamble, no framing, no sign-off.\n' +
+    '- If nothing here is worth a note — only filler, fragments, or garble — reply with exactly ' + NOTHING_NOTEWORTHY + ' and nothing else.\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nNotes:',
 }
 
 /**
@@ -75,50 +90,6 @@ export const defaultEntitiesTemplate: PromptTemplate = {
     '- artifact (✱): a document, file, link, system, or deliverable.\n' +
     '- topic: a subject, project, or theme under discussion.\n' +
     'Extract only entities the transcript supports; invent nothing. Merge obvious aliases of one thing into a single entity. If there are none, return [].\n\n' +
-    'Summary of the window: {{summary}}\n\n' +
-    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array of entities:',
-}
-
-/**
- * The PREVIOUS shipped bodies of the three window templates — the voice-baked bodies that shipped
- * before #130 made the factory defaults neutral. The one-time builtin-body refresh
- * (DistillDocuments.ensureDefaults) uses these to detect an UNEDITED builtin on an existing install:
- * seeds are seed-if-absent, so an upgrader keeps its old baked body forever otherwise. A stored
- * builtin is treated as unedited — and refreshed to the new neutral body — ONLY when it is still at
- * version 1 AND its body is byte-for-byte one of these previous bodies. Any user edit bumps the
- * version off 1 (LayoutStore.put) and/or diverges the body, so an edited document is NEVER clobbered.
- * Keyed by template id. Keep in lockstep with the bodies above: a refresh compares against these,
- * never against the current body.
- */
-export const PREVIOUS_BUILTIN_BODIES: Readonly<Record<string, string>> = {
-  [defaultDistillTemplate.id]:
-    'You are distilling a live meeting into a tight, factual summary of what just happened.\n' +
-    'Voice: tone {{tone}}/10, warmth {{warmth}}/10, wit {{wit}}/10, charm {{charm}}/10, ' +
-    'specificity {{specificity}}/10, brevity {{brevity}}/10.\n' +
-    '{{voice.rules}}\n' +
-    'Summarize only what the transcript supports. Do not invent commitments or names.\n\n' +
-    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nSummary:',
-  [defaultExtractTemplate.id]:
-    'You extract typed moments from a meeting transcript. Return ONLY a JSON array, no prose, no code fences.\n' +
-    'Each element: {"kind": one of "commitment"|"question"|"decision"|"artifact", "text": string, ' +
-    '"speaker": string (optional), "confidence": number 0..1 (optional), "answered": boolean (only for kind "question")}.\n' +
-    '- commitment (●): someone promised to do something.\n' +
-    '- question (◆): a question directed at the user awaiting an answer.\n' +
-    '- decision (▲): a choice the group settled on.\n' +
-    '- artifact (✱): a document, link, or file referenced or to produce.\n' +
-    'Extract only what the transcript supports; invent nothing. If there are no moments, return [].\n' +
-    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
-    'Summary of the window: {{summary}}\n\n' +
-    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array:',
-  [defaultEntitiesTemplate.id]:
-    'You extract the named entities discussed in a meeting transcript — the people, artifacts, and topics that matter.\n' +
-    'Return ONLY a JSON array of entities, no prose, no code fences.\n' +
-    'Each element: {"name": string, "kind": one of "person"|"artifact"|"topic", "aliases": string[] (optional other names for the same thing)}.\n' +
-    '- person: a human named or clearly referred to.\n' +
-    '- artifact (✱): a document, file, link, system, or deliverable.\n' +
-    '- topic: a subject, project, or theme under discussion.\n' +
-    'Extract only entities the transcript supports; invent nothing. Merge obvious aliases of one thing into a single entity. If there are none, return [].\n' +
-    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
     'Summary of the window: {{summary}}\n\n' +
     'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array of entities:',
 }
@@ -290,9 +261,11 @@ export const defaultRollingSummaryTemplate: PromptTemplate = {
   description: 'hierarchical summary (#177): a rolling window over the existing distillates (+ packets as evidence)',
   summary: { level: 'rolling', windowMs: 60_000, maxChildren: 6, maxEvidence: 3, cadenceMs: 60_000 },
   body:
-    'You are writing a short rolling summary of a work session from the window summaries below. ' +
-    'Summarize only what they support; invent nothing. One or two tight sentences.\n\n' +
-    'Window summaries ({{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nRolling summary:',
+    'Keep the running notes for this stretch of a work session, from the window notes below.\n' +
+    '- Lead with the substance; the fewest words that carry it. One or two tight lines.\n' +
+    '- Never narrate the notes ("the notes indicate", "it was mentioned") — write what happened.\n' +
+    '- Keep only what the notes below support; invent nothing.\n\n' +
+    'Window notes ({{windowStart}} → {{windowEnd}}):\n{{children}}\n\nRunning notes:',
 }
 
 export const defaultFiveMinuteSummaryTemplate: PromptTemplate = {
@@ -304,10 +277,12 @@ export const defaultFiveMinuteSummaryTemplate: PromptTemplate = {
   description: 'hierarchical summary (#177): the concise five-minute view, over the window\'s rolling summaries plus a bounded selection of moments',
   summary: { level: 'five-minute', windowMs: 300_000, childLevel: 'rolling', maxChildren: 5, maxEvidence: 5, cadenceMs: 300_000 },
   body:
-    'You are writing a concise five-minute view of a work session from the lower-level summaries below. ' +
-    'Summarize only what they support; invent nothing. Keep it tight.\n\n' +
-    'Lower-level summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
-    'Corroborating moments:\n{{evidence}}\n\nFive-minute summary:',
+    'Write the five-minute view of a work session from the lower-level notes below — the substance only.\n' +
+    '- Lead with what happened; the fewest words that carry it. Keep it tight.\n' +
+    '- Never narrate the notes ("the notes indicate", "it was mentioned") — just write it.\n' +
+    '- Keep only what the notes and moments below support; invent nothing.\n\n' +
+    'Lower-level notes (window {{windowStart}} → {{windowEnd}}):\n{{children}}\n\n' +
+    'Moments:\n{{evidence}}\n\nFive-minute view:',
 }
 
 export const defaultSessionSummaryTemplate: PromptTemplate = {
@@ -319,10 +294,11 @@ export const defaultSessionSummaryTemplate: PromptTemplate = {
   description: 'hierarchical summary (#177): the durable end-of-session result, over the session\'s five-minute summaries plus a bounded selection of moments',
   summary: { level: 'session', windowMs: 300_000, childLevel: 'five-minute', maxChildren: 12, maxEvidence: 8 },
   body:
-    'You are writing the durable result of a whole work session from the five-minute summaries below. ' +
-    'Summarize only what they support; invent nothing. Lead with the outcome, then the key points.\n\n' +
-    'Five-minute summaries (session {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
-    'Corroborating moments:\n{{evidence}}\n\nSession summary:',
+    'Write the wrap-up of a whole work session from the five-minute notes below.\n' +
+    '- Lead with the outcome, then the key points — the substance, not a narration of the notes.\n' +
+    '- Keep only what the notes and moments below support; invent nothing.\n\n' +
+    'Five-minute notes (session {{windowStart}} → {{windowEnd}}):\n{{children}}\n\n' +
+    'Moments:\n{{evidence}}\n\nWrap-up:',
 }
 
 /**
@@ -341,10 +317,11 @@ export const defaultEpisodeSummaryTemplate: PromptTemplate = {
   description: 'hierarchical summary (#177): a coherent stretch of activity — a wider window over the rolling summaries',
   summary: { level: 'episode', windowMs: 180_000, childLevel: 'rolling', maxChildren: 8, maxEvidence: 3, cadenceMs: 180_000 },
   body:
-    'You are naming a coherent stretch of a work session from the rolling summaries below — what this ' +
-    'episode was about. Summarize only what they support; invent nothing. One or two tight sentences.\n\n' +
-    'Rolling summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
-    'Corroborating moments:\n{{evidence}}\n\nEpisode summary:',
+    'Name what this stretch of the session was about, from the rolling notes below — one or two tight lines.\n' +
+    '- Lead with the substance; no narration of the notes themselves, no preamble.\n' +
+    '- Keep only what the notes and moments below support; invent nothing.\n\n' +
+    'Rolling notes (window {{windowStart}} → {{windowEnd}}):\n{{children}}\n\n' +
+    'Moments:\n{{evidence}}\n\nWhat this stretch was about:',
 }
 
 /**
@@ -363,10 +340,10 @@ export const defaultProjectSummaryTemplate: PromptTemplate = {
   description: 'hierarchical summary (#177): durable cross-session project continuity, over every session\'s session summary — a new session supersedes the prior revision, never overwriting it',
   summary: { level: 'project', windowMs: 300_000, childLevel: 'session', maxChildren: 20, maxEvidence: 0 },
   body:
-    'You are writing the durable, continuing summary of a PROJECT from its per-session summaries below — ' +
-    'the through-line across sessions. Summarize only what they support; invent nothing. Lead with where ' +
-    'the project stands now, then the durable threads.\n\n' +
-    'Session summaries ({{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nProject summary:',
+    'Write where this project stands now, from its per-session notes below — the through-line across sessions.\n' +
+    '- Lead with the current state, then the durable threads — the substance, not a narration of the notes.\n' +
+    '- Keep only what the notes below support; invent nothing.\n\n' +
+    'Session notes ({{windowStart}} → {{windowEnd}}):\n{{children}}\n\nWhere the project stands:',
 }
 
 /** The shipped summary prompt bundle, finest→coarsest (all five #177 levels — episode/project land in slice 2). */
@@ -377,6 +354,79 @@ export const defaultSummaryTemplates: readonly PromptTemplate[] = [
   defaultSessionSummaryTemplate,
   defaultProjectSummaryTemplate,
 ]
+
+/**
+ * The PREVIOUS shipped bodies of the builtin templates — the prior generation of a body we still want an
+ * UNEDITED install to auto-upgrade FROM. The one-time builtin-body refresh (DistillDocuments.ensureDefaults
+ * → seedOrRefreshBuiltin) uses these to detect an unedited builtin on an existing install: seeds are
+ * seed-if-absent, so an upgrader keeps its old body forever otherwise. A stored builtin is treated as
+ * unedited — and refreshed to the current shipped body — ONLY when it is still at version 1 AND its body is
+ * byte-for-byte the previous body for its id. Any user edit bumps the version off 1 (LayoutStore.put) and/or
+ * diverges the body, so an edited document is NEVER clobbered. Keyed by template id. Declared AFTER every
+ * template it references so its computed keys read initialized consts (no temporal-dead-zone access). Keep in
+ * lockstep with the bodies above: a refresh compares against these, never against the current body.
+ *
+ * NB (#245): the summary-family entries are the #177 bodies and the distill entry is the #130 NEUTRAL body —
+ * the generation that shipped before this notes-voice rewrite. A pre-#130 install already refreshed off the
+ * voice-baked distill body to the neutral one (version 2), so the voice-baked body is no longer a live upgrade
+ * source; a refreshed-once install therefore sits at version 2 and — by the conservative version===1 guard —
+ * does not auto-upgrade further. A fresh-since-#130 (still-version-1) install, or a fresh install, lands the
+ * notes-voice bodies automatically. The extract/entities entries are unchanged (#130 pre-neutral bodies) — this
+ * slice does not touch those templates.
+ */
+export const PREVIOUS_BUILTIN_BODIES: Readonly<Record<string, string>> = {
+  [defaultDistillTemplate.id]:
+    'You are distilling a live meeting into a tight, factual summary of what just happened.\n' +
+    'Summarize only what the transcript supports. Do not invent commitments or names.\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nSummary:',
+  [defaultExtractTemplate.id]:
+    'You extract typed moments from a meeting transcript. Return ONLY a JSON array, no prose, no code fences.\n' +
+    'Each element: {"kind": one of "commitment"|"question"|"decision"|"artifact", "text": string, ' +
+    '"speaker": string (optional), "confidence": number 0..1 (optional), "answered": boolean (only for kind "question")}.\n' +
+    '- commitment (●): someone promised to do something.\n' +
+    '- question (◆): a question directed at the user awaiting an answer.\n' +
+    '- decision (▲): a choice the group settled on.\n' +
+    '- artifact (✱): a document, link, or file referenced or to produce.\n' +
+    'Extract only what the transcript supports; invent nothing. If there are no moments, return [].\n' +
+    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
+    'Summary of the window: {{summary}}\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array:',
+  [defaultEntitiesTemplate.id]:
+    'You extract the named entities discussed in a meeting transcript — the people, artifacts, and topics that matter.\n' +
+    'Return ONLY a JSON array of entities, no prose, no code fences.\n' +
+    'Each element: {"name": string, "kind": one of "person"|"artifact"|"topic", "aliases": string[] (optional other names for the same thing)}.\n' +
+    '- person: a human named or clearly referred to.\n' +
+    '- artifact (✱): a document, file, link, system, or deliverable.\n' +
+    '- topic: a subject, project, or theme under discussion.\n' +
+    'Extract only entities the transcript supports; invent nothing. Merge obvious aliases of one thing into a single entity. If there are none, return [].\n' +
+    'Voice: specificity {{specificity}}/10, brevity {{brevity}}/10. {{voice.rules}}\n\n' +
+    'Summary of the window: {{summary}}\n\n' +
+    'Transcript (merge window {{windowStart}} → {{windowEnd}}):\n{{transcript}}\n\nJSON array of entities:',
+  [defaultRollingSummaryTemplate.id]:
+    'You are writing a short rolling summary of a work session from the window summaries below. ' +
+    'Summarize only what they support; invent nothing. One or two tight sentences.\n\n' +
+    'Window summaries ({{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nRolling summary:',
+  [defaultEpisodeSummaryTemplate.id]:
+    'You are naming a coherent stretch of a work session from the rolling summaries below — what this ' +
+    'episode was about. Summarize only what they support; invent nothing. One or two tight sentences.\n\n' +
+    'Rolling summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
+    'Corroborating moments:\n{{evidence}}\n\nEpisode summary:',
+  [defaultFiveMinuteSummaryTemplate.id]:
+    'You are writing a concise five-minute view of a work session from the lower-level summaries below. ' +
+    'Summarize only what they support; invent nothing. Keep it tight.\n\n' +
+    'Lower-level summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
+    'Corroborating moments:\n{{evidence}}\n\nFive-minute summary:',
+  [defaultSessionSummaryTemplate.id]:
+    'You are writing the durable result of a whole work session from the five-minute summaries below. ' +
+    'Summarize only what they support; invent nothing. Lead with the outcome, then the key points.\n\n' +
+    'Five-minute summaries (session {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\n' +
+    'Corroborating moments:\n{{evidence}}\n\nSession summary:',
+  [defaultProjectSummaryTemplate.id]:
+    'You are writing the durable, continuing summary of a PROJECT from its per-session summaries below — ' +
+    'the through-line across sessions. Summarize only what they support; invent nothing. Lead with where ' +
+    'the project stands now, then the durable threads.\n\n' +
+    'Session summaries ({{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nProject summary:',
+}
 
 /**
  * The default meeting mode — window config lives here (mode document owns merge windows, per

@@ -13,5 +13,5 @@
     "maxEvidence": 5,
     "cadenceMs": 300000
   },
-  "body": "You are writing a concise five-minute view of a work session from the lower-level summaries below. Summarize only what they support; invent nothing. Keep it tight.\n\nLower-level summaries (window {{windowStart}} -> {{windowEnd}}):\n{{children}}\n\nCorroborating moments:\n{{evidence}}\n\nFive-minute summary:"
+  "body": "Write the five-minute view of a work session from the lower-level notes below — the substance only.\n- Lead with what happened; the fewest words that carry it. Keep it tight.\n- Never narrate the notes (\"the notes indicate\", \"it was mentioned\") — just write it.\n- Keep only what the notes and moments below support; invent nothing.\n\nLower-level notes (window {{windowStart}} → {{windowEnd}}):\n{{children}}\n\nMoments:\n{{evidence}}\n\nFive-minute view:"
 }
